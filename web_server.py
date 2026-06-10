@@ -112,6 +112,7 @@ from feature.contacts import (
     normalize_auto_maintenance_batch_size,
     stop_maintenance_hint,
 )
+from feature import relationship_scan
 from feature.moments_tasks import (
     MOMENTS_TASK_STATUS_VALUES,
     cancel_queued_moments_task,
@@ -2261,6 +2262,7 @@ def dashboard():
         ),
     }
     contact_directory_options = _contact_profiles_picker_options(task_scope_wx_id)
+    relationship_scan_seed = _relationship_scan_payload(contact_directory_options.get('wx_id', ''))
     initial_active_tab = str(request.args.get('active_tab', '') or '').strip()
 
     force_admin_change_required = is_force_admin_change_required()
@@ -2278,6 +2280,7 @@ def dashboard():
         material_outreach_runtime_seed=material_outreach_runtime_seed,
         ai_material_outreach_status=ai_material_outreach_status,
         contact_directory_options=contact_directory_options,
+        relationship_scan_seed=relationship_scan_seed,
         task_scope_options=task_scope_options,
         initial_active_tab=initial_active_tab,
         force_admin_change_required=force_admin_change_required,
@@ -5479,6 +5482,37 @@ def _contact_profiles_picker_options(wx_id=''):
     }
 
 
+def _relationship_scan_wx_id_from_request():
+    wx_id = _contact_profiles_runtime_wx_id_from_request()
+    if wx_id:
+        return _validate_known_account_wx_id(wx_id, base_dir=CONTACT_PROFILES_DIR)
+    return _contact_profiles_wx_id_from_request()
+
+
+def _relationship_scan_payload(wx_id=''):
+    wx_id = str(wx_id or '').strip()
+    if not wx_id:
+        wx_id = _contact_profiles_wx_id_from_request()
+    state = relationship_scan.load_state(DATA_DIR, wx_id)
+    payload = relationship_scan.relationship_scan_payload(state)
+    wx_ids = _available_account_wx_ids(CONTACT_PROFILES_DIR)
+    if wx_id and wx_id not in wx_ids:
+        wx_ids.append(wx_id)
+    payload['wx_ids'] = wx_ids
+    return payload
+
+
+def _save_relationship_scan_settings(wx_id, raw_settings):
+    wx_id = str(wx_id or '').strip()
+    state = relationship_scan.load_state(DATA_DIR, wx_id)
+    state['settings'] = relationship_scan.normalize_settings({
+        **(state.get('settings') or {}),
+        **(raw_settings or {}),
+    })
+    state = relationship_scan.save_state(DATA_DIR, state)
+    return relationship_scan.relationship_scan_payload(state)
+
+
 def _contact_profiles_runtime_wx_id_from_request():
     candidate = str(request.args.get('wx_id', '') or '').strip()
     if candidate:
@@ -5719,6 +5753,93 @@ def contact_profiles_repair_preview():
         _require_running_contact_profiles_wx_id()
         result = bot.preview_contact_profile_remark_repairs()
         return jsonify({'status': 'success', 'data': result})
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/relationship_scan/status')
+@login_required
+def relationship_scan_status():
+    try:
+        wx_id = _relationship_scan_wx_id_from_request()
+        return jsonify({'status': 'success', 'payload': _relationship_scan_payload(wx_id)})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/relationship_scan/settings', methods=['POST'])
+@login_required
+def relationship_scan_settings_save():
+    try:
+        data = request.get_json(silent=True) or {}
+        wx_id = _relationship_scan_wx_id_from_request()
+        payload = _save_relationship_scan_settings(wx_id, data.get('settings') or data)
+        return jsonify({'status': 'success', 'message': '关系扫描设置已保存', 'payload': payload})
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/relationship_scan/scan', methods=['POST'])
+@login_required
+def relationship_scan_manual_scan():
+    try:
+        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'scan_relationship_sessions')):
+            return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
+        _require_running_contact_profiles_wx_id()
+        result = bot.scan_relationship_sessions()
+        count = len(result.get('sessions') or [])
+        return jsonify({
+            'status': 'success',
+            'message': f'关系扫描完成，本轮读取 {count} 个会话',
+            'payload': result.get('payload') or {},
+        })
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        log('ERROR', f'[关系扫描] 立即扫描失败：{e}')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/relationship_scan/full_scan', methods=['POST'])
+@login_required
+def relationship_scan_full_scan():
+    try:
+        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'full_scan_relationship_sessions')):
+            return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
+        _require_running_contact_profiles_wx_id()
+        log('INFO', '[关系扫描] 收到全量扫描请求')
+        result = bot.full_scan_relationship_sessions()
+        count = len(result.get('sessions') or [])
+        return jsonify({
+            'status': 'success',
+            'message': f'全量扫描完成，本轮读取 {count} 个会话',
+            'payload': result.get('payload') or {},
+        })
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        log('ERROR', f'[关系扫描] 全量扫描失败：{e}')
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/relationship_scan/stop', methods=['POST'])
+@login_required
+def relationship_scan_stop():
+    try:
+        if bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'stop_relationship_full_scan'):
+            _require_running_contact_profiles_wx_id()
+            payload = bot.stop_relationship_full_scan()
+        else:
+            wx_id = _relationship_scan_wx_id_from_request()
+            state = relationship_scan.load_state(DATA_DIR, wx_id)
+            state.setdefault('runtime', {})['stop_requested'] = True
+            state = relationship_scan.save_state(DATA_DIR, state)
+            payload = relationship_scan.relationship_scan_payload(state)
+        return jsonify({'status': 'success', 'message': '已请求停止全量扫描', 'payload': payload})
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:

@@ -488,6 +488,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .material-taskized-card > .ui-head.ui-head--page,
 .ai-moments-card > .ui-head.ui-head--page,
 .contact-maintenance-card > .ui-head.ui-head--page,
+.relationship-scan-card > .ui-head.ui-head--page,
 .listen-page-head,
 #tab-group > .cfg-card > .ui-head.ui-head--page { margin-bottom: 0; padding-bottom: 12px; }
 .keyword-reply-summary,
@@ -1382,6 +1383,24 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .contact-maintenance-auto-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .contact-maintenance-auto-field--full { grid-column: 1 / -1; }
 .contact-maintenance-auto-grid .cfg-hint { line-height: 1.6; }
+.relationship-scan-card { margin-top: 16px; }
+.relationship-scan-body { --ui-split-side-min: 360px; }
+.relationship-scan-result-block,
+.relationship-scan-settings-block { min-width: 0; }
+.relationship-scan-table { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface-l3); }
+.relationship-scan-row { display: grid; grid-template-columns: minmax(120px, .85fr) 82px minmax(180px, 1.6fr) 116px 118px; gap: 10px; align-items: center; min-height: 42px; padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--card-fg); }
+.relationship-scan-row:last-child { border-bottom: 0; }
+.relationship-scan-row--head { min-height: 34px; background: var(--surface-l2); color: var(--muted); font-size: 12px; font-weight: 700; }
+.relationship-scan-record-list { min-height: 78px; background: var(--surface-l3); }
+.relationship-scan-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.relationship-scan-state,
+.relationship-scan-sync-state { justify-self: start; display: inline-flex; align-items: center; justify-content: center; min-width: 52px; height: 24px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 700; line-height: 1; }
+.relationship-scan-state.is-blocked { color: var(--danger); background: rgba(220,38,38,.1); }
+.relationship-scan-state.is-deleted { color: var(--warning); background: rgba(245,158,11,.14); }
+.relationship-scan-state.is-normal { color: var(--primary); background: rgba(7,193,96,.12); }
+.relationship-scan-sync-state.is-pending { color: var(--warning); background: rgba(245,158,11,.14); }
+.relationship-scan-sync-state.is-synced { color: var(--primary); background: rgba(7,193,96,.12); }
+.relationship-scan-sync-state.is-skipped { color: var(--muted); background: var(--surface-l4); }
 .new-friend-main-stack { display: grid; gap: 16px; min-width: 0; }
 .new-friend-block { min-width: 0; padding: var(--ui-l2-card-padding); border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
 .new-friend-block .switch-row { margin-bottom: 10px; }
@@ -1423,6 +1442,9 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .new-friend-field-grid { grid-template-columns: 1fr; }
   .contact-maintenance-body { grid-template-columns: 1fr; }
   .contact-maintenance-auto-grid { grid-template-columns: 1fr; }
+  .relationship-scan-row { grid-template-columns: minmax(88px, 1fr) 66px minmax(120px, 1.4fr); }
+  .relationship-scan-row span:nth-child(4),
+  .relationship-scan-row span:nth-child(5) { display: none; }
   .new-friend-nickname-row .cfg-hint,
   .new-friend-tag-head .cfg-hint { text-align: left; margin-left: 0; }
   .new-friend-welcome-head { flex-wrap: wrap; align-items: flex-start; }

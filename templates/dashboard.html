@@ -1672,7 +1672,6 @@ html.icons-pref-local [class*=" bi-"]::before {
           <h5>通讯录维护</h5>
           <span class="desc">读取微信的联系人信息，并保存到本地</span>
         </div>
-        <div id="contact-directory-msg" class="cfg-feedback" style="display:none;"></div>
       <div class="contact-maintenance-summary">
         <span class="ui-pill ui-pill--status contact-maintenance-pill {% if config.get('contact_directory_auto_maintenance_switch', False) %}is-success{% else %}is-danger{% endif %}">
           <span class="contact-maintenance-pill-label">自动维护</span><span class="contact-maintenance-pill-value">{% if config.get('contact_directory_auto_maintenance_switch', False) %}已开启{% else %}已关闭{% endif %}</span>
@@ -1697,8 +1696,12 @@ html.icons-pref-local [class*=" bi-"]::before {
               <h5>手动建档</h5>
               <span class="desc">立即读取通讯录，或修复缺少备注的联系人</span>
             </div>
+            <div class="ui-head__actions">
+              <span class="cfg-hint" id="contact-directory-maintenance-last-time">最近维护 未维护</span>
+            </div>
           </div>
           <div class="cfg-flow">
+            <div id="contact-directory-msg" class="cfg-feedback" style="display:none;"></div>
             <div class="contact-maintenance-actions">
               <button type="button" id="btn-contact-standard-build" class="ui-btn ui-btn--primary ui-btn--l2">
                 <i class="bi bi-list-check"></i> 立即建档
@@ -1763,6 +1766,116 @@ html.icons-pref-local [class*=" bi-"]::before {
               <label class="cfg-label" for="contact_directory_auto_maintenance_full_scan_interval_days">每轮维护间隔</label>
               <input type="number" class="form-control" id="contact_directory_auto_maintenance_full_scan_interval_days" min="1" max="30" value="{{ config.get('contact_directory_auto_maintenance_full_scan_interval_days', 7) }}">
               <div class="cfg-hint">单位：天。上一轮维护完后，隔多久自动开始下一轮</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% set relationship_settings = relationship_scan_seed.get('settings', {}) if relationship_scan_seed else {} %}
+    {% set relationship_summary = relationship_scan_seed.get('summary', {}) if relationship_scan_seed else {} %}
+    <div class="cfg-card relationship-scan-card">
+      <div class="ui-head ui-head--page">
+        <i class="bi bi-person-check"></i>
+        <h5>关系扫描</h5>
+        <span class="desc">周期性扫描会话列表，自动识别把你拉黑、删除的好友</span>
+      </div>
+      <div class="contact-maintenance-summary relationship-scan-summary">
+        <span class="ui-pill ui-pill--status contact-maintenance-pill {% if relationship_summary.get('auto_scan_enabled', True) %}is-success{% else %}is-danger{% endif %}" id="relationship-scan-auto-pill">
+          <span class="contact-maintenance-pill-label">自动扫描</span><span class="contact-maintenance-pill-value" id="relationship-scan-auto-state">{% if relationship_summary.get('auto_scan_enabled', True) %}已开启{% else %}已关闭{% endif %}</span>
+        </span>
+        <span class="ui-pill is-danger contact-maintenance-pill">
+          <span class="contact-maintenance-pill-label">今天拉黑</span><span class="contact-maintenance-pill-value" id="relationship-scan-today-blocked">{{ relationship_summary.get('today_blocked', 0) }}</span>
+        </span>
+        <span class="ui-pill is-warning contact-maintenance-pill">
+          <span class="contact-maintenance-pill-label">今天删除</span><span class="contact-maintenance-pill-value" id="relationship-scan-today-deleted">{{ relationship_summary.get('today_deleted', 0) }}</span>
+        </span>
+        <span class="ui-pill is-success contact-maintenance-pill">
+          <span class="contact-maintenance-pill-label">今天恢复</span><span class="contact-maintenance-pill-value" id="relationship-scan-today-recovered">{{ relationship_summary.get('today_recovered', 0) }}</span>
+        </span>
+        <span class="ui-pill is-info contact-maintenance-pill">
+          <span class="contact-maintenance-pill-label">已同步微信</span><span class="contact-maintenance-pill-value" id="relationship-scan-synced-today">{{ relationship_summary.get('wechat_synced_today', 0) }}</span>
+        </span>
+        <span class="ui-pill is-warning contact-maintenance-pill">
+          <span class="contact-maintenance-pill-label">待同步微信</span><span class="contact-maintenance-pill-value" id="relationship-scan-pending-sync">{{ relationship_summary.get('wechat_pending', 0) }}</span>
+        </span>
+      </div>
+      <div class="contact-maintenance-body relationship-scan-body">
+        <div class="new-friend-block relationship-scan-result-block">
+          <div class="ui-head ui-head--section">
+            <div class="ui-head__main">
+              <h5>扫描结果</h5>
+              <span class="desc" id="relationship-scan-result-desc">本轮扫描 {{ relationship_summary.get('last_scan_count', 0) }} 个会话</span>
+            </div>
+            <div class="ui-head__actions">
+              <span class="cfg-hint" id="relationship-scan-last-time">最近扫描 {{ relationship_summary.get('last_scan_at') or '未扫描' }}</span>
+            </div>
+          </div>
+          <div class="cfg-flow">
+            <div id="relationship-scan-msg" class="cfg-feedback" style="display:none;"></div>
+            <div class="contact-maintenance-actions">
+              <button type="button" id="btn-relationship-scan-now" class="ui-btn ui-btn--primary ui-btn--l2">
+                <i class="bi bi-search"></i> 立即扫描
+              </button>
+              <button type="button" id="btn-relationship-scan-full" class="ui-btn ui-btn--secondary ui-btn--l2">
+                <i class="bi bi-arrow-down-up"></i> 全量扫描
+              </button>
+              <button type="button" id="btn-relationship-scan-stop" class="ui-btn ui-btn--secondary ui-btn--l2">
+                <i class="bi bi-stop-circle"></i> 停止扫描
+              </button>
+            </div>
+            <div class="page-inline-notice page-inline-notice--danger">
+              <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
+              <div class="page-inline-notice__content">全量扫描会滚动微信主窗口会话列表，运行时请尽量不要手动操作微信</div>
+            </div>
+            <div class="relationship-scan-table">
+              <div class="relationship-scan-row relationship-scan-row--head">
+                <span>联系人</span><span>状态</span><span>会话预览</span><span>变化时间</span><span>自动同步</span>
+              </div>
+              <div id="relationship-scan-record-list" class="relationship-scan-record-list ui-workbench-scroll-body">
+                <div class="contact-directory-list-empty">暂无关系扫描记录</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="new-friend-block relationship-scan-settings-block">
+          <div class="ui-head ui-head--section">
+            <div class="ui-head__main">
+              <h5>自动扫描</h5>
+              <span class="desc">后台读取当前会话列表；全量扫描只在手动触发时滚动读取</span>
+            </div>
+            <div class="ui-head__actions">
+              <label class="ui-switch ui-switch--l2 ui-head-switch" for="relationship_scan_auto_enabled" title="开启自动扫描">
+                <input class="form-check-input" type="checkbox" id="relationship_scan_auto_enabled" {% if relationship_settings.get('auto_scan_enabled', True) %}checked{% endif %}>
+                <span class="ui-switch-knob"></span>
+              </label>
+            </div>
+          </div>
+          <div class="contact-maintenance-auto-grid">
+            <div>
+              <label class="cfg-label" for="relationship_scan_auto_write_contact_directory">写入本地通讯录</label>
+              <select class="form-select" id="relationship_scan_auto_write_contact_directory">
+                <option value="auto" {% if relationship_settings.get('auto_write_contact_directory', True) %}selected{% endif %}>自动</option>
+                <option value="off" {% if not relationship_settings.get('auto_write_contact_directory', True) %}selected{% endif %}>关闭</option>
+              </select>
+              <div class="cfg-hint">扫描到关系变化后，自动更新本地通讯录状态</div>
+            </div>
+            <div>
+              <label class="cfg-label" for="relationship_scan_auto_sync_wechat_tags">同步到微信标签</label>
+              <select class="form-select" id="relationship_scan_auto_sync_wechat_tags">
+                <option value="auto" {% if relationship_settings.get('auto_sync_wechat_tags', True) %}selected{% endif %}>自动</option>
+                <option value="off" {% if not relationship_settings.get('auto_sync_wechat_tags', True) %}selected{% endif %}>关闭</option>
+              </select>
+              <div class="cfg-hint">微信空闲时自动添加或移除实际好友标签</div>
+            </div>
+            <div>
+              <label class="cfg-label" for="relationship_scan_sync_batch_size">每轮同步标签</label>
+              <input type="number" class="form-control" id="relationship_scan_sync_batch_size" min="1" max="10" value="{{ relationship_settings.get('sync_batch_size', 5) }}">
+              <div class="cfg-hint">每轮真实修改微信标签的人数，范围 1-10</div>
+            </div>
+            <div>
+              <label class="cfg-label" for="relationship_scan_interval_seconds">每次查询间隔</label>
+              <input type="number" class="form-control" id="relationship_scan_interval_seconds" min="5" max="20" value="{{ relationship_settings.get('scan_interval_seconds', 10) }}">
+              <div class="cfg-hint">后台自动扫描当前会话列表的间隔，范围 5-20 秒</div>
             </div>
           </div>
         </div>
@@ -3975,6 +4088,10 @@ $(function(){
     tag: '__all__',
     payload: null
   };
+  var _relationshipScanSeed = {{ relationship_scan_seed|tojson|safe }};
+  var _relationshipScanState = {
+    payload: _relationshipScanSeed || {}
+  };
   var _materialOutreachRuntimeSeed = {{ material_outreach_runtime_seed|tojson|safe }};
   var _materialOutreachBrowserSeed = {{ material_outreach_status.get('browser', {})|tojson|safe }};
   var _materialOutreachBrowserState = {
@@ -4428,6 +4545,12 @@ $(function(){
     $('#contact-directory-total').text('0');
     $('#contact-directory-duplicate-count').text('0');
     $('#contact-directory-repair-count').text('0');
+    $('#contact-directory-maintenance-last-time').text('最近维护 未维护');
+  }
+  function contactDirectoryShortTime(value){
+    var text = String(value || '').trim();
+    if(!text) return '';
+    return text.replace('T', ' ').slice(5, 16);
   }
   function summarizeContactDirectoryUpdatedAt(value){
     var text = String(value || '').trim();
@@ -4472,6 +4595,7 @@ $(function(){
     $('#contact-directory-total').text(String(summary.total || 0));
     $('#contact-directory-duplicate-count').text(String(summary.duplicate_send_names || 0));
     $('#contact-directory-repair-count').text(String(summary.repair_candidates || 0));
+    $('#contact-directory-maintenance-last-time').text('最近维护 ' + (contactDirectoryShortTime(summary.updated_at || '') || '未维护'));
   }
   function setContactDirectoryBrowserMsg(message, ok){
     var $msg = $('#contact-directory-browser-msg');
@@ -4609,6 +4733,142 @@ $(function(){
       }, deleteAction, 'contact-directory-tag-item', false));
     });
     updateContactDirectoryContactList();
+  }
+  function relationshipScanStatusInfo(status){
+    status = String(status || '').trim();
+    if(status === 'blocked') return {text:'拉黑', cls:'is-blocked'};
+    if(status === 'deleted') return {text:'删除', cls:'is-deleted'};
+    return {text:'正常', cls:'is-normal'};
+  }
+  function relationshipScanSyncInfo(record){
+    record = record || {};
+    var status = String(record.wechat_sync_status || '').trim();
+    var error = String(record.wechat_sync_error || '').trim();
+    if(status === 'synced') return {text:'已同步', cls:'is-synced'};
+    if(status === 'pending' && error) return {text:'下轮重试', cls:'is-pending'};
+    if(status === 'pending') return {text:'待同步', cls:'is-pending'};
+    return {text:'无需同步', cls:'is-skipped'};
+  }
+  function relationshipScanShortTime(value){
+    var text = String(value || '').trim();
+    if(!text) return '-';
+    return text.replace('T', ' ').slice(5, 16);
+  }
+  function renderRelationshipScanRecord(record){
+    record = record || {};
+    var statusInfo = relationshipScanStatusInfo(record.status);
+    var syncInfo = relationshipScanSyncInfo(record);
+    var name = String(record.name || '').trim() || '未命名';
+    var evidence = String(record.evidence || '').trim() || '-';
+    var changedAt = relationshipScanShortTime(record.changed_at || record.last_seen_at);
+    return ''+
+      '<div class="relationship-scan-row">'+
+        '<span title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</span>'+
+        '<span class="relationship-scan-state '+escapeHtml(statusInfo.cls)+'">'+escapeHtml(statusInfo.text)+'</span>'+
+        '<span title="'+escapeHtml(evidence)+'">'+escapeHtml(evidence)+'</span>'+
+        '<span title="'+escapeHtml(String(record.changed_at || record.last_seen_at || ''))+'">'+escapeHtml(changedAt)+'</span>'+
+        '<span class="relationship-scan-sync-state '+escapeHtml(syncInfo.cls)+'" title="'+escapeHtml(record.wechat_sync_error || '')+'">'+escapeHtml(syncInfo.text)+'</span>'+
+      '</div>';
+  }
+  function renderRelationshipScan(payload){
+    payload = payload || {};
+    _relationshipScanState.payload = payload;
+    var settings = payload.settings || {};
+    var summary = payload.summary || {};
+    var records = Array.isArray(payload.records) ? payload.records : [];
+    var autoEnabled = summary.auto_scan_enabled !== false;
+    $('#relationship-scan-auto-pill').toggleClass('is-success', autoEnabled).toggleClass('is-danger', !autoEnabled);
+    $('#relationship-scan-auto-state').text(autoEnabled ? '已开启' : '已关闭');
+    $('#relationship-scan-today-blocked').text(String(summary.today_blocked || 0));
+    $('#relationship-scan-today-deleted').text(String(summary.today_deleted || 0));
+    $('#relationship-scan-today-recovered').text(String(summary.today_recovered || 0));
+    $('#relationship-scan-synced-today').text(String(summary.wechat_synced_today || 0));
+    $('#relationship-scan-pending-sync').text(String(summary.wechat_pending || 0));
+    $('#relationship-scan-result-desc').text('本轮扫描 ' + String(summary.last_scan_count || 0) + ' 个会话');
+    $('#relationship-scan-last-time').text('最近扫描 ' + (summary.last_scan_at ? relationshipScanShortTime(summary.last_scan_at) : '未扫描'));
+    $('#relationship_scan_auto_enabled').prop('checked', settings.auto_scan_enabled !== false);
+    $('#relationship_scan_auto_write_contact_directory').val(settings.auto_write_contact_directory !== false ? 'auto' : 'off');
+    $('#relationship_scan_auto_sync_wechat_tags').val(settings.auto_sync_wechat_tags !== false ? 'auto' : 'off');
+    $('#relationship_scan_sync_batch_size').val(settings.sync_batch_size || 5);
+    $('#relationship_scan_interval_seconds').val(settings.scan_interval_seconds || 10);
+    if(!records.length){
+      $('#relationship-scan-record-list').html('<div class="contact-directory-list-empty">暂无关系扫描记录</div>');
+      return;
+    }
+    $('#relationship-scan-record-list').html(records.map(renderRelationshipScanRecord).join(''));
+  }
+  function relationshipScanSettingsPayload(){
+    return {
+      wx_id: String(_contactDirectoryBrowserState.wxId || (_relationshipScanState.payload || {}).wx_id || '').trim(),
+      settings: {
+        auto_scan_enabled: $('#relationship_scan_auto_enabled').is(':checked'),
+        auto_write_contact_directory: $('#relationship_scan_auto_write_contact_directory').val() !== 'off',
+        auto_sync_wechat_tags: $('#relationship_scan_auto_sync_wechat_tags').val() !== 'off',
+        sync_batch_size: Math.max(1, Math.min(10, parseInt($('#relationship_scan_sync_batch_size').val()) || 5)),
+        scan_interval_seconds: Math.max(5, Math.min(20, parseInt($('#relationship_scan_interval_seconds').val()) || 10))
+      }
+    };
+  }
+  function loadRelationshipScanStatus(wxId, options){
+    options = options || {};
+    var params = {};
+    if(wxId) params.wx_id = wxId;
+    return $.getJSON('/relationship_scan/status', params).done(function(res){
+      if(res.status === 'success'){
+        renderRelationshipScan(res.payload || {});
+      } else if(!options.silent){
+        showMsg('relationship-scan-msg', res.message || '关系扫描状态加载失败', false);
+      }
+    }).fail(function(xhr){
+      if(!options.silent){
+        showMsg('relationship-scan-msg', '关系扫描状态加载失败：' + (xhr.responseText || xhr.status), false);
+      }
+    });
+  }
+  function saveRelationshipScanSettings(options){
+    options = options || {};
+    var payload = relationshipScanSettingsPayload();
+    return $.ajax({
+      url:'/relationship_scan/settings',
+      type:'POST',
+      contentType:'application/json',
+      data: JSON.stringify(payload),
+    }).done(function(res){
+      if(res.status === 'success'){
+        renderRelationshipScan(res.payload || {});
+        if(!options.silent) showMsg('relationship-scan-msg', res.message || '关系扫描设置已保存', true);
+      } else if(!options.silent){
+        showMsg('relationship-scan-msg', res.message || '关系扫描设置保存失败', false);
+      }
+    }).fail(function(xhr){
+      if(!options.silent){
+        showMsg('relationship-scan-msg', '关系扫描设置保存失败：' + (xhr.responseText || xhr.status), false);
+      }
+    });
+  }
+  function runRelationshipScanAction(url, buttonId, runningText, fallbackMessage){
+    var payload = {wx_id: String(_contactDirectoryBrowserState.wxId || '').trim()};
+    var $btn = $('#' + buttonId);
+    var oldHtml = $btn.html();
+    $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> ' + runningText);
+    return $.ajax({
+      url:url,
+      type:'POST',
+      contentType:'application/json',
+      data: JSON.stringify(payload),
+    }).done(function(res){
+      if(res.status === 'success'){
+        renderRelationshipScan(res.payload || {});
+        showMsg('relationship-scan-msg', res.message || fallbackMessage, true);
+        loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
+      } else {
+        showMsg('relationship-scan-msg', res.message || fallbackMessage + '失败', false);
+      }
+    }).fail(function(xhr){
+      showMsg('relationship-scan-msg', fallbackMessage + '失败：' + (xhr.responseText || xhr.status), false);
+    }).always(function(){
+      $btn.prop('disabled', false).html(oldHtml);
+    });
   }
   function updateMaterialOutreachRecordStats(stats){
     stats = stats || {};
@@ -4854,6 +5114,7 @@ $(function(){
   }
   applyTaskWorkbenchRuntimeState('material_outreach', _materialOutreachRuntimeSeed || {});
   renderMaterialOutreachBrowser(_materialOutreachBrowserSeed || {});
+  renderRelationshipScan(_relationshipScanSeed || {});
   loadTaskWorkbenchRuntime('material_outreach', {silent:true});
   setInterval(function(){
     if(typeof getActiveTabId === 'function' && getActiveTabId() === 'tab-schedule' && (!document.hidden)){
@@ -7686,12 +7947,14 @@ $(function(){
   });
   $(document).on('click', '[data-tab="tab-contact-directory"]', function(){
     loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
+    loadRelationshipScanStatus(_contactDirectoryBrowserState.wxId, {silent:true});
   });
   $('#contact-directory-wx-select').on('change', function(){
     var wxId = ($(this).val() || '').trim();
     if(wxId === String(_contactDirectoryBrowserState.wxId || '')) return;
     _contactDirectoryBrowserState.tag = '__all__';
     loadContactDirectoryBrowser(wxId);
+    loadRelationshipScanStatus(wxId, {silent:true});
   });
   $(document).on('click', '[data-tab="tab-prompt"]', function(){
     loadPromptPreviewWxIds(getPromptPreviewWxId() || getConversationMemoryWxId());
@@ -7753,6 +8016,7 @@ $(function(){
   });
   $('#btn-refresh-contact-directory-browser').click(function(){
     loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
+    loadRelationshipScanStatus(_contactDirectoryBrowserState.wxId, {silent:true});
   });
   $('#btn-contact-standard-build').click(function(){
     chooseContactDirectoryStart('standard');
@@ -7816,6 +8080,20 @@ $(function(){
   }
   $('#btn-contact-repair-remarks').click(function(){
     showRemarkRepairPreview();
+  });
+  $('#btn-relationship-scan-now').click(function(){
+    runRelationshipScanAction('/relationship_scan/scan', 'btn-relationship-scan-now', '扫描中...', '关系扫描完成');
+  });
+  $('#btn-relationship-scan-full').click(function(){
+    svModal.confirm('全量扫描会滚动微信主窗口会话列表。确定现在开始？', function(){
+      runRelationshipScanAction('/relationship_scan/full_scan', 'btn-relationship-scan-full', '扫描中...', '全量扫描完成');
+    }, '全量扫描确认', '开始扫描', '取消');
+  });
+  $('#btn-relationship-scan-stop').click(function(){
+    runRelationshipScanAction('/relationship_scan/stop', 'btn-relationship-scan-stop', '停止中...', '停止扫描');
+  });
+  $(document).on('change', '#relationship_scan_auto_enabled,#relationship_scan_auto_write_contact_directory,#relationship_scan_auto_sync_wechat_tags,#relationship_scan_sync_batch_size,#relationship_scan_interval_seconds', function(){
+    saveRelationshipScanSettings({silent:true});
   });
 
   function renderConversationMemoryExtractSummaryCard(label, value){

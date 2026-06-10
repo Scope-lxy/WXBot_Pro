@@ -2,13 +2,13 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
-from core.contact_profiles import BLOCKED_BY_CONTACT_TAG, is_default_placeholder_avatar, normalize_friend_detail
 from feature.contacts import check_contact_directory_auto_maintenance
 from feature.contacts import edit_friend_info_via_chat_profile
 from feature.contacts import modify_friend_tags_via_chat_profile
 from feature.contacts import prepare_contact_directory_window
 from feature.contacts import repair_contact_profile_remarks
-from feature.contacts import apply_blocked_contact_directory_flags
+from feature.contacts import refresh_contact_profiles_batch
+from feature.contacts import refresh_contact_profiles_single_batch
 
 
 class ContactMaintenancePrepareTests(unittest.TestCase):
@@ -103,10 +103,11 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         class FakeBot:
             wx = FakeWeChat()
 
-        with patch("feature.contacts.close_contact_directory_management_windows", return_value=0):
+        with patch("feature.contacts.close_contact_directory_management_windows", return_value=0) as mock_close:
             prepare_contact_directory_window(FakeBot())
 
         self.assertEqual(calls, ["SwitchToContact"])
+        mock_close.assert_not_called()
 
     def test_prepare_rebinds_and_retries_after_switch_failure(self):
         calls = []
@@ -129,12 +130,124 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             return bot.wx
 
         with (
-            patch("feature.contacts.close_contact_directory_management_windows", return_value=0),
+            patch("feature.contacts.close_contact_directory_management_windows", return_value=0) as mock_close,
             patch("core.wechat_window.rebind_wechat_client", side_effect=fake_rebind),
         ):
             prepare_contact_directory_window(FakeBot())
 
         self.assertEqual(calls, ["broken", "rebind", "healthy"])
+        mock_close.assert_not_called()
+
+    def test_run_to_completion_passes_previous_tail_as_next_batch_start(self):
+        calls = []
+        results = [
+            {
+                "count_returned": 10,
+                "next_start_name": "阿英10",
+                "analysis": {"outcome": "advanced", "completed": False},
+                "directory": {"maintenance": {"status": "idle"}},
+            },
+            {
+                "count_returned": 8,
+                "next_start_name": "阿英18",
+                "analysis": {"outcome": "tail_complete", "completed": True},
+                "directory": {"maintenance": {"status": "idle"}},
+            },
+        ]
+
+        class FakeBot:
+            def _load_contact_profiles_directory(self):
+                return {"maintenance": {}}, "ignored.json", "scope_rui"
+
+            def _refresh_contact_profiles_single_batch(self, **kwargs):
+                calls.append(kwargs)
+                return results.pop(0)
+
+            def _summarize_directory_growth(self, _before, _after):
+                return {"new_unique_count": 0, "directory_total_unique_count": 18}
+
+            def _write_contact_directory_auto_cycle_state(self, directory, **updates):
+                directory = dict(directory or {})
+                directory.setdefault("maintenance", {}).update(updates)
+                return directory
+
+            def _save_contact_profiles_directory(self, _directory):
+                pass
+
+        result = refresh_contact_profiles_batch(FakeBot(), mode="standard", run_to_completion=True)
+
+        self.assertEqual([call["start_name"] for call in calls], ["", "阿英10"])
+        self.assertEqual([call["logical_start_name"] for call in calls], ["", "阿英10"])
+        self.assertEqual([call["switch_back_to_chat"] for call in calls], [False, False])
+        self.assertEqual(result["count_returned"], 18)
+        self.assertTrue(result["completed"])
+
+    def test_force_refresh_runs_single_full_get_friend_details_call(self):
+        calls = []
+
+        class FakeLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeWeChat:
+            def GetFriendDetails(self, **kwargs):
+                calls.append(("GetFriendDetails", kwargs))
+                return [{"昵称": "阿英2"}, {"昵称": "阿英3"}]
+
+            def SwitchToChat(self):
+                calls.append(("SwitchToChat",))
+
+        class FakeBot:
+            wx = FakeWeChat()
+
+            def _get_wechat_action_lock(self):
+                return FakeLock()
+
+            def _load_contact_profiles_directory(self):
+                return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
+
+            def _prepare_contact_directory_window(self):
+                calls.append(("prepare",))
+
+        with (
+            patch("feature.contacts.save_contact_directory"),
+            patch("feature.contacts.load_contact_directory", return_value={"subjects": [], "maintenance": {}}),
+        ):
+            result = refresh_contact_profiles_single_batch(FakeBot(), mode="force")
+
+        get_calls = [call for call in calls if call[0] == "GetFriendDetails"]
+        self.assertEqual(len(get_calls), 1)
+        self.assertIsNone(get_calls[0][1]["n"])
+        self.assertEqual(get_calls[0][1]["interval"], 0.5)
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["analysis"]["outcome"], "full_scan_complete")
+
+    def test_force_run_to_completion_uses_single_batch(self):
+        calls = []
+
+        class FakeBot:
+            def _refresh_contact_profiles_single_batch(self, **kwargs):
+                calls.append(kwargs)
+                return {
+                    "count_returned": 2,
+                    "read_item_count": 2,
+                    "analysis": {"outcome": "full_scan_complete", "completed": True},
+                    "directory": {"maintenance": {"status": "idle"}},
+                }
+
+            def _save_contact_profiles_directory(self, _directory):
+                pass
+
+        result = refresh_contact_profiles_batch(FakeBot(), mode="force", run_to_completion=True)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["mode"], "force")
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["stopped_reason"], "directory_complete")
+        self.assertTrue(result["directory"]["maintenance"]["last_full_scan_completed_at"])
 
     def test_repair_remarks_retries_single_contact_after_rebind(self):
         calls = []
@@ -288,58 +401,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(calls[1], ("ChatInfo",))
         self.assertEqual(calls[2][0], "EditFriendInfo")
         self.assertEqual(calls[2][1]["add_tags"], ["付费用户"])
-
-    def test_placeholder_avatar_flags_blocked_contact(self):
-        detail = {
-            "昵称": "阿英2",
-            "微信号": "wxid_test",
-            "头像": r"C:\\Users\\Admin\\Desktop\\WXBot_Pro\\wxautox文件下载\\头像\\placeholder.png",
-        }
-        with patch("core.contact_profiles.os.path.exists", return_value=True), \
-             patch("core.contact_profiles.os.path.getsize", return_value=671), \
-             patch("PIL.Image.open") as mock_open:
-            class FakeStat:
-                mean = [220, 220, 220]
-                stddev = [1, 1, 1]
-
-            class FakeImage:
-                size = (48, 48)
-
-                def convert(self, _mode):
-                    return self
-
-                def getcolors(self, maxcolors=None):
-                    return [(1, (220, 220, 220))]
-
-            mock_open.return_value = FakeImage()
-            mock_stat = patch("PIL.ImageStat.Stat", return_value=FakeStat())
-            with mock_stat:
-                normalized = normalize_friend_detail(detail)
-        self.assertTrue(normalized["blocked_by_contact_suspected"])
-        self.assertIn(BLOCKED_BY_CONTACT_TAG, normalized["tags"])
-
-    def test_apply_blocked_flags_updates_directory(self):
-        directory = {
-            "subjects": [
-                {
-                    "remark": "",
-                    "nickname": "阿英2",
-                    "display_name": "阿英2",
-                    "send_name": "阿英2",
-                    "tags": [],
-                    "warnings": [],
-                }
-            ]
-        }
-        raw_details = [{
-            "昵称": "阿英2",
-            "头像": r"C:\\Users\\Admin\\Desktop\\WXBot_Pro\\wxautox文件下载\\头像\\placeholder.png",
-        }]
-        with patch("feature.contacts.is_default_placeholder_avatar", return_value=True):
-            updated = apply_blocked_contact_directory_flags(directory, raw_details)
-        self.assertIn(BLOCKED_BY_CONTACT_TAG, updated["subjects"][0]["tags"])
-        self.assertTrue(updated["subjects"][0]["blocked_by_contact_suspected"])
-
 
 if __name__ == "__main__":
     unittest.main()

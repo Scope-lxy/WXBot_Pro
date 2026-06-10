@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>关系扫描卡片原型</title>
+  <style>
+    :root {
+      --page: #f4f6f8;
+      --card: #fff;
+      --panel: #f1f3f5;
+      --line: #e4e7ec;
+      --text: #101828;
+      --muted: #7a828f;
+      --green: #08c972;
+      --green-bg: #dcf8e8;
+      --green-line: #9ee8bd;
+      --orange: #e87800;
+      --orange-bg: #fff2df;
+      --orange-line: #ffbc79;
+      --red: #dc2736;
+      --red-bg: #fff0f2;
+      --red-line: #ff9aa4;
+      --blue: #2f6fed;
+      --blue-bg: #eaf1ff;
+      --blue-line: #a9c3ff;
+      --shadow: 0 2px 10px rgba(15, 23, 42, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--page);
+      color: var(--text);
+      font: 15px/1.55 "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+      padding: 16px;
+    }
+
+    .page-card {
+      max-width: 1600px;
+      margin: 0 auto;
+      background: var(--card);
+      border: 1px solid #dde2e8;
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+      padding: 28px 30px 30px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding-bottom: 28px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: #e7f8ee;
+      border: 2px solid var(--green);
+      display: grid;
+      place-items: center;
+      color: var(--green);
+      font-weight: 900;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin-left: 4px;
+      color: var(--muted);
+      font-size: 17px;
+      font-weight: 600;
+    }
+
+    .pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      padding: 18px 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .pill {
+      min-height: 43px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 18px;
+      font-size: 17px;
+      font-weight: 800;
+      white-space: nowrap;
+      border: 1px solid var(--green-line);
+      color: #00a95c;
+      background: var(--green-bg);
+    }
+
+    .pill.red {
+      border-color: var(--red-line);
+      background: var(--red-bg);
+      color: var(--red);
+    }
+
+    .pill.orange {
+      border-color: var(--orange-line);
+      background: var(--orange-bg);
+      color: var(--orange);
+    }
+
+    .pill.blue {
+      border-color: var(--blue-line);
+      background: var(--blue-bg);
+      color: var(--blue);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.42fr) minmax(360px, 0.86fr);
+      gap: 20px;
+      padding-top: 22px;
+    }
+
+    .section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 18px;
+      min-width: 0;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 14px;
+    }
+
+    h2 {
+      margin: 0 0 8px;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    button {
+      height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #fff;
+      color: var(--text);
+      padding: 0 16px;
+      font: inherit;
+      font-weight: 800;
+    }
+
+    .primary {
+      border-color: var(--green);
+      background: var(--green);
+      color: #fff;
+    }
+
+    .danger {
+      border-color: var(--red-line);
+      color: var(--red);
+      background: #fff;
+    }
+
+    .warning-box {
+      border: 1px solid #ffd2d6;
+      background: #fff5f6;
+      color: var(--red);
+      border-radius: 8px;
+      padding: 14px 16px;
+      font-size: 16px;
+      font-weight: 800;
+      margin-bottom: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    th,
+    td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: middle;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    th {
+      background: #f8fafc;
+      color: #667085;
+      font-size: 13px;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    .state {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 58px;
+      height: 26px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .state.blocked { color: var(--red); background: var(--red-bg); }
+    .state.deleted { color: var(--orange); background: var(--orange-bg); }
+    .state.normal { color: #079455; background: var(--green-bg); }
+    .state.pending { color: var(--blue); background: var(--blue-bg); }
+    .state.failed { color: var(--red); background: var(--red-bg); }
+
+    .switch {
+      width: 48px;
+      height: 28px;
+      border-radius: 999px;
+      background: #b8edcf;
+      padding: 4px;
+      display: flex;
+      justify-content: flex-end;
+      flex: 0 0 auto;
+    }
+
+    .switch::after {
+      content: "";
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    .input {
+      height: 46px;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 7px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 0 14px;
+      font-size: 17px;
+    }
+
+    .help {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .full { grid-column: 1 / -1; }
+
+    .mini-stats {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .mini {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 12px;
+    }
+
+    .mini span {
+      display: block;
+      color: var(--muted);
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .mini b {
+      font-size: 21px;
+    }
+
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr; }
+      .subtitle { display: block; margin-left: 0; }
+    }
+
+    @media (max-width: 720px) {
+      body { padding: 8px; }
+      .page-card { padding: 18px; }
+      .header { align-items: flex-start; }
+      .pills { gap: 8px; }
+      .pill { width: 100%; justify-content: space-between; }
+      .form-grid, .mini-stats { grid-template-columns: 1fr; }
+      th:nth-child(4), td:nth-child(4),
+      th:nth-child(5), td:nth-child(5) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page-card">
+    <header class="header">
+      <div class="icon">↔</div>
+      <div>
+        <h1>关系扫描 <span class="subtitle">扫描会话列表，识别拉黑、删除和恢复正常</span></h1>
+      </div>
+    </header>
+
+    <div class="pills" aria-label="今日统计">
+      <div class="pill green">自动扫描 <span>已开启</span></div>
+      <div class="pill red">今天拉黑 <span>3</span></div>
+      <div class="pill orange">今天删除 <span>2</span></div>
+      <div class="pill green">今天恢复 <span>4</span></div>
+      <div class="pill blue">已同步微信 <span>7</span></div>
+      <div class="pill orange">待同步微信 <span>2</span></div>
+    </div>
+
+    <section class="layout">
+      <article class="section">
+        <div class="section-head">
+          <div>
+            <h2>扫描结果</h2>
+            <div class="hint">本轮扫描 16 个会话；全量扫描会自动滚动会话列表</div>
+          </div>
+          <div class="hint">最近扫描 00:42:18</div>
+        </div>
+
+        <div class="actions">
+          <button class="primary">立即扫描</button>
+          <button>全量扫描</button>
+          <button class="danger">停止扫描</button>
+        </div>
+
+        <div class="warning-box">全量扫描会滚动微信主窗口会话列表，运行时请尽量不要手动操作微信</div>
+
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 150px;">联系人</th>
+              <th style="width: 90px;">状态</th>
+              <th>会话预览</th>
+              <th style="width: 120px;">变化时间</th>
+              <th style="width: 138px;">自动同步</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>B-成和香</td>
+              <td><span class="state blocked">拉黑</span></td>
+              <td>消息已发出，但被对方拒收了。</td>
+              <td>00:42:18</td>
+              <td><span class="state pending">待同步</span></td>
+            </tr>
+            <tr>
+              <td>B-石秀容</td>
+              <td><span class="state deleted">删除</span></td>
+              <td>石秀容开启了朋友验证，你还不是他（她）朋友...</td>
+              <td>00:42:18</td>
+              <td><span class="state pending">待同步</span></td>
+            </tr>
+            <tr>
+              <td>B-珍珠1</td>
+              <td><span class="state blocked">拉黑</span></td>
+              <td>消息已发出，但被对方拒收了。</td>
+              <td>00:41:58</td>
+              <td><span class="state normal">已同步</span></td>
+            </tr>
+            <tr>
+              <td>B-薄荷1</td>
+              <td><span class="state normal">正常</span></td>
+              <td>姐姐，我今天比较忙，晚点再陪你聊哦[爱心][玫瑰]</td>
+              <td>00:41:12</td>
+              <td><span class="state pending">待移除</span></td>
+            </tr>
+            <tr>
+              <td>B-何跃香2</td>
+              <td><span class="state deleted">删除</span></td>
+              <td>何跃香开启了朋友验证，你还不是他（她）朋友...</td>
+              <td>00:40:45</td>
+              <td><span class="state failed">下轮重试</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+
+      <aside class="section">
+        <div class="section-head">
+          <div>
+            <h2>自动扫描</h2>
+            <div class="hint">轻扫只读取当前渲染的会话；全量扫描会滚动读取</div>
+          </div>
+          <div class="switch" aria-label="自动扫描已开启"></div>
+        </div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label>自动写入通讯录</label>
+            <div class="input"><span>开启</span><span class="state normal">默认</span></div>
+            <div class="help">扫描到关系变化后，自动更新本地通讯录状态</div>
+          </div>
+
+          <div class="field">
+            <label>自动同步微信标签</label>
+            <div class="input"><span>开启</span><span class="state normal">默认</span></div>
+            <div class="help">微信空闲时自动添加或移除实际好友标签</div>
+          </div>
+
+          <div class="field">
+            <label>每轮同步标签</label>
+            <div class="input"><span>5</span><span class="hint">1-10 人</span></div>
+            <div class="help">控制每轮真实微信标签修改的数量</div>
+          </div>
+
+          <div class="field">
+            <label>每次查询间隔</label>
+            <div class="input"><span>10</span><span class="hint">5-20 秒</span></div>
+            <div class="help">后台自动轻扫当前会话列表的间隔</div>
+          </div>
+        </div>
+
+        <div class="mini-stats">
+          <div class="mini"><span>本地通讯录匹配</span><b>8 / 9</b></div>
+          <div class="mini"><span>本轮新增记录</span><b>5</b></div>
+          <div class="mini"><span>同步失败</span><b>1</b></div>
+          <div class="mini"><span>下次轻扫</span><b>8 秒</b></div>
+        </div>
+      </aside>
+    </section>
+  </main>
+</body>
+</html>

@@ -153,7 +153,7 @@ from feature.custom_forward import (
     is_custom_forward_source,
     iter_custom_forward_listen_sources,
 )
-from feature import contacts, listening, message_routing, takeover_runtime
+from feature import contacts, listening, message_routing, relationship_scan, takeover_runtime
 from feature import admin_forward_flow, admin_moments_flow
 
 
@@ -1929,8 +1929,8 @@ class WXBot:
         log_start_finish=True,
         previous_next_start_name="",
         run_kind="manual_standard",
-        preserve_current_position=False,
         logical_start_name=None,
+        switch_back_to_chat=True,
     ):
         return contacts.refresh_contact_profiles_single_batch(
             self,
@@ -1942,8 +1942,8 @@ class WXBot:
             log_start_finish=log_start_finish,
             previous_next_start_name=previous_next_start_name,
             run_kind=run_kind,
-            preserve_current_position=preserve_current_position,
             logical_start_name=logical_start_name,
+            switch_back_to_chat=switch_back_to_chat,
         )
 
     def refresh_contact_profiles_batch(
@@ -1956,7 +1956,6 @@ class WXBot:
         count_override=None,
         run_to_completion=False,
         automatic=False,
-        preserve_current_position=False,
     ):
         return contacts.refresh_contact_profiles_batch(
             self,
@@ -1967,11 +1966,29 @@ class WXBot:
             count_override=count_override,
             run_to_completion=run_to_completion,
             automatic=automatic,
-            preserve_current_position=preserve_current_position,
         )
 
     def _check_contact_directory_auto_maintenance(self, now=None):
         return contacts.check_contact_directory_auto_maintenance(self, now=now)
+
+    def relationship_scan_payload(self):
+        state = relationship_scan.load_state(self.config.DATA_DIR, str(getattr(self, "wx_id", "") or "default"))
+        return relationship_scan.relationship_scan_payload(state)
+
+    def scan_relationship_sessions(self):
+        return relationship_scan.scan_current_sessions(self, mode="manual")
+
+    def full_scan_relationship_sessions(self):
+        return relationship_scan.scan_full_sessions(self)
+
+    def stop_relationship_full_scan(self):
+        return relationship_scan.request_stop_full_scan(self)
+
+    def _check_relationship_auto_scan(self, now=None):
+        return relationship_scan.check_auto_scan(self, now=now)
+
+    def _process_relationship_tag_sync(self):
+        return relationship_scan.process_pending_wechat_tag_sync(self)
 
     def set_contact_profiles_paused(self, paused=True):
         return contacts.set_contact_profiles_paused(self, paused=paused)
@@ -6180,7 +6197,7 @@ class WXBot:
             self.init_wx_listeners()
             log(message=f"UI面板状态更新完成")
 
-            wait_time      = 3   # 主循环每 1 秒轮询一次
+            wait_time      = 3   # 主循环每 3 秒轮询一次
             check_interval = 10  # 每 10 次循环执行一次离线检测
             check_counter      = 0
             check_new_counter  = 0
@@ -6301,6 +6318,11 @@ class WXBot:
                     self._check_admin_forward_timeout()
                 except Exception as e:
                     log(level="ERROR", message=f"管理员转发流程超时检查出错：{e}")
+
+                try:
+                    self._check_relationship_auto_scan()
+                except Exception as e:
+                    log(level="ERROR", message=f"关系扫描模块出错：{e}")
 
                 if self._contact_directory_auto_maintenance_enabled():
                     try:

@@ -9,7 +9,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
 import re
 import unicodedata
 from datetime import datetime
@@ -24,8 +23,6 @@ DIRECTORY_FILENAME = "contacts.json"
 
 WARNING_DUPLICATE_SEND_NAME = "duplicate_send_name"
 WARNING_SEND_NAME_UNSEARCHABLE = "send_name_unsearchable"
-WARNING_BLOCKED_BY_CONTACT = "blocked_by_contact_suspected"
-BLOCKED_BY_CONTACT_TAG = "拉黑我的人"
 
 _TAG_SPLIT_RE = re.compile(r"[,，、;；/|｜\n\r\t]+")
 _SAFE_NAME_RE = re.compile(r"[^0-9A-Za-z_.-]+")
@@ -97,39 +94,6 @@ def normalize_tag_list(raw_tags: Any) -> list[str]:
     return normalized
 
 
-def _append_unique_text(values: list[str], value: str) -> list[str]:
-    text = _clean_text(value)
-    if text and text not in values:
-        values.append(text)
-    return values
-
-
-def is_default_placeholder_avatar(path: Any) -> bool:
-    path_text = _clean_text(path)
-    if not path_text:
-        return False
-    try:
-        if not os.path.exists(path_text):
-            return False
-        file_size = os.path.getsize(path_text)
-        if file_size > 1500:
-            return False
-        from PIL import Image, ImageStat
-
-        image = Image.open(path_text).convert("RGB")
-        width, height = image.size
-        if width < 20 or height < 20:
-            return False
-        stat = ImageStat.Stat(image)
-        means = list(stat.mean)
-        stddev = list(stat.stddev)
-        channel_spread = max(means) - min(means)
-        avg_stddev = sum(stddev) / len(stddev)
-        return channel_spread <= 8 and avg_stddev <= 45
-    except Exception:
-        return False
-
-
 def is_default_wechat_id(value: Any) -> bool:
     return _clean_text(value).lower().startswith("wxid_")
 
@@ -187,10 +151,6 @@ def normalize_friend_detail(
     wechat_id = _first_text(raw_detail, ("微信号", "微信ID", "wechat_id", "wxid", "wx_id", "WeChatId"))
     raw_tags = _first_value(raw_detail, ("标签", "tags", "Tags", "tag", "Tag"))
     tags = normalize_tag_list(raw_tags)
-    avatar_path = _first_text(raw_detail, ("头像", "avatar", "head_image", "headimg", "HeadImage"))
-    blocked_suspected = is_default_placeholder_avatar(avatar_path)
-    if blocked_suspected:
-        _append_unique_text(tags, BLOCKED_BY_CONTACT_TAG)
     send_name, send_name_source = _choose_send_name(wechat_id, remark, nickname)
     display_name = remark or nickname or send_name or wechat_id
     contact_key, confidence = _build_contact_key(wechat_id, remark, nickname, raw_detail)
@@ -200,9 +160,6 @@ def normalize_friend_detail(
     warnings = _without_warning(warnings, WARNING_DUPLICATE_SEND_NAME)
     if not is_searchable_send_name(send_name):
         _append_warning(warnings, WARNING_SEND_NAME_UNSEARCHABLE)
-    warnings = _without_warning(warnings, WARNING_BLOCKED_BY_CONTACT)
-    if blocked_suspected:
-        _append_warning(warnings, WARNING_BLOCKED_BY_CONTACT)
 
     contact = {
         "subject_type": "friend",
@@ -216,8 +173,6 @@ def normalize_friend_detail(
         "send_name_source": send_name_source,
         "tags": tags,
         "raw_tags": raw_tags if raw_tags is not None else "",
-        "avatar_path": avatar_path,
-        "blocked_by_contact_suspected": blocked_suspected,
         "status": "active",
         "warnings": warnings,
         "stable_suffix": existing.get("stable_suffix") or "",
