@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WXBot Pro</title>
+<link rel="icon" href="https://wxbot.siverking.online/favicon.ico" type="image/x-icon">
+<link href="https://s4.zstatic.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<script>
+window.__BOOTSTRAP_ICONS_CDN_CSS__ = "https://wxbot.siverking.online/panel/static/bootstrap-icons.css";
+window.__BOOTSTRAP_ICONS_LOCAL_CSS__ = {{ url_for('static', filename='bootstrap-icons.css') | tojson }};
+window.__BOOTSTRAP_ICONS_USE_LOCAL_FIRST__ = /^(127\.0\.0\.1|localhost)$/i.test(location.hostname);
+window.__BOOTSTRAP_ICONS_PRIMARY_CSS__ = window.__BOOTSTRAP_ICONS_USE_LOCAL_FIRST__
+  ? window.__BOOTSTRAP_ICONS_LOCAL_CSS__
+  : window.__BOOTSTRAP_ICONS_CDN_CSS__;
+window.__BOOTSTRAP_ICONS_FALLBACK_CSS__ = window.__BOOTSTRAP_ICONS_USE_LOCAL_FIRST__
+  ? window.__BOOTSTRAP_ICONS_CDN_CSS__
+  : window.__BOOTSTRAP_ICONS_LOCAL_CSS__;
+window.__bootstrapIconsCssFallback = function(linkEl){
+  if(!linkEl || linkEl.dataset.fallbackApplied === '1'){
+    return;
+  }
+  linkEl.dataset.fallbackApplied = '1';
+  linkEl.href = window.__BOOTSTRAP_ICONS_FALLBACK_CSS__;
+};
+document.documentElement.classList.add(window.__BOOTSTRAP_ICONS_USE_LOCAL_FIRST__ ? 'icons-pref-local' : 'icons-pref-cdn');
+(function(){
+  var link = document.createElement('link');
+  link.id = 'bootstrap-icons-link';
+  link.rel = 'stylesheet';
+  link.href = window.__BOOTSTRAP_ICONS_PRIMARY_CSS__;
+  link.onerror = function(){ window.__bootstrapIconsCssFallback(link); };
+  document.head.appendChild(link);
+})();
+</script>
+<style>
+@font-face {
+  font-display: block;
+  font-family: "bootstrap-icons-pref-cdn";
+  src:
+    url("https://wxbot.siverking.online/panel/static/fonts/bootstrap-icons.woff2") format("woff2"),
+    url("{{ url_for('static', filename='fonts/bootstrap-icons.woff2') }}") format("woff2"),
+    url("https://wxbot.siverking.online/panel/static/fonts/bootstrap-icons.woff") format("woff"),
+    url("{{ url_for('static', filename='fonts/bootstrap-icons.woff') }}") format("woff");
+}
+
+@font-face {
+  font-display: block;
+  font-family: "bootstrap-icons-pref-local";
+  src:
+    url("{{ url_for('static', filename='fonts/bootstrap-icons.woff2') }}") format("woff2"),
+    url("https://wxbot.siverking.online/panel/static/fonts/bootstrap-icons.woff2") format("woff2"),
+    url("{{ url_for('static', filename='fonts/bootstrap-icons.woff') }}") format("woff"),
+    url("https://wxbot.siverking.online/panel/static/fonts/bootstrap-icons.woff") format("woff");
+}
+
+html.icons-pref-cdn .bi::before,
+html.icons-pref-cdn [class^="bi-"]::before,
+html.icons-pref-cdn [class*=" bi-"]::before {
+  font-family: bootstrap-icons-pref-cdn !important;
+}
+
+html.icons-pref-local .bi::before,
+html.icons-pref-local [class^="bi-"]::before,
+html.icons-pref-local [class*=" bi-"]::before {
+  font-family: bootstrap-icons-pref-local !important;
+}
+</style>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #2C2C2C;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.login-wrap {
+  width: 100%;
+  max-width: 380px;
+  padding: 16px;
+}
+.login-card {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.28);
+  overflow: hidden;
+}
+.login-header {
+  background: #2C2C2C;
+  border-bottom: 1px solid #3a3a3a;
+  padding: 24px 28px 20px;
+  text-align: center;
+}
+.login-header .brand-icon {
+  font-size: 32px;
+  color: #07C160;
+  display: block;
+  margin-bottom: 8px;
+}
+.login-header h5 {
+  margin: 0;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: .3px;
+}
+.login-header p {
+  margin: 4px 0 0;
+  color: rgba(255,255,255,.45);
+  font-size: 12px;
+}
+.login-body {
+  padding: 28px;
+}
+.form-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  margin-bottom: 6px;
+}
+.form-control {
+  border-radius: 6px;
+  border: 1px solid #E5E5E5;
+  font-size: 13.5px;
+  padding: 9px 12px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.form-control:focus {
+  border-color: #07C160;
+  box-shadow: 0 0 0 3px rgba(7,193,96,.12);
+  outline: none;
+}
+.input-icon-wrap {
+  position: relative;
+}
+.input-icon-wrap i {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #aaa;
+  font-size: 14px;
+  pointer-events: none;
+}
+.input-icon-wrap .form-control {
+  padding-left: 34px;
+}
+.btn-login {
+  width: 100%;
+  background: #07C160;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .2s;
+  margin-top: 4px;
+}
+.btn-login:hover { background: #06AD56; }
+.btn-login:active { background: #059a4e; }
+.alert {
+  font-size: 13px;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.alert-success {
+  background: #F0FBF5;
+  border: 1px solid #B7EBD0;
+  color: #06AD56;
+}
+.alert-danger {
+  background: #FFF0F0;
+  border: 1px solid #FECACA;
+  color: #DC2626;
+}
+.alert .btn-close {
+  margin-left: auto;
+  font-size: 11px;
+  opacity: .5;
+}
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="login-header">
+      <i class="bi bi-robot brand-icon"></i>
+      <h5>WXBot Pro</h5>
+      <p>默认账号：admin　默认密码：123456<br>登录后请尽快修改</p>
+    </div>
+    <div class="login-body">
+      {% if logout_success %}
+      <div class="alert alert-success">
+        <i class="bi bi-check-circle-fill"></i> 您已成功退出
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+      </div>
+      {% endif %}
+
+      {% if error %}
+      <div class="alert alert-danger">
+        <i class="bi bi-exclamation-circle-fill"></i> {{ error }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+      </div>
+      {% endif %}
+
+      <form method="POST" action="{{ url_for('login') }}">
+        <div class="mb-3">
+          <label for="username" class="form-label">用户名</label>
+          <div class="input-icon-wrap">
+            <i class="bi bi-person"></i>
+            <input type="text" class="form-control" id="username" name="username" placeholder="请输入用户名" required autofocus>
+          </div>
+        </div>
+        <div class="mb-4">
+          <label for="password" class="form-label">密码</label>
+          <div class="input-icon-wrap">
+            <i class="bi bi-lock"></i>
+            <input type="password" class="form-control" id="password" name="password" placeholder="请输入密码" required>
+          </div>
+        </div>
+        <button type="submit" class="btn-login"><i class="bi bi-box-arrow-in-right"></i> 登录</button>
+      </form>
+    </div>
+  </div>
+</div>
+<script src="https://s4.zstatic.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

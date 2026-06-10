@@ -1,0 +1,41 @@
+# Git backup rules for local development on Windows
+
+# Virtual environments
+.venv/
+venv/
+venv2/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pycache_verify/
+
+# Build and release artifacts
+build/
+dist/
+releases/
+*.spec
+*.zip
+*.whl
+
+# Bundled runtime and local tools cache
+runtime/
+
+# Logs and historical backups
+panel_logs/
+wxauto_logs/
+logs/
+backups/
+backup/
+
+# Private runtime data
+data/accounts/
+data/cache/
+data/config/
+
+# Keep prompt assets, but skip generated prompt backups
+data/system_prompts/prompt_backup/
+
+# Local test assets
+tools/ui_conflict_test_config.json
+

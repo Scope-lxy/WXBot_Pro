@@ -1,0 +1,20 @@
+{
+  "base_url": "http://127.0.0.1:10001",
+  "username": "admin",
+  "password": "123456",
+  "contacts": [
+    "联系人1",
+    "联系人2",
+    "联系人3"
+  ],
+  "scheduled_targets": 3,
+  "material_targets": 3,
+  "scheduled_message_text": "【WXBot 冲突测试】定时消息，请忽略。",
+  "moments_text": "【WXBot 冲突测试】朋友圈测试，请忽略。",
+  "contact_refresh_mode": "test",
+  "contact_refresh_start_name": "",
+  "task_timeout_seconds": 240,
+  "poll_interval_seconds": 2,
+  "task_only_delay_seconds": 6,
+  "maintenance_overlap_delay_seconds": 4
+}
