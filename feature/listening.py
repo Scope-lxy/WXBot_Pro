@@ -19,6 +19,7 @@ from core.wechat_window import (
     rebind_wechat_client as core_rebind_wechat_client,
     run_with_wechat_rebind_retry,
 )
+from core.wechat_observability import warn_slow_wechat_ui_action
 from feature.custom_forward import iter_custom_forward_listen_sources
 from feature.custom_forward_runtime import handle_custom_forward, handle_custom_forward_takeover
 from feature.material_outreach import iter_material_outreach_listen_sources
@@ -152,7 +153,8 @@ def try_get_all_subwindow_names(bot):
 def add_listen_chat_once(bot, nickname, label):
     def add_action():
         with bot._get_wechat_action_lock():
-            return bot.wx.AddListenChat(nickname=nickname, callback=bot.message_handle_callback)
+            with warn_slow_wechat_ui_action(f"AddListenChat({nickname})"):
+                return bot.wx.AddListenChat(nickname=nickname, callback=bot.message_handle_callback)
 
     result = run_with_wechat_rebind_retry(
         bot,
@@ -486,7 +488,8 @@ def remove_listen_chat_verified(bot, nickname):
     try:
         def remove_action():
             with bot._get_wechat_action_lock():
-                return bot.wx.RemoveListenChat(nickname)
+                with warn_slow_wechat_ui_action(f"RemoveListenChat({nickname})"):
+                    return bot.wx.RemoveListenChat(nickname)
 
         run_with_wechat_rebind_retry(
             bot,
@@ -622,7 +625,8 @@ def pass_new_friends(bot):
         _bot_log(bot, message="新好友检测跳过：微信操作锁占用中")
         return False
     try:
-        new_friends = bot.wx.GetNewFriends(acceptable=True)
+        with warn_slow_wechat_ui_action("GetNewFriends()"):
+            new_friends = bot.wx.GetNewFriends(acceptable=True)
         _bot_sleep(bot, 1)
         if len(new_friends) != 0:
             _bot_log(bot, message="以下是新朋友：\n" + str(new_friends))

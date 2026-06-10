@@ -9,18 +9,22 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from core.contact_profiles import (
+    BLOCKED_BY_CONTACT_TAG,
     apply_repaired_remark,
     directory_path as contact_directory_path,
+    is_default_placeholder_avatar,
     load_directory as load_contact_directory,
     merge_directory as merge_contact_directory,
     repair_candidates as contact_repair_candidates,
     save_directory as save_contact_directory,
 )
 from core.wechat_window import (
+    bring_wechat_main_window_to_front,
     close_top_windows_by_title,
     rebind_wechat_client as core_rebind_wechat_client,
     run_with_wechat_rebind_retry,
 )
+from core.wechat_observability import warn_slow_wechat_ui_action
 from core.logger import log
 from feature import takeover_runtime
 from feature.material_outreach import append_bounded_record
@@ -68,6 +72,10 @@ def close_contact_directory_management_windows(bot) -> int:
 
 def rebind_wechat_client(bot):
     return core_rebind_wechat_client(bot)
+
+
+def bring_wechat_to_front() -> int:
+    return bring_wechat_main_window_to_front(wait=0.3)
 
 
 def normalize_refresh_mode(mode: Any) -> str:
@@ -168,6 +176,252 @@ def coerce_detail_list(result: Any) -> list[Any]:
     if isinstance(result, tuple):
         return list(result)
     return [result]
+
+
+def _detail_tag_list(raw_detail: dict[str, Any]) -> list[str]:
+    raw_tags = raw_detail.get("标签")
+    if raw_tags is None:
+        raw_tags = raw_detail.get("tags")
+    if isinstance(raw_tags, (list, tuple, set)):
+        return [str(item or "").strip() for item in raw_tags if str(item or "").strip()]
+    text = str(raw_tags or "").strip()
+    if not text:
+        return []
+    parts = []
+    for chunk in text.replace("，", ",").replace("、", ",").replace("；", ",").replace(";", ",").split(","):
+        cleaned = chunk.strip()
+        if cleaned:
+            parts.append(cleaned)
+    return parts
+
+
+def _detail_search_name(raw_detail: dict[str, Any]) -> str:
+    if not isinstance(raw_detail, dict):
+        return ""
+    return str(raw_detail.get("备注") or raw_detail.get("remark") or raw_detail.get("昵称") or raw_detail.get("nickname") or "").strip()
+
+
+def contact_edit_target_name(contact: dict[str, Any]) -> str:
+    contact = contact or {}
+    for key in ("send_name", "remark", "nickname", "display_name", "wechat_id"):
+        value = _clean_text(contact.get(key))
+        if value:
+            return value
+    return ""
+
+
+def contact_expected_chat_names(contact: dict[str, Any], target_name: str = "") -> set[str]:
+    contact = contact or {}
+    names = {_clean_text(target_name)}
+    for key in ("remark", "nickname", "display_name", "send_name", "wechat_id"):
+        names.add(_clean_text(contact.get(key)))
+    return {name for name in names if name}
+
+
+def friend_info_edit_success(response: Any) -> bool:
+    return isinstance(response, dict) and response.get("status") == "成功"
+
+
+def edit_friend_info_via_chat_profile(
+    bot,
+    target_name: str,
+    *,
+    expected_names: set[str] | None = None,
+    remark: str | None = None,
+    add_tags: list[str] | None = None,
+    remove_tags: list[str] | None = None,
+) -> Any:
+    target_name = _clean_text(target_name)
+    if not target_name:
+        raise RuntimeError("缺少可搜索的好友名称")
+    if not any([remark is not None, add_tags, remove_tags]):
+        raise RuntimeError("缺少要修改的好友信息")
+    if not getattr(bot, "wx", None):
+        raise RuntimeError("微信客户端未初始化，请先启动机器人并保持微信主窗口可用。")
+
+    close_contact_directory_management_windows(bot)
+    bring_wechat_to_front()
+    chat_with = getattr(bot.wx, "ChatWith", None)
+    if not callable(chat_with):
+        raise RuntimeError("当前微信客户端不支持打开好友聊天窗口")
+    with warn_slow_wechat_ui_action(f"ChatWith({target_name})"):
+        chat_with(target_name, exact=True)
+    bring_wechat_to_front()
+
+    chat_info = {}
+    get_chat_info = getattr(bot.wx, "ChatInfo", None)
+    if callable(get_chat_info):
+        chat_info = get_chat_info() or {}
+        if isinstance(chat_info, dict):
+            chat_type = _clean_text(chat_info.get("chat_type"))
+            chat_name = _clean_text(chat_info.get("chat_name"))
+            allowed_names = {name for name in (expected_names or set()) if _clean_text(name)}
+            allowed_names.add(target_name)
+            if chat_type and chat_type != "friend":
+                raise RuntimeError(f"当前会话不是好友会话：{chat_type}")
+            if chat_name and allowed_names and chat_name not in allowed_names:
+                raise RuntimeError(f"当前会话不是目标好友：{chat_name}")
+
+    bring_wechat_to_front()
+    with warn_slow_wechat_ui_action(f"EditFriendInfo({target_name})"):
+        response = bot.wx.EditFriendInfo(
+            remark=remark,
+            add_tags=add_tags,
+            remove_tags=remove_tags,
+            tag_wait=0.8,
+        )
+    if not friend_info_edit_success(response):
+        raise RuntimeError(f"修改好友信息未返回明确成功：{response}")
+    return response
+
+
+def blocked_contact_tag_candidates(raw_details: list[Any], tag_name: str = BLOCKED_BY_CONTACT_TAG) -> list[dict[str, str]]:
+    candidates = []
+    seen = set()
+    for raw_detail in raw_details or []:
+        if not isinstance(raw_detail, dict):
+            continue
+        avatar_path = raw_detail.get("头像") or raw_detail.get("avatar") or raw_detail.get("head_image") or ""
+        if not is_default_placeholder_avatar(avatar_path):
+            continue
+        if tag_name in _detail_tag_list(raw_detail):
+            continue
+        search_name = _detail_search_name(raw_detail)
+        if not search_name or search_name in seen:
+            continue
+        seen.add(search_name)
+        candidates.append({"name": search_name, "avatar_path": str(avatar_path or "")})
+    return candidates
+
+
+def apply_blocked_contact_directory_flags(directory, raw_details, *, now=None):
+    updated = directory if isinstance(directory, dict) else {}
+    timestamp = now if now is not None else datetime.now().replace(microsecond=0)
+    if hasattr(timestamp, "isoformat"):
+        timestamp = timestamp.replace(microsecond=0).isoformat()
+    else:
+        timestamp = str(timestamp or "").strip()
+    by_name = {}
+    for raw_detail in raw_details or []:
+        if not isinstance(raw_detail, dict):
+            continue
+        avatar_path = raw_detail.get("头像") or raw_detail.get("avatar") or raw_detail.get("head_image") or ""
+        if not is_default_placeholder_avatar(avatar_path):
+            continue
+        name = _detail_search_name(raw_detail)
+        if name:
+            by_name[name] = str(avatar_path or "")
+
+    if not by_name:
+        return updated
+
+    for contact in updated.get("subjects") or []:
+        if not isinstance(contact, dict):
+            continue
+        search_name = str(contact.get("remark") or contact.get("nickname") or contact.get("display_name") or contact.get("send_name") or "").strip()
+        avatar_path = by_name.get(search_name)
+        if not avatar_path:
+            continue
+        tags = list(contact.get("tags") or [])
+        if BLOCKED_BY_CONTACT_TAG not in tags:
+            tags.append(BLOCKED_BY_CONTACT_TAG)
+        warnings = list(contact.get("warnings") or [])
+        if "blocked_by_contact_suspected" not in warnings:
+            warnings.append("blocked_by_contact_suspected")
+        contact["tags"] = tags
+        contact["warnings"] = warnings
+        contact["avatar_path"] = avatar_path
+        contact["blocked_by_contact_suspected"] = True
+        contact["blocked_tag_updated_at"] = timestamp
+    return updated
+
+
+def modify_friend_tags_via_chat_profile(
+    bot,
+    targets: list[dict[str, str]],
+    *,
+    add_tags: list[str] | None = None,
+    remove_tags: list[str] | None = None,
+    log_prefix: str = "[通讯录维护]",
+) -> dict[str, Any]:
+    add_tags = [str(item or "").strip() for item in (add_tags or []) if str(item or "").strip()]
+    remove_tags = [str(item or "").strip() for item in (remove_tags or []) if str(item or "").strip()]
+    records = []
+    result = {
+        "add_tags": add_tags,
+        "remove_tags": remove_tags,
+        "target_count": len(targets or []),
+        "success_count": 0,
+        "failed_count": 0,
+        "records": records,
+        "status": "skipped",
+        "message": "",
+    }
+    if not targets:
+        return result
+    if not add_tags and not remove_tags:
+        result["failed_count"] = len(targets or [])
+        result["status"] = "failed"
+        result["message"] = "缺少要修改的标签"
+        return result
+
+    tag_label = "、".join(add_tags or remove_tags)
+    action_label = "添加" if add_tags else "移除"
+    for target in targets:
+        target_name = _clean_text((target or {}).get("name"))
+        record = {
+            "name": target_name,
+            "avatar_path": str((target or {}).get("avatar_path") or ""),
+            "add_tags": add_tags,
+            "remove_tags": remove_tags,
+            "success": False,
+            "error": "",
+        }
+        if not target_name:
+            record["error"] = "缺少可搜索的好友名称"
+            result["failed_count"] += 1
+            records.append(record)
+            continue
+
+        def apply_single_tag_update():
+            return edit_friend_info_via_chat_profile(
+                bot,
+                target_name,
+                expected_names={target_name},
+                add_tags=add_tags,
+                remove_tags=remove_tags,
+            )
+
+        try:
+            response = run_with_wechat_rebind_retry(
+                bot,
+                apply_single_tag_update,
+                cleanup=lambda: close_contact_directory_management_windows(bot),
+                attempts=2,
+                on_retry=lambda exc, _attempt: _bot_log(
+                    bot,
+                    level="WARNING",
+                    message=f"{log_prefix} 给 {target_name} {action_label}标签【{tag_label}】失败，重新初始化微信客户端后重试：{exc}",
+                ),
+            )
+            record["success"] = True
+            record["response"] = response
+            result["success_count"] += 1
+        except Exception as exc:
+            record["error"] = str(exc)
+            result["failed_count"] += 1
+        records.append(record)
+
+    if result["failed_count"] and result["success_count"]:
+        result["status"] = "partial"
+        result["message"] = "部分好友标签修改成功"
+    elif result["failed_count"]:
+        result["status"] = "failed"
+        result["message"] = "好友标签修改失败"
+    else:
+        result["status"] = "success"
+        result["message"] = "好友标签修改成功"
+    return result
 
 
 def contact_name_matches(name: Any, start_name: Any) -> bool:
@@ -533,24 +787,19 @@ def contact_directory_auto_maintenance_time_window_allows(bot, now=None):
     )
 
 
-def has_recent_chat_activity_for_contact_maintenance(bot, now=None):
-    last_msg_time = getattr(bot, "last_msg_time", None)
-    if not last_msg_time:
-        return False
-    last_dt = None
-    if isinstance(last_msg_time, datetime):
-        last_dt = last_msg_time
-    elif isinstance(last_msg_time, str):
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
-            try:
-                last_dt = datetime.strptime(last_msg_time, fmt)
-                break
-            except ValueError:
-                continue
-    if last_dt is None:
-        return False
-    current_dt = maintenance_now(now)
-    return current_dt - last_dt < timedelta(minutes=1)
+def has_pending_lightweight_send_queue(bot) -> bool:
+    ensure_queue = getattr(bot, "_ensure_lightweight_send_queue_state", None)
+    if callable(ensure_queue):
+        ensure_queue()
+    queue = getattr(bot, "_lightweight_send_queue", None)
+    queue_lock = getattr(bot, "_lightweight_send_queue_lock", None)
+    if queue_lock is None:
+        return bool(queue)
+    try:
+        with queue_lock:
+            return bool(getattr(bot, "_lightweight_send_queue", None))
+    except Exception:
+        return bool(queue)
 
 
 def is_contact_directory_auto_maintenance_idle(bot):
@@ -697,11 +946,14 @@ def refresh_contact_profiles_single_batch(
                 else:
                     prepare_contact_directory_window(bot)
                 try:
-                    return bot.wx.GetFriendDetails(
-                        n=settings["count"],
-                        callback=callback,
-                        interval=settings["interval"],
-                    )
+                    with warn_slow_wechat_ui_action(f"GetFriendDetails(n={settings['count']})"):
+                        return bot.wx.GetFriendDetails(
+                            n=settings["count"],
+                            callback=callback,
+                            interval=settings["interval"],
+                            save_head_image=True,
+                            save_head_wait=0.5,
+                        )
                 finally:
                     switch_to_chat = getattr(bot.wx, "SwitchToChat", None)
                     if callable(switch_to_chat):
@@ -733,6 +985,23 @@ def refresh_contact_profiles_single_batch(
             now=datetime.now(),
             mark_missing=False,
         )
+        merged = apply_blocked_contact_directory_flags(merged, raw_details, now=datetime.now())
+        blocked_tag_candidates = blocked_contact_tag_candidates(raw_details)
+        if blocked_tag_candidates:
+            with bot._get_wechat_action_lock():
+                blocked_tag_result = modify_friend_tags_via_chat_profile(
+                    bot,
+                    blocked_tag_candidates,
+                    add_tags=[BLOCKED_BY_CONTACT_TAG],
+                )
+        else:
+            blocked_tag_result = modify_friend_tags_via_chat_profile(
+                bot,
+                blocked_tag_candidates,
+                add_tags=[BLOCKED_BY_CONTACT_TAG],
+            )
+        blocked_tag_result["tag_name"] = BLOCKED_BY_CONTACT_TAG
+        blocked_tag_result["candidate_count"] = blocked_tag_result.get("target_count", len(blocked_tag_candidates))
         analysis = analyze_refresh_batch(
             raw_details=raw_details,
             requested_count=settings["count"],
@@ -764,6 +1033,9 @@ def refresh_contact_profiles_single_batch(
         finished_maintenance["last_batch_repeat_count"] = int(analysis.get("repeat_count", 0) or 0)
         finished_maintenance["last_batch_outcome"] = str(analysis.get("outcome") or "")
         finished_maintenance["retry_count"] = 0
+        finished_maintenance["last_blocked_tag_candidate_count"] = int(blocked_tag_result.get("candidate_count", 0) or 0)
+        finished_maintenance["last_blocked_tag_success_count"] = int(blocked_tag_result.get("success_count", 0) or 0)
+        finished_maintenance["last_blocked_tag_failed_count"] = int(blocked_tag_result.get("failed_count", 0) or 0)
         save_contact_directory(directory_file, finished)
         if log_start_finish:
             _bot_log(bot, message=f"[通讯录维护] {mode_label}完成，本次读取 {len(raw_details)} 个好友")
@@ -788,6 +1060,7 @@ def refresh_contact_profiles_single_batch(
             "read_item_count": len(raw_details),
             "new_unique_count": growth["new_unique_count"],
             "directory_total_unique_count": growth["directory_total_unique_count"],
+            "blocked_tag_result": blocked_tag_result,
         }
     except Exception as exc:
         latest_directory = load_contact_directory(directory_file, wx_id=wx_id)
@@ -1065,19 +1338,22 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         time_window_allows = contact_directory_auto_maintenance_time_window_allows(bot, now=now_dt)
     if not time_window_allows:
         return False
-    recent_chat_fn = getattr(bot, "_has_recent_chat_activity_for_contact_maintenance", None)
-    if callable(recent_chat_fn):
-        has_recent_chat = recent_chat_fn(now=now_dt)
-    else:
-        has_recent_chat = has_recent_chat_activity_for_contact_maintenance(bot, now=now_dt)
-    if has_recent_chat:
-        return False
     idle_fn = getattr(bot, "_is_contact_directory_auto_maintenance_idle", None)
     if callable(idle_fn):
         is_idle = idle_fn()
     else:
         is_idle = is_contact_directory_auto_maintenance_idle(bot)
     if not is_idle:
+        return False
+    flush_lightweight = getattr(bot, "_flush_lightweight_send_queue", None)
+    if callable(flush_lightweight):
+        flush_lightweight()
+    pending_queue_fn = getattr(bot, "_has_pending_lightweight_send_queue", None)
+    if callable(pending_queue_fn):
+        has_pending_queue = pending_queue_fn()
+    else:
+        has_pending_queue = has_pending_lightweight_send_queue(bot)
+    if has_pending_queue:
         return False
     cycle_state_fn = getattr(bot, "_contact_directory_auto_cycle_state", None)
     if callable(cycle_state_fn):
@@ -1346,15 +1622,32 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
                 continue
             repair_display_fn = getattr(bot, "_contact_repair_before_display", None)
             if callable(repair_display_fn):
-                target_name = repair_display_fn(contact)
+                target_display = repair_display_fn(contact)
             else:
-                target_name = contact_repair_before_display(contact)
+                target_display = contact_repair_before_display(contact)
+            target_name = contact_edit_target_name(contact)
             error = ""
             success = False
+            def apply_single_remark():
+                return edit_friend_info_via_chat_profile(
+                    bot,
+                    target_name,
+                    expected_names=contact_expected_chat_names(contact, target_name),
+                    remark=suggested_remark,
+                )
+
             try:
-                if target_name and hasattr(bot.wx, "ChatWith"):
-                    bot.wx.ChatWith(target_name, exact=True)
-                bot.wx.EditFriendInfo(remark=suggested_remark)
+                run_with_wechat_rebind_retry(
+                    bot,
+                    apply_single_remark,
+                    cleanup=lambda: close_contact_directory_management_windows(bot),
+                    attempts=2,
+                    on_retry=lambda exc, _attempt: _bot_log(
+                        bot,
+                        level="WARNING",
+                        message=f"[通讯录维护] 备注修复 {index}/{len(candidates)} 失败，重新初始化微信客户端后重试：{exc}",
+                    ),
+                )
                 success = True
             except Exception as exc:
                 error = str(exc)
@@ -1364,6 +1657,7 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
                 "wx_id": wx_id,
                 "contact_key": contact_key,
                 "target_name": target_name,
+                "target_display": target_display,
                 "old_remark": str(contact.get("remark") or ""),
                 "new_remark": suggested_remark,
                 "success": success,
@@ -1372,9 +1666,9 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
             append_bounded_record(records_file, record, limit=1000)
             result["records"].append(record)
             if success:
-                _bot_log(bot, message=f"[通讯录维护] 备注修复 {index}/{len(candidates)}：{target_name} -> {suggested_remark}")
+                _bot_log(bot, message=f"[通讯录维护] 备注修复 {index}/{len(candidates)}：{target_display} -> {suggested_remark}")
             else:
-                _bot_log(bot, message=f"[通讯录维护] 备注修复失败 {index}/{len(candidates)}：{target_name} -> {suggested_remark}，错误：{error}")
+                _bot_log(bot, message=f"[通讯录维护] 备注修复失败 {index}/{len(candidates)}：{target_display} -> {suggested_remark}，错误：{error}")
 
             if success:
                 current_directory = apply_repaired_remark(

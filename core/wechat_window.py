@@ -8,6 +8,13 @@ from collections.abc import Iterable
 
 
 WM_CLOSE = 0x0010
+SW_RESTORE = 9
+SW_SHOW = 5
+HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_SHOWWINDOW = 0x0040
 
 
 def top_window_handles_by_title(title: str, *, visible_only: bool = True) -> list[int]:
@@ -63,6 +70,41 @@ def close_top_windows_by_title(title: str, *, visible_only: bool = True, wait: f
     if closed and wait:
         time.sleep(max(0.0, float(wait)))
     return closed
+
+
+def bring_top_windows_to_front(title: str, *, wait: float = 0.3) -> int:
+    handles = top_window_handles_by_title(title, visible_only=False)
+    if not handles:
+        return 0
+    if os.name != "nt":
+        return 0
+    try:
+        import ctypes
+    except Exception:
+        return 0
+
+    user32 = ctypes.windll.user32
+    shown = 0
+    flags = SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+    for hwnd in handles:
+        try:
+            hwnd = int(hwnd)
+            user32.ShowWindow(hwnd, SW_RESTORE)
+            user32.ShowWindow(hwnd, SW_SHOW)
+            user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, flags)
+            user32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags)
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            shown += 1
+        except Exception:
+            continue
+    if shown and wait:
+        time.sleep(max(0.0, float(wait)))
+    return shown
+
+
+def bring_wechat_main_window_to_front(*, wait: float = 0.3) -> int:
+    return bring_top_windows_to_front("微信", wait=wait) + bring_top_windows_to_front("WeChat", wait=wait)
 
 
 def rebind_wechat_client(bot, *, versions: Iterable[str] = ("微信", "WeChat")):

@@ -67,7 +67,8 @@ from core.api import (
     select_tts_config,
     set_chat_api_app_version,
 )
-from core.logger import log
+from core.logger import install_thread_exception_logger, log
+from core.wechat_observability import warn_slow_wechat_ui_action
 from core.prompt_system import (
     CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
     ConversationMemoryStore,
@@ -282,6 +283,8 @@ from feature.moments_like import (
 )
 from feature.moments_publisher import execute_moments_publish_task
 from feature.task_workbench_storage import TaskWorkbenchStorage, file_lock_for_path
+
+install_thread_exception_logger()
 
 set_chat_api_app_version(version)
 
@@ -681,7 +684,8 @@ class WXBot:
             chat = runtime_chat_state.get_listen_chat(self, target)
             if runtime_chat_state.listen_chat_has_method(chat, "SendMsg"):
                 return chat
-            result = self.wx.AddListenChat(nickname=target, callback=self.message_handle_callback)
+            with warn_slow_wechat_ui_action(f"AddListenChat({target})"):
+                result = self.wx.AddListenChat(nickname=target, callback=self.message_handle_callback)
             if result and not isinstance(result, dict):
                 runtime_chat_state.remember_listen_chat(self, target, result)
                 log(message=f"[轻量发送队列] 已自动恢复监听子窗口：{target}")
@@ -1733,7 +1737,8 @@ class WXBot:
     def _open_moments_with_recovery(self):
         def open_moments():
             with self._get_wechat_action_lock():
-                return self.wx.Moments()
+                with warn_slow_wechat_ui_action("Moments()"):
+                    return self.wx.Moments()
 
         return run_with_wechat_rebind_retry(
             self,
@@ -1898,8 +1903,8 @@ class WXBot:
     def _contact_directory_auto_maintenance_time_window_allows(self, now=None):
         return contacts.contact_directory_auto_maintenance_time_window_allows(self, now=now)
 
-    def _has_recent_chat_activity_for_contact_maintenance(self, now=None):
-        return contacts.has_recent_chat_activity_for_contact_maintenance(self, now=now)
+    def _has_pending_lightweight_send_queue(self):
+        return contacts.has_pending_lightweight_send_queue(self)
 
     def _is_contact_directory_auto_maintenance_idle(self):
         return contacts.is_contact_directory_auto_maintenance_idle(self)
@@ -2238,9 +2243,14 @@ class WXBot:
             cached = self._material_source_chats.get(source)
             if self._material_source_chat_is_usable(cached):
                 return cached
+
+            def add_material_source_chat():
+                with warn_slow_wechat_ui_action(f"AddListenChat({source})"):
+                    return self.wx.AddListenChat(nickname=source, callback=self.message_handle_callback)
+
             result = run_with_wechat_rebind_retry(
                 self,
-                lambda: self.wx.AddListenChat(nickname=source, callback=self.message_handle_callback),
+                add_material_source_chat,
                 cleanup=self._cleanup_known_main_window_residue,
                 attempts=2,
                 on_retry=lambda exc, _attempt: log(
@@ -2380,13 +2390,15 @@ class WXBot:
 
     def _forward_material_message(self, message, targets, *, preface=""):
         with self._get_wechat_action_lock():
-            roll_into_view = getattr(message, "roll_into_view", None)
-            if callable(roll_into_view):
-                roll_into_view()
-            if preface:
-                result = message.forward(targets, message=preface)
-            else:
-                result = message.forward(targets)
+            target_label = "、".join(str(item or "").strip() for item in (targets or []) if str(item or "").strip())
+            with warn_slow_wechat_ui_action(f"message.forward({target_label or 'unknown'})"):
+                roll_into_view = getattr(message, "roll_into_view", None)
+                if callable(roll_into_view):
+                    roll_into_view()
+                if preface:
+                    result = message.forward(targets, message=preface)
+                else:
+                    result = message.forward(targets)
             success, result_error = is_forward_result_success(result)
             return success, result_error
 

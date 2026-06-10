@@ -2,6 +2,7 @@ from datetime import datetime
 import os
 import sys
 import threading
+import traceback
 
 def _base_dir():
     """运行时基础目录：打包后为 exe 所在目录，开发时为当前目录"""
@@ -24,6 +25,7 @@ LOG_COLORS = {
 log_messages = []
 _log_lock = threading.Lock()
 _next_log_id = 0
+_thread_exception_logger_installed = False
 
 def _copy_logs(items):
     return [dict(item) for item in items]
@@ -109,3 +111,40 @@ def log(level="INFO", message=''):
             f.write(f'[{timestamp}]: {message}' + '\n')
     except Exception as e:
         print(f"写入日志文件失败: {e}")
+
+
+def install_thread_exception_logger():
+    """Route uncaught background thread exceptions into the normal panel log."""
+    global _thread_exception_logger_installed
+    if _thread_exception_logger_installed:
+        return False
+    previous_hook = getattr(threading, "excepthook", None)
+
+    def _log_thread_exception(args):
+        if args.exc_type is SystemExit:
+            if callable(previous_hook):
+                previous_hook(args)
+            return
+        thread_name = getattr(getattr(args, "thread", None), "name", "") or "unknown"
+        exc_type = getattr(args, "exc_type", None)
+        exc_value = getattr(args, "exc_value", None)
+        exc_name = getattr(exc_type, "__name__", str(exc_type or "Exception"))
+        try:
+            tb_text = "".join(traceback.format_exception(exc_type, exc_value, getattr(args, "exc_traceback", None))).strip()
+        except Exception:
+            tb_text = str(exc_value or "")
+        if len(tb_text) > 4000:
+            tb_text = tb_text[:4000] + "\n... traceback truncated ..."
+        log(
+            level="ERROR",
+            message=f"[后台线程异常] {thread_name}: {exc_name}: {exc_value}\n{tb_text}",
+        )
+        if callable(previous_hook) and previous_hook is not _log_thread_exception:
+            try:
+                previous_hook(args)
+            except Exception:
+                pass
+
+    threading.excepthook = _log_thread_exception
+    _thread_exception_logger_installed = True
+    return True

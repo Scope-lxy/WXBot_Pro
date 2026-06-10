@@ -4,6 +4,7 @@ import time
 
 from core.logger import log
 from core.runtime_chat_state import pause_message_reply, send_text_to_target
+from core.wechat_observability import warn_slow_wechat_ui_action
 from feature.custom_forward import iter_custom_forward_actions, plan_custom_forward_takeover
 
 
@@ -15,10 +16,11 @@ def send_custom_forward_action(bot, action, chat, message):
     if action.get("kind") == "forward":
         source_message = action.get("source_message")
         with bot._get_wechat_action_lock():
-            if source_message:
-                message.forward(target, message=source_message)
-            else:
-                message.forward(target)
+            with warn_slow_wechat_ui_action(f"message.forward({target})"):
+                if source_message:
+                    message.forward(target, message=source_message)
+                else:
+                    message.forward(target)
     else:
         send_text_to_target(bot, target, action.get("content", ""))
     log(
