@@ -10,7 +10,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
 if (-not (Test-Path ".git")) {
-    Write-Error "当前目录还不是 Git 仓库：$repoRoot"
+    Write-Error "Current directory is not a Git repository: $repoRoot"
 }
 
 $message = ($MessageParts -join " ").Trim()
@@ -22,10 +22,9 @@ git add -A
 
 $statusLines = git status --short
 if (-not $statusLines) {
-    Write-Host "没有需要备份的新改动。"
+    Write-Host "No new changes to back up."
     exit 0
 }
 
 git commit -m $message
 git status --short --branch
-
