@@ -1493,88 +1493,81 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
           </div>
 
-          <div class="new-friend-block">
-            <div class="ui-head ui-head--section">
+          <div class="new-friend-block new-friend-welcome-block">
+            <div class="ui-head ui-head--section new-friend-welcome-head">
               <div class="ui-head__main">
-                <h5>自动修改备注和标签</h5>
-                <span class="desc">通过好友时，设置了备注规则或微信标签就自动同步</span>
+                <h5>欢迎消息</h5>
+                <span class="desc">通过好友后发送文字或文件</span>
               </div>
               <div class="ui-head__actions">
-                <label class="ui-switch ui-switch--l2 ui-head-switch" for="new_friend_archive_switch" title="自动修改备注和标签">
-                  <input class="form-check-input" type="checkbox" id="new_friend_archive_switch" name="new_friend_archive_switch" {% if config.get('new_friend_archive_switch', True) %}checked{% endif %}>
-                  <span class="ui-switch-knob"></span>
-                </label>
+                <button type="button" class="ui-btn ui-btn--add ui-btn--l2 js-add-new-friend-file"><i class="bi bi-plus-circle"></i> 添加文件</button>
               </div>
             </div>
-            <div class="new-friend-l3-group new-friend-remark-group">
-              <div class="new-friend-nickname-row">
-                <label class="ui-switch ui-switch--l3 ui-head-switch new-friend-inline-switch" for="new_friend_remark_use_nickname" title="备注包含好友原始昵称">
-                  <input class="form-check-input" type="checkbox" id="new_friend_remark_use_nickname" name="new_friend_remark_use_nickname" {% if config.get('new_friend_remark_use_nickname', True) %}checked{% endif %}>
-                  <span class="ui-switch-knob"></span>
-                </label>
-                <label class="new-friend-nickname-label" for="new_friend_remark_use_nickname">备注包含好友原始昵称</label>
-                <span class="cfg-hint">关闭后仅使用前缀、后缀和时间戳生成备注</span>
-              </div>
-              <div class="new-friend-field-grid">
-                <div>
-                  <label class="cfg-label" for="new_friend_remark_prefix">备注前缀</label>
-                  <div class="inline-check-field">
-                    <input type="text" class="form-control" id="new_friend_remark_prefix" name="new_friend_remark_prefix" placeholder="（留空）" value="{{ config.new_friend_remark_prefix|default('') }}">
-                    <label class="inline-check-suffix" for="new_friend_remark_prefix_timestamp">
-                      <input class="form-check-input" type="checkbox" id="new_friend_remark_prefix_timestamp" name="new_friend_remark_prefix_timestamp" {% if config.get('new_friend_remark_prefix_timestamp', False) %}checked{% endif %}>
-                      加时间戳
-                    </label>
-                  </div>
-                </div>
-                <div>
-                  <label class="cfg-label" for="new_friend_remark_suffix">备注后缀</label>
-                  <div class="inline-check-field">
-                    <input type="text" class="form-control" id="new_friend_remark_suffix" name="new_friend_remark_suffix" placeholder="_机器人备注" value="{{ config.new_friend_remark_suffix|default('_机器人备注') }}">
-                    <label class="inline-check-suffix" for="new_friend_remark_suffix_timestamp">
-                      <input class="form-check-input" type="checkbox" id="new_friend_remark_suffix_timestamp" name="new_friend_remark_suffix_timestamp" {% if config.get('new_friend_remark_suffix_timestamp', False) %}checked{% endif %}>
-                      加时间戳
-                    </label>
-                  </div>
-                </div>
-              </div>
-              <div class="cfg-hint">备注格式：前缀时间戳 + 前缀 + 新好友昵称 + 后缀 + 后缀时间戳；超出微信备注长度会自动裁剪</div>
-            </div>
-            <div class="new-friend-l3-group new-friend-tag-group">
-              <div class="new-friend-tag-head">
-                <label class="cfg-label">微信标签</label>
-                <span class="cfg-hint">只能填写微信中已存在的标签</span>
-              </div>
-              <div id="new_friend_tags_container" class="new-friend-list">
-                {% for tag in config.new_friend_tags %}
-                <div class="list-item">
-                  <input type="text" class="form-control" name="new_friend_tags" value="{{ tag }}" placeholder="标签名">
-                  <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
-                </div>
-                {% endfor %}
-              </div>
-              <button type="button" class="ui-btn ui-btn--add ui-btn--l3 ui-btn--spaced-sm js-add-field" data-target="#new_friend_tags_container" data-name="new_friend_tags"><i class="bi bi-plus-circle"></i> 添加标签</button>
+            <div id="new_friend_msg_container" class="new-friend-message-editor scheduled-message-content-stack" data-message="{{ config.new_friend_msg|tojson|forceescape }}">
             </div>
           </div>
         </div>
 
-        <div class="new-friend-block new-friend-welcome-block">
-          <div class="ui-head ui-head--section new-friend-welcome-head">
+        <div class="new-friend-block">
+          <div class="ui-head ui-head--section">
             <div class="ui-head__main">
-              <h5>欢迎消息</h5>
-              <span class="desc">通过好友后发送文案或图片</span>
+              <h5>自动修改备注和标签</h5>
+              <span class="desc">通过好友时，设置了备注规则或自动打标签就自动同步</span>
             </div>
             <div class="ui-head__actions">
-              <button type="button" class="ui-btn ui-btn--add ui-btn--l2 js-add-new-friend-message-text"><i class="bi bi-plus-circle"></i> 加文案</button>
-              <button type="button" class="ui-btn ui-btn--add ui-btn--l2 js-add-new-friend-message-image"><i class="bi bi-plus-circle"></i> 加图片</button>
+              <label class="ui-switch ui-switch--l2 ui-head-switch" for="new_friend_archive_switch" title="自动修改备注和标签">
+                <input class="form-check-input" type="checkbox" id="new_friend_archive_switch" name="new_friend_archive_switch" {% if config.get('new_friend_archive_switch', True) %}checked{% endif %}>
+                <span class="ui-switch-knob"></span>
+              </label>
             </div>
           </div>
-          <div id="new_friend_msg_container" class="new-friend-message-list scheduled-message-content-list">
-            {% if not config.new_friend_msg %}
-            <div class="scheduled-message-empty-content">暂无欢迎消息，可用右上角“加文案 / 加图片”添加。</div>
-            {% endif %}
-            {% for msg in config.new_friend_msg %}
-            <input type="hidden" name="new_friend_msg" value="{{ msg }}">
-            {% endfor %}
+          <div class="new-friend-l3-group new-friend-remark-group">
+            <div class="new-friend-nickname-row">
+              <label class="ui-switch ui-switch--l3 ui-head-switch new-friend-inline-switch" for="new_friend_remark_use_nickname" title="备注包含好友原始昵称">
+                <input class="form-check-input" type="checkbox" id="new_friend_remark_use_nickname" name="new_friend_remark_use_nickname" {% if config.get('new_friend_remark_use_nickname', True) %}checked{% endif %}>
+                <span class="ui-switch-knob"></span>
+              </label>
+              <label class="new-friend-nickname-label" for="new_friend_remark_use_nickname">备注包含好友原始昵称</label>
+              <span class="cfg-hint">关闭后仅使用前缀、后缀和时间戳生成备注</span>
+            </div>
+            <div class="new-friend-field-grid">
+              <div>
+                <label class="cfg-label" for="new_friend_remark_prefix">备注前缀</label>
+                <div class="inline-check-field">
+                  <input type="text" class="form-control" id="new_friend_remark_prefix" name="new_friend_remark_prefix" placeholder="（留空）" value="{{ config.new_friend_remark_prefix|default('') }}">
+                  <label class="inline-check-suffix" for="new_friend_remark_prefix_timestamp">
+                    <input class="form-check-input" type="checkbox" id="new_friend_remark_prefix_timestamp" name="new_friend_remark_prefix_timestamp" {% if config.get('new_friend_remark_prefix_timestamp', False) %}checked{% endif %}>
+                    加时间戳
+                  </label>
+                </div>
+              </div>
+              <div>
+                <label class="cfg-label" for="new_friend_remark_suffix">备注后缀</label>
+                <div class="inline-check-field">
+                  <input type="text" class="form-control" id="new_friend_remark_suffix" name="new_friend_remark_suffix" placeholder="_机器人备注" value="{{ config.new_friend_remark_suffix|default('_机器人备注') }}">
+                  <label class="inline-check-suffix" for="new_friend_remark_suffix_timestamp">
+                    <input class="form-check-input" type="checkbox" id="new_friend_remark_suffix_timestamp" name="new_friend_remark_suffix_timestamp" {% if config.get('new_friend_remark_suffix_timestamp', False) %}checked{% endif %}>
+                    加时间戳
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="cfg-hint">备注格式：前缀时间戳 + 前缀 + 新好友昵称 + 后缀 + 后缀时间戳；超出微信备注长度会自动裁剪</div>
+          </div>
+          <div class="new-friend-l3-group new-friend-tag-group">
+            <div class="new-friend-tag-head">
+              <label class="cfg-label">自动打标签</label>
+              <span class="cfg-hint">只能填写微信中已存在的标签</span>
+            </div>
+            <div id="new_friend_tags_container" class="new-friend-list">
+              {% for tag in config.new_friend_tags %}
+              <div class="list-item">
+                <input type="text" class="form-control" name="new_friend_tags" value="{{ tag }}" placeholder="标签名">
+                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
+              </div>
+              {% endfor %}
+            </div>
+            <button type="button" class="ui-btn ui-btn--add ui-btn--l3 ui-btn--spaced-sm js-add-field" data-target="#new_friend_tags_container" data-name="new_friend_tags"><i class="bi bi-plus-circle"></i> 添加标签</button>
           </div>
         </div>
       </div>
@@ -1741,15 +1734,15 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="contact-maintenance-auto-grid">
             <div>
               <label class="cfg-label" for="contact_directory_auto_maintenance_interval_minutes">每批维护间隔</label>
-              <input type="number" class="form-control" id="contact_directory_auto_maintenance_interval_minutes" min="5" max="1440" value="{{ config.get('contact_directory_auto_maintenance_interval_minutes', 60) }}">
+              <input type="number" class="form-control" id="contact_directory_auto_maintenance_interval_minutes" min="5" max="1440" value="{{ config.get('contact_directory_auto_maintenance_interval_minutes', 20) }}">
               <div class="cfg-hint">单位：分钟，这是最低间隔；如果机器人一直没空，实际间隔可能更久</div>
             </div>
             <div>
               <label class="cfg-label" for="contact_directory_auto_maintenance_batch_size">每批维护人数</label>
               <select class="form-select" id="contact_directory_auto_maintenance_batch_size">
-                <option value="10" {% if config.get('contact_directory_auto_maintenance_batch_size', 10) == 10 %}selected{% endif %}>标准 - 10 人</option>
-                <option value="20" {% if config.get('contact_directory_auto_maintenance_batch_size', 10) == 20 %}selected{% endif %}>暴力 - 20 人</option>
-                <option value="50" {% if config.get('contact_directory_auto_maintenance_batch_size', 10) == 50 %}selected{% endif %}>危险 - 50 人</option>
+                <option value="20" {% if config.get('contact_directory_auto_maintenance_batch_size', 50) == 20 %}selected{% endif %}>安全 - 20 人</option>
+                <option value="50" {% if config.get('contact_directory_auto_maintenance_batch_size', 50) == 50 %}selected{% endif %}>标准 - 50 人</option>
+                <option value="80" {% if config.get('contact_directory_auto_maintenance_batch_size', 50) == 80 %}selected{% endif %}>暴力 - 80 人</option>
               </select>
               <div class="cfg-hint">单批自动维护最多读取这么多联系人，主要用于控制风控节奏</div>
             </div>
@@ -1822,6 +1815,9 @@ html.icons-pref-local [class*=" bi-"]::before {
               <button type="button" id="btn-relationship-scan-stop" class="ui-btn ui-btn--secondary ui-btn--l2">
                 <i class="bi bi-stop-circle"></i> 停止扫描
               </button>
+              <button type="button" id="btn-relationship-scan-clear" class="ui-btn ui-btn--danger ui-btn--l2">
+                <i class="bi bi-trash3"></i> 清空结果
+              </button>
             </div>
             <div class="page-inline-notice page-inline-notice--danger">
               <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
@@ -1831,8 +1827,8 @@ html.icons-pref-local [class*=" bi-"]::before {
               <div class="relationship-scan-row relationship-scan-row--head">
                 <span>联系人</span><span>状态</span><span>会话预览</span><span>变化时间</span><span>自动同步</span>
               </div>
-              <div id="relationship-scan-record-list" class="relationship-scan-record-list ui-workbench-scroll-body">
-                <div class="contact-directory-list-empty">暂无关系扫描记录</div>
+              <div id="relationship-scan-record-list" class="relationship-scan-record-list ui-workbench-scroll-body is-empty">
+                <div class="relationship-scan-empty">暂无关系扫描记录</div>
               </div>
             </div>
           </div>
@@ -4700,8 +4696,37 @@ $(function(){
       var tag = String(item.tag || '');
       var label = String(item.label || tag || '未命名标签');
       var meta = String(item.count || 0) + ' 人';
-      var deleteAction = false;
-      if(tag && tag !== '__all__'){
+      var deleteAction = null;
+      if(tag === '__all__'){
+        deleteAction = function(){
+          var currentWxId = String(_contactDirectoryBrowserState.wxId || '');
+          if(!currentWxId){
+            showMsg('contact-directory-msg', '请先选择微信号', false);
+            return;
+          }
+          svModal.confirm('确定清空当前微信号的全部联系人建档记录？此操作不可恢复。', function(){
+            $.ajax({
+              url:'/contact_profiles/wx/' + encodeURIComponent(currentWxId),
+              type:'DELETE',
+            }).done(function(res){
+              if(res.status === 'success'){
+                showMsg('contact-directory-msg', res.message || '已清空全部联系人建档记录', true);
+                _contactDirectoryBrowserState.tag = '__all__';
+                if(res.browser){
+                  renderContactDirectoryBrowser(res.browser);
+                  _contactDirectoryBrowserState.loaded = true;
+                } else {
+                  loadContactDirectoryBrowser('');
+                }
+              } else {
+                showMsg('contact-directory-msg', res.message || '清空失败', false);
+              }
+            }).fail(function(xhr){
+              showMsg('contact-directory-msg', '清空失败：' + (xhr.responseText || xhr.status), false);
+            });
+          }, '清空确认', '确定清空', '取消');
+        };
+      } else if(tag){
         deleteAction = function(){
           var currentWxId = String(_contactDirectoryBrowserState.wxId || '');
           svModal.confirm('确定删除标签「' + label + '」？这会从当前通讯录里移除该标签', function(){
@@ -4792,10 +4817,10 @@ $(function(){
     $('#relationship_scan_sync_batch_size').val(settings.sync_batch_size || 5);
     $('#relationship_scan_interval_seconds').val(settings.scan_interval_seconds || 10);
     if(!records.length){
-      $('#relationship-scan-record-list').html('<div class="contact-directory-list-empty">暂无关系扫描记录</div>');
+      $('#relationship-scan-record-list').addClass('is-empty').html('<div class="relationship-scan-empty">暂无关系扫描记录</div>');
       return;
     }
-    $('#relationship-scan-record-list').html(records.map(renderRelationshipScanRecord).join(''));
+    $('#relationship-scan-record-list').removeClass('is-empty').html(records.map(renderRelationshipScanRecord).join(''));
   }
   function relationshipScanSettingsPayload(){
     return {
@@ -5131,27 +5156,31 @@ $(function(){
     return '立即建档';
   }
   function chooseContactDirectoryStart(mode){
+    if(mode === 'force'){
+      runContactDirectoryRefresh('force', '', {buttonId:'btn-contact-force-build'});
+      return;
+    }
     var payload = _contactDirectoryBrowserState.payload || {};
     var summary = payload.summary || {};
     var total = Number(summary.total || 0);
-    var nextStartName = String(summary.next_start_name || '').trim();
+    var continueStartName = String(summary.continue_start_name || '').trim();
     var buttonId = mode === 'force' ? 'btn-contact-force-build' : 'btn-contact-standard-build';
-    if(total <= 0 || !nextStartName){
+    if(total <= 0 || !continueStartName){
       runContactDirectoryRefresh(mode, '', {buttonId: buttonId});
       return;
     }
     svModal.choice(
-      '检测到本地已有通讯录档案。请选择这次建档方式：<br><br><div style="font-size:12px;color:var(--muted);">上次停止位置：' + escapeHtml(nextStartName) + '</div>',
+      '检测到本地已有通讯录档案。请选择这次建档方式：<br><br><div style="font-size:12px;color:var(--muted);">当前档案最后联系人：' + escapeHtml(continueStartName) + '</div>',
       [
         {text:'取消', variant:'secondary'},
         {text:'重头开始', variant:'soft', action:function(){
           runContactDirectoryRefresh(mode, '', {buttonId: buttonId});
         }},
-        {text:'继续上次位置', variant:'primary', action:function(){
-          runContactDirectoryRefresh(mode, nextStartName, {buttonId: buttonId});
+        {text:'从已有联系人继续', variant:'primary', action:function(){
+          runContactDirectoryRefresh(mode, continueStartName, {buttonId: buttonId});
         }}
       ],
-      mode === 'force' ? '暴力建档方式' : '立即建档方式'
+      '立即建档方式'
     );
   }
   function runContactDirectoryRefresh(mode, startName, options){
@@ -5168,7 +5197,7 @@ $(function(){
     if($btn.length){
       $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 执行中...');
     }
-    showMsg('contact-directory-msg', contactDirectoryActionLabel(mode) + '进行中：程序会先把微信切到前台并切到通讯录；你可以切回面板点击停止建档', 'info', {persistent:true});
+    showMsg('contact-directory-msg', contactDirectoryActionLabel(mode) + '进行中：程序会先把微信切到前台并切到通讯录；停止请求会尽快生效，当前读取未被打断时会在本批返回后停止', 'info', {persistent:true});
     setContactDirectoryBrowserMsg('', true);
     $.ajax({
       url:'/contact_profiles/refresh_batch',
@@ -5554,133 +5583,81 @@ $(function(){
   function appendScheduledMessageFileRow($editor, pathValue){
     return appendScheduledMessageFileRows($editor, [pathValue]) > 0;
   }
-  function buildNewFriendMessageImageItem(path, index){
-    path = String(path || '').trim();
+  function buildNewFriendMessageFileRow(pathValue){
+    pathValue = pathValue == null ? '' : String(pathValue);
     return ''+
-      '<div class="scheduled-message-item-card scheduled-message-image-item new-friend-message-item-card" data-content-kind="image" data-message-index="'+index+'">'+
-        '<input type="hidden" class="new-friend-message-image-value" value="'+escapeMomentsHtml(path)+'">'+
-        '<div class="scheduled-message-image-preview">'+
-          '<img src="'+scheduledMessageImagePreviewUrl(path)+'" alt="图片预览">'+
-          '<button type="button" class="scheduled-message-delete-badge ui-btn--icon ui-btn--l3 is-danger btn-delete-new-friend-message-content" title="删除图片" aria-label="删除图片"><i class="bi bi-x-lg"></i></button>'+
-        '</div>'+
+      '<div class="file-path-row scheduled-message-file-row new-friend-message-file-row">'+
+        '<input type="text" class="form-control new-friend-message-file-input" value="'+escapeMomentsHtml(pathValue)+'" placeholder="文件绝对路径">'+
+        '<button type="button" class="file-path-pick btn-pick-new-friend-message-file" title="更换文件" aria-label="更换文件"><i class="bi bi-arrow-repeat"></i></button>'+
+        '<button type="button" class="btn-rm file-path-remove btn-remove-new-friend-message-file" title="删除文件" aria-label="删除文件"><i class="bi bi-x-lg"></i></button>'+
       '</div>';
   }
-  function buildNewFriendMessageTextItem(text, index){
-    text = String(text || '');
-    var empty = !$.trim(text);
+  function syncNewFriendMessageFileWrap(){
+    var $editor = $('#new_friend_msg_container');
+    var fileCount = $editor.find('.new-friend-message-file-row').length;
+    $editor.find('.new-friend-message-file-wrap').toggle(fileCount > 0);
+    $('.js-add-new-friend-file').prop('disabled', fileCount >= KEYWORD_MAX_FILES);
+  }
+  function appendNewFriendMessageFiles(pathValues){
+    var $editor = $('#new_friend_msg_container');
+    var normalizedPaths = (Array.isArray(pathValues) ? pathValues : []).map(function(pathValue){
+      return $.trim(pathValue || '');
+    }).filter(Boolean);
+    var remaining = Math.max(0, KEYWORD_MAX_FILES - $editor.find('.new-friend-message-file-row').length);
+    if(!remaining){
+      if(normalizedPaths.length) svModal.alert('最多只能添加 9 个文件');
+      syncNewFriendMessageFileWrap();
+      return 0;
+    }
+    normalizedPaths.slice(0, remaining).forEach(function(pathValue){
+      $editor.find('.new-friend-message-file-list').append(buildNewFriendMessageFileRow(pathValue));
+    });
+    if(normalizedPaths.length > remaining){
+      svModal.alert('最多只能添加 9 个文件');
+    }
+    syncNewFriendMessageFileWrap();
+    return Math.min(normalizedPaths.length, remaining);
+  }
+  function buildNewFriendMessageEditor(message){
+    message = message && typeof message === 'object' ? message : {};
+    var textValue = message.text == null ? '' : String(message.text);
+    var files = Array.isArray(message.files) ? message.files.slice(0, KEYWORD_MAX_FILES) : [];
     return ''+
-      '<div class="scheduled-message-item-card scheduled-message-text-item new-friend-message-text-item new-friend-message-item-card" data-content-kind="text" data-message-index="'+index+'">'+
-        '<strong class="scheduled-message-item-title">消息 '+(index + 1)+'</strong>'+
-        '<div class="scheduled-message-text-row">'+
-          '<div class="scheduled-message-text-preview'+(empty ? ' is-empty' : '')+'" title="'+escapeMomentsHtml(text || '未填写文案')+'">'+
-            '<span class="scheduled-message-text-content">'+escapeMomentsHtml(text || '未填写文案')+'</span>'+
-          '</div>'+
-        '</div>'+
-        '<div class="scheduled-message-item-actions">'+
-          '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 scheduled-message-icon-btn ui-btn--icon ui-btn--l3 btn-edit-new-friend-message-text" title="编辑文案" aria-label="编辑文案"><i class="bi bi-pencil"></i></button>'+
-          '<button type="button" class="scheduled-message-delete-badge ui-btn--icon ui-btn--l3 is-danger btn-delete-new-friend-message-content" title="删除文案" aria-label="删除文案"><i class="bi bi-x-lg"></i></button>'+
-        '</div>'+
+      '<div class="scheduled-message-text-block">'+
+        '<textarea class="form-control ai-moments-control scheduled-message-text-input new-friend-message-text-input" rows="1" placeholder="输入欢迎内容，可留空">'+escapeMomentsHtml(textValue)+'</textarea>'+
+      '</div>'+
+      '<div class="scheduled-message-file-block new-friend-message-file-wrap"'+(files.length ? '' : ' style="display:none"')+'>'+
+        '<div class="file-path-list scheduled-message-file-list new-friend-message-file-list">'+files.map(function(pathValue){ return buildNewFriendMessageFileRow(pathValue); }).join('')+'</div>'+
       '</div>';
-  }
-  function buildNewFriendMessageContentCards(msgs){
-    var html = '';
-    buildScheduledMessageContentItemsFromMsgs(msgs).forEach(function(item, index){
-      if(item.type === 'image'){
-        html += buildNewFriendMessageImageItem(item.path, index);
-      }else{
-        html += buildNewFriendMessageTextItem(item.text, index);
-      }
-    });
-    return html || '<div class="scheduled-message-empty-content">暂无欢迎消息，可用右上角“加文案 / 加图片”添加。</div>';
-  }
-  function renumberNewFriendMessageItems(){
-    $('#new_friend_msg_container .new-friend-message-item-card').each(function(index){
-      var $card = $(this);
-      $card.attr('data-message-index', index);
-      if($card.attr('data-content-kind') === 'text'){
-        $card.find('.scheduled-message-item-title').first().text('消息 ' + (index + 1));
-      }
-    });
   }
   function normalizeNewFriendMessageRows(){
-    var $list = $('#new_friend_msg_container');
-    if(!$list.length || $list.find('.new-friend-message-item-card').length){
-      renumberNewFriendMessageItems();
-      return;
+    var $editor = $('#new_friend_msg_container');
+    if(!$editor.length || $editor.find('.new-friend-message-text-input').length) return;
+    var message = {};
+    try {
+      message = JSON.parse($editor.attr('data-message') || '{}');
+    } catch(_err) {
+      message = {};
     }
-    var msgs = [];
-    $list.find('input[name="new_friend_msg"]').each(function(){
-      var value = $.trim($(this).val() || '');
-      if(value){
-        msgs.push(value);
-      }
-    });
-    $list.html(buildNewFriendMessageContentCards(msgs));
+    $editor.html(buildNewFriendMessageEditor(message));
+    syncNewFriendMessageFileWrap();
   }
-  function flattenNewFriendMessagesFromUI(){
-    var msgs = [];
-    $('#new_friend_msg_container .new-friend-message-item-card').each(function(){
-      var $card = $(this);
-      if($card.attr('data-content-kind') === 'text'){
-        var $text = $card.find('.scheduled-message-text-preview').first();
-        var $content = $card.find('.scheduled-message-text-content').first();
-        var text = $text.hasClass('is-empty') ? '' : $.trim($content.text() || '');
-        if(text){
-          msgs.push(text);
-        }
-        return;
-      }
-      var path = $.trim($card.find('.new-friend-message-image-value').val() || '');
+  function collectNewFriendMessagesFromUI(){
+    var $editor = $('#new_friend_msg_container');
+    var text = $.trim($editor.find('.new-friend-message-text-input').val() || '');
+    var files = [];
+    $editor.find('.new-friend-message-file-input').each(function(){
+      if(files.length >= KEYWORD_MAX_FILES) return false;
+      var path = $.trim($(this).val() || '');
       if(path){
-        msgs.push(path);
+        files.push(path);
       }
     });
-    return msgs;
+    return { text: text, files: files };
   }
-  function startNewFriendMessageTextEdit($card){
-    if($card.hasClass('is-editing')) return;
-    $('.new-friend-message-item-card.is-editing').not($card).each(function(){
-      finishNewFriendMessageTextEdit($(this), true);
-    });
-    var $text = $card.find('.scheduled-message-text-preview').first();
-    var $content = $card.find('.scheduled-message-text-content').first();
-    var value = $text.hasClass('is-empty') ? '' : ($content.text() || '');
-    $card.addClass('is-editing');
-    $text.removeClass('is-empty').addClass('editing');
-    $content
-      .data('newFriendOriginalText', value)
-      .text(value)
-      .attr('contenteditable','true')
-      .attr('role','textbox')
-      .attr('aria-label','编辑欢迎文案')
-      .focus();
-    $card.find('.btn-edit-new-friend-message-text').attr('title','完成编辑').attr('aria-label','完成编辑').html('<i class="bi bi-check-lg"></i>');
-    if(window.getSelection && document.createRange){
-      var range = document.createRange();
-      range.selectNodeContents($content[0]);
-      range.collapse(false);
-      var selection = window.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-  }
-  function finishNewFriendMessageTextEdit($card, save){
-    if(!$card.hasClass('is-editing')) return;
-    var $text = $card.find('.scheduled-message-text-preview').first();
-    var $content = $card.find('.scheduled-message-text-content').first();
-    var value = save ? $.trim($content.text() || '') : ($content.data('newFriendOriginalText') || '');
-    $content
-      .text(value || '未填写文案')
-      .removeAttr('contenteditable')
-      .removeAttr('role')
-      .removeAttr('aria-label')
-      .removeData('newFriendOriginalText');
-    $text
-      .toggleClass('is-empty', !value)
-      .removeClass('editing')
-      .attr('title', value || '未填写文案');
-    $card.removeClass('is-editing');
-    $card.find('.btn-edit-new-friend-message-text').attr('title','编辑文案').attr('aria-label','编辑文案').html('<i class="bi bi-pencil"></i>');
+  function hasNewFriendWelcomeContent(message){
+    message = message && typeof message === 'object' ? message : {};
+    return !!($.trim(message.text || '') || (Array.isArray(message.files) && message.files.length));
   }
   function flattenScheduledMessageContentFromEditor($editor){
     var msgs = [];
@@ -8022,9 +7999,9 @@ $(function(){
     chooseContactDirectoryStart('standard');
   });
   $('#btn-contact-force-build').click(function(){
-    svModal.confirm('暴力建档会用更快的顺序读取联系人信息，但也更容易触发微信风控。确定继续吗？', function(){
-      chooseContactDirectoryStart('force');
-    }, '暴力建档确认', '继续执行', '取消');
+    svModal.confirm('暴力建档会从通讯录头部开始全量读取好友信息，期间会长时间占用微信主窗口。确定继续吗？', function(){
+      runContactDirectoryRefresh('force', '', {buttonId:'btn-contact-force-build'});
+    }, '暴力建档确认', '开始全量建档', '取消');
   });
   $('#btn-contact-pause-maintenance').click(function(){
     toggleContactDirectoryPause(true);
@@ -8091,6 +8068,11 @@ $(function(){
   });
   $('#btn-relationship-scan-stop').click(function(){
     runRelationshipScanAction('/relationship_scan/stop', 'btn-relationship-scan-stop', '停止中...', '停止扫描');
+  });
+  $('#btn-relationship-scan-clear').click(function(){
+    svModal.confirm('确定清空当前微信号的全部关系扫描结果？记录和待同步队列都会清空，此操作不可恢复；已同步到微信的标签不会自动撤销。', function(){
+      runRelationshipScanAction('/relationship_scan/clear', 'btn-relationship-scan-clear', '清空中...', '清空结果');
+    }, '清空确认', '确定清空', '取消');
   });
   $(document).on('change', '#relationship_scan_auto_enabled,#relationship_scan_auto_write_contact_directory,#relationship_scan_auto_sync_wechat_tags,#relationship_scan_sync_batch_size,#relationship_scan_interval_seconds', function(){
     saveRelationshipScanSettings({silent:true});
@@ -8706,56 +8688,36 @@ $(function(){
 
   // ===== Add New Friend Welcome Content =====
   normalizeNewFriendMessageRows();
-  $(document).on('click','.js-add-new-friend-message-text',function(e){
+  $(document).on('click','.js-add-new-friend-file',function(e){
     e.preventDefault();
     e.stopImmediatePropagation();
-    var $list = $('#new_friend_msg_container');
-    if(!$list.length) return;
-    $list.find('.scheduled-message-empty-content').remove();
-    var $item = $(buildNewFriendMessageTextItem('', $list.find('.new-friend-message-item-card').length));
-    insertListItemAtTop($list, $item);
-    renumberNewFriendMessageItems();
-    startNewFriendMessageTextEdit($item);
-  });
-  $(document).on('click','.js-add-new-friend-message-image',function(e){
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    var $list = $('#new_friend_msg_container');
-    if(!$list.length) return;
-    if($list.find('.new-friend-message-image-value').length >= 9){
-      svModal.alert('最多只能添加 9 张图片');
+    var $editor = $('#new_friend_msg_container');
+    if(!$editor.length) return;
+    if($editor.find('.new-friend-message-file-row').length >= KEYWORD_MAX_FILES){
+      syncNewFriendMessageFileWrap();
       return;
     }
-    $.get('/pick_image_files', function(res){
-      if(res.status === 'success' && Array.isArray(res.paths)){
-        $list.find('.scheduled-message-empty-content').remove();
-        res.paths.slice().reverse().forEach(function(pathValue){
-          if($list.find('.new-friend-message-image-value').length >= 9) return false;
-          insertListItemAtTop($list, buildNewFriendMessageImageItem(pathValue, $list.find('.new-friend-message-item-card').length));
-        });
-        renumberNewFriendMessageItems();
+    $.get('/pick_keyword_reply_files', function(resp){
+      if(resp && resp.status === 'success' && Array.isArray(resp.paths)){
+        appendNewFriendMessageFiles(resp.paths);
       }
     });
   });
-  $(document).on('click','.btn-edit-new-friend-message-text',function(e){
+  $(document).on('click','.btn-pick-new-friend-message-file',function(e){
     e.preventDefault();
     e.stopPropagation();
-    var $card = $(this).closest('.new-friend-message-item-card');
-    if($card.hasClass('is-editing')){
-      finishNewFriendMessageTextEdit($card, true);
-    }else{
-      startNewFriendMessageTextEdit($card);
-    }
+    var $input = $(this).siblings('.new-friend-message-file-input');
+    $.get('/pick_keyword_reply_file', function(resp){
+      if(resp && resp.status === 'success' && resp.path){
+        $input.val(resp.path);
+      }
+    });
   });
-  $(document).on('click','.btn-delete-new-friend-message-content',function(e){
+  $(document).on('click','.btn-remove-new-friend-message-file',function(e){
     e.preventDefault();
     e.stopPropagation();
-    var $list = $('#new_friend_msg_container');
-    $(this).closest('.new-friend-message-item-card').remove();
-    renumberNewFriendMessageItems();
-    if(!$list.find('.new-friend-message-item-card').length){
-      $list.html('<div class="scheduled-message-empty-content">暂无欢迎消息，可用右上角“加文案 / 加图片”添加。</div>');
-    }
+    $(this).closest('.new-friend-message-file-row').remove();
+    syncNewFriendMessageFileWrap();
   });
 
   $(document).on('click','.scheduled-message-task-preview',function(){
@@ -10975,7 +10937,7 @@ $(function(){
       admin:$('#admin').val(),
       group_welcome_msg:$('#group_welcome_msg').val(),
       default_prompt:$('#default_prompt_select').val()||'默认',
-      listen_list:[], global_blacklist:[], group:[], group_api_map:{}, group_prompt_map:{}, new_friend_msg:[],
+      listen_list:[], global_blacklist:[], group:[], group_api_map:{}, group_prompt_map:{}, new_friend_msg:{text:'', files:[]},
       chat_prompt_map:{}, chat_api_map:{}, chat_tts_map:{},
       conversation_memory_switch:$('#conversation_memory_switch').is(':checked'),
       conversation_memory_message_threshold:parseInt($('#conversation_memory_message_threshold').val())||100,
@@ -10987,8 +10949,8 @@ $(function(){
       scheduled_message_task_list:[],
       contact_directory_auto_maintenance_switch:$('#contact_directory_auto_maintenance_switch').is(':checked'),
       contact_directory_auto_maintenance_full_scan_interval_days:Math.max(1,Math.min(30,parseInt($('#contact_directory_auto_maintenance_full_scan_interval_days').val())||7)),
-      contact_directory_auto_maintenance_batch_size:parseInt($('#contact_directory_auto_maintenance_batch_size').val())||10,
-      contact_directory_auto_maintenance_interval_minutes:Math.max(5,Math.min(1440,parseInt($('#contact_directory_auto_maintenance_interval_minutes').val())||60)),
+      contact_directory_auto_maintenance_batch_size:parseInt($('#contact_directory_auto_maintenance_batch_size').val())||50,
+      contact_directory_auto_maintenance_interval_minutes:Math.max(5,Math.min(1440,parseInt($('#contact_directory_auto_maintenance_interval_minutes').val())||20)),
       contact_directory_auto_maintenance_window_start:$.trim($('#contact_directory_auto_maintenance_window_start').val()||'00:00'),
       contact_directory_auto_maintenance_window_end:$.trim($('#contact_directory_auto_maintenance_window_end').val()||'23:59'),
       material_source_silent:$('#material_source_silent').is(':checked'),
@@ -11095,8 +11057,8 @@ $(function(){
       var gpv=$(this).find('.group-prompt-select').val();
       if(gpv){ configData.group_prompt_map[name]=gpv; }
     });
-    configData.new_friend_msg = flattenNewFriendMessagesFromUI();
-    configData.new_friend_reply_switch = configData.new_friend_msg.length > 0;
+    configData.new_friend_msg = collectNewFriendMessagesFromUI();
+    configData.new_friend_reply_switch = hasNewFriendWelcomeContent(configData.new_friend_msg);
     $('#keyword_container .keyword-item').each(function(){
       var $item=$(this);
       var k=$.trim($item.find('input[name="keyword_key"]').val() || '');

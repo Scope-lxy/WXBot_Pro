@@ -1392,6 +1392,8 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .relationship-scan-row:last-child { border-bottom: 0; }
 .relationship-scan-row--head { min-height: 34px; background: var(--surface-l2); color: var(--muted); font-size: 12px; font-weight: 700; }
 .relationship-scan-record-list { min-height: 78px; background: var(--surface-l3); }
+.relationship-scan-record-list.is-empty { padding: 12px; overflow: hidden; }
+.relationship-scan-empty { display: flex; align-items: center; width: 100%; min-height: var(--ui-empty-state-min-height); padding: var(--ui-empty-state-padding); border: 1px dashed var(--layer-border-subtle); border-radius: var(--radius); background: var(--surface-l4); color: var(--muted); font-size: 13px; line-height: 1.45; text-align: left; }
 .relationship-scan-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .relationship-scan-state,
 .relationship-scan-sync-state { justify-self: start; display: inline-flex; align-items: center; justify-content: center; min-width: 52px; height: 24px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 700; line-height: 1; }
@@ -1418,10 +1420,9 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .new-friend-tag-head .cfg-hint { margin: 0; text-align: right; }
 .new-friend-list { display: grid; gap: 10px; }
 .new-friend-list .list-item { margin-bottom: 0; padding: 0; border: 0; background: transparent; }
-.new-friend-message-list { min-height: 0; }
+.new-friend-message-editor { min-height: 0; }
 .new-friend-welcome-head .ui-head__actions { gap: 8px; }
-.new-friend-welcome-block .scheduled-message-empty-content { width: 100%; }
-.new-friend-message-text-item { flex: 1 1 100%; }
+.new-friend-message-file-list { display: grid; gap: 8px; }
 .new-friend-block { background: var(--surface-l2); border-color: var(--layer-border); }
 .new-friend-l3-group { background: var(--surface-l3); border-color: var(--layer-border-subtle); }
 .new-friend-l3-group .switch-row,

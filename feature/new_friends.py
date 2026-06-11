@@ -2,6 +2,54 @@
 
 from datetime import datetime
 
+MAX_NEW_FRIEND_MESSAGE_FILES = 9
+
+
+def normalize_new_friend_welcome_messages(value):
+    """Return one clean welcome message block with text and files."""
+    if not isinstance(value, dict):
+        return {"text": "", "files": []}
+    text = str(value.get("text") or "").strip()
+    files = []
+    raw_files = value.get("files")
+    if isinstance(raw_files, list):
+        for path in raw_files:
+            normalized_path = str(path or "").strip()
+            if not normalized_path:
+                continue
+            files.append(normalized_path)
+            if len(files) >= MAX_NEW_FRIEND_MESSAGE_FILES:
+                break
+    return {"text": text, "files": files}
+
+
+def new_friend_welcome_message_has_content(value):
+    message = normalize_new_friend_welcome_messages(value)
+    return bool(message.get("text") or message.get("files"))
+
+
+def iter_new_friend_welcome_actions(messages):
+    """Yield ordered send actions for the welcome message block."""
+    message = normalize_new_friend_welcome_messages(messages)
+    text = message.get("text") or ""
+    if text:
+        yield {"type": "text", "content": text}
+    for path in message.get("files") or []:
+        if path:
+            yield {"type": "file", "path": path}
+
+
+def new_friend_welcome_message_summary(message):
+    message = normalize_new_friend_welcome_messages(message)
+    text = str(message.get("text") or "").strip()
+    files = [str(path or "").strip() for path in (message.get("files") or []) if str(path or "").strip()]
+    parts = []
+    if text:
+        parts.append(text)
+    if files:
+        parts.append(f"文件 {len(files)} 个")
+    return " + ".join(parts) or "（空）"
+
 
 def remark_unit_len(text):
     """Approximate WeChat remark length: ASCII as 1 unit, CJK/other as 2."""
@@ -87,7 +135,7 @@ def build_new_friend_status_lines(
     use_name = "是" if use_nickname else "否"
     prefix_time = "是" if prefix_timestamp else "否"
     suffix_time = "是" if suffix_timestamp else "否"
-    configured_messages = messages if messages else ["（无）"]
+    configured_messages = [new_friend_welcome_message_summary(messages)] if new_friend_welcome_message_has_content(messages) else ["（无）"]
     return [
         "--- 新好友状态 ---",
         f"自动通过好友申请：{accept}",

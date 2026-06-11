@@ -57,6 +57,7 @@ def run_probe(
     interval: float,
     match_name: str,
     switch_back: bool,
+    show_window: bool = False,
     printer: Callable[[str], None] = default_printer,
 ):
     client = client_factory()
@@ -69,15 +70,16 @@ def run_probe(
     result = None
     error = None
 
-    log_step(printer, "开始最小复现：Show -> SwitchToContact -> GetFriendDetails")
-    log_step(printer, "步骤 1/4：Show()")
-    client.Show()
+    log_step(printer, "开始最小复现：SwitchToContact -> GetFriendDetails")
+    if show_window:
+        log_step(printer, "步骤 1/4：Show()")
+        client.Show()
 
-    log_step(printer, "步骤 2/4：SwitchToContact()")
+    log_step(printer, "步骤 1/3：SwitchToContact()")
     client.SwitchToContact()
 
     try:
-        log_step(printer, f"步骤 3/4：GetFriendDetails({json.dumps({k: v for k, v in kwargs.items() if k != 'callback'}, ensure_ascii=False)})")
+        log_step(printer, f"步骤 2/3：GetFriendDetails({json.dumps({k: v for k, v in kwargs.items() if k != 'callback'}, ensure_ascii=False)})")
         if "callback" in kwargs:
             log_step(printer, f"已启用最简 callback，目标联系人：{normalize_name(match_name)}")
         result = client.GetFriendDetails(**kwargs)
@@ -91,7 +93,7 @@ def run_probe(
             switch_to_chat = getattr(client, "SwitchToChat", None)
             if callable(switch_to_chat):
                 try:
-                    log_step(printer, "步骤 4/4：SwitchToChat()")
+                    log_step(printer, "步骤 3/3：SwitchToChat()")
                     switch_to_chat()
                 except Exception as exc:
                     log_step(printer, f"SwitchToChat 调用异常：{exc}")
@@ -102,6 +104,7 @@ def run_probe(
         "interval": max(0.1, float(interval)),
         "match_name": normalize_name(match_name),
         "switch_back": bool(switch_back),
+        "show_window": bool(show_window),
         "duration_seconds": duration,
         "callback_hits": callback_hits,
         "result": result,
@@ -121,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval", type=float, default=1.5, help="GetFriendDetails 间隔秒数，默认 1.5")
     parser.add_argument("--match-name", default="", help="可选：启用最简 callback，只匹配这个联系人名")
     parser.add_argument(
+        "--show-window",
+        action="store_true",
+        help="先调用 wx.Show() 再切通讯录；默认不调用，避免微信 4.x 主窗口灰屏/重绘异常",
+    )
+    parser.add_argument(
         "--no-switch-back",
         action="store_true",
         help="默认结束后会尝试 SwitchToChat；传这个参数则不切回聊天页",
@@ -135,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         interval=args.interval,
         match_name=args.match_name,
         switch_back=not args.no_switch_back,
+        show_window=args.show_window,
     )
     return 1 if summary["error"] else 0
 

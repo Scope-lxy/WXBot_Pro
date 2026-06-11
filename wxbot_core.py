@@ -93,7 +93,7 @@ from core.chat_history_format import (
     format_history_message,
 )
 from core.reply_count_store import ReplyCountStore
-from core.wechat_window import close_top_windows_by_title, run_with_wechat_rebind_retry
+from core.wechat_window import run_with_wechat_rebind_retry
 from core.daily_runtime_stats import DailyRuntimeStatsStore, build_empty_daily_runtime_stats
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.prompting import (
@@ -1729,11 +1729,6 @@ class WXBot:
             log_error=lambda message: log(level="ERROR", message=message),
         )
 
-    def _cleanup_known_main_window_residue(self):
-        closed = close_top_windows_by_title("通讯录管理")
-        if closed:
-            log(message=f"[微信窗口] 已关闭残留通讯录管理窗口 {closed} 个")
-
     def _open_moments_with_recovery(self):
         def open_moments():
             with self._get_wechat_action_lock():
@@ -1743,7 +1738,6 @@ class WXBot:
         return run_with_wechat_rebind_retry(
             self,
             open_moments,
-            cleanup=self._cleanup_known_main_window_residue,
             attempts=2,
             on_retry=lambda exc, _attempt: log(
                 level="WARNING",
@@ -2268,7 +2262,6 @@ class WXBot:
             result = run_with_wechat_rebind_retry(
                 self,
                 add_material_source_chat,
-                cleanup=self._cleanup_known_main_window_residue,
                 attempts=2,
                 on_retry=lambda exc, _attempt: log(
                     level="WARNING",
@@ -6177,8 +6170,6 @@ class WXBot:
         - 进入主循环，依次执行：离线检测、新好友检测、全局监听/定时任务
         """
         # self.key_pass(2025, 6, 20, 0, 0, 0)  # 打包保护锁（按需启用）
-        log(message=f"wxbot\n版本: wxbot_{self.ver}\n作者: https://www.siver.top\n")
-
         # 激活授权校验
         if self.wxautox_activate_check():
             log(message="wxautox已激活")

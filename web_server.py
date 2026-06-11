@@ -105,6 +105,10 @@ from feature.keyword_reply import (
     normalize_keyword_terms,
     normalize_keyword_reply_rule,
 )
+from feature.new_friends import (
+    new_friend_welcome_message_has_content,
+    normalize_new_friend_welcome_messages,
+)
 from feature.contacts import (
     coerce_auto_maintenance_full_scan_interval_days,
     coerce_auto_maintenance_interval_minutes,
@@ -2073,16 +2077,16 @@ def dashboard():
     config.setdefault('keyword_dict', {})                    # 关键词字典
     config.setdefault('scheduled_message_task_list', [])     # 统一定时消息任务列表
     config.setdefault('contact_directory_auto_maintenance_switch', False)
-    config.setdefault('contact_directory_auto_maintenance_batch_size', 10)
-    config.setdefault('contact_directory_auto_maintenance_interval_minutes', 10)
+    config.setdefault('contact_directory_auto_maintenance_batch_size', 50)
+    config.setdefault('contact_directory_auto_maintenance_interval_minutes', 20)
     config.setdefault('contact_directory_auto_maintenance_full_scan_interval_days', 7)
     config.setdefault('contact_directory_auto_maintenance_window_start', '00:00')
     config.setdefault('contact_directory_auto_maintenance_window_end', '23:59')
     config['contact_directory_auto_maintenance_batch_size'] = normalize_auto_maintenance_batch_size(
-        config.get('contact_directory_auto_maintenance_batch_size', 10)
+        config.get('contact_directory_auto_maintenance_batch_size', 50)
     )
     config['contact_directory_auto_maintenance_interval_minutes'] = coerce_auto_maintenance_interval_minutes(
-        config.get('contact_directory_auto_maintenance_interval_minutes', 10)
+        config.get('contact_directory_auto_maintenance_interval_minutes', 20)
     )
     config['contact_directory_auto_maintenance_full_scan_interval_days'] = coerce_auto_maintenance_full_scan_interval_days(
         config.get('contact_directory_auto_maintenance_full_scan_interval_days', 7)
@@ -2140,6 +2144,8 @@ def dashboard():
         ]
     config.setdefault('new_friend_remark_use_nickname', True)
     config.setdefault('new_friend_archive_switch', True)
+    config['new_friend_msg'] = normalize_new_friend_welcome_messages(config.get('new_friend_msg'))
+    config['new_friend_reply_switch'] = new_friend_welcome_message_has_content(config.get('new_friend_msg'))
     config.setdefault('new_friend_remark_prefix_timestamp', False)
     config.setdefault('new_friend_remark_suffix_timestamp', False)
     config.setdefault('chat_voice_recognition_switch', False)
@@ -3178,7 +3184,7 @@ def _coerce_bool_fields(merged_config):
                 merged_config[field] = bool(v)
 
 def _coerce_list_fields(merged_config):
-    list_fields = ['listen_list', 'global_blacklist', 'group', 'new_friend_msg', 'new_friend_tags', 'scheduled_message_task_list', 'material_source_list', 'material_outreach_list', 'moments_task_list', 'custom_forward_list', 'conversation_memory_exclude_list', 'chat_voice_reply_request_keywords', 'group_voice_reply_request_keywords', 'chat_voice_reply_trigger_modes', 'ai_material_outreach_allowed_sources']
+    list_fields = ['listen_list', 'global_blacklist', 'group', 'new_friend_tags', 'scheduled_message_task_list', 'material_source_list', 'material_outreach_list', 'moments_task_list', 'custom_forward_list', 'conversation_memory_exclude_list', 'chat_voice_reply_request_keywords', 'group_voice_reply_request_keywords', 'chat_voice_reply_trigger_modes', 'ai_material_outreach_allowed_sources']
     for field in list_fields:
         if field in merged_config and not isinstance(merged_config[field], list):
             if isinstance(merged_config[field], str):
@@ -3265,8 +3271,8 @@ def _coerce_int_range_fields(merged_config):
         'conversation_memory_message_threshold': (10, 200, 100),
         'conversation_memory_interval_hours': (1, 72, 12),
         'conversation_memory_protected_recent_count': (0, 200, 20),
-        'contact_directory_auto_maintenance_batch_size': (10, 50, 10),
-        'contact_directory_auto_maintenance_interval_minutes': (5, 1440, 10),
+        'contact_directory_auto_maintenance_batch_size': (20, 80, 50),
+        'contact_directory_auto_maintenance_interval_minutes': (5, 1440, 20),
         'contact_directory_auto_maintenance_full_scan_interval_days': (1, 30, 7),
         'backup_chat_api_failover_threshold': (1, 10, 3),
         'chat_voice_reply_cooldown_minutes': (0, 1440, 10),
@@ -3446,6 +3452,11 @@ def _coerce_dict_fields(merged_config):
         if not isinstance(kd, dict):
             merged_config['keyword_dict'] = {}
 
+    if 'new_friend_msg' in merged_config:
+        merged_config['new_friend_msg'] = normalize_new_friend_welcome_messages(
+            merged_config.get('new_friend_msg')
+        )
+
     # group_api_map: 值必须为 int 接口索引，非法值自动过滤
     if 'group_api_map' in merged_config:
         gam = merged_config['group_api_map']
@@ -3603,11 +3614,11 @@ def save_config(config_data):
 
         _coerce_bool_fields(merged_config)
         _coerce_list_fields(merged_config)
-        merged_config['new_friend_reply_switch'] = bool(merged_config.get('new_friend_msg'))
         _coerce_float_fields(merged_config)
         _coerce_int_range_fields(merged_config)
         _coerce_backup_chat_api_fields(merged_config)
         _coerce_dict_fields(merged_config)
+        merged_config['new_friend_reply_switch'] = new_friend_welcome_message_has_content(merged_config.get('new_friend_msg'))
         if 'keyword_dict' in (config_data or {}):
             _validate_keyword_rules_have_content(merged_config.get('keyword_dict', {}))
         _normalize_custom_forward_rules(merged_config)
@@ -5300,6 +5311,22 @@ def _load_contact_profiles_directory(wx_id):
     return load_contact_directory(path, wx_id=wx_id) if wx_id else default_contact_directory('')
 
 
+def _contact_profiles_continue_start_name(directory):
+    subjects = directory.get('subjects') if isinstance(directory, dict) else []
+    for subject in reversed(subjects or []):
+        if not isinstance(subject, dict):
+            continue
+        if subject.get('subject_type', 'friend') != 'friend':
+            continue
+        if subject.get('status', 'active') != 'active':
+            continue
+        for key in ('send_name', 'remark', 'display_name', 'nickname', 'wechat_id'):
+            value = str(subject.get(key, '') or '').strip()
+            if value:
+                return value
+    return ''
+
+
 def _contact_profiles_summary(directory):
     directory = mark_send_name_conflicts(directory)
     subjects = [item for item in directory.get('subjects', []) if isinstance(item, dict)]
@@ -5328,7 +5355,7 @@ def _contact_profiles_summary(directory):
         'repair_candidates': len(contact_repair_candidates(directory)),
         'updated_at': directory.get('updated_at', ''),
         'maintenance_status': (directory.get('maintenance') or {}).get('status', ''),
-        'next_start_name': str(((directory.get('maintenance') or {}).get('next_start_name', '')) or ''),
+        'continue_start_name': _contact_profiles_continue_start_name(directory),
     }
 
 
@@ -5613,9 +5640,15 @@ def contact_profiles_tag_delete(tag):
     """删除指定微信号下的一个本地通讯录标签。"""
     try:
         tag = unquote(str(tag or '').strip())
-        if tag == '__all__':
-            return jsonify({'status': 'error', 'message': '全部联系人不可删除'}), 400
         wx_id = _contact_profiles_wx_id_from_request()
+        if tag == '__all__':
+            _contact_profiles_delete_wx_namespace(wx_id)
+            return jsonify({
+                'status': 'success',
+                'wx_id': wx_id,
+                'message': '已清空该微信号下的全部联系人建档记录',
+                'browser': _contact_profiles_browser_payload(''),
+            })
         changed = _contact_profiles_remove_tag(wx_id, tag)
         message = f'已删除标签「{tag}」' if changed else f'标签「{tag}」不存在'
         return jsonify({
@@ -5703,7 +5736,7 @@ def contact_profiles_pause():
         wx_id = str(directory.get('wx_id', '') or running_wx_id or getattr(bot, 'wx_id', '') or '').strip()
         return jsonify({
             'status': 'success',
-            'message': '已停止建档，但进行中的这 10/20 个联系人会继续完成' if paused else '已恢复建档状态',
+            'message': '已请求停止建档，会尽快停止；若当前读取未被打断，则会在本批返回后停止' if paused else '已恢复建档状态',
             'data': directory,
             'browser': _contact_profiles_browser_payload(wx_id) if wx_id else _contact_profiles_browser_payload(''),
         })
@@ -5840,6 +5873,23 @@ def relationship_scan_stop():
             state = relationship_scan.save_state(DATA_DIR, state)
             payload = relationship_scan.relationship_scan_payload(state)
         return jsonify({'status': 'success', 'message': '已请求停止全量扫描', 'payload': payload})
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/relationship_scan/clear', methods=['POST'])
+@login_required
+def relationship_scan_clear():
+    try:
+        wx_id = _relationship_scan_wx_id_from_request()
+        state = relationship_scan.load_state(DATA_DIR, wx_id)
+        if (state.get('runtime') or {}).get('full_scan_running'):
+            return jsonify({'status': 'error', 'message': '全量扫描正在运行，请先停止扫描后再清空结果。'})
+        state = relationship_scan.save_state(DATA_DIR, relationship_scan.clear_state(state))
+        payload = _relationship_scan_payload(state.get('wx_id') or wx_id)
+        return jsonify({'status': 'success', 'message': '已清空关系扫描结果和待同步队列', 'payload': payload})
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
@@ -6538,7 +6588,7 @@ def main():
                 "new_friend_switch": False,
                 "new_friend_archive_switch": True,
                 "new_friend_reply_switch": False,
-                "new_friend_msg": [],
+                "new_friend_msg": {"text": "", "files": []},
                 "new_friend_check_min": 60,
                 "new_friend_check_max": 300,
                 "new_friend_remark_use_nickname": True,
@@ -6553,8 +6603,8 @@ def main():
                 "keyword_dict": {},
                 "scheduled_message_task_list": [],
                 "contact_directory_auto_maintenance_switch": False,
-                "contact_directory_auto_maintenance_batch_size": 10,
-                "contact_directory_auto_maintenance_interval_minutes": 10,
+                "contact_directory_auto_maintenance_batch_size": 50,
+                "contact_directory_auto_maintenance_interval_minutes": 20,
                 "contact_directory_auto_maintenance_full_scan_interval_days": 7,
                 "contact_directory_auto_maintenance_window_start": "00:00",
                 "contact_directory_auto_maintenance_window_end": "23:59",

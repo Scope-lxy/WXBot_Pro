@@ -256,7 +256,7 @@ class WXBotConfig:
                     "new_friend_switch": False,
                     "new_friend_archive_switch": True,
                     "new_friend_reply_switch": False,
-                    "new_friend_msg": [],
+                    "new_friend_msg": {"text": "", "files": []},
                     "new_friend_check_min": 60,
                     "new_friend_check_max": 300,
                     "new_friend_remark_use_nickname": True,
@@ -871,9 +871,12 @@ class WXBotConfig:
 
         # 新好友配置
         self.new_frined_switch       = self.config.get('new_friend_switch')
-        self.new_frien_msg           = self.config.get('new_friend_msg', [])
+        self.new_frien_msg           = self.config.get('new_friend_msg', {"text": "", "files": []})
         self.new_friend_archive_switch = bool(self.config.get('new_friend_archive_switch', True))
-        self.new_frien_reply_switch  = bool(self.new_frien_msg)
+        self.new_frien_reply_switch  = bool(
+            str((self.new_frien_msg or {}).get('text', '')).strip()
+            or ((self.new_frien_msg or {}).get('files') or [])
+        )
         self.new_friend_check_min    = max(60, int(self.config.get('new_friend_check_min', 60)))
         self.new_friend_check_max    = min(3600, max(self.new_friend_check_min, int(self.config.get('new_friend_check_max', 300))))
         self.new_friend_remark_use_nickname = bool(self.config.get('new_friend_remark_use_nickname', True))

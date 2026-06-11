@@ -7,7 +7,8 @@ import time
 from collections.abc import Iterable
 
 
-WM_CLOSE = 0x0010
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
 SW_RESTORE = 9
 SW_SHOW = 5
 HWND_TOPMOST = -1
@@ -50,28 +51,6 @@ def top_window_handles_by_title(title: str, *, visible_only: bool = True) -> lis
     return handles
 
 
-def close_top_windows_by_title(title: str, *, visible_only: bool = True, wait: float = 0.3) -> int:
-    handles = top_window_handles_by_title(title, visible_only=visible_only)
-    if not handles:
-        return 0
-    try:
-        import ctypes
-    except Exception:
-        return 0
-
-    user32 = ctypes.windll.user32
-    closed = 0
-    for hwnd in handles:
-        try:
-            user32.PostMessageW(int(hwnd), WM_CLOSE, 0, 0)
-            closed += 1
-        except Exception:
-            continue
-    if closed and wait:
-        time.sleep(max(0.0, float(wait)))
-    return closed
-
-
 def bring_top_windows_to_front(title: str, *, wait: float = 0.3) -> int:
     handles = top_window_handles_by_title(title, visible_only=False)
     if not handles:
@@ -105,6 +84,44 @@ def bring_top_windows_to_front(title: str, *, wait: float = 0.3) -> int:
 
 def bring_wechat_main_window_to_front(*, wait: float = 0.3) -> int:
     return bring_top_windows_to_front("微信", wait=wait) + bring_top_windows_to_front("WeChat", wait=wait)
+
+
+def click_wechat_main_window_chat_nav(*, wait: float = 0.1) -> bool:
+    if os.name != "nt":
+        return False
+    handles = top_window_handles_by_title("微信", visible_only=False) or top_window_handles_by_title("WeChat", visible_only=False)
+    if not handles:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return False
+
+    user32 = ctypes.windll.user32
+    hwnd = int(handles[0])
+    rect = wintypes.RECT()
+    point = wintypes.POINT()
+    try:
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return False
+        user32.GetCursorPos(ctypes.byref(point))
+        width = max(1, int(rect.right - rect.left))
+        height = max(1, int(rect.bottom - rect.top))
+        x = int(rect.left + min(32, max(12, width - 12)))
+        y = int(rect.top + min(110, max(42, height - 12)))
+        user32.ShowWindow(hwnd, SW_RESTORE)
+        user32.ShowWindow(hwnd, SW_SHOW)
+        user32.SetForegroundWindow(hwnd)
+        user32.SetCursorPos(x, y)
+        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        user32.SetCursorPos(int(point.x), int(point.y))
+        if wait:
+            time.sleep(max(0.0, float(wait)))
+        return True
+    except Exception:
+        return False
 
 
 def rebind_wechat_client(bot, *, versions: Iterable[str] = ("微信", "WeChat")):

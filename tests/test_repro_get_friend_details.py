@@ -32,7 +32,7 @@ class ReproGetFriendDetailsTests(unittest.TestCase):
 
         class FakeWeChat:
             def Show(self):
-                sequence.append("Show")
+                raise AssertionError("Show should not be called by default")
 
             def SwitchToContact(self):
                 sequence.append("SwitchToContact")
@@ -53,12 +53,38 @@ class ReproGetFriendDetailsTests(unittest.TestCase):
             printer=lambda _msg: None,
         )
 
-        self.assertEqual(sequence[0:2], ["Show", "SwitchToContact"])
-        self.assertEqual(sequence[2][0], "GetFriendDetails")
-        self.assertEqual(sequence[2][1]["n"], 2)
-        self.assertEqual(sequence[2][1]["interval"], 1.2)
-        self.assertEqual(sequence[3], "SwitchToChat")
+        self.assertEqual(sequence[0], "SwitchToContact")
+        self.assertEqual(sequence[1][0], "GetFriendDetails")
+        self.assertEqual(sequence[1][1]["n"], 2)
+        self.assertEqual(sequence[1][1]["interval"], 1.2)
+        self.assertEqual(sequence[2], "SwitchToChat")
         self.assertEqual(result["result"], [{"昵称": "阿英2"}])
+
+    def test_run_probe_can_explicitly_show_window(self):
+        sequence = []
+
+        class FakeWeChat:
+            def Show(self):
+                sequence.append("Show")
+
+            def SwitchToContact(self):
+                sequence.append("SwitchToContact")
+
+            def GetFriendDetails(self, **kwargs):
+                sequence.append(("GetFriendDetails", kwargs))
+                return []
+
+        run_probe(
+            client_factory=FakeWeChat,
+            count=1,
+            interval=0.5,
+            match_name="",
+            switch_back=False,
+            show_window=True,
+            printer=lambda _msg: None,
+        )
+
+        self.assertEqual(sequence[0:2], ["Show", "SwitchToContact"])
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from feature.relationship_scan import (
     SYNC_PENDING,
     TAG_BLOCKED,
     TAG_DELETED,
+    clear_state,
     due_for_auto_scan,
     merge_state_into_contact_directory,
     relationship_scan_summary,
@@ -124,6 +125,33 @@ class RelationshipScanTests(unittest.TestCase):
         self.assertEqual(summary["today_recovered"], 1)
         self.assertEqual(summary["wechat_synced_today"], 1)
         self.assertEqual(summary["wechat_pending"], 1)
+
+    def test_clear_state_removes_records_events_and_pending_sync(self):
+        state = {
+            "wx_id": "wxid_test",
+            "settings": {"auto_scan_enabled": False, "scan_interval_seconds": 20},
+            "runtime": {
+                "last_auto_scan_at": "2026-06-11T09:00:00",
+                "last_scan_at": "2026-06-11T09:00:00",
+                "last_scan_mode": "auto",
+                "last_scan_count": 12,
+            },
+            "records": [{
+                "name": "阿英2",
+                "status": STATUS_BLOCKED,
+                "wechat_sync_status": SYNC_PENDING,
+            }],
+            "events": [{"at": "2026-06-11T09:00:00", "type": "blocked", "name": "阿英2"}],
+        }
+        cleared = clear_state(state)
+        summary = relationship_scan_summary(cleared, now=datetime(2026, 6, 11, 10, 0, 0))
+        self.assertEqual(cleared["records"], [])
+        self.assertEqual(cleared["events"], [])
+        self.assertFalse(cleared["settings"]["auto_scan_enabled"])
+        self.assertEqual(cleared["settings"]["scan_interval_seconds"], 20)
+        self.assertEqual(summary["last_scan_count"], 0)
+        self.assertEqual(summary["last_scan_at"], "")
+        self.assertEqual(summary["wechat_pending"], 0)
 
     def test_auto_scan_due_uses_configured_interval(self):
         now = datetime(2026, 6, 11, 10, 0, 0)

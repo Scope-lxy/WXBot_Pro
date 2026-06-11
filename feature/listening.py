@@ -15,7 +15,6 @@ from core.account_storage import account_area_dir, migrate_default_account
 from core.logger import log
 from core.memory import MemoryManager
 from core.wechat_window import (
-    close_top_windows_by_title,
     rebind_wechat_client as core_rebind_wechat_client,
     run_with_wechat_rebind_retry,
 )
@@ -23,7 +22,7 @@ from core.wechat_observability import warn_slow_wechat_ui_action
 from feature.custom_forward import iter_custom_forward_listen_sources
 from feature.custom_forward_runtime import handle_custom_forward, handle_custom_forward_takeover
 from feature.material_outreach import iter_material_outreach_listen_sources
-from feature.new_friends import build_new_friend_remark
+from feature.new_friends import build_new_friend_remark, iter_new_friend_welcome_actions
 from feature.voice_reply import load_voice_reply_state
 
 LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS = 5
@@ -117,12 +116,6 @@ def listen_add_error(result):
     return str(result)
 
 
-def cleanup_listener_main_window_residue(bot):
-    closed = close_top_windows_by_title("通讯录管理")
-    if closed:
-        _bot_log(bot, message=f"已关闭残留通讯录管理窗口 {closed} 个")
-
-
 def subwindow_who(chat):
     try:
         return str(getattr(chat, "who", "") or "").strip()
@@ -159,7 +152,6 @@ def add_listen_chat_once(bot, nickname, label):
     result = run_with_wechat_rebind_retry(
         bot,
         add_action,
-        cleanup=lambda: cleanup_listener_main_window_residue(bot),
         attempts=2,
         on_retry=lambda exc, _attempt: _bot_log(
             bot,
@@ -494,7 +486,6 @@ def remove_listen_chat_verified(bot, nickname):
         run_with_wechat_rebind_retry(
             bot,
             remove_action,
-            cleanup=lambda: cleanup_listener_main_window_residue(bot),
             attempts=2,
             on_retry=lambda exc, _attempt: _bot_log(
                 bot,
@@ -657,16 +648,11 @@ def pass_new_friends(bot):
                 _bot_log(bot, message="已通过" + send_name + "的好友请求")
                 bot.wx.SwitchToChat()
                 _bot_sleep(bot, 5)
-                reply_messages = [
-                    str(msg).strip()
-                    for msg in getattr(bot.config, "new_frien_msg", [])
-                    if str(msg or "").strip()
-                ]
-                for msg in reply_messages:
-                    if bot.is_image_path(msg):
-                        bot.wx.SendFiles(who=send_name, filepath=msg)
+                for action in iter_new_friend_welcome_actions(getattr(bot.config, "new_frien_msg", [])):
+                    if action["type"] == "file":
+                        bot.wx.SendFiles(who=send_name, filepath=action["path"])
                     else:
-                        bot.wx.SendMsg(who=send_name, msg=msg)
+                        bot.wx.SendMsg(who=send_name, msg=action["content"])
                     bot.config.human_delay()
                 bot.wx.ChatWith(who="文件传输助手")
                 _bot_sleep(bot, 1)

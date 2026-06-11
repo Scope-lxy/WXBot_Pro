@@ -439,6 +439,13 @@ def relationship_scan_payload(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def clear_state(state: dict[str, Any]) -> dict[str, Any]:
+    state = normalize_state(state, wx_id=_clean_text((state or {}).get("wx_id")))
+    cleared = default_state(state.get("wx_id", ""))
+    cleared["settings"] = normalize_settings(state.get("settings"))
+    return cleared
+
+
 def _data_dir(bot) -> str:
     return str(getattr(getattr(bot, "config", None), "DATA_DIR", "") or getattr(bot, "DATA_DIR", "") or "data")
 
