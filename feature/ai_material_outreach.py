@@ -147,9 +147,9 @@ def normalize_ai_material_outreach_config(raw):
 
 
 def normalize_ai_auto_outreach_runtime_config(raw):
-    config = normalize_ai_material_outreach_config(raw)
-    config.update(AI_AUTO_OUTREACH_RUNTIME_DEFAULTS)
-    return config
+    defaults = normalize_ai_material_outreach_config(AI_AUTO_OUTREACH_RUNTIME_DEFAULTS)
+    defaults.update(normalize_ai_material_outreach_config(raw))
+    return defaults
 
 
 def normalize_ai_detection_state(raw):

@@ -557,12 +557,18 @@ def friend_request_summary(state: dict[str, Any]) -> dict[str, Any]:
 
 def friend_request_payload(state: dict[str, Any]) -> dict[str, Any]:
     state = normalize_state(state, wx_id=_clean_text((state or {}).get("wx_id")))
+    settings = normalize_settings(state.get("settings"))
+    candidates = []
+    for candidate in state.get("candidates", [])[:100]:
+        item = dict(candidate)
+        item["can_run"] = candidate_can_run(candidate, state, settings)
+        candidates.append(item)
     return {
         "settings": state.get("settings", {}),
         "add_object_options": [dict(item) for item in ADD_OBJECT_OPTIONS if item.get("enabled")],
         "message_rules": state.get("message_rules", []),
         "runtime": state.get("runtime", {}),
         "summary": friend_request_summary(state),
-        "candidates": state.get("candidates", [])[:100],
+        "candidates": candidates,
         "executions": list(reversed(state.get("executions", [])[-30:])),
     }

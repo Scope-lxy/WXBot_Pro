@@ -12,7 +12,7 @@ def msg(msg_type, content):
 
 
 class MaterialOutreachPoolTests(unittest.TestCase):
-    def test_collect_replaces_same_source_and_signature(self):
+    def test_collect_refreshes_same_source_and_stable_signature(self):
         existing = {
             "id": "mat_old",
             "source": "文件传输助手",
@@ -68,6 +68,33 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         self.assertEqual(material_id, "mat_new")
         self.assertEqual(len(pool), 2)
         self.assertEqual(entry["id"], "mat_new")
+
+    def test_stable_signature_refresh_reuses_existing_material_identity(self):
+        existing = {
+            "id": "mat_old",
+            "source": "文件传输助手",
+            "type": "link",
+            "type_bucket": "link",
+            "content_preview": "[链接]相同标题",
+            "stable_signature": "link|[链接]相同标题",
+            "created_at": "2026-06-01T10:00:00",
+            "status": "active",
+            "ownership": "我的作品",
+            "copy_note": "保留这条转发备注",
+        }
+
+        pool, entry, material_id = collect_material_source_message(
+            [existing],
+            "文件传输助手",
+            msg("link", "[链接]相同标题"),
+            material_id_factory=lambda: "mat_new",
+            limit_map={"文件传输助手": 10},
+        )
+
+        self.assertEqual(material_id, "mat_old")
+        self.assertEqual(entry["id"], "mat_old")
+        self.assertEqual(entry["copy_note"], "保留这条转发备注")
+        self.assertEqual([item["id"] for item in pool], ["mat_old"])
 
     def test_rebuild_keeps_latest_duplicate_message_and_old_material_id(self):
         first = msg("link", "[链接]相同标题")

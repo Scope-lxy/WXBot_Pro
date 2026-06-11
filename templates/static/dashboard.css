@@ -1405,11 +1405,12 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .relationship-scan-sync-state.is-synced { color: var(--primary); background: rgba(7,193,96,.12); }
 .relationship-scan-sync-state.is-skipped { color: var(--muted); background: var(--surface-l4); }
 .friend-request-card { margin-top: 0; order: 1; }
-.new-friend-card { order: 2; }
+.friend-request-runtime-card { order: 2; }
+.new-friend-card { order: 3; }
 .friend-request-body { --ui-split-side-min: 360px; grid-template-columns: var(--ui-split-main-columns); margin-top: 14px; }
 .friend-request-summary { margin-bottom: 0; }
 .friend-request-default-copy { display: grid; gap: 8px; margin-bottom: 12px; }
-.friend-request-rule-list { display: grid; gap: 10px; }
+.friend-request-rule-list { display: grid; gap: 10px; min-height: 0; max-height: var(--ui-workbench-list-max-height); overflow-y: auto; overflow-x: hidden; padding-right: 2px; overscroll-behavior: contain; align-content: start; }
 .friend-request-rule-head { grid-template-columns: minmax(82px, auto) minmax(120px, 160px) 36px; gap: 8px; }
 .friend-request-rule-object-field { display: grid; gap: 4px; align-items: start; }
 .friend-request-rule-object-field .cfg-label { margin: 0; font-size: 12px; line-height: 1.2; }
@@ -1421,6 +1422,11 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .friend-request-settings-divider { width: 100%; }
 .friend-request-candidate-list,
 .friend-request-execution-list { display: grid; gap: 8px; margin-top: 10px; }
+.friend-request-candidate-list { min-height: 0; max-height: var(--ui-workbench-list-max-height); overflow-y: auto; overflow-x: hidden; padding-right: 2px; overscroll-behavior: contain; align-content: start; }
+.friend-request-runtime-card .friend-request-candidate-list,
+.friend-request-runtime-card .friend-request-execution-list { gap: 6px; margin-top: 0; max-height: calc(10 * 56px + 9 * 6px); }
+.friend-request-runtime-row .task-workbench-runtime-meta,
+.friend-request-runtime-row .task-workbench-runtime-time { min-width: 0; }
 .friend-request-row,
 .friend-request-execution-row { display: grid; grid-template-columns: minmax(0, 1fr) 76px minmax(120px, .9fr); gap: 10px; align-items: center; min-height: 40px; padding: 9px 10px; border: 1px solid var(--layer-border-subtle); border-radius: var(--radius); background: var(--surface-l3); font-size: 13px; }
 .friend-request-row-main { min-width: 0; display: grid; gap: 2px; }
@@ -1484,6 +1490,10 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .friend-request-row,
   .friend-request-execution-row { grid-template-columns: 1fr; }
   .friend-request-rule-head { grid-template-columns: minmax(0, 1fr) minmax(120px, 1fr) 36px; }
+  .friend-request-rule-list { max-height: none; overflow: visible; padding-right: 0; }
+  .friend-request-candidate-list { max-height: none; overflow: visible; padding-right: 0; }
+  .friend-request-runtime-card .friend-request-candidate-list,
+  .friend-request-runtime-card .friend-request-execution-list { max-height: none; overflow: visible; padding-right: 0; }
   .new-friend-nickname-row .cfg-hint,
   .new-friend-tag-head .cfg-hint { text-align: left; margin-left: 0; }
   .new-friend-welcome-head { flex-wrap: wrap; align-items: flex-start; }

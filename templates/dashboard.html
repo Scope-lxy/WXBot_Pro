@@ -1609,19 +1609,6 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
             <div id="friend-request-rule-list" class="friend-request-rule-list"></div>
           </div>
-          <div class="new-friend-block friend-request-candidate-block">
-            <div class="ui-head ui-head--section">
-              <div class="ui-head__main">
-                <h5>候选人</h5>
-                <span class="desc" id="friend-request-candidate-desc">共 {{ friend_request_summary.get('candidate_count', 0) }} 人</span>
-              </div>
-              <div class="ui-head__actions">
-                <button type="button" class="ui-btn ui-btn--secondary ui-btn--l2" id="btn-friend-request-refresh"><i class="bi bi-arrow-clockwise"></i> 刷新候选</button>
-              </div>
-            </div>
-            <div id="friend-request-msg" class="cfg-feedback" style="display:none;"></div>
-            <div class="friend-request-candidate-list" id="friend-request-candidate-list"></div>
-          </div>
         </div>
         <div class="new-friend-block friend-request-settings-block">
           <div class="ui-head ui-head--section">
@@ -1695,12 +1682,42 @@ html.icons-pref-local [class*=" bi-"]::before {
             <button type="button" class="ui-btn ui-btn--primary ui-btn--l2" id="btn-friend-request-save"><i class="bi bi-save"></i> 保存设置</button>
             <button type="button" class="ui-btn ui-btn--danger ui-btn--l2" id="btn-friend-request-run-once"><i class="bi bi-send"></i> 执行一次</button>
           </div>
+          <div id="friend-request-msg" class="cfg-feedback" style="display:none;"></div>
           <div class="page-inline-notice page-inline-notice--danger">
             <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
             <div class="page-inline-notice__content">执行一次会真实向 1 个候选人提交好友验证申请；运行时会拉起微信窗口，请不要手动干扰微信界面</div>
           </div>
-          <div class="friend-request-execution-list" id="friend-request-execution-list"></div>
         </div>
+      </div>
+    </div>
+    <div class="cfg-card friend-request-runtime-card" id="friend-request-runtime-card">
+      <div class="ui-head ui-head--page">
+        <i class="bi bi-list-check ui-head__icon"></i>
+        <h5 class="ui-head__title">自动加好友队列和记录</h5>
+        <span class="desc ui-head__desc">查看待执行的好友申请队列，以及已经结束的申请结果</span>
+      </div>
+      <div class="moments-execution-grid">
+        <section class="ai-moments-runtime-block friend-request-runtime-block" data-friend-request-runtime-card="queue">
+          <div class="ai-moments-pane-head ui-head ui-head--section">
+            <div class="ai-moments-pane-title ui-head__main">
+              <h5 class="ui-head__title">待执行</h5>
+              <span class="desc" id="friend-request-candidate-desc">共 {{ friend_request_summary.get('candidate_count', 0) }} 人</span>
+            </div>
+            <div class="ui-head__actions">
+              <button type="button" class="ui-btn ui-btn--secondary ui-btn--l4" id="btn-friend-request-refresh"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+            </div>
+          </div>
+          <div class="ai-moments-runtime-list friend-request-candidate-list" id="friend-request-candidate-list"></div>
+        </section>
+        <section class="ai-moments-runtime-block friend-request-runtime-block" data-friend-request-runtime-card="executions">
+          <div class="ai-moments-pane-head ui-head ui-head--section">
+            <div class="ai-moments-pane-title ui-head__main">
+              <h5 class="ui-head__title">已执行</h5>
+              <span class="desc" id="friend-request-execution-desc">最近 30 条执行结果</span>
+            </div>
+          </div>
+          <div class="ai-moments-runtime-list friend-request-execution-list" id="friend-request-execution-list"></div>
+        </section>
       </div>
     </div>
   </div>
@@ -5036,6 +5053,9 @@ $(function(){
         renderRelationshipScan(res.payload || {});
         showMsg('relationship-scan-msg', res.message || fallbackMessage, true);
         loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
+        if(url !== '/relationship_scan/stop'){
+          refreshFriendRequestCandidatesAfterContactChange(_contactDirectoryBrowserState.wxId);
+        }
       } else {
         showMsg('relationship-scan-msg', res.message || fallbackMessage + '失败', false);
       }
@@ -5066,19 +5086,46 @@ $(function(){
     if(status === 'skipped' || status === 'archived') return 'is-skipped';
     return 'is-pending';
   }
+  function friendRequestRuntimeStatusClass(status){
+    status = String(status || '').trim();
+    if(status === 'sent' || status === 'accepted') return 'success';
+    if(status === 'failed') return 'failed';
+    if(status === 'skipped' || status === 'archived') return 'warning';
+    return 'pending';
+  }
+  function friendRequestQueueCandidates(candidates){
+    candidates = Array.isArray(candidates) ? candidates : [];
+    return candidates.filter(function(candidate){
+      var status = String((candidate || {}).status || 'pending').trim();
+      return candidate && (candidate.can_run === true || status === 'pending' || status === 'failed');
+    });
+  }
+  function friendRequestRuntimeTime(candidate){
+    candidate = candidate || {};
+    if(candidate.next_retry_at) return '下次可执行：' + friendRequestShortTime(candidate.next_retry_at);
+    if(candidate.last_attempt_at) return '上次尝试：' + friendRequestShortTime(candidate.last_attempt_at);
+    if(candidate.sent_at) return '上次提交：' + friendRequestShortTime(candidate.sent_at);
+    return '等待执行';
+  }
   function renderFriendRequestCandidate(candidate){
     candidate = candidate || {};
     var name = String(candidate.display_name || candidate.send_name || candidate.conversation_keyword || '未命名').trim();
     var tags = Array.isArray(candidate.tags) ? candidate.tags.join('，') : '';
     var result = String(candidate.last_result || '').trim();
+    var displayStatus = candidate.can_run === true ? 'pending' : candidate.status;
     return ''+
-      '<div class="friend-request-row">'+
-        '<div class="friend-request-row-main">'+
-          '<strong title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</strong>'+
-          '<span title="'+escapeHtml(tags || '无标签')+'">'+escapeHtml(tags || '无标签')+'</span>'+
+      '<div class="ai-moments-runtime-row friend-request-runtime-row">'+
+        '<div class="ai-moments-runtime-main">'+
+          '<div class="ai-moments-runtime-title-row">'+
+            '<span class="ai-moments-runtime-result ui-pill--status ui-pill--l4 '+escapeHtml(friendRequestRuntimeStatusClass(displayStatus))+'">'+escapeHtml(friendRequestStatusLabel(displayStatus))+'</span>'+
+            '<strong class="ai-moments-runtime-title-text" title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</strong>'+
+          '</div>'+
+          '<div class="task-workbench-runtime-meta" title="'+escapeHtml(tags || '无标签')+'">'+escapeHtml(tags || '无标签')+'</div>'+
+          '<div class="task-workbench-runtime-time" title="'+escapeHtml(result)+'">'+escapeHtml(result || friendRequestRuntimeTime(candidate))+'</div>'+
         '</div>'+
-        '<span class="friend-request-state '+escapeHtml(friendRequestStatusClass(candidate.status))+'">'+escapeHtml(friendRequestStatusLabel(candidate.status))+'</span>'+
-        '<span title="'+escapeHtml(result)+'">'+escapeHtml(result || friendRequestShortTime(candidate.last_attempt_at || candidate.sent_at))+'</span>'+
+        '<div class="ai-moments-runtime-side">'+
+          '<span class="task-runtime-action-placeholder" aria-hidden="true"></span>'+
+        '</div>'+
       '</div>';
   }
   function renderFriendRequestExecution(item){
@@ -5086,10 +5133,18 @@ $(function(){
     var target = String(item.display_name || item.target || '未命名').trim();
     var message = String(item.message || '').trim();
     return ''+
-      '<div class="friend-request-execution-row">'+
-        '<span class="friend-request-state '+escapeHtml(friendRequestStatusClass(item.status))+'">'+escapeHtml(friendRequestStatusLabel(item.status))+'</span>'+
-        '<strong title="'+escapeHtml(target)+'">'+escapeHtml(target)+'</strong>'+
-        '<span title="'+escapeHtml(message)+'">'+escapeHtml(message || friendRequestShortTime(item.at))+'</span>'+
+      '<div class="ai-moments-runtime-row friend-request-runtime-row">'+
+        '<div class="ai-moments-runtime-main">'+
+          '<div class="ai-moments-runtime-title-row">'+
+            '<span class="ai-moments-runtime-result ui-pill--status ui-pill--l4 '+escapeHtml(friendRequestRuntimeStatusClass(item.status))+'">'+escapeHtml(friendRequestStatusLabel(item.status))+'</span>'+
+            '<strong class="ai-moments-runtime-title-text" title="'+escapeHtml(target)+'">'+escapeHtml(target)+'</strong>'+
+          '</div>'+
+          '<div class="task-workbench-runtime-meta" title="'+escapeHtml(message || '无结果说明')+'">'+escapeHtml(message || '无结果说明')+'</div>'+
+          '<div class="task-workbench-runtime-time">'+escapeHtml(friendRequestShortTime(item.at))+'</div>'+
+        '</div>'+
+        '<div class="ai-moments-runtime-side">'+
+          '<span class="task-runtime-action-placeholder" aria-hidden="true"></span>'+
+        '</div>'+
       '</div>';
   }
   function friendRequestAddObjectOptions(){
@@ -5117,7 +5172,7 @@ $(function(){
         '<div class="keyword-rule-editor">'+
           '<div class="keyword-item__header friend-request-rule-head">'+
             '<label class="new-friend-nickname-label"><input type="checkbox" class="form-check-input friend-request-rule-enabled" '+(rule.enabled !== false ? 'checked' : '')+'> 启用</label>'+
-            '<div class="friend-request-rule-object-field"><label class="cfg-label">匹配类型</label><select class="form-select friend-request-rule-object">'+
+            '<div class="friend-request-rule-object-field"><select class="form-select friend-request-rule-object" aria-label="匹配类型">'+
               friendRequestAddObjectOptionsHtml(objectKind)+
             '</select></div>'+
             '<button type="button" class="btn-rm btn-friend-request-remove-rule" title="删除规则" aria-label="删除规则"><i class="bi bi-x-lg"></i></button>'+
@@ -5157,7 +5212,6 @@ $(function(){
     $('#friend-request-pending-count').text(String(summary.pending_count || 0));
     $('#friend-request-sent-count').text(String(summary.sent_count || 0));
     $('#friend-request-failed-count').text(String(summary.today_failed || 0));
-    $('#friend-request-candidate-desc').text('共 ' + String(summary.candidate_count || 0) + ' 人');
     if(!options.preserveControls){
       $('#friend_request_enabled').prop('checked', settings.enabled === true);
       $('#friend_request_add_object').val(settings.add_object || 'deleted_me');
@@ -5171,8 +5225,11 @@ $(function(){
       renderFriendRequestTagControls(settings);
     }
     var candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
-    $('#friend-request-candidate-list').html(candidates.length ? candidates.map(renderFriendRequestCandidate).join('') : '<div class="relationship-scan-empty">暂无候选人。先刷新候选，或确认通讯录建档里有匹配标签。</div>');
+    var queueCandidates = friendRequestQueueCandidates(candidates);
+    $('#friend-request-candidate-desc').text('待执行 ' + String(queueCandidates.length) + ' · 全部 ' + String(summary.candidate_count || 0) + ' 人');
+    $('#friend-request-candidate-list').html(queueCandidates.length ? queueCandidates.map(renderFriendRequestCandidate).join('') : '<div class="relationship-scan-empty">暂无待执行队列。先刷新候选，或确认通讯录建档里有匹配标签。</div>');
     var executions = Array.isArray(payload.executions) ? payload.executions : [];
+    $('#friend-request-execution-desc').text('最近 ' + String(executions.length || 0) + ' 条执行结果');
     $('#friend-request-execution-list').html(executions.length ? executions.map(renderFriendRequestExecution).join('') : '<div class="relationship-scan-empty">暂无执行记录</div>');
     if(!options.preserveControls){
       var rules = Array.isArray(payload.message_rules) ? payload.message_rules : [];
@@ -5250,6 +5307,23 @@ $(function(){
       if(!options.silent){
         showMsg('friend-request-msg', '好友申请设置保存失败：' + (xhr.responseText || xhr.status), false);
       }
+    });
+  }
+  function refreshFriendRequestCandidatesAfterContactChange(wxId){
+    wxId = String(wxId || _contactDirectoryBrowserState.wxId || '').trim();
+    return $.ajax({
+      url:'/friend_request/refresh_candidates',
+      type:'POST',
+      contentType:'application/json',
+      data: JSON.stringify({wx_id: wxId}),
+    }).done(function(res){
+      if(res.status === 'success'){
+        renderFriendRequest(res.payload || {});
+      } else {
+        loadFriendRequestStatus(wxId, {silent:true});
+      }
+    }).fail(function(){
+      loadFriendRequestStatus(wxId, {silent:true});
     });
   }
   function runFriendRequestAction(url, buttonId, runningText, fallbackMessage){
@@ -11610,10 +11684,26 @@ $(function(){
   function hasUnsavedConfigChanges(){
     return currentConfigSnapshot() !== _configSnapshotBaseline;
   }
+  function validateMaterialOutreachBeforeSave(configData){
+    var tasks = Array.isArray((configData || {}).material_outreach_list) ? configData.material_outreach_list : [];
+    for(var i = 0; i < tasks.length; i += 1){
+      var task = tasks[i] || {};
+      if(task.enabled === false) continue;
+      if(String(task.repeat_mode || '') !== 'once') continue;
+      if(String(task.batch_material_strategy || '') !== 'fixed') continue;
+      if($.trim(task.fixed_material_id || '')) continue;
+      svModal.error('保存失败: 单次素材转发任务需要先选择固定素材');
+      return false;
+    }
+    return true;
+  }
   function saveConfig(callback){
     var context = buildConfigSaveContext();
     var configData = context.configData;
     var _keyUpdates = context.keyUpdates;
+    if(!validateMaterialOutreachBeforeSave(configData)){
+      return;
+    }
     $.ajax({
       url:'/save_config', type:'POST', contentType:'application/json',
       data:JSON.stringify(configData),
