@@ -1464,7 +1464,7 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Friend ===== -->
   <div class="config-panel" id="tab-friend">
     <div class="cfg-card new-friend-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-person-plus"></i><h5>新好友</h5><span class="desc">新好友流程：自动通过、归档和欢迎消息</span></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-person-plus"></i><h5>通过新好友</h5><span class="desc">通过新好友流程：自动通过、归档和欢迎消息</span></div>
       <div class="new-friend-config-shell">
         <div class="new-friend-main-stack">
           <div class="new-friend-block">
@@ -1572,6 +1572,159 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
             <button type="button" class="ui-btn ui-btn--add ui-btn--l3 ui-btn--spaced-sm js-add-field" data-target="#new_friend_tags_container" data-name="new_friend_tags"><i class="bi bi-plus-circle"></i> 添加标签</button>
           </div>
+        </div>
+      </div>
+    </div>
+    {% set friend_request_settings = friend_request_seed.get('settings', {}) if friend_request_seed else {} %}
+    {% set friend_request_summary = friend_request_seed.get('summary', {}) if friend_request_seed else {} %}
+    {% set friend_request_time_range = (friend_request_settings.get('allowed_time_ranges', ['09:00-22:00'])[0] if friend_request_settings.get('allowed_time_ranges') else '09:00-22:00') %}
+    {% set friend_request_time_start = friend_request_time_range.split('-')[0] if '-' in friend_request_time_range else '09:00' %}
+    {% set friend_request_time_end = friend_request_time_range.split('-')[1] if '-' in friend_request_time_range else '22:00' %}
+    <div class="cfg-card friend-request-card">
+      <div class="ui-head ui-head--page">
+        <i class="bi bi-person-plus-fill"></i>
+        <h5>自动加好友</h5>
+        <span class="desc">按来源筛选候选人，自动发起好友验证申请</span>
+      </div>
+      <div class="contact-maintenance-summary friend-request-summary">
+        <span class="ui-pill ui-pill--status contact-maintenance-pill {% if friend_request_summary.get('enabled') %}is-success{% else %}is-danger{% endif %}" id="friend-request-enabled-pill">
+          <span class="contact-maintenance-pill-label">自动申请</span><span class="contact-maintenance-pill-value" id="friend-request-enabled-state">{% if friend_request_summary.get('enabled') %}已开启{% else %}已关闭{% endif %}</span>
+        </span>
+        <span class="ui-pill is-info contact-maintenance-pill"><span class="contact-maintenance-pill-label">今日申请</span><span class="contact-maintenance-pill-value" id="friend-request-today-sent">{{ friend_request_summary.get('today_sent', 0) }}</span></span>
+        <span class="ui-pill is-warning contact-maintenance-pill"><span class="contact-maintenance-pill-label">待申请</span><span class="contact-maintenance-pill-value" id="friend-request-pending-count">{{ friend_request_summary.get('pending_count', 0) }}</span></span>
+        <span class="ui-pill is-success contact-maintenance-pill"><span class="contact-maintenance-pill-label">已提交</span><span class="contact-maintenance-pill-value" id="friend-request-sent-count">{{ friend_request_summary.get('sent_count', 0) }}</span></span>
+        <span class="ui-pill is-danger contact-maintenance-pill"><span class="contact-maintenance-pill-label">失败</span><span class="contact-maintenance-pill-value" id="friend-request-failed-count">{{ friend_request_summary.get('today_failed', 0) }}</span></span>
+      </div>
+      <div class="new-friend-config-shell friend-request-body">
+        <div class="new-friend-main-stack">
+          <div class="new-friend-block friend-request-copy-block">
+            <div class="ui-head ui-head--section">
+              <div class="ui-head__main">
+                <h5>申请文案</h5>
+                <span class="desc">按添加对象配置多批文案；执行时从已启用文案里随机选择</span>
+              </div>
+              <div class="ui-head__actions">
+                <button type="button" class="ui-btn ui-btn--add ui-btn--l2" id="btn-friend-request-add-rule"><i class="bi bi-plus-circle"></i> 添加文案</button>
+              </div>
+            </div>
+            <div id="friend-request-rule-list" class="friend-request-rule-list"></div>
+          </div>
+          <div class="new-friend-block friend-request-candidate-block">
+            <div class="ui-head ui-head--section">
+              <div class="ui-head__main">
+                <h5>候选人</h5>
+                <span class="desc" id="friend-request-candidate-desc">共 {{ friend_request_summary.get('candidate_count', 0) }} 人</span>
+              </div>
+              <div class="ui-head__actions">
+                <button type="button" class="ui-btn ui-btn--secondary ui-btn--l2" id="btn-friend-request-refresh"><i class="bi bi-arrow-clockwise"></i> 刷新候选</button>
+              </div>
+            </div>
+            <div id="friend-request-msg" class="cfg-feedback" style="display:none;"></div>
+            <div class="friend-request-candidate-list" id="friend-request-candidate-list"></div>
+          </div>
+        </div>
+        <div class="new-friend-block friend-request-settings-block">
+          <div class="ui-head ui-head--section">
+            <div class="ui-head__main">
+              <h5>自动发送申请</h5>
+              <span class="desc">当前发送方式：会话内点击“发送朋友验证”</span>
+            </div>
+            <div class="ui-head__actions">
+              <label class="ui-switch ui-switch--l2 ui-head-switch" for="friend_request_enabled" title="开启自动好友申请">
+                <input class="form-check-input" type="checkbox" id="friend_request_enabled" {% if friend_request_settings.get('enabled') %}checked{% endif %}>
+                <span class="ui-switch-knob"></span>
+              </label>
+            </div>
+          </div>
+          <div class="contact-maintenance-auto-grid friend-request-settings-grid">
+            <div class="contact-maintenance-auto-field--full">
+              <label class="cfg-label" for="friend_request_add_object">添加对象</label>
+              <select class="form-select" id="friend_request_add_object">
+                <option value="deleted_me" {% if friend_request_settings.get('add_object', 'deleted_me') == 'deleted_me' %}selected{% endif %}>删除我的人</option>
+              </select>
+            </div>
+            <div class="contact-maintenance-auto-field--full friend-request-source-tags">
+              <label class="cfg-label">选择标签</label>
+              <div id="friend_request_include_tags_wrap" class="compact-multiselect scheduled-message-tag-multiselect friend-request-tag-multiselect" data-placeholder="请选择标签">
+                <button type="button" class="compact-multiselect-trigger"><span class="compact-multiselect-summary is-placeholder">请选择标签</span><i class="bi bi-chevron-down"></i></button>
+                <div class="compact-multiselect-panel">
+                  <div class="compact-multiselect-search"><input type="text" class="form-control compact-multiselect-search-input" placeholder="搜索标签"></div>
+                  <div class="compact-multiselect-options">
+                    {% for tag in contact_directory_options.tags %}
+                    <label class="compact-multiselect-option" data-search="{{ (tag.tag ~ ' ' ~ tag.count)|lower }}">
+                      <input type="checkbox" class="compact-multiselect-check ui-check" value="{{ tag.tag }}" {% if tag.tag in friend_request_settings.get('include_tags', []) %}checked{% endif %}>
+                      <span class="compact-multiselect-option-text">{{ tag.tag }}</span>
+                      <span class="compact-multiselect-option-count">（{{ tag.count }}）</span>
+                    </label>
+                    {% endfor %}
+                    <div class="compact-multiselect-empty" style="display:none;">没有匹配标签</div>
+                  </div>
+                  <div class="compact-multiselect-actions"><button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-clear">清空</button><button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-apply">确定</button></div>
+                </div>
+              </div>
+            </div>
+            <div>
+              <label class="cfg-label" for="friend_request_daily_limit">每天最多申请（次）</label>
+              <input type="number" class="form-control" id="friend_request_daily_limit" min="1" max="200" value="{{ friend_request_settings.get('daily_limit', 20) }}">
+            </div>
+            <div>
+              <label class="cfg-label">可申请时间段</label>
+              <div class="ai-moments-time-window">
+                <input type="time" class="form-control ai-moments-control" id="friend_request_time_start" value="{{ friend_request_time_start }}">
+                <span class="ai-moments-time-separator">-</span>
+                <input type="time" class="form-control ai-moments-control" id="friend_request_time_end" value="{{ friend_request_time_end }}">
+              </div>
+            </div>
+            <div>
+              <label class="cfg-label" for="friend_request_interval_minutes">每次申请间隔（分钟）</label>
+              <input type="number" class="form-control" id="friend_request_interval_minutes" min="5" max="1440" value="{{ friend_request_settings.get('base_interval_minutes', 30) }}">
+            </div>
+            <div>
+              <label class="cfg-label" for="friend_request_duplicate_strategy">重复申请策略</label>
+              <select class="form-select" id="friend_request_duplicate_strategy">
+                <option value="1" {% if friend_request_settings.get('recent_duplicate_days', 7) == 1 %}selected{% endif %}>当天不重复</option>
+                <option value="3" {% if friend_request_settings.get('recent_duplicate_days', 7) == 3 %}selected{% endif %}>3天不重复</option>
+                <option value="7" {% if friend_request_settings.get('recent_duplicate_days', 7) == 7 %}selected{% endif %}>7天不重复</option>
+                <option value="30" {% if friend_request_settings.get('recent_duplicate_days', 7) == 30 %}selected{% endif %}>30天不重复</option>
+              </select>
+            </div>
+            <div>
+              <label class="cfg-label" for="friend_request_permission">朋友圈权限</label>
+              <select class="form-select" id="friend_request_permission">
+                <option value="不设置" {% if friend_request_settings.get('permission', '不设置') == '不设置' %}selected{% endif %}>不设置</option>
+                <option value="仅聊天" {% if friend_request_settings.get('permission') == '仅聊天' %}selected{% endif %}>仅聊天</option>
+              </select>
+            </div>
+            <div>
+              <label class="cfg-label">添加后的标签</label>
+              <div id="friend_request_success_tags_wrap" class="compact-multiselect scheduled-message-tag-multiselect friend-request-tag-multiselect" data-placeholder="可不选">
+                <button type="button" class="compact-multiselect-trigger"><span class="compact-multiselect-summary is-placeholder">可不选</span><i class="bi bi-chevron-down"></i></button>
+                <div class="compact-multiselect-panel">
+                  <div class="compact-multiselect-search"><input type="text" class="form-control compact-multiselect-search-input" placeholder="搜索标签"></div>
+                  <div class="compact-multiselect-options">
+                    {% for tag in contact_directory_options.tags %}
+                    <label class="compact-multiselect-option" data-search="{{ (tag.tag ~ ' ' ~ tag.count)|lower }}">
+                      <input type="checkbox" class="compact-multiselect-check ui-check" value="{{ tag.tag }}" {% if tag.tag in friend_request_settings.get('success_tags', []) %}checked{% endif %}>
+                      <span class="compact-multiselect-option-text">{{ tag.tag }}</span>
+                      <span class="compact-multiselect-option-count">（{{ tag.count }}）</span>
+                    </label>
+                    {% endfor %}
+                    <div class="compact-multiselect-empty" style="display:none;">没有匹配标签</div>
+                  </div>
+                  <div class="compact-multiselect-actions"><button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-clear">清空</button><button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-apply">确定</button></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="contact-maintenance-actions friend-request-actions">
+            <button type="button" class="ui-btn ui-btn--primary ui-btn--l2" id="btn-friend-request-save"><i class="bi bi-save"></i> 保存设置</button>
+            <button type="button" class="ui-btn ui-btn--danger ui-btn--l2" id="btn-friend-request-run-once"><i class="bi bi-send"></i> 执行一次</button>
+          </div>
+          <div class="page-inline-notice page-inline-notice--danger">
+            <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
+            <div class="page-inline-notice__content">执行一次会真实向 1 个候选人提交好友验证申请；运行时会拉起微信窗口，请不要手动干扰微信界面</div>
+          </div>
+          <div class="friend-request-execution-list" id="friend-request-execution-list"></div>
         </div>
       </div>
     </div>
@@ -4089,6 +4242,10 @@ $(function(){
   var _relationshipScanState = {
     payload: _relationshipScanSeed || {}
   };
+  var _friendRequestSeed = {{ friend_request_seed|tojson|safe }};
+  var _friendRequestState = {
+    payload: _friendRequestSeed || {}
+  };
   var _materialOutreachRuntimeSeed = {{ material_outreach_runtime_seed|tojson|safe }};
   var _materialOutreachBrowserSeed = {{ material_outreach_status.get('browser', {})|tojson|safe }};
   var _materialOutreachBrowserState = {
@@ -4896,6 +5053,201 @@ $(function(){
       $btn.prop('disabled', false).html(oldHtml);
     });
   }
+  function friendRequestShortTime(value){
+    var text = String(value || '').trim();
+    if(!text) return '-';
+    return text.replace('T', ' ').slice(5, 16);
+  }
+  function friendRequestStatusLabel(status){
+    status = String(status || '').trim();
+    if(status === 'sent') return '已提交';
+    if(status === 'failed') return '失败';
+    if(status === 'skipped') return '已跳过';
+    if(status === 'accepted') return '已通过';
+    if(status === 'archived') return '已归档';
+    return '待申请';
+  }
+  function friendRequestStatusClass(status){
+    status = String(status || '').trim();
+    if(status === 'sent' || status === 'accepted') return 'is-sent';
+    if(status === 'failed') return 'is-failed';
+    if(status === 'skipped' || status === 'archived') return 'is-skipped';
+    return 'is-pending';
+  }
+  function renderFriendRequestCandidate(candidate){
+    candidate = candidate || {};
+    var name = String(candidate.display_name || candidate.send_name || candidate.conversation_keyword || '未命名').trim();
+    var tags = Array.isArray(candidate.tags) ? candidate.tags.join('，') : '';
+    var result = String(candidate.last_result || '').trim();
+    return ''+
+      '<div class="friend-request-row">'+
+        '<div class="friend-request-row-main">'+
+          '<strong title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</strong>'+
+          '<span title="'+escapeHtml(tags || '无标签')+'">'+escapeHtml(tags || '无标签')+'</span>'+
+        '</div>'+
+        '<span class="friend-request-state '+escapeHtml(friendRequestStatusClass(candidate.status))+'">'+escapeHtml(friendRequestStatusLabel(candidate.status))+'</span>'+
+        '<span title="'+escapeHtml(result)+'">'+escapeHtml(result || friendRequestShortTime(candidate.last_attempt_at || candidate.sent_at))+'</span>'+
+      '</div>';
+  }
+  function renderFriendRequestExecution(item){
+    item = item || {};
+    var target = String(item.display_name || item.target || '未命名').trim();
+    var message = String(item.message || '').trim();
+    return ''+
+      '<div class="friend-request-execution-row">'+
+        '<span class="friend-request-state '+escapeHtml(friendRequestStatusClass(item.status))+'">'+escapeHtml(friendRequestStatusLabel(item.status))+'</span>'+
+        '<strong title="'+escapeHtml(target)+'">'+escapeHtml(target)+'</strong>'+
+        '<span title="'+escapeHtml(message)+'">'+escapeHtml(message || friendRequestShortTime(item.at))+'</span>'+
+      '</div>';
+  }
+  function renderFriendRequestRule(rule){
+    rule = rule || {};
+    var ruleId = String(rule.rule_id || ('rule_' + Date.now() + '_' + Math.floor(Math.random() * 10000)));
+    var messages = Array.isArray(rule.messages) ? rule.messages.join('\n') : '';
+    var objectKind = String(rule.object_kind || 'deleted_me');
+    return ''+
+      '<div class="keyword-item friend-request-rule-item" data-rule-id="'+escapeHtml(ruleId)+'">'+
+        '<div class="keyword-rule-editor">'+
+          '<div class="keyword-item__header friend-request-rule-head">'+
+            '<label class="new-friend-nickname-label"><input type="checkbox" class="form-check-input friend-request-rule-enabled" '+(rule.enabled !== false ? 'checked' : '')+'> 启用</label>'+
+            '<select class="form-select friend-request-rule-object">'+
+              '<option value="deleted_me" '+(objectKind === 'deleted_me' ? 'selected' : '')+'>删除我的人</option>'+
+            '</select>'+
+            '<button type="button" class="btn-rm btn-friend-request-remove-rule" title="删除规则" aria-label="删除规则"><i class="bi bi-x-lg"></i></button>'+
+          '</div>'+
+          '<div class="friend-request-rule-grid friend-request-rule-grid--single">'+
+            '<div><label class="cfg-label">申请文案</label><textarea class="form-control friend-request-rule-messages" rows="5" placeholder="每行一条">'+escapeHtml(messages)+'</textarea></div>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+  }
+  function renderFriendRequest(payload){
+    payload = payload || {};
+    _friendRequestState.payload = payload;
+    var settings = payload.settings || {};
+    var summary = payload.summary || {};
+    var enabled = !!summary.enabled;
+    $('#friend-request-enabled-pill').toggleClass('is-success', enabled).toggleClass('is-danger', !enabled);
+    $('#friend-request-enabled-state').text(enabled ? '已开启' : '已关闭');
+    $('#friend-request-today-sent').text(String(summary.today_sent || 0));
+    $('#friend-request-pending-count').text(String(summary.pending_count || 0));
+    $('#friend-request-sent-count').text(String(summary.sent_count || 0));
+    $('#friend-request-failed-count').text(String(summary.today_failed || 0));
+    $('#friend-request-candidate-desc').text('共 ' + String(summary.candidate_count || 0) + ' 人');
+    $('#friend_request_enabled').prop('checked', settings.enabled === true);
+    $('#friend_request_add_object').val(settings.add_object || 'deleted_me');
+    $('#friend_request_daily_limit').val(settings.daily_limit || 20);
+    $('#friend_request_interval_minutes').val(settings.base_interval_minutes || 30);
+    var timeRange = ((settings.allowed_time_ranges || ['09:00-22:00'])[0] || '09:00-22:00').split('-');
+    $('#friend_request_time_start').val(timeRange[0] || '09:00');
+    $('#friend_request_time_end').val(timeRange[1] || '22:00');
+    $('#friend_request_permission').val(settings.permission || '不设置');
+    $('#friend_request_duplicate_strategy').val(String(settings.recent_duplicate_days || 7));
+    setCompactMultiSelectValues($('#friend_request_include_tags_wrap'), settings.include_tags || []);
+    setCompactMultiSelectValues($('#friend_request_success_tags_wrap'), settings.success_tags || []);
+    var candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+    $('#friend-request-candidate-list').html(candidates.length ? candidates.map(renderFriendRequestCandidate).join('') : '<div class="relationship-scan-empty">暂无候选人。先刷新候选，或确认通讯录建档里有匹配标签。</div>');
+    var executions = Array.isArray(payload.executions) ? payload.executions : [];
+    $('#friend-request-execution-list').html(executions.length ? executions.map(renderFriendRequestExecution).join('') : '<div class="relationship-scan-empty">暂无执行记录</div>');
+    var rules = Array.isArray(payload.message_rules) ? payload.message_rules : [];
+    $('#friend-request-rule-list').html(rules.length ? rules.map(renderFriendRequestRule).join('') : '<div class="relationship-scan-empty">暂无标签文案规则，未命中时会使用默认文案。</div>');
+    initializeCompactMultiSelects($('#friend-request-rule-list'));
+  }
+  function friendRequestLines(value){
+    return String(value || '').split(/\r?\n/).map(function(item){ return $.trim(item); }).filter(Boolean);
+  }
+  function collectFriendRequestRules(){
+    var rules = [];
+    $('#friend-request-rule-list .friend-request-rule-item').each(function(){
+      var $item = $(this);
+      var messages = friendRequestLines($item.find('.friend-request-rule-messages').val());
+      if(!messages.length) return;
+      rules.push({
+        rule_id: String($item.data('rule-id') || ''),
+        enabled: $item.find('.friend-request-rule-enabled').is(':checked'),
+        object_kind: $item.find('.friend-request-rule-object').val() || 'deleted_me',
+        messages: messages
+      });
+    });
+    return rules;
+  }
+  function friendRequestSettingsPayload(){
+    return {
+      wx_id: String(_contactDirectoryBrowserState.wxId || (_friendRequestState.payload || {}).wx_id || '').trim(),
+      settings: {
+        enabled: $('#friend_request_enabled').is(':checked'),
+        add_object: $('#friend_request_add_object').val() || 'deleted_me',
+        include_tags: selectedCompactMultiSelectValues($('#friend_request_include_tags_wrap')),
+        daily_limit: Math.max(1, Math.min(200, parseInt($('#friend_request_daily_limit').val()) || 20)),
+        base_interval_minutes: Math.max(5, Math.min(1440, parseInt($('#friend_request_interval_minutes').val()) || 30)),
+        allowed_time_ranges: [($('#friend_request_time_start').val() || '09:00') + '-' + ($('#friend_request_time_end').val() || '22:00')],
+        permission: $('#friend_request_permission').val() || '不设置',
+        success_tags: selectedCompactMultiSelectValues($('#friend_request_success_tags_wrap')),
+        recent_duplicate_days: Math.max(1, Math.min(30, parseInt($('#friend_request_duplicate_strategy').val()) || 7)),
+        sender_kind: 'conversation_verify'
+      },
+      default_messages: [],
+      message_rules: collectFriendRequestRules()
+    };
+  }
+  function loadFriendRequestStatus(wxId, options){
+    options = options || {};
+    var params = {};
+    if(wxId) params.wx_id = wxId;
+    return $.getJSON('/friend_request/status', params).done(function(res){
+      if(res.status === 'success'){
+        renderFriendRequest(res.payload || {});
+      } else if(!options.silent){
+        showMsg('friend-request-msg', res.message || '好友申请状态加载失败', false);
+      }
+    }).fail(function(xhr){
+      if(!options.silent){
+        showMsg('friend-request-msg', '好友申请状态加载失败：' + (xhr.responseText || xhr.status), false);
+      }
+    });
+  }
+  function saveFriendRequestSettings(options){
+    options = options || {};
+    return $.ajax({
+      url:'/friend_request/settings',
+      type:'POST',
+      contentType:'application/json',
+      data: JSON.stringify(friendRequestSettingsPayload()),
+    }).done(function(res){
+      if(res.status === 'success'){
+        renderFriendRequest(res.payload || {});
+        if(!options.silent) showMsg('friend-request-msg', res.message || '好友申请设置已保存', true);
+      } else if(!options.silent){
+        showMsg('friend-request-msg', res.message || '好友申请设置保存失败', false);
+      }
+    }).fail(function(xhr){
+      if(!options.silent){
+        showMsg('friend-request-msg', '好友申请设置保存失败：' + (xhr.responseText || xhr.status), false);
+      }
+    });
+  }
+  function runFriendRequestAction(url, buttonId, runningText, fallbackMessage){
+    var $btn = $('#' + buttonId);
+    var oldHtml = $btn.html();
+    $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> ' + runningText);
+    return $.ajax({
+      url:url,
+      type:'POST',
+      contentType:'application/json',
+      data: JSON.stringify({wx_id: String(_contactDirectoryBrowserState.wxId || '').trim()}),
+    }).done(function(res){
+      if(res.status === 'success'){
+        renderFriendRequest(res.payload || {});
+        showMsg('friend-request-msg', res.message || fallbackMessage, true);
+      } else {
+        showMsg('friend-request-msg', res.message || fallbackMessage + '失败', false);
+      }
+    }).fail(function(xhr){
+      showMsg('friend-request-msg', fallbackMessage + '失败：' + (xhr.responseText || xhr.status), false);
+    }).always(function(){
+      $btn.prop('disabled', false).html(oldHtml);
+    });
+  }
   function updateMaterialOutreachRecordStats(stats){
     stats = stats || {};
     updateMaterialTaskSummaryCounts();
@@ -5141,6 +5493,7 @@ $(function(){
   applyTaskWorkbenchRuntimeState('material_outreach', _materialOutreachRuntimeSeed || {});
   renderMaterialOutreachBrowser(_materialOutreachBrowserSeed || {});
   renderRelationshipScan(_relationshipScanSeed || {});
+  renderFriendRequest(_friendRequestSeed || {});
   loadTaskWorkbenchRuntime('material_outreach', {silent:true});
   setInterval(function(){
     if(typeof getActiveTabId === 'function' && getActiveTabId() === 'tab-schedule' && (!document.hidden)){
@@ -7926,6 +8279,10 @@ $(function(){
   $(document).on('click', '[data-tab="tab-contact-directory"]', function(){
     loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
     loadRelationshipScanStatus(_contactDirectoryBrowserState.wxId, {silent:true});
+    loadFriendRequestStatus(_contactDirectoryBrowserState.wxId, {silent:true});
+  });
+  $(document).on('click', '[data-tab="tab-friend"]', function(){
+    loadFriendRequestStatus(_contactDirectoryBrowserState.wxId, {silent:true});
   });
   $('#contact-directory-wx-select').on('change', function(){
     var wxId = ($(this).val() || '').trim();
@@ -7933,6 +8290,7 @@ $(function(){
     _contactDirectoryBrowserState.tag = '__all__';
     loadContactDirectoryBrowser(wxId);
     loadRelationshipScanStatus(wxId, {silent:true});
+    loadFriendRequestStatus(wxId, {silent:true});
   });
   $(document).on('click', '[data-tab="tab-prompt"]', function(){
     loadPromptPreviewWxIds(getPromptPreviewWxId() || getConversationMemoryWxId());
@@ -7995,6 +8353,7 @@ $(function(){
   $('#btn-refresh-contact-directory-browser').click(function(){
     loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
     loadRelationshipScanStatus(_contactDirectoryBrowserState.wxId, {silent:true});
+    loadFriendRequestStatus(_contactDirectoryBrowserState.wxId, {silent:true});
   });
   $('#btn-contact-standard-build').click(function(){
     chooseContactDirectoryStart('standard');
@@ -8077,6 +8436,38 @@ $(function(){
   });
   $(document).on('change', '#relationship_scan_auto_enabled,#relationship_scan_auto_sync_wechat_tags,#relationship_scan_sync_batch_size,#relationship_scan_sync_interval_minutes,#relationship_scan_interval_seconds', function(){
     saveRelationshipScanSettings({silent:true});
+  });
+  $('#btn-friend-request-add-rule').click(function(){
+    var $list = $('#friend-request-rule-list');
+    if($list.find('.relationship-scan-empty').length){
+      $list.empty();
+    }
+    $list.append(renderFriendRequestRule({enabled:true, object_kind:$('#friend_request_add_object').val() || 'deleted_me', messages:[]}));
+    initializeCompactMultiSelects($list.children().last());
+  });
+  $(document).on('click', '.btn-friend-request-remove-rule', function(){
+    $(this).closest('.friend-request-rule-item').remove();
+    if(!$('#friend-request-rule-list .friend-request-rule-item').length){
+      $('#friend-request-rule-list').html('<div class="relationship-scan-empty">暂无标签文案规则，未命中时会使用默认文案。</div>');
+    }
+  });
+  $('#btn-friend-request-save').click(function(){
+    saveFriendRequestSettings();
+  });
+  $('#btn-friend-request-refresh').click(function(){
+    saveFriendRequestSettings({silent:true}).always(function(){
+      runFriendRequestAction('/friend_request/refresh_candidates', 'btn-friend-request-refresh', '刷新中...', '刷新候选');
+    });
+  });
+  $('#btn-friend-request-run-once').click(function(){
+    svModal.confirm('确定现在执行一次好友申请？本次最多会向 1 个候选人真实提交验证申请。', function(){
+      saveFriendRequestSettings({silent:true}).always(function(){
+        runFriendRequestAction('/friend_request/run_once', 'btn-friend-request-run-once', '执行中...', '执行一次');
+      });
+    }, '好友申请确认', '执行一次', '取消');
+  });
+  $(document).on('change', '#friend_request_enabled,#friend_request_add_object,#friend_request_daily_limit,#friend_request_interval_minutes,#friend_request_time_start,#friend_request_time_end,#friend_request_duplicate_strategy,#friend_request_permission,#friend_request_include_tags_wrap .compact-multiselect-check,#friend_request_success_tags_wrap .compact-multiselect-check', function(){
+    saveFriendRequestSettings({silent:true});
   });
 
   function renderConversationMemoryExtractSummaryCard(label, value){

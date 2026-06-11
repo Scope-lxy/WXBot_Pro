@@ -153,7 +153,7 @@ from feature.custom_forward import (
     is_custom_forward_source,
     iter_custom_forward_listen_sources,
 )
-from feature import contacts, listening, message_routing, relationship_scan, takeover_runtime
+from feature import contacts, friend_request, listening, message_routing, relationship_scan, takeover_runtime
 from feature import admin_forward_flow, admin_moments_flow
 
 
@@ -2004,6 +2004,16 @@ class WXBot:
 
     def _process_relationship_tag_sync(self):
         return relationship_scan.process_pending_wechat_tag_sync(self)
+
+    def friend_request_payload(self):
+        state = friend_request.load_state(self.config.DATA_DIR, str(getattr(self, "wx_id", "") or "default"))
+        return friend_request.friend_request_payload(state)
+
+    def run_friend_request_once(self, force=False):
+        return friend_request.run_once(self, force=force)
+
+    def _check_friend_request_auto_run(self, now=None):
+        return friend_request.check_auto_run(self, now=now)
 
     def set_contact_profiles_paused(self, paused=True):
         return contacts.set_contact_profiles_paused(self, paused=paused)
@@ -6436,6 +6446,11 @@ class WXBot:
                     self._check_relationship_auto_scan()
                 except Exception as e:
                     log(level="ERROR", message=f"关系扫描模块出错：{e}")
+
+                try:
+                    self._check_friend_request_auto_run()
+                except Exception as e:
+                    log(level="ERROR", message=f"好友申请模块出错：{e}")
 
                 if self._contact_directory_auto_maintenance_enabled():
                     try:

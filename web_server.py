@@ -116,7 +116,7 @@ from feature.contacts import (
     normalize_auto_maintenance_batch_size,
     stop_maintenance_hint,
 )
-from feature import relationship_scan
+from feature import friend_request, relationship_scan
 from feature.moments_tasks import (
     MOMENTS_TASK_STATUS_VALUES,
     cancel_queued_moments_task,
@@ -2269,6 +2269,7 @@ def dashboard():
     }
     contact_directory_options = _contact_profiles_picker_options(task_scope_wx_id)
     relationship_scan_seed = _relationship_scan_payload(contact_directory_options.get('wx_id', ''))
+    friend_request_seed = _friend_request_payload(contact_directory_options.get('wx_id', ''))
     initial_active_tab = str(request.args.get('active_tab', '') or '').strip()
 
     force_admin_change_required = is_force_admin_change_required()
@@ -2287,6 +2288,7 @@ def dashboard():
         ai_material_outreach_status=ai_material_outreach_status,
         contact_directory_options=contact_directory_options,
         relationship_scan_seed=relationship_scan_seed,
+        friend_request_seed=friend_request_seed,
         task_scope_options=task_scope_options,
         initial_active_tab=initial_active_tab,
         force_admin_change_required=force_admin_change_required,
@@ -5540,6 +5542,44 @@ def _save_relationship_scan_settings(wx_id, raw_settings):
     return relationship_scan.relationship_scan_payload(state)
 
 
+def _friend_request_wx_id_from_request():
+    wx_id = _contact_profiles_runtime_wx_id_from_request()
+    if wx_id:
+        return _validate_known_account_wx_id(wx_id, base_dir=CONTACT_PROFILES_DIR)
+    return _contact_profiles_wx_id_from_request()
+
+
+def _friend_request_payload(wx_id=''):
+    wx_id = str(wx_id or '').strip()
+    if not wx_id:
+        wx_id = _contact_profiles_wx_id_from_request()
+    state = friend_request.load_state(DATA_DIR, wx_id)
+    payload = friend_request.friend_request_payload(state)
+    wx_ids = _available_account_wx_ids(CONTACT_PROFILES_DIR)
+    if wx_id and wx_id not in wx_ids:
+        wx_ids.append(wx_id)
+    payload['wx_id'] = wx_id
+    payload['wx_ids'] = wx_ids
+    return payload
+
+
+def _save_friend_request_settings(wx_id, raw_data):
+    wx_id = str(wx_id or '').strip()
+    state = friend_request.load_state(DATA_DIR, wx_id)
+    raw_data = raw_data or {}
+    state['settings'] = friend_request.normalize_settings({
+        **(state.get('settings') or {}),
+        **(raw_data.get('settings') or raw_data),
+    })
+    if 'message_rules' in raw_data:
+        rules = [friend_request.normalize_message_rule(item) for item in (raw_data.get('message_rules') or [])]
+        state['message_rules'] = [item for item in rules if item]
+    if 'default_messages' in raw_data:
+        state['default_messages'] = friend_request.normalize_default_messages(raw_data.get('default_messages'))
+    state = friend_request.save_state(DATA_DIR, state)
+    return _friend_request_payload(state.get('wx_id') or wx_id)
+
+
 def _contact_profiles_runtime_wx_id_from_request():
     candidate = str(request.args.get('wx_id', '') or '').strip()
     if candidate:
@@ -5893,6 +5933,72 @@ def relationship_scan_clear():
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/friend_request/status')
+@login_required
+def friend_request_status():
+    try:
+        wx_id = _friend_request_wx_id_from_request()
+        return jsonify({'status': 'success', 'payload': _friend_request_payload(wx_id)})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/friend_request/settings', methods=['POST'])
+@login_required
+def friend_request_settings_save():
+    try:
+        data = request.get_json(silent=True) or {}
+        wx_id = _friend_request_wx_id_from_request()
+        payload = _save_friend_request_settings(wx_id, data)
+        return jsonify({'status': 'success', 'message': '好友申请设置已保存', 'payload': payload})
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/friend_request/refresh_candidates', methods=['POST'])
+@login_required
+def friend_request_refresh_candidates():
+    try:
+        wx_id = _friend_request_wx_id_from_request()
+        state = friend_request.refresh_candidates(DATA_DIR, wx_id, contact_base_dir=CONTACT_PROFILES_DIR)
+        payload = _friend_request_payload(wx_id)
+        return jsonify({
+            'status': 'success',
+            'message': f"已刷新候选人，共 {len(payload.get('candidates') or [])} 人",
+            'payload': payload,
+        })
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/friend_request/run_once', methods=['POST'])
+@login_required
+def friend_request_run_once():
+    try:
+        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'run_friend_request_once')):
+            return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
+        _require_running_contact_profiles_wx_id()
+        result = bot.run_friend_request_once(force=True)
+        status = result.get('status') or 'failed'
+        ok = status in {'sent', 'skipped'}
+        wx_id = str(getattr(bot, 'wx_id', '') or '').strip()
+        return jsonify({
+            'status': 'success' if ok else 'error',
+            'message': result.get('message') or ('执行完成' if ok else '执行失败'),
+            'payload': _friend_request_payload(wx_id) if wx_id else (result.get('payload') or {}),
+            'result': result.get('result') or {},
+        })
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        log('ERROR', f'[好友申请] 手动执行失败：{e}')
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
