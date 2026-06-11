@@ -31,11 +31,15 @@ DEFAULT_SETTINGS = {
     "sender_kind": "conversation_verify",
 }
 
-DEFAULT_MESSAGES: list[str] = []
 ADD_OBJECT_DELETED_ME = "deleted_me"
 ADD_OBJECT_GROUP_MEMBER = "group_member"
 ADD_OBJECT_PHONE = "phone"
 ADD_OBJECT_VALUES = {ADD_OBJECT_DELETED_ME, ADD_OBJECT_GROUP_MEMBER, ADD_OBJECT_PHONE}
+ADD_OBJECT_OPTIONS = [
+    {"value": ADD_OBJECT_DELETED_ME, "label": "删除我的人", "enabled": True},
+    {"value": ADD_OBJECT_GROUP_MEMBER, "label": "群内成员", "enabled": False},
+    {"value": ADD_OBJECT_PHONE, "label": "手机号", "enabled": False},
+]
 
 
 def _clean_text(value: Any) -> str:
@@ -94,10 +98,6 @@ def _clean_string_list(value: Any) -> list[str]:
     return result
 
 
-def normalize_default_messages(value: Any) -> list[str]:
-    return _clean_string_list(value)
-
-
 def normalize_time_ranges(value: Any) -> list[str]:
     ranges = _clean_string_list(value)
     result: list[str] = []
@@ -123,7 +123,7 @@ def _parse_clock(value: Any) -> datetime_time | None:
 
 def normalize_settings(settings: Any) -> dict[str, Any]:
     raw = dict(settings or {}) if isinstance(settings, dict) else {}
-    add_object = _clean_text(raw.get("add_object")) or _clean_text(raw.get("source_kind")) or DEFAULT_SETTINGS["add_object"]
+    add_object = _clean_text(raw.get("add_object")) or DEFAULT_SETTINGS["add_object"]
     if add_object not in ADD_OBJECT_VALUES:
         add_object = DEFAULT_SETTINGS["add_object"]
     permission = _clean_text(raw.get("permission")) or DEFAULT_SETTINGS["permission"]
@@ -149,11 +149,9 @@ def normalize_settings(settings: Any) -> dict[str, Any]:
 def normalize_message_rule(rule: Any) -> dict[str, Any] | None:
     if not isinstance(rule, dict):
         return None
-    object_kind = _clean_text(rule.get("object_kind")) or _clean_text(rule.get("add_object")) or ""
-    if not object_kind and _clean_string_list(rule.get("match_tags")):
-        object_kind = ADD_OBJECT_DELETED_ME
+    object_kind = _clean_text(rule.get("object_kind"))
     if object_kind not in ADD_OBJECT_VALUES:
-        object_kind = ADD_OBJECT_DELETED_ME
+        return None
     messages = _clean_string_list(rule.get("messages"))
     if not messages:
         return None
@@ -176,7 +174,6 @@ def normalize_state(state: Any, wx_id: str = "") -> dict[str, Any]:
     normalized["settings"] = normalize_settings(state.get("settings"))
     rules = [normalize_message_rule(item) for item in (state.get("message_rules") or [])]
     normalized["message_rules"] = [item for item in rules if item]
-    normalized["default_messages"] = normalize_default_messages(state.get("default_messages"))
     runtime = state.get("runtime")
     if isinstance(runtime, dict):
         normalized["runtime"].update(copy.deepcopy(runtime))
@@ -193,7 +190,6 @@ def default_state(wx_id: str) -> dict[str, Any]:
         "updated_at": "",
         "settings": dict(DEFAULT_SETTINGS),
         "message_rules": [],
-        "default_messages": [],
         "runtime": {
             "today": _today_key(),
             "today_sent": 0,
@@ -248,11 +244,12 @@ def normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "wechat_id": _clean_text(candidate.get("wechat_id")),
         "tags": tags,
         "sender_kind": _clean_text(candidate.get("sender_kind")) or "conversation_verify",
-        "add_object": _clean_text(candidate.get("add_object")) or _clean_text(candidate.get("source_kind")) or ADD_OBJECT_DELETED_ME,
+        "add_object": _clean_text(candidate.get("add_object")) or ADD_OBJECT_DELETED_ME,
         "conversation_keyword": _clean_text(candidate.get("conversation_keyword")) or send_name or display_name,
         "status": status,
         "last_result": _clean_text(candidate.get("last_result")),
         "last_attempt_at": _clean_text(candidate.get("last_attempt_at")),
+        "next_retry_at": _clean_text(candidate.get("next_retry_at")),
         "sent_at": _clean_text(candidate.get("sent_at")),
     }
 
@@ -317,6 +314,7 @@ def refresh_candidates(base_dir: str | Path, wx_id: str, *, contact_base_dir: st
             candidate["status"] = old.get("status", "pending")
             candidate["last_result"] = old.get("last_result", "")
             candidate["last_attempt_at"] = old.get("last_attempt_at", "")
+            candidate["next_retry_at"] = old.get("next_retry_at", "")
             candidate["sent_at"] = old.get("sent_at", "")
         candidates.append(candidate)
     state["candidates"] = candidates
@@ -369,6 +367,36 @@ def _recent_duplicate(candidate: dict[str, Any], state: dict[str, Any], settings
     return False
 
 
+def candidate_matches_settings(candidate: dict[str, Any], settings: dict[str, Any]) -> bool:
+    if (_clean_text(candidate.get("add_object")) or ADD_OBJECT_DELETED_ME) != settings["add_object"]:
+        return False
+    include_tags = set(settings.get("include_tags") or [])
+    if include_tags and not (set(normalize_tag_list(candidate.get("tags"))) & include_tags):
+        return False
+    return True
+
+
+def _retry_due(candidate: dict[str, Any], *, now: Any = None) -> bool:
+    retry_at = _parse_time(candidate.get("next_retry_at"))
+    if not retry_at:
+        return True
+    current = now if isinstance(now, datetime) else _parse_time(now) or datetime.now()
+    return current >= retry_at
+
+
+def candidate_can_run(candidate: dict[str, Any], state: dict[str, Any], settings: dict[str, Any], *, now: Any = None) -> bool:
+    status = candidate.get("status")
+    if status not in {"pending", "failed", "sent"}:
+        return False
+    if not candidate_matches_settings(candidate, settings):
+        return False
+    if status == "failed" and not _retry_due(candidate, now=now):
+        return False
+    if _recent_duplicate(candidate, state, settings, now=now):
+        return False
+    return True
+
+
 def select_message_for_candidate(state: dict[str, Any], candidate: dict[str, Any]) -> str:
     object_kind = _clean_text(candidate.get("add_object")) or ADD_OBJECT_DELETED_ME
     messages: list[str] = []
@@ -393,13 +421,11 @@ def next_pending_candidate(state: dict[str, Any], *, now: Any = None, ignore_sch
         if not _interval_due(state, settings, now=now):
             return None, "申请间隔未到"
     for candidate in state.get("candidates") or []:
-        if candidate.get("status") not in {"pending", "failed"}:
+        if not candidate_can_run(candidate, state, settings, now=now):
             continue
         if not candidate.get("conversation_keyword"):
             candidate["status"] = "skipped"
             candidate["last_result"] = "缺少可打开会话名"
-            continue
-        if _recent_duplicate(candidate, state, settings, now=now):
             continue
         return candidate, ""
     return None, "没有待申请候选人"
@@ -414,6 +440,7 @@ def record_execution(state: dict[str, Any], candidate: dict[str, Any], result: d
     if status == "sent":
         candidate["status"] = "sent"
         candidate["sent_at"] = timestamp
+        candidate["next_retry_at"] = ""
         runtime["today_sent"] = int(runtime.get("today_sent", 0) or 0) + 1
         runtime["today_success"] = int(runtime.get("today_success", 0) or 0) + 1
         runtime["last_sent_at"] = timestamp
@@ -423,6 +450,8 @@ def record_execution(state: dict[str, Any], candidate: dict[str, Any], result: d
         candidate["status"] = "skipped"
     else:
         candidate["status"] = "failed"
+        current = _parse_time(timestamp) or datetime.now()
+        candidate["next_retry_at"] = (current + timedelta(minutes=_next_interval_minutes(normalize_settings(state.get("settings"))))).replace(microsecond=0).isoformat()
         runtime["today_failed"] = int(runtime.get("today_failed", 0) or 0) + 1
     candidate["last_attempt_at"] = timestamp
     candidate["last_result"] = message
@@ -440,6 +469,18 @@ def record_execution(state: dict[str, Any], candidate: dict[str, Any], result: d
     state.setdefault("executions", []).append(execution)
     state["executions"] = state["executions"][-300:]
     return state
+
+
+def save_execution_state(base_dir: str | Path, state: dict[str, Any]) -> dict[str, Any]:
+    latest = load_state(base_dir, _clean_text(state.get("wx_id")) or "default")
+    latest_candidates = {item.get("candidate_id"): item for item in latest.get("candidates") or []}
+    for candidate in state.get("candidates") or []:
+        candidate_id = candidate.get("candidate_id")
+        if candidate_id in latest_candidates:
+            latest_candidates[candidate_id].update(copy.deepcopy(candidate))
+    latest["runtime"] = copy.deepcopy(state.get("runtime") or {})
+    latest["executions"] = copy.deepcopy(state.get("executions") or [])
+    return save_state(base_dir, latest)
 
 
 def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
@@ -461,18 +502,21 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
     try:
         addmsg = select_message_for_candidate(state, candidate)
         sender = ConversationVerifySender()
-        result = sender.send(
-            bot,
-            candidate.get("conversation_keyword"),
-            addmsg=addmsg,
-            remark=candidate.get("remark") or candidate.get("display_name") or candidate.get("conversation_keyword"),
-            tags=settings.get("success_tags") or [],
-            permission=settings.get("permission") or "不设置",
-        )
+        try:
+            result = sender.send(
+                bot,
+                candidate.get("conversation_keyword"),
+                addmsg=addmsg,
+                remark=candidate.get("remark") or candidate.get("display_name") or candidate.get("conversation_keyword"),
+                tags=settings.get("success_tags") or [],
+                permission=settings.get("permission") or "不设置",
+            )
+        except Exception as exc:
+            result = {"status": "failed", "message": _clean_text(exc) or "好友申请发送异常"}
     finally:
         lock.release()
     state = record_execution(state, candidate, result, addmsg=addmsg, now=now)
-    state = save_state(bot.config.DATA_DIR, state)
+    state = save_execution_state(bot.config.DATA_DIR, state)
     return {"status": result.get("status", "failed"), "message": result.get("message", ""), "payload": friend_request_payload(state), "result": result}
 
 
@@ -495,12 +539,13 @@ def check_auto_run(bot, *, now: Any = None) -> bool:
 
 def friend_request_summary(state: dict[str, Any]) -> dict[str, Any]:
     _reset_daily_runtime_if_needed(state)
+    settings = normalize_settings(state.get("settings"))
     candidates = state.get("candidates") or []
     runtime = state.get("runtime") or {}
     return {
         "enabled": bool((state.get("settings") or {}).get("enabled", False)),
         "candidate_count": len(candidates),
-        "pending_count": sum(1 for item in candidates if item.get("status") in {"pending", "failed"}),
+        "pending_count": sum(1 for item in candidates if item.get("conversation_keyword") and candidate_can_run(item, state, settings)),
         "sent_count": sum(1 for item in candidates if item.get("status") == "sent"),
         "today_sent": int(runtime.get("today_sent", 0) or 0),
         "today_success": int(runtime.get("today_success", 0) or 0),
@@ -514,8 +559,8 @@ def friend_request_payload(state: dict[str, Any]) -> dict[str, Any]:
     state = normalize_state(state, wx_id=_clean_text((state or {}).get("wx_id")))
     return {
         "settings": state.get("settings", {}),
+        "add_object_options": [dict(item) for item in ADD_OBJECT_OPTIONS if item.get("enabled")],
         "message_rules": state.get("message_rules", []),
-        "default_messages": state.get("default_messages", []),
         "runtime": state.get("runtime", {}),
         "summary": friend_request_summary(state),
         "candidates": state.get("candidates", [])[:100],

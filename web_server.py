@@ -5567,16 +5567,21 @@ def _save_friend_request_settings(wx_id, raw_data):
     wx_id = str(wx_id or '').strip()
     state = friend_request.load_state(DATA_DIR, wx_id)
     raw_data = raw_data or {}
+    old_settings = friend_request.normalize_settings(state.get('settings'))
     state['settings'] = friend_request.normalize_settings({
         **(state.get('settings') or {}),
         **(raw_data.get('settings') or raw_data),
     })
+    new_settings = state['settings']
     if 'message_rules' in raw_data:
         rules = [friend_request.normalize_message_rule(item) for item in (raw_data.get('message_rules') or [])]
         state['message_rules'] = [item for item in rules if item]
-    if 'default_messages' in raw_data:
-        state['default_messages'] = friend_request.normalize_default_messages(raw_data.get('default_messages'))
     state = friend_request.save_state(DATA_DIR, state)
+    if (
+        old_settings.get('add_object') != new_settings.get('add_object')
+        or old_settings.get('include_tags') != new_settings.get('include_tags')
+    ):
+        state = friend_request.refresh_candidates(DATA_DIR, state.get('wx_id') or wx_id)
     return _friend_request_payload(state.get('wx_id') or wx_id)
 
 

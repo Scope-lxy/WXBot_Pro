@@ -1,5 +1,8 @@
 import unittest
+import tempfile
+import threading
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from PIL import Image, ImageDraw
 
@@ -35,7 +38,7 @@ class FriendRequestLogicTest(unittest.TestCase):
             "allowed_time_ranges": ["09:00-10:00"],
             "base_interval_minutes": 30,
         })
-        state["candidates"] = [friend_request.normalize_candidate({"display_name": "瑞东", "send_name": "瑞东"})]
+        state["candidates"] = [friend_request.normalize_candidate({"display_name": "瑞东", "send_name": "瑞东", "tags": ["删除我的人"]})]
 
         candidate, reason = friend_request.next_pending_candidate(state, now=now)
         self.assertIsNone(candidate)
@@ -63,6 +66,96 @@ class FriendRequestLogicTest(unittest.TestCase):
         self.assertGreaterEqual(next_run, now + timedelta(minutes=27))
         self.assertLessEqual(next_run, now + timedelta(minutes=33))
 
+    def test_failed_candidate_waits_for_retry_time(self):
+        now = datetime(2026, 6, 11, 9, 30, 0)
+        state = friend_request.default_state("wxid_test")
+        state["settings"] = friend_request.normalize_settings({"base_interval_minutes": 30})
+        candidate = friend_request.normalize_candidate({"display_name": "瑞东", "send_name": "瑞东", "tags": ["删除我的人"]})
+        state["candidates"] = [candidate]
+
+        friend_request.record_execution(state, candidate, {"status": "failed", "message": "未找到验证按钮"}, addmsg="", now=now)
+
+        retry_at = datetime.fromisoformat(candidate["next_retry_at"])
+        next_candidate, reason = friend_request.next_pending_candidate(state, now=now, ignore_schedule=True)
+        self.assertIsNone(next_candidate)
+        self.assertEqual(reason, "没有待申请候选人")
+
+        next_candidate, reason = friend_request.next_pending_candidate(state, now=retry_at + timedelta(seconds=1), ignore_schedule=True)
+        self.assertIs(next_candidate, candidate)
+        self.assertEqual(reason, "")
+
+    def test_sent_candidate_can_run_after_duplicate_window(self):
+        now = datetime(2026, 6, 11, 9, 30, 0)
+        state = friend_request.default_state("wxid_test")
+        state["settings"] = friend_request.normalize_settings({"recent_duplicate_days": 3})
+        candidate = friend_request.normalize_candidate({
+            "display_name": "瑞东",
+            "send_name": "瑞东",
+            "tags": ["删除我的人"],
+            "status": "sent",
+        })
+        state["candidates"] = [candidate]
+        state["executions"] = [{
+            "at": (now - timedelta(days=2)).isoformat(),
+            "candidate_id": candidate["candidate_id"],
+            "status": "sent",
+        }]
+
+        next_candidate, _reason = friend_request.next_pending_candidate(state, now=now, ignore_schedule=True)
+        self.assertIsNone(next_candidate)
+
+        state["executions"][0]["at"] = (now - timedelta(days=4)).isoformat()
+        next_candidate, reason = friend_request.next_pending_candidate(state, now=now, ignore_schedule=True)
+        self.assertIs(next_candidate, candidate)
+        self.assertEqual(reason, "")
+
+    def test_next_pending_candidate_skips_stale_tag_candidates(self):
+        state = friend_request.default_state("wxid_test")
+        state["settings"] = friend_request.normalize_settings({"include_tags": ["删除我的人"]})
+        stale = friend_request.normalize_candidate({"display_name": "旧目标", "send_name": "旧目标", "tags": ["旧标签"]})
+        matched = friend_request.normalize_candidate({"display_name": "瑞东", "send_name": "瑞东", "tags": ["删除我的人"]})
+        state["candidates"] = [stale, matched]
+
+        candidate, reason = friend_request.next_pending_candidate(state, now=datetime(2026, 6, 11, 9, 30, 0), ignore_schedule=True)
+
+        self.assertIs(candidate, matched)
+        self.assertEqual(reason, "")
+
+    def test_run_once_records_sender_exception_as_failed(self):
+        class RaisingSender:
+            def send(self, *args, **kwargs):
+                raise RuntimeError("微信未初始化")
+
+        class FakeBot:
+            wx_id = "wxid_test"
+
+            def __init__(self, data_dir):
+                self.config = SimpleNamespace(DATA_DIR=data_dir)
+                self._lock = threading.Lock()
+
+            def _get_wechat_action_lock(self):
+                return self._lock
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            state = friend_request.default_state("wxid_test")
+            state["candidates"] = [friend_request.normalize_candidate({
+                "display_name": "瑞东",
+                "send_name": "瑞东",
+                "tags": ["删除我的人"],
+            })]
+            friend_request.save_state(data_dir, state)
+            original_sender = friend_request.ConversationVerifySender
+            friend_request.ConversationVerifySender = RaisingSender
+            try:
+                result = friend_request.run_once(FakeBot(data_dir), force=True, now=datetime(2026, 6, 11, 9, 30, 0))
+            finally:
+                friend_request.ConversationVerifySender = original_sender
+
+            saved = friend_request.load_state(data_dir, "wxid_test")
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(saved["candidates"][0]["status"], "failed")
+            self.assertIn("微信未初始化", saved["executions"][-1]["message"])
+
     def test_select_message_by_add_object_random_pool(self):
         state = friend_request.default_state("wxid_test")
         state["message_rules"] = [
@@ -86,6 +179,30 @@ class FriendRequestLogicTest(unittest.TestCase):
         candidate = friend_request.normalize_candidate({"display_name": "瑞东", "send_name": "瑞东", "add_object": "deleted_me"})
 
         self.assertEqual(friend_request.select_message_for_candidate(state, candidate), "")
+
+    def test_old_message_fields_are_dropped(self):
+        state = friend_request.normalize_state({
+            "wx_id": "wxid_test",
+            "default_messages": ["旧默认文案"],
+            "message_rules": [
+                {"match_tags": ["删除我的人"], "messages": ["旧标签文案"]},
+                {"object_kind": "deleted_me", "messages": ["新文案"]},
+            ],
+        }, wx_id="wxid_test")
+
+        self.assertNotIn("default_messages", state)
+        self.assertEqual(state["message_rules"], [{
+            "rule_id": state["message_rules"][0]["rule_id"],
+            "enabled": True,
+            "object_kind": "deleted_me",
+            "messages": ["新文案"],
+        }])
+
+    def test_payload_exposes_available_add_objects(self):
+        payload = friend_request.friend_request_payload(friend_request.default_state("wxid_test"))
+
+        self.assertEqual(payload["add_object_options"], [{"value": "deleted_me", "label": "删除我的人", "enabled": True}])
+        self.assertNotIn("default_messages", payload)
 
     def test_blue_fragment_detection_handles_wrapped_link(self):
         image = Image.new("RGB", (140, 70), "white")

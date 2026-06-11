@@ -1636,83 +1636,58 @@ html.icons-pref-local [class*=" bi-"]::before {
               </label>
             </div>
           </div>
-          <div class="contact-maintenance-auto-grid friend-request-settings-grid">
-            <div class="contact-maintenance-auto-field--full">
-              <label class="cfg-label" for="friend_request_add_object">添加对象</label>
-              <select class="form-select" id="friend_request_add_object">
-                <option value="deleted_me" {% if friend_request_settings.get('add_object', 'deleted_me') == 'deleted_me' %}selected{% endif %}>删除我的人</option>
-              </select>
-            </div>
-            <div class="contact-maintenance-auto-field--full friend-request-source-tags">
-              <label class="cfg-label">选择标签</label>
-              <div id="friend_request_include_tags_wrap" class="compact-multiselect scheduled-message-tag-multiselect friend-request-tag-multiselect" data-placeholder="请选择标签">
-                <button type="button" class="compact-multiselect-trigger"><span class="compact-multiselect-summary is-placeholder">请选择标签</span><i class="bi bi-chevron-down"></i></button>
-                <div class="compact-multiselect-panel">
-                  <div class="compact-multiselect-search"><input type="text" class="form-control compact-multiselect-search-input" placeholder="搜索标签"></div>
-                  <div class="compact-multiselect-options">
-                    {% for tag in contact_directory_options.tags %}
-                    <label class="compact-multiselect-option" data-search="{{ (tag.tag ~ ' ' ~ tag.count)|lower }}">
-                      <input type="checkbox" class="compact-multiselect-check ui-check" value="{{ tag.tag }}" {% if tag.tag in friend_request_settings.get('include_tags', []) %}checked{% endif %}>
-                      <span class="compact-multiselect-option-text">{{ tag.tag }}</span>
-                      <span class="compact-multiselect-option-count">（{{ tag.count }}）</span>
-                    </label>
-                    {% endfor %}
-                    <div class="compact-multiselect-empty" style="display:none;">没有匹配标签</div>
-                  </div>
-                  <div class="compact-multiselect-actions"><button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-clear">清空</button><button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-apply">确定</button></div>
-                </div>
+          <div class="friend-request-settings-grid">
+            <div class="friend-request-source-grid">
+              <div>
+                <label class="cfg-label" for="friend_request_add_object">添加对象</label>
+                <select class="form-select" id="friend_request_add_object">
+                  {% for option in friend_request_seed.get('add_object_options', [{'value':'deleted_me','label':'删除我的人'}]) %}
+                  <option value="{{ option.value }}" {% if friend_request_settings.get('add_object', 'deleted_me') == option.value %}selected{% endif %}>{{ option.label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="friend-request-source-tags">
+                <label class="cfg-label">选择标签</label>
+                <div id="friend_request_include_tags_slot"></div>
               </div>
             </div>
-            <div>
-              <label class="cfg-label" for="friend_request_daily_limit">每天最多申请（次）</label>
-              <input type="number" class="form-control" id="friend_request_daily_limit" min="1" max="200" value="{{ friend_request_settings.get('daily_limit', 20) }}">
-            </div>
-            <div>
-              <label class="cfg-label">可申请时间段</label>
-              <div class="ai-moments-time-window">
-                <input type="time" class="form-control ai-moments-control" id="friend_request_time_start" value="{{ friend_request_time_start }}">
-                <span class="ai-moments-time-separator">-</span>
-                <input type="time" class="form-control ai-moments-control" id="friend_request_time_end" value="{{ friend_request_time_end }}">
+            <div class="detail-config-separator friend-request-settings-divider" aria-hidden="true"></div>
+            <div class="friend-request-general-grid">
+              <div>
+                <label class="cfg-label" for="friend_request_daily_limit">每天最多申请（次）</label>
+                <input type="number" class="form-control" id="friend_request_daily_limit" min="1" max="200" value="{{ friend_request_settings.get('daily_limit', 20) }}">
               </div>
-            </div>
-            <div>
-              <label class="cfg-label" for="friend_request_interval_minutes">每次申请间隔（分钟）</label>
-              <input type="number" class="form-control" id="friend_request_interval_minutes" min="5" max="1440" value="{{ friend_request_settings.get('base_interval_minutes', 30) }}">
-            </div>
-            <div>
-              <label class="cfg-label" for="friend_request_duplicate_strategy">重复申请策略</label>
-              <select class="form-select" id="friend_request_duplicate_strategy">
-                <option value="1" {% if friend_request_settings.get('recent_duplicate_days', 7) == 1 %}selected{% endif %}>当天不重复</option>
-                <option value="3" {% if friend_request_settings.get('recent_duplicate_days', 7) == 3 %}selected{% endif %}>3天不重复</option>
-                <option value="7" {% if friend_request_settings.get('recent_duplicate_days', 7) == 7 %}selected{% endif %}>7天不重复</option>
-                <option value="30" {% if friend_request_settings.get('recent_duplicate_days', 7) == 30 %}selected{% endif %}>30天不重复</option>
-              </select>
-            </div>
-            <div>
-              <label class="cfg-label" for="friend_request_permission">朋友圈权限</label>
-              <select class="form-select" id="friend_request_permission">
-                <option value="不设置" {% if friend_request_settings.get('permission', '不设置') == '不设置' %}selected{% endif %}>不设置</option>
-                <option value="仅聊天" {% if friend_request_settings.get('permission') == '仅聊天' %}selected{% endif %}>仅聊天</option>
-              </select>
-            </div>
-            <div>
-              <label class="cfg-label">添加后的标签</label>
-              <div id="friend_request_success_tags_wrap" class="compact-multiselect scheduled-message-tag-multiselect friend-request-tag-multiselect" data-placeholder="可不选">
-                <button type="button" class="compact-multiselect-trigger"><span class="compact-multiselect-summary is-placeholder">可不选</span><i class="bi bi-chevron-down"></i></button>
-                <div class="compact-multiselect-panel">
-                  <div class="compact-multiselect-search"><input type="text" class="form-control compact-multiselect-search-input" placeholder="搜索标签"></div>
-                  <div class="compact-multiselect-options">
-                    {% for tag in contact_directory_options.tags %}
-                    <label class="compact-multiselect-option" data-search="{{ (tag.tag ~ ' ' ~ tag.count)|lower }}">
-                      <input type="checkbox" class="compact-multiselect-check ui-check" value="{{ tag.tag }}" {% if tag.tag in friend_request_settings.get('success_tags', []) %}checked{% endif %}>
-                      <span class="compact-multiselect-option-text">{{ tag.tag }}</span>
-                      <span class="compact-multiselect-option-count">（{{ tag.count }}）</span>
-                    </label>
-                    {% endfor %}
-                    <div class="compact-multiselect-empty" style="display:none;">没有匹配标签</div>
-                  </div>
-                  <div class="compact-multiselect-actions"><button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-clear">清空</button><button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-apply">确定</button></div>
+              <div>
+                <label class="cfg-label" for="friend_request_interval_minutes">每次申请间隔（分钟）</label>
+                <input type="number" class="form-control" id="friend_request_interval_minutes" min="5" max="1440" value="{{ friend_request_settings.get('base_interval_minutes', 30) }}">
+              </div>
+              <div>
+                <label class="cfg-label" for="friend_request_duplicate_strategy">重复申请策略</label>
+                <select class="form-select" id="friend_request_duplicate_strategy">
+                  <option value="1" {% if friend_request_settings.get('recent_duplicate_days', 7) == 1 %}selected{% endif %}>当天不重复</option>
+                  <option value="3" {% if friend_request_settings.get('recent_duplicate_days', 7) == 3 %}selected{% endif %}>3天不重复</option>
+                  <option value="7" {% if friend_request_settings.get('recent_duplicate_days', 7) == 7 %}selected{% endif %}>7天不重复</option>
+                  <option value="30" {% if friend_request_settings.get('recent_duplicate_days', 7) == 30 %}selected{% endif %}>30天不重复</option>
+                </select>
+              </div>
+              <div>
+                <label class="cfg-label">可申请时间段</label>
+                <div class="ai-moments-time-window">
+                  <input type="time" class="form-control ai-moments-control" id="friend_request_time_start" value="{{ friend_request_time_start }}">
+                  <span class="ai-moments-time-separator">-</span>
+                  <input type="time" class="form-control ai-moments-control" id="friend_request_time_end" value="{{ friend_request_time_end }}">
                 </div>
+              </div>
+              <div>
+                <label class="cfg-label" for="friend_request_permission">朋友圈权限</label>
+                <select class="form-select" id="friend_request_permission">
+                  <option value="不设置" {% if friend_request_settings.get('permission', '不设置') == '不设置' %}selected{% endif %}>不设置</option>
+                  <option value="仅聊天" {% if friend_request_settings.get('permission') == '仅聊天' %}selected{% endif %}>仅聊天</option>
+                </select>
+              </div>
+              <div>
+                <label class="cfg-label">添加后的标签</label>
+                <div id="friend_request_success_tags_slot"></div>
               </div>
             </div>
           </div>
@@ -4053,24 +4028,41 @@ $(function(){
     html += '<div class="compact-multiselect-empty" style="display:none;">没有匹配标签</div>';
     return html;
   }
-  function renderMaterialTagMultiSelect(fieldClass, selected){
-    selected = selectedList(selected);
-    var wrapClass = fieldClass === 'material-target-tags' ? 'material-tag-multiselect material-target-tag-multiselect' : 'material-tag-multiselect';
-    return '<div class="compact-multiselect '+wrapClass+'" data-placeholder="请选择标签">'+
-      '<button type="button" class="compact-multiselect-trigger">'+
-        '<span class="compact-multiselect-summary is-placeholder">请选择标签</span>'+
+  function renderContactTagMultiSelectHtml(options){
+    options = options || {};
+    var selected = selectedList(options.selected);
+    var idAttr = options.id ? ' id="'+escapeHtml(options.id)+'"' : '';
+    var wrapClass = String(options.wrapClass || '').trim();
+    var hiddenClass = String(options.hiddenClass || '').trim();
+    var placeholder = String(options.placeholder || '请选择标签');
+    var searchPlaceholder = String(options.searchPlaceholder || '搜索标签');
+    var disabled = !!options.disabled;
+    var disabledAttr = disabled ? ' disabled' : '';
+    return '<div'+idAttr+' class="compact-multiselect '+escapeHtml(wrapClass)+(disabled ? ' disabled' : '')+'" data-placeholder="'+escapeHtml(placeholder)+'">'+
+      '<button type="button" class="compact-multiselect-trigger"'+disabledAttr+'>'+
+        '<span class="compact-multiselect-summary is-placeholder">'+escapeHtml(placeholder)+'</span>'+
         '<i class="bi bi-chevron-down"></i>'+
       '</button>'+
       '<div class="compact-multiselect-panel">'+
-        '<div class="compact-multiselect-search"><input type="text" class="form-control compact-multiselect-search-input" placeholder="搜索标签"></div>'+
+        '<div class="compact-multiselect-search"><input type="text" class="form-control compact-multiselect-search-input" placeholder="'+escapeHtml(searchPlaceholder)+'"'+disabledAttr+'></div>'+
         '<div class="compact-multiselect-options">'+contactTagCheckboxRowsHtml(selected)+'</div>'+
         '<div class="compact-multiselect-actions">'+
-          '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-clear">清空</button>'+
-          '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-apply">确定</button>'+
+          '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-clear"'+disabledAttr+'>清空</button>'+
+          '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-apply"'+disabledAttr+'>确定</button>'+
         '</div>'+
       '</div>'+
-      '<select class="form-select '+fieldClass+' d-none" multiple>'+contactTagOptionsHtml(selected)+'</select>'+
+      (hiddenClass ? '<select class="form-select '+escapeHtml(hiddenClass)+' d-none" multiple'+disabledAttr+'>'+contactTagOptionsHtml(selected)+'</select>' : '')+
     '</div>';
+  }
+  function renderMaterialTagMultiSelect(fieldClass, selected){
+    selected = selectedList(selected);
+    var wrapClass = fieldClass === 'material-target-tags' ? 'material-tag-multiselect material-target-tag-multiselect' : 'material-tag-multiselect';
+    return renderContactTagMultiSelectHtml({
+      selected: selected,
+      wrapClass: wrapClass,
+      hiddenClass: fieldClass,
+      placeholder: '请选择标签'
+    });
   }
   function renderScheduledMessageTagMultiSelect(selected, disabled){
     selected = selectedList(selected);
@@ -5100,6 +5092,21 @@ $(function(){
         '<span title="'+escapeHtml(message)+'">'+escapeHtml(message || friendRequestShortTime(item.at))+'</span>'+
       '</div>';
   }
+  function friendRequestAddObjectOptions(){
+    var payload = _friendRequestState.payload || _friendRequestSeed || {};
+    var options = Array.isArray(payload.add_object_options) ? payload.add_object_options : [];
+    return options.length ? options : [{value:'deleted_me', label:'删除我的人'}];
+  }
+  function friendRequestAddObjectOptionsHtml(selected){
+    selected = String(selected || 'deleted_me');
+    return friendRequestAddObjectOptions().map(function(option){
+      option = option || {};
+      var value = String(option.value || '').trim();
+      var label = String(option.label || value || '未命名对象').trim();
+      if(!value) return '';
+      return '<option value="'+escapeHtml(value)+'" '+(value === selected ? 'selected' : '')+'>'+escapeHtml(label)+'</option>';
+    }).join('');
+  }
   function renderFriendRequestRule(rule){
     rule = rule || {};
     var ruleId = String(rule.rule_id || ('rule_' + Date.now() + '_' + Math.floor(Math.random() * 10000)));
@@ -5110,18 +5117,35 @@ $(function(){
         '<div class="keyword-rule-editor">'+
           '<div class="keyword-item__header friend-request-rule-head">'+
             '<label class="new-friend-nickname-label"><input type="checkbox" class="form-check-input friend-request-rule-enabled" '+(rule.enabled !== false ? 'checked' : '')+'> 启用</label>'+
-            '<select class="form-select friend-request-rule-object">'+
-              '<option value="deleted_me" '+(objectKind === 'deleted_me' ? 'selected' : '')+'>删除我的人</option>'+
-            '</select>'+
+            '<div class="friend-request-rule-object-field"><label class="cfg-label">匹配类型</label><select class="form-select friend-request-rule-object">'+
+              friendRequestAddObjectOptionsHtml(objectKind)+
+            '</select></div>'+
             '<button type="button" class="btn-rm btn-friend-request-remove-rule" title="删除规则" aria-label="删除规则"><i class="bi bi-x-lg"></i></button>'+
           '</div>'+
           '<div class="friend-request-rule-grid friend-request-rule-grid--single">'+
-            '<div><label class="cfg-label">申请文案</label><textarea class="form-control friend-request-rule-messages" rows="5" placeholder="每行一条">'+escapeHtml(messages)+'</textarea></div>'+
+            '<div><textarea class="form-control friend-request-rule-messages" rows="5" placeholder="请输入添加好友时的文案，每行一条">'+escapeHtml(messages)+'</textarea></div>'+
           '</div>'+
         '</div>'+
       '</div>';
   }
-  function renderFriendRequest(payload){
+  function renderFriendRequestTagControls(settings){
+    settings = settings || {};
+    $('#friend_request_include_tags_slot').html(renderContactTagMultiSelectHtml({
+      id: 'friend_request_include_tags_wrap',
+      selected: settings.include_tags || [],
+      wrapClass: 'scheduled-message-tag-multiselect friend-request-tag-multiselect',
+      placeholder: '请选择标签'
+    }));
+    $('#friend_request_success_tags_slot').html(renderContactTagMultiSelectHtml({
+      id: 'friend_request_success_tags_wrap',
+      selected: settings.success_tags || [],
+      wrapClass: 'scheduled-message-tag-multiselect friend-request-tag-multiselect',
+      placeholder: '可不选'
+    }));
+    initializeCompactMultiSelects($('#friend_request_include_tags_slot,#friend_request_success_tags_slot'));
+  }
+  function renderFriendRequest(payload, options){
+    options = options || {};
     payload = payload || {};
     _friendRequestState.payload = payload;
     var settings = payload.settings || {};
@@ -5134,24 +5158,27 @@ $(function(){
     $('#friend-request-sent-count').text(String(summary.sent_count || 0));
     $('#friend-request-failed-count').text(String(summary.today_failed || 0));
     $('#friend-request-candidate-desc').text('共 ' + String(summary.candidate_count || 0) + ' 人');
-    $('#friend_request_enabled').prop('checked', settings.enabled === true);
-    $('#friend_request_add_object').val(settings.add_object || 'deleted_me');
-    $('#friend_request_daily_limit').val(settings.daily_limit || 20);
-    $('#friend_request_interval_minutes').val(settings.base_interval_minutes || 30);
-    var timeRange = ((settings.allowed_time_ranges || ['09:00-22:00'])[0] || '09:00-22:00').split('-');
-    $('#friend_request_time_start').val(timeRange[0] || '09:00');
-    $('#friend_request_time_end').val(timeRange[1] || '22:00');
-    $('#friend_request_permission').val(settings.permission || '不设置');
-    $('#friend_request_duplicate_strategy').val(String(settings.recent_duplicate_days || 7));
-    setCompactMultiSelectValues($('#friend_request_include_tags_wrap'), settings.include_tags || []);
-    setCompactMultiSelectValues($('#friend_request_success_tags_wrap'), settings.success_tags || []);
+    if(!options.preserveControls){
+      $('#friend_request_enabled').prop('checked', settings.enabled === true);
+      $('#friend_request_add_object').val(settings.add_object || 'deleted_me');
+      $('#friend_request_daily_limit').val(settings.daily_limit || 20);
+      $('#friend_request_interval_minutes').val(settings.base_interval_minutes || 30);
+      var timeRange = ((settings.allowed_time_ranges || ['09:00-22:00'])[0] || '09:00-22:00').split('-');
+      $('#friend_request_time_start').val(timeRange[0] || '09:00');
+      $('#friend_request_time_end').val(timeRange[1] || '22:00');
+      $('#friend_request_permission').val(settings.permission || '不设置');
+      $('#friend_request_duplicate_strategy').val(String(settings.recent_duplicate_days || 7));
+      renderFriendRequestTagControls(settings);
+    }
     var candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
     $('#friend-request-candidate-list').html(candidates.length ? candidates.map(renderFriendRequestCandidate).join('') : '<div class="relationship-scan-empty">暂无候选人。先刷新候选，或确认通讯录建档里有匹配标签。</div>');
     var executions = Array.isArray(payload.executions) ? payload.executions : [];
     $('#friend-request-execution-list').html(executions.length ? executions.map(renderFriendRequestExecution).join('') : '<div class="relationship-scan-empty">暂无执行记录</div>');
-    var rules = Array.isArray(payload.message_rules) ? payload.message_rules : [];
-    $('#friend-request-rule-list').html(rules.length ? rules.map(renderFriendRequestRule).join('') : '<div class="relationship-scan-empty">暂无标签文案规则，未命中时会使用默认文案。</div>');
-    initializeCompactMultiSelects($('#friend-request-rule-list'));
+    if(!options.preserveControls){
+      var rules = Array.isArray(payload.message_rules) ? payload.message_rules : [];
+      $('#friend-request-rule-list').html(rules.length ? rules.map(renderFriendRequestRule).join('') : '<div class="relationship-scan-empty">暂无申请文案。未配置文案时会发送空验证消息。</div>');
+      initializeCompactMultiSelects($('#friend-request-rule-list'));
+    }
   }
   function friendRequestLines(value){
     return String(value || '').split(/\r?\n/).map(function(item){ return $.trim(item); }).filter(Boolean);
@@ -5186,7 +5213,6 @@ $(function(){
         recent_duplicate_days: Math.max(1, Math.min(30, parseInt($('#friend_request_duplicate_strategy').val()) || 7)),
         sender_kind: 'conversation_verify'
       },
-      default_messages: [],
       message_rules: collectFriendRequestRules()
     };
   }
@@ -5215,7 +5241,7 @@ $(function(){
       data: JSON.stringify(friendRequestSettingsPayload()),
     }).done(function(res){
       if(res.status === 'success'){
-        renderFriendRequest(res.payload || {});
+        renderFriendRequest(res.payload || {}, {preserveControls: !!options.silent});
         if(!options.silent) showMsg('friend-request-msg', res.message || '好友申请设置已保存', true);
       } else if(!options.silent){
         showMsg('friend-request-msg', res.message || '好友申请设置保存失败', false);
@@ -8448,7 +8474,7 @@ $(function(){
   $(document).on('click', '.btn-friend-request-remove-rule', function(){
     $(this).closest('.friend-request-rule-item').remove();
     if(!$('#friend-request-rule-list .friend-request-rule-item').length){
-      $('#friend-request-rule-list').html('<div class="relationship-scan-empty">暂无标签文案规则，未命中时会使用默认文案。</div>');
+      $('#friend-request-rule-list').html('<div class="relationship-scan-empty">暂无申请文案。未配置文案时会发送空验证消息。</div>');
     }
   });
   $('#btn-friend-request-save').click(function(){
