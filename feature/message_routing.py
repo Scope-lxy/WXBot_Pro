@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
+from contextlib import nullcontext
 from datetime import datetime
 
 from core import runtime_chat_state
@@ -112,39 +113,45 @@ def handle_friend_message_callback(bot, msg, chat, *, text: str):
     bot.last_msg_sender = msg.sender
     _update_alllisten_timestamp(bot, chat.who)
 
-    if chat.who == bot.config.cmd and bot._handle_admin_forward_input(chat, msg):
-        bot._mark_message_skip_memory(msg)
-        return True
-    if chat.who == bot.config.cmd and bot._handle_admin_moments_input(chat, msg):
-        bot._mark_message_skip_memory(msg)
-        return True
-    if bot._handle_material_source_message(chat, msg):
-        if chat.who == getattr(bot.config, "cmd", ""):
+    admin_reply_context = (
+        takeover_runtime.capture_admin_chat_replies(bot, chat)
+        if chat.who == bot.config.cmd
+        else nullcontext()
+    )
+    with admin_reply_context:
+        if chat.who == bot.config.cmd and bot._handle_admin_forward_input(chat, msg):
             bot._mark_message_skip_memory(msg)
-        return True
+            return True
+        if chat.who == bot.config.cmd and bot._handle_admin_moments_input(chat, msg):
+            bot._mark_message_skip_memory(msg)
+            return True
+        if bot._handle_material_source_message(chat, msg):
+            if chat.who == getattr(bot.config, "cmd", ""):
+                bot._mark_message_skip_memory(msg)
+            return True
 
-    takeover_handled = False
-    if getattr(bot.config, "custom_forward_switch", False):
-        try:
-            takeover_handled = handle_custom_forward_takeover(bot, chat, msg)
-        except Exception as exc:
-            _bot_log(bot, level="ERROR", message=f"自定义转发人工接管处理出错: {exc}")
-
-    if takeover_handled:
-        result = True
-    else:
-        result = bot.process_message(chat, msg)
+        takeover_handled = False
         if getattr(bot.config, "custom_forward_switch", False):
             try:
-                handle_custom_forward(bot, chat, msg)
+                takeover_handled = handle_custom_forward_takeover(bot, chat, msg)
             except Exception as exc:
-                _bot_log(bot, level="ERROR", message=f"自定义转发处理出错: {exc}")
+                _bot_log(bot, level="ERROR", message=f"自定义转发人工接管处理出错: {exc}")
 
-    if not result:
-        bot.is_err(
-            bot.wx.nickname + " wxbot处理监听新消息失败！",
-            text + "\n" + bot._result_error_text(result),
-        )
+        if takeover_handled:
+            result = True
+        else:
+            result = bot.process_message(chat, msg)
+            if getattr(bot.config, "custom_forward_switch", False):
+                try:
+                    handle_custom_forward(bot, chat, msg)
+                except Exception as exc:
+                    _bot_log(bot, level="ERROR", message=f"自定义转发处理出错: {exc}")
+
+        if not result:
+            bot.is_err(
+                bot.wx.nickname + " wxbot处理监听新消息失败！",
+                text + "\n" + bot._result_error_text(result),
+            )
     return None
 
 

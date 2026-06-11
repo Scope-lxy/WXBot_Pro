@@ -913,5 +913,36 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(calls[2][0], "EditFriendInfo")
         self.assertEqual(calls[2][1]["add_tags"], ["付费用户"])
 
+    def test_modify_friend_tags_treats_noop_as_success_without_retry(self):
+        calls = []
+
+        class FakeWeChat:
+            def ChatWith(self, who, exact=True):
+                calls.append(("ChatWith", who, exact))
+
+            def ChatInfo(self):
+                calls.append(("ChatInfo",))
+                return {"chat_type": "friend", "chat_name": "阿英2"}
+
+            def EditFriendInfo(self, **kwargs):
+                calls.append(("EditFriendInfo", kwargs))
+                return {"status": "失败", "message": "未进行任何修改", "data": None}
+
+        class FakeBot:
+            wx = FakeWeChat()
+
+        with patch("feature.contacts.bring_wechat_to_front", return_value=1):
+            result = modify_friend_tags_via_chat_profile(
+                FakeBot(),
+                [{"name": "阿英2"}],
+                add_tags=["删除我的人"],
+            )
+
+        edit_calls = [item for item in calls if item[0] == "EditFriendInfo"]
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["success_count"], 1)
+        self.assertEqual(result["records"][0]["response"]["noop"], True)
+        self.assertEqual(len(edit_calls), 1)
+
 if __name__ == "__main__":
     unittest.main()

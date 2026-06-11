@@ -1183,22 +1183,23 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .material-source-panel .ui-btn--spaced-sm { margin-top: 0; }
 .material-source-item { flex-wrap: nowrap; }
 .material-source-item .material-source-input { min-width: 0; flex: 1 1 200px; }
-.material-source-limit-shell { display: inline-flex; align-items: center; gap: 4px; min-height: var(--ui-control-height); padding: 0 12px; border: 1px solid var(--border); border-radius: 12px; background: #fff; flex: 0 0 156px; }
-.material-source-limit-prefix { flex: 0 0 auto; font-size: 13px; color: var(--muted); white-space: nowrap; }
-.material-source-item .material-source-limit-input { flex: 1 1 auto; width: 44px !important; min-width: 44px; padding: 0; border: 0; box-shadow: none; text-align: right; background: transparent; }
-.material-source-item .material-source-limit-input:focus { box-shadow: none; }
+.material-source-limit-shell { flex: 0 0 132px; }
+.material-source-item .material-source-limit-input { text-align: right; }
 .material-source-item .btn-rm { flex: 0 0 36px; }
 .material-source-item .btn-rm[disabled] { transform: none; }
-.material-management-list { display: grid; gap: 12px; }
+.material-management-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; }
 .material-management-list .ai-moments-task-preview { margin-top: 0; }
-.material-management-card { display: flex; flex-direction: column; gap: 10px; cursor: pointer; }
+.material-management-card { display: flex; flex-direction: column; gap: 10px; width: 100%; min-width: 0; cursor: pointer; overflow: hidden; }
 .material-management-card.selected { border-color: rgba(7,193,96,.55); box-shadow: 0 0 0 2px rgba(7,193,96,.10); }
 .material-management-card.is-disabled { opacity: .72; }
+.material-management-card .ai-moments-task-head { height: auto; min-height: 0; align-items: flex-start; overflow: visible; }
+.material-management-card .ai-moments-task-title { align-items: flex-start; }
+.material-management-card .ai-moments-task-title-text { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; word-break: break-word; }
 .material-management-copy { display: grid; gap: 4px; color: var(--secondary); font-size: 12.5px; line-height: 1.6; }
 .material-management-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.material-management-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.material-management-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; flex-wrap: wrap; }
 .material-management-meta { margin: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
-.material-management-card-action { margin-left: auto; align-self: center; }
+.material-management-card-action { margin-left: auto; align-self: center; flex: 0 0 auto; }
 .material-management-detail[hidden] { display: none !important; }
 .material-management-readonly { color: var(--muted); background: #F8FAFC; }
 .material-management-error { color: var(--danger); }
@@ -1289,7 +1290,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
     }
   .material-source-item { flex-wrap: wrap; }
   .material-source-limit-shell { width: 100%; flex: 1 1 100%; }
-  .material-source-item .material-source-limit-input { width: 100% !important; }
   .material-source-head { grid-template-columns: 1fr; }
   .material-source-head .cfg-hint { text-align: left; }
   .material-taskized-card .ai-moments-pane-head .ui-head__actions { width: 100%; justify-content: flex-start; }
@@ -1407,9 +1407,8 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .new-friend-block { min-width: 0; padding: var(--ui-l2-card-padding); border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
 .new-friend-block .switch-row { margin-bottom: 10px; }
 .new-friend-block .switch-row:last-child { margin-bottom: 0; }
-.new-friend-interval-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.new-friend-interval-row span { font-size: 13px; color: var(--muted); line-height: 1.6; }
-.new-friend-interval-row .form-control { width: 96px; flex: 0 0 96px; }
+.new-friend-interval-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-width: 0; }
+.new-friend-interval-grid .cfg-label { display: block; margin-bottom: 6px; }
 .new-friend-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .new-friend-nickname-row { display: flex; align-items: center; gap: 10px; padding: 0 0 10px; border: 0; border-bottom: 1px solid var(--layer-border-subtle); border-radius: 0; background: transparent; margin: 0 0 12px; flex-wrap: wrap; }
 .new-friend-nickname-label { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 13.5px; font-weight: 600; color: var(--card-fg); cursor: pointer; }
@@ -1441,6 +1440,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .custom-forward-add-actions { justify-content: flex-start; }
   .new-friend-config-shell { grid-template-columns: 1fr; }
   .new-friend-field-grid { grid-template-columns: 1fr; }
+  .new-friend-interval-grid { grid-template-columns: 1fr; }
   .contact-maintenance-body { grid-template-columns: 1fr; }
   .contact-maintenance-auto-grid { grid-template-columns: 1fr; }
   .relationship-scan-row { grid-template-columns: minmax(88px, 1fr) 66px minmax(120px, 1.4fr); }

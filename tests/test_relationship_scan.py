@@ -10,7 +10,10 @@ from feature.relationship_scan import (
     TAG_DELETED,
     clear_state,
     due_for_auto_scan,
+    due_for_wechat_tag_sync,
     merge_state_into_contact_directory,
+    normalize_settings,
+    pending_sync_records,
     relationship_scan_summary,
     relationship_status_from_preview,
     update_state_from_sessions,
@@ -129,7 +132,7 @@ class RelationshipScanTests(unittest.TestCase):
     def test_clear_state_removes_records_events_and_pending_sync(self):
         state = {
             "wx_id": "wxid_test",
-            "settings": {"auto_scan_enabled": False, "scan_interval_seconds": 20},
+            "settings": {"auto_scan_enabled": True, "auto_sync_wechat_tags": True, "scan_interval_seconds": 20},
             "runtime": {
                 "last_auto_scan_at": "2026-06-11T09:00:00",
                 "last_scan_at": "2026-06-11T09:00:00",
@@ -148,6 +151,7 @@ class RelationshipScanTests(unittest.TestCase):
         self.assertEqual(cleared["records"], [])
         self.assertEqual(cleared["events"], [])
         self.assertFalse(cleared["settings"]["auto_scan_enabled"])
+        self.assertFalse(cleared["settings"]["auto_sync_wechat_tags"])
         self.assertEqual(cleared["settings"]["scan_interval_seconds"], 20)
         self.assertEqual(summary["last_scan_count"], 0)
         self.assertEqual(summary["last_scan_at"], "")
@@ -162,6 +166,69 @@ class RelationshipScanTests(unittest.TestCase):
         self.assertTrue(due_for_auto_scan(state, now=now))
         state["runtime"]["last_auto_scan_at"] = (now - timedelta(seconds=5)).isoformat()
         self.assertFalse(due_for_auto_scan(state, now=now))
+
+    def test_default_wechat_tag_sync_interval_is_ten_minutes(self):
+        self.assertEqual(normalize_settings({})["sync_interval_minutes"], 10)
+
+    def test_wechat_tag_sync_due_uses_configured_interval(self):
+        now = datetime(2026, 6, 11, 10, 0, 0)
+        state = {
+            "settings": {"auto_sync_wechat_tags": True, "sync_interval_minutes": 10},
+            "runtime": {"last_wechat_tag_sync_at": (now - timedelta(minutes=11)).isoformat()},
+        }
+        self.assertTrue(due_for_wechat_tag_sync(state, now=now))
+        state["runtime"]["last_wechat_tag_sync_at"] = (now - timedelta(minutes=5)).isoformat()
+        self.assertFalse(due_for_wechat_tag_sync(state, now=now))
+
+    def test_pending_sync_records_skip_future_retry_and_prioritize_unattempted(self):
+        now = datetime(2026, 6, 11, 10, 0, 0)
+        state = {
+            "records": [
+                {
+                    "name": "已尝试",
+                    "status": STATUS_BLOCKED,
+                    "wechat_sync_status": SYNC_PENDING,
+                    "wechat_sync_attempted_at": "2026-06-11T09:00:00",
+                },
+                {
+                    "name": "稍后重试",
+                    "status": STATUS_DELETED,
+                    "wechat_sync_status": SYNC_PENDING,
+                    "wechat_sync_next_retry_at": "2026-06-11T10:05:00",
+                },
+                {
+                    "name": "未尝试",
+                    "status": STATUS_BLOCKED,
+                    "wechat_sync_status": SYNC_PENDING,
+                },
+            ],
+        }
+        names = [record["name"] for record in pending_sync_records(state, now=now)]
+        self.assertEqual(names, ["未尝试", "已尝试"])
+
+    def test_same_status_scan_keeps_pending_retry_delay(self):
+        state = {
+            "wx_id": "wxid_test",
+            "records": [{
+                "name": "阿英2",
+                "status": STATUS_BLOCKED,
+                "wechat_sync_status": SYNC_PENDING,
+                "wechat_sync_error": "上一轮失败",
+                "wechat_sync_next_retry_at": "2026-06-11T10:10:00",
+                "wechat_sync_attempted_at": "2026-06-11T10:00:00",
+                "wechat_sync_retry_count": 1,
+            }],
+            "events": [],
+        }
+        updated = update_state_from_sessions(
+            state,
+            [{"name": "阿英2", "content": "消息已发出，但被对方拒收了。"}],
+            now=datetime(2026, 6, 11, 10, 1, 0),
+        )
+        record = updated["records"][0]
+        self.assertEqual(record["wechat_sync_error"], "上一轮失败")
+        self.assertEqual(record["wechat_sync_next_retry_at"], "2026-06-11T10:10:00")
+        self.assertEqual(record["wechat_sync_retry_count"], 1)
 
 
 if __name__ == "__main__":

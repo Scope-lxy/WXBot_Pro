@@ -35,14 +35,13 @@ def ensure_admin_workspace_state(bot):
     return normalized
 
 
-def ensure_admin_workspace_skip_messages(bot):
-    cache = getattr(bot, "_admin_workspace_skip_messages", None)
+def ensure_admin_workspace_echo_messages(bot):
+    cache = getattr(bot, "_admin_workspace_echo_messages", None)
     if isinstance(cache, set):
         cache = {str(item): 1 for item in cache if str(item or "").strip()}
-        bot._admin_workspace_skip_messages = cache
     elif not isinstance(cache, dict):
         cache = {}
-        bot._admin_workspace_skip_messages = cache
+    bot._admin_workspace_echo_messages = cache
     return cache
 
 
@@ -52,17 +51,6 @@ def ensure_pending_takeover_messages(bot):
         cache = {}
         bot._admin_workspace_pending_takeover = cache
     return cache
-
-
-def mark_skip_next_admin_self_message(bot):
-    bot._skip_next_admin_self_message = True
-
-
-def consume_skip_next_admin_self_message(bot):
-    if not bool(getattr(bot, "_skip_next_admin_self_message", False)):
-        return False
-    bot._skip_next_admin_self_message = False
-    return True
 
 
 def has_active_moments_draft(bot):
@@ -115,23 +103,19 @@ def list_paused_friends(bot):
     return paused
 
 
-def remember_admin_mirror_message(bot, content):
+def remember_admin_echo_message(bot, content):
     content = str(content or "").strip()
     if not content:
         return
-    cache = ensure_admin_workspace_skip_messages(bot)
+    cache = ensure_admin_workspace_echo_messages(bot)
     cache[content] = int(cache.get(content, 0) or 0) + 1
 
 
-def remember_admin_self_message(bot, content):
-    remember_admin_mirror_message(bot, content)
-
-
-def consume_admin_mirror_message(bot, content):
+def consume_admin_echo_message(bot, content):
     content = str(content or "").strip()
     if not content:
         return False
-    cache = ensure_admin_workspace_skip_messages(bot)
+    cache = ensure_admin_workspace_echo_messages(bot)
     count = int(cache.get(content, 0) or 0)
     if count <= 0:
         return False
@@ -167,7 +151,7 @@ def capture_admin_chat_replies(bot, chat):
         result = send_msg(*args, **kwargs)
         payload = _extract_send_message_text(args, kwargs)
         if result is not False and payload:
-            remember_admin_self_message(bot, payload)
+            remember_admin_echo_message(bot, payload)
         return result
 
     chat.SendMsg = wrapped_send_msg
@@ -401,7 +385,7 @@ def replay_pending_takeover_messages_to_admin(bot, target):
         return False
     for item in items:
         text_payload = "\n".join(_build_pending_takeover_mirror_lines(target, item))
-        remember_admin_mirror_message(bot, text_payload)
+        remember_admin_echo_message(bot, text_payload)
         result = runtime_chat_state.send_text_to_target(bot, admin_chat, text_payload)
         if result is False:
             return False
@@ -409,7 +393,7 @@ def replay_pending_takeover_messages_to_admin(bot, target):
         if str((item or {}).get("type") or "").strip() == "image":
             image_path = _resolve_existing_image_path(bot, (item or {}).get("content", ""))
         if image_path:
-            remember_admin_mirror_message(bot, image_path)
+            remember_admin_echo_message(bot, image_path)
             file_result = runtime_chat_state.send_file_to_target(bot, admin_chat, image_path)
             if file_result is False:
                 return False
@@ -430,12 +414,12 @@ def mirror_takeover_message_to_admin(bot, chat, message):
         queue_pending_takeover_message(bot, chat, message)
         return True
     text_payload = "\n".join(_build_takeover_mirror_lines(chat, message, current_target))
-    remember_admin_mirror_message(bot, text_payload)
+    remember_admin_echo_message(bot, text_payload)
     runtime_chat_state.send_text_to_target(bot, admin_chat, text_payload)
     message_type = str(getattr(message, "type", "") or "").strip()
     image_path = _resolve_existing_image_path(bot, getattr(message, "content", ""))
     if message_type == "image" and image_path:
-        remember_admin_mirror_message(bot, image_path)
+        remember_admin_echo_message(bot, image_path)
         runtime_chat_state.send_file_to_target(bot, admin_chat, image_path)
     return True
 

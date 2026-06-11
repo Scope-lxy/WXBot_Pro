@@ -68,6 +68,12 @@ def _bot_log(bot, *args, **kwargs) -> None:
     log_fn(*args, **kwargs)
 
 
+def friend_info_edit_noop(response: Any) -> bool:
+    if not isinstance(response, dict):
+        return False
+    return "未进行任何修改" in _clean_text(response.get("message"))
+
+
 def bring_wechat_to_front() -> int:
     return bring_wechat_main_window_to_front(wait=0.3)
 
@@ -254,6 +260,11 @@ def edit_friend_info_via_chat_profile(
             remove_tags=remove_tags,
             tag_wait=0.8,
         )
+    if friend_info_edit_noop(response):
+        response = dict(response)
+        response["status"] = "成功"
+        response["noop"] = True
+        return response
     if not friend_info_edit_success(response):
         raise RuntimeError(f"修改好友信息未返回明确成功：{response}")
     return response

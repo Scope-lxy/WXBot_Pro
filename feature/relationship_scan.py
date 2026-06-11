@@ -44,9 +44,9 @@ EVENT_WECHAT_SYNC_FAILED = "wechat_sync_failed"
 
 DEFAULT_SETTINGS = {
     "auto_scan_enabled": True,
-    "auto_write_contact_directory": True,
     "auto_sync_wechat_tags": True,
     "sync_batch_size": 5,
+    "sync_interval_minutes": 10,
     "scan_interval_seconds": 10,
 }
 
@@ -93,13 +93,21 @@ def coerce_scan_interval_seconds(value: Any) -> int:
     return max(5, min(20, number))
 
 
+def coerce_sync_interval_minutes(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = DEFAULT_SETTINGS["sync_interval_minutes"]
+    return max(1, min(1440, number))
+
+
 def normalize_settings(settings: Any) -> dict[str, Any]:
     raw = dict(settings or {}) if isinstance(settings, dict) else {}
     return {
         "auto_scan_enabled": bool(raw.get("auto_scan_enabled", DEFAULT_SETTINGS["auto_scan_enabled"])),
-        "auto_write_contact_directory": bool(raw.get("auto_write_contact_directory", DEFAULT_SETTINGS["auto_write_contact_directory"])),
         "auto_sync_wechat_tags": bool(raw.get("auto_sync_wechat_tags", DEFAULT_SETTINGS["auto_sync_wechat_tags"])),
         "sync_batch_size": coerce_sync_batch_size(raw.get("sync_batch_size", DEFAULT_SETTINGS["sync_batch_size"])),
+        "sync_interval_minutes": coerce_sync_interval_minutes(raw.get("sync_interval_minutes", DEFAULT_SETTINGS["sync_interval_minutes"])),
         "scan_interval_seconds": coerce_scan_interval_seconds(raw.get("scan_interval_seconds", DEFAULT_SETTINGS["scan_interval_seconds"])),
     }
 
@@ -119,6 +127,7 @@ def default_state(wx_id: str) -> dict[str, Any]:
             "last_scan_at": "",
             "last_scan_mode": "",
             "last_scan_count": 0,
+            "last_wechat_tag_sync_at": "",
             "full_scan_running": False,
             "stop_requested": False,
         },
@@ -154,6 +163,10 @@ def normalize_record(record: dict[str, Any]) -> dict[str, Any]:
     sync_status = _clean_text(record.get("wechat_sync_status")) or SYNC_SKIPPED
     if sync_status not in {SYNC_PENDING, SYNC_SYNCED, SYNC_SKIPPED}:
         sync_status = SYNC_PENDING
+    try:
+        sync_retry_count = int(record.get("wechat_sync_retry_count", 0) or 0)
+    except (TypeError, ValueError):
+        sync_retry_count = 0
     return {
         "name": _clean_text(record.get("name")),
         "status": status,
@@ -168,6 +181,9 @@ def normalize_record(record: dict[str, Any]) -> dict[str, Any]:
         "wechat_sync_status": sync_status,
         "wechat_sync_error": _clean_text(record.get("wechat_sync_error")),
         "wechat_synced_at": _clean_text(record.get("wechat_synced_at")),
+        "wechat_sync_attempted_at": _clean_text(record.get("wechat_sync_attempted_at")),
+        "wechat_sync_next_retry_at": _clean_text(record.get("wechat_sync_next_retry_at")),
+        "wechat_sync_retry_count": max(0, sync_retry_count),
     }
 
 
@@ -300,10 +316,13 @@ def update_state_from_sessions(
         existing["last_seen_at"] = timestamp
         if is_status_change or not existing.get("changed_at"):
             existing["changed_at"] = timestamp
-        if is_status_change or existing.get("wechat_sync_status") != SYNC_SYNCED:
+        if is_status_change or existing.get("wechat_sync_status") not in {SYNC_PENDING, SYNC_SYNCED}:
             existing["wechat_sync_status"] = SYNC_PENDING
             existing["wechat_sync_error"] = ""
             existing["wechat_synced_at"] = ""
+            existing["wechat_sync_attempted_at"] = ""
+            existing["wechat_sync_next_retry_at"] = ""
+            existing["wechat_sync_retry_count"] = 0
         if is_status_change:
             _append_event(state, _relationship_event_type(status), name, status=status, evidence=evidence, now=timestamp)
         records[name] = existing
@@ -443,6 +462,8 @@ def clear_state(state: dict[str, Any]) -> dict[str, Any]:
     state = normalize_state(state, wx_id=_clean_text((state or {}).get("wx_id")))
     cleared = default_state(state.get("wx_id", ""))
     cleared["settings"] = normalize_settings(state.get("settings"))
+    cleared["settings"]["auto_scan_enabled"] = False
+    cleared["settings"]["auto_sync_wechat_tags"] = False
     return cleared
 
 
@@ -476,9 +497,6 @@ def _save_bot_state(bot, state: dict[str, Any]) -> dict[str, Any]:
 
 
 def apply_state_to_local_contacts(bot, state: dict[str, Any]) -> dict[str, Any]:
-    settings = normalize_settings(state.get("settings"))
-    if not settings["auto_write_contact_directory"]:
-        return state
     wx_id = _clean_text(state.get("wx_id")) or _wx_id(bot)
     if not wx_id:
         return state
@@ -605,7 +623,7 @@ def check_auto_scan(bot, *, now: Any = None) -> bool:
         return False
     state = _load_bot_state(bot)
     if not due_for_auto_scan(state, now=now):
-        process_pending_wechat_tag_sync(bot)
+        process_pending_wechat_tag_sync(bot, now=now)
         return False
     lock = bot._get_wechat_action_lock()
     if not lock.acquire(blocking=False):
@@ -622,31 +640,62 @@ def check_auto_scan(bot, *, now: Any = None) -> bool:
     runtime["last_scan_mode"] = "auto"
     runtime["last_scan_count"] = len(sessions)
     _save_bot_state(bot, state)
-    process_pending_wechat_tag_sync(bot)
+    process_pending_wechat_tag_sync(bot, now=now)
     return True
 
 
-def pending_sync_records(state: dict[str, Any]) -> list[dict[str, Any]]:
+def pending_sync_records(state: dict[str, Any], *, now: Any = None) -> list[dict[str, Any]]:
+    current = now if isinstance(now, datetime) else _parse_time(now) or datetime.now()
+    pending: list[tuple[int, dict[str, Any]]] = []
+    for index, item in enumerate((state or {}).get("records") or []):
+        record = normalize_record(item)
+        if _clean_text(record.get("wechat_sync_status")) != SYNC_PENDING:
+            continue
+        next_retry = _parse_time(record.get("wechat_sync_next_retry_at"))
+        if next_retry and next_retry > current:
+            continue
+        pending.append((index, record))
     return [
-        normalize_record(item)
-        for item in (state or {}).get("records") or []
-        if _clean_text((item or {}).get("wechat_sync_status")) == SYNC_PENDING
+        record
+        for _index, record in sorted(
+            pending,
+            key=lambda pair: (
+                1 if _clean_text(pair[1].get("wechat_sync_attempted_at")) else 0,
+                _clean_text(pair[1].get("wechat_sync_attempted_at")),
+                pair[0],
+            ),
+        )
     ]
+
+
+def due_for_wechat_tag_sync(state: dict[str, Any], *, now: Any = None) -> bool:
+    settings = normalize_settings((state or {}).get("settings"))
+    if not settings["auto_sync_wechat_tags"]:
+        return False
+    runtime = (state or {}).get("runtime") or {}
+    last_sync = _parse_time(runtime.get("last_wechat_tag_sync_at"))
+    if not last_sync:
+        return True
+    current = now if isinstance(now, datetime) else _parse_time(now) or datetime.now()
+    return current - last_sync >= timedelta(minutes=settings["sync_interval_minutes"])
 
 
 def desired_wechat_tag_update(status: str) -> tuple[list[str], list[str]]:
     return _relation_tags_for_status(status)
 
 
-def process_pending_wechat_tag_sync(bot, *, limit: int | None = None) -> dict[str, Any]:
+def process_pending_wechat_tag_sync(bot, *, limit: int | None = None, now: Any = None, force: bool = False) -> dict[str, Any]:
     if not getattr(bot, "wx", None):
         return {"processed": 0, "success": 0, "failed": 0}
     state = _load_bot_state(bot)
     settings = normalize_settings(state.get("settings"))
     if not settings["auto_sync_wechat_tags"]:
         return {"processed": 0, "success": 0, "failed": 0}
+    current_time = now if isinstance(now, datetime) else _parse_time(now) or datetime.now()
+    if not force and not due_for_wechat_tag_sync(state, now=current_time):
+        return {"processed": 0, "success": 0, "failed": 0}
     batch_limit = coerce_sync_batch_size(limit if limit is not None else settings["sync_batch_size"])
-    records = pending_sync_records(state)[:batch_limit]
+    records = pending_sync_records(state, now=current_time)[:batch_limit]
     if not records:
         return {"processed": 0, "success": 0, "failed": 0}
     lock = bot._get_wechat_action_lock()
@@ -658,6 +707,7 @@ def process_pending_wechat_tag_sync(bot, *, limit: int | None = None) -> dict[st
         for record in records:
             name = record["name"]
             add_tags, remove_tags = desired_wechat_tag_update(record["status"])
+            attempt_at = _iso_timestamp(current_time)
             try:
                 result = modify_friend_tags_via_chat_profile(
                     bot,
@@ -667,27 +717,36 @@ def process_pending_wechat_tag_sync(bot, *, limit: int | None = None) -> dict[st
                     log_prefix="[关系扫描]",
                 )
                 processed += 1
-                current = state_records.get(name)
-                if result.get("status") == "success" and current:
-                    current["wechat_sync_status"] = SYNC_SYNCED
-                    current["wechat_sync_error"] = ""
-                    current["wechat_synced_at"] = _iso_timestamp()
+                current_record = state_records.get(name)
+                if current_record:
+                    current_record["wechat_sync_attempted_at"] = attempt_at
+                    current_record["wechat_sync_retry_count"] = int(current_record.get("wechat_sync_retry_count", 0) or 0) + 1
+                if result.get("status") == "success" and current_record:
+                    current_record["wechat_sync_status"] = SYNC_SYNCED
+                    current_record["wechat_sync_error"] = ""
+                    current_record["wechat_sync_next_retry_at"] = ""
+                    current_record["wechat_synced_at"] = _iso_timestamp()
                     success += 1
-                    _append_event(state, EVENT_WECHAT_SYNCED, name, status=current.get("status", ""), now=current["wechat_synced_at"])
-                elif current:
-                    current["wechat_sync_status"] = SYNC_PENDING
-                    current["wechat_sync_error"] = result.get("message") or "微信标签同步失败"
+                    _append_event(state, EVENT_WECHAT_SYNCED, name, status=current_record.get("status", ""), now=current_record["wechat_synced_at"])
+                elif current_record:
+                    current_record["wechat_sync_status"] = SYNC_PENDING
+                    current_record["wechat_sync_error"] = result.get("message") or "微信标签同步失败"
+                    current_record["wechat_sync_next_retry_at"] = (current_time + timedelta(minutes=settings["sync_interval_minutes"])).replace(microsecond=0).isoformat()
                     failed += 1
-                    _append_event(state, EVENT_WECHAT_SYNC_FAILED, name, status=current.get("status", ""), now=_iso_timestamp(), error=current["wechat_sync_error"])
+                    _append_event(state, EVENT_WECHAT_SYNC_FAILED, name, status=current_record.get("status", ""), now=_iso_timestamp(), error=current_record["wechat_sync_error"])
             except Exception as exc:
                 processed += 1
                 failed += 1
-                current = state_records.get(name)
-                if current:
-                    current["wechat_sync_status"] = SYNC_PENDING
-                    current["wechat_sync_error"] = str(exc)
+                failed_record = state_records.get(name)
+                if failed_record:
+                    failed_record["wechat_sync_status"] = SYNC_PENDING
+                    failed_record["wechat_sync_error"] = str(exc)
+                    failed_record["wechat_sync_attempted_at"] = attempt_at
+                    failed_record["wechat_sync_retry_count"] = int(failed_record.get("wechat_sync_retry_count", 0) or 0) + 1
+                    failed_record["wechat_sync_next_retry_at"] = (current_time + timedelta(minutes=settings["sync_interval_minutes"])).replace(microsecond=0).isoformat()
                 _append_event(state, EVENT_WECHAT_SYNC_FAILED, name, status=record.get("status", ""), now=_iso_timestamp(), error=str(exc))
         state["records"] = sorted(state_records.values(), key=lambda item: _clean_text(item.get("changed_at")), reverse=True)
+        state.setdefault("runtime", {})["last_wechat_tag_sync_at"] = _iso_timestamp(current_time)
         _save_bot_state(bot, state)
         if processed:
             log(message=f"[关系扫描] 微信标签同步完成：成功 {success}，失败 {failed}")

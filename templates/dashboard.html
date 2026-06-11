@@ -1481,15 +1481,18 @@ html.icons-pref-local [class*=" bi-"]::before {
               </div>
             </div>
             <div class="new-friend-l3-group new-friend-interval-group">
-              <label class="cfg-label">随机检查间隔</label>
-              <div class="new-friend-interval-row">
-                <span>最短</span>
-                <input type="number" class="form-control" id="new_friend_check_min" name="new_friend_check_min" min="60" max="3600" value="{{ config.new_friend_check_min|default(60) }}">
-                <span>秒，最长</span>
-                <input type="number" class="form-control" id="new_friend_check_max" name="new_friend_check_max" min="60" max="3600" value="{{ config.new_friend_check_max|default(300) }}">
-                <span>秒</span>
+              <div class="new-friend-interval-grid">
+                <div>
+                  <label class="cfg-label" for="new_friend_check_min">最短检查间隔</label>
+                  <input type="number" class="form-control" id="new_friend_check_min" name="new_friend_check_min" min="60" max="3600" value="{{ config.new_friend_check_min|default(60) }}">
+                  <div class="cfg-hint">默认 60 秒（范围 60-3600）</div>
+                </div>
+                <div>
+                  <label class="cfg-label" for="new_friend_check_max">最长检查间隔</label>
+                  <input type="number" class="form-control" id="new_friend_check_max" name="new_friend_check_max" min="60" max="3600" value="{{ config.new_friend_check_max|default(300) }}">
+                  <div class="cfg-hint">默认 300 秒（范围 60-3600）</div>
+                </div>
               </div>
-              <div class="cfg-hint">随机间隔范围 60 ~ 3600 秒，默认 60 ~ 300 秒</div>
             </div>
           </div>
 
@@ -1848,14 +1851,6 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
           <div class="contact-maintenance-auto-grid">
             <div>
-              <label class="cfg-label" for="relationship_scan_auto_write_contact_directory">写入本地通讯录</label>
-              <select class="form-select" id="relationship_scan_auto_write_contact_directory">
-                <option value="auto" {% if relationship_settings.get('auto_write_contact_directory', True) %}selected{% endif %}>自动</option>
-                <option value="off" {% if not relationship_settings.get('auto_write_contact_directory', True) %}selected{% endif %}>关闭</option>
-              </select>
-              <div class="cfg-hint">扫描到关系变化后，自动更新本地通讯录状态</div>
-            </div>
-            <div>
               <label class="cfg-label" for="relationship_scan_auto_sync_wechat_tags">同步到微信标签</label>
               <select class="form-select" id="relationship_scan_auto_sync_wechat_tags">
                 <option value="auto" {% if relationship_settings.get('auto_sync_wechat_tags', True) %}selected{% endif %}>自动</option>
@@ -1867,6 +1862,11 @@ html.icons-pref-local [class*=" bi-"]::before {
               <label class="cfg-label" for="relationship_scan_sync_batch_size">每轮同步标签</label>
               <input type="number" class="form-control" id="relationship_scan_sync_batch_size" min="1" max="10" value="{{ relationship_settings.get('sync_batch_size', 5) }}">
               <div class="cfg-hint">每轮真实修改微信标签的人数，范围 1-10</div>
+            </div>
+            <div>
+              <label class="cfg-label" for="relationship_scan_sync_interval_minutes">每轮同步间隔</label>
+              <input type="number" class="form-control" id="relationship_scan_sync_interval_minutes" min="1" max="1440" value="{{ relationship_settings.get('sync_interval_minutes', 10) }}">
+              <div class="cfg-hint">单位：分钟。默认 10 分钟，避免连续占用微信改标签</div>
             </div>
             <div>
               <label class="cfg-label" for="relationship_scan_interval_seconds">每次查询间隔</label>
@@ -2482,9 +2482,10 @@ html.icons-pref-local [class*=" bi-"]::before {
                 {% for source in material_sources %}
                 <div class="list-item material-source-item">
                   <input type="text" class="form-control material-source-input" value="{{ source }}" placeholder="可设置好友/群聊为来源">
-                  <div class="material-source-limit-shell">
-                    <span class="material-source-limit-prefix">素材上限：</span>
-                    <input type="number" class="form-control material-source-limit-input" min="1" max="50" value="{{ config.get('material_source_pool_limit_map', {}).get(source, 10) }}" placeholder="10" title="该来源可用素材池上限">
+                  <div class="material-source-limit-shell cfg-inline-combo__field" title="素材上限">
+                    <span class="cfg-inline-combo__prefix">最多</span>
+                    <input type="number" class="form-control cfg-inline-combo__input material-source-limit-input" min="1" max="50" value="{{ config.get('material_source_pool_limit_map', {}).get(source, 10) }}" placeholder="10" title="该来源可用素材池上限" aria-label="素材上限">
+                    <span class="cfg-inline-combo__suffix">条</span>
                   </div>
                   <button type="button" class="btn-rm btn-remove-item"{% if material_sources|length == 1 and source == '文件传输助手' %} disabled title="至少保留一个素材来源"{% endif %}><i class="bi bi-x-lg"></i></button>
                 </div>
@@ -4812,9 +4813,9 @@ $(function(){
     $('#relationship-scan-result-desc').text('本轮扫描 ' + String(summary.last_scan_count || 0) + ' 个会话');
     $('#relationship-scan-last-time').text('最近扫描 ' + (summary.last_scan_at ? relationshipScanShortTime(summary.last_scan_at) : '未扫描'));
     $('#relationship_scan_auto_enabled').prop('checked', settings.auto_scan_enabled !== false);
-    $('#relationship_scan_auto_write_contact_directory').val(settings.auto_write_contact_directory !== false ? 'auto' : 'off');
     $('#relationship_scan_auto_sync_wechat_tags').val(settings.auto_sync_wechat_tags !== false ? 'auto' : 'off');
     $('#relationship_scan_sync_batch_size').val(settings.sync_batch_size || 5);
+    $('#relationship_scan_sync_interval_minutes').val(settings.sync_interval_minutes || 10);
     $('#relationship_scan_interval_seconds').val(settings.scan_interval_seconds || 10);
     if(!records.length){
       $('#relationship-scan-record-list').addClass('is-empty').html('<div class="relationship-scan-empty">暂无关系扫描记录</div>');
@@ -4827,9 +4828,9 @@ $(function(){
       wx_id: String(_contactDirectoryBrowserState.wxId || (_relationshipScanState.payload || {}).wx_id || '').trim(),
       settings: {
         auto_scan_enabled: $('#relationship_scan_auto_enabled').is(':checked'),
-        auto_write_contact_directory: $('#relationship_scan_auto_write_contact_directory').val() !== 'off',
         auto_sync_wechat_tags: $('#relationship_scan_auto_sync_wechat_tags').val() !== 'off',
         sync_batch_size: Math.max(1, Math.min(10, parseInt($('#relationship_scan_sync_batch_size').val()) || 5)),
+        sync_interval_minutes: Math.max(1, Math.min(1440, parseInt($('#relationship_scan_sync_interval_minutes').val()) || 10)),
         scan_interval_seconds: Math.max(5, Math.min(20, parseInt($('#relationship_scan_interval_seconds').val()) || 10))
       }
     };
@@ -8070,11 +8071,11 @@ $(function(){
     runRelationshipScanAction('/relationship_scan/stop', 'btn-relationship-scan-stop', '停止中...', '停止扫描');
   });
   $('#btn-relationship-scan-clear').click(function(){
-    svModal.confirm('确定清空当前微信号的全部关系扫描结果？记录和待同步队列都会清空，此操作不可恢复；已同步到微信的标签不会自动撤销。', function(){
+    svModal.confirm('确定清空当前微信号的全部关系扫描结果？记录和待同步队列都会清空，并会暂停自动扫描和微信标签同步；已同步到微信的标签不会自动撤销。', function(){
       runRelationshipScanAction('/relationship_scan/clear', 'btn-relationship-scan-clear', '清空中...', '清空结果');
     }, '清空确认', '确定清空', '取消');
   });
-  $(document).on('change', '#relationship_scan_auto_enabled,#relationship_scan_auto_write_contact_directory,#relationship_scan_auto_sync_wechat_tags,#relationship_scan_sync_batch_size,#relationship_scan_interval_seconds', function(){
+  $(document).on('change', '#relationship_scan_auto_enabled,#relationship_scan_auto_sync_wechat_tags,#relationship_scan_sync_batch_size,#relationship_scan_sync_interval_minutes,#relationship_scan_interval_seconds', function(){
     saveRelationshipScanSettings({silent:true});
   });
 
@@ -10038,9 +10039,10 @@ $(function(){
     var safeLimit = String(Math.max(1, Math.min(50, parseInt(limit, 10) || 10)));
     return '<div class="list-item material-source-item">'+
       '<input type="text" class="form-control material-source-input" value="'+safeSource+'" placeholder="可设置好友/群聊为来源">'+
-      '<div class="material-source-limit-shell">'+
-        '<span class="material-source-limit-prefix">素材上限：</span>'+
-        '<input type="number" class="form-control material-source-limit-input" min="1" max="50" value="'+safeLimit+'" placeholder="10" title="该来源可用素材池上限">'+
+      '<div class="material-source-limit-shell cfg-inline-combo__field" title="素材上限">'+
+        '<span class="cfg-inline-combo__prefix">最多</span>'+
+        '<input type="number" class="form-control cfg-inline-combo__input material-source-limit-input" min="1" max="50" value="'+safeLimit+'" placeholder="10" title="该来源可用素材池上限" aria-label="素材上限">'+
+        '<span class="cfg-inline-combo__suffix">条</span>'+
       '</div>'+
       '<button type="button" class="btn-rm btn-remove-item"'+(deletable ? '' : ' disabled title="至少保留一个素材来源"')+'><i class="bi bi-x-lg"></i></button>'+
     '</div>';

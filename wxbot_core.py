@@ -448,6 +448,8 @@ class WXBot:
         self._chat_merge_buffers = {}
         self._chat_merge_timers = {}
         self._chat_send_locks = {}
+        self._material_source_read_locks = {}
+        self._material_source_read_locks_guard = threading.Lock()
         self._chat_reply_versions = {}
         self._recent_private_image_hashes = {}
         self._lightweight_send_queue_lock = threading.RLock()
@@ -637,6 +639,21 @@ class WXBot:
         if not hasattr(self, "_wechat_action_lock") or self._wechat_action_lock is None:
             self._wechat_action_lock = threading.RLock()
         return self._wechat_action_lock
+
+    def _get_material_source_read_lock(self, source):
+        source = str(source or "").strip()
+        if not source:
+            source = "__default__"
+        if not hasattr(self, "_material_source_read_locks") or self._material_source_read_locks is None:
+            self._material_source_read_locks = {}
+        if not hasattr(self, "_material_source_read_locks_guard") or self._material_source_read_locks_guard is None:
+            self._material_source_read_locks_guard = threading.Lock()
+        with self._material_source_read_locks_guard:
+            lock = self._material_source_read_locks.get(source)
+            if lock is None:
+                lock = threading.RLock()
+                self._material_source_read_locks[source] = lock
+            return lock
 
     def _ensure_lightweight_send_queue_state(self):
         if not hasattr(self, "_lightweight_send_queue_lock"):
@@ -2124,7 +2141,7 @@ class WXBot:
         materials = self._load_material_outreach_materials()
         if allow_rebuild:
             for source in sources:
-                materials = self._rebuild_material_runtime_pool_for_source(source, goback=False)
+                materials = self._rebuild_material_runtime_pool_for_source(source, goback=True)
 
         plan = plan_material_outreach_batches(
             task,
@@ -2192,8 +2209,21 @@ class WXBot:
         if not source:
             return self._load_material_outreach_materials()
         limit = self._material_pool_limit_for_source(source)
-        source_chat = self._ensure_material_source_chat(source)
-        messages = self._get_material_source_messages(source_chat, limit, goback=goback)
+        read_limit = limit + 10
+        with self._get_material_source_read_lock(source):
+            source_chat = self._ensure_material_source_chat(source)
+            if callable(getattr(source_chat, "GetHistoryMessage", None)):
+                with warn_slow_wechat_ui_action(f"GetHistoryMessage({source}, n={read_limit})"):
+                    messages = self._get_material_source_messages(source_chat, read_limit, goback=goback)
+            elif callable(getattr(self.wx, "GetHistoryMessage", None)) and callable(getattr(self.wx, "ChatWith", None)):
+                with self._get_wechat_action_lock():
+                    with warn_slow_wechat_ui_action(f"ChatWith({source})"):
+                        self.wx.ChatWith(source, exact=True)
+                    with warn_slow_wechat_ui_action(f"GetHistoryMessage({source}, n={read_limit})"):
+                        messages = self._get_material_source_messages(self.wx, read_limit, goback=goback)
+            else:
+                with warn_slow_wechat_ui_action(f"GetAllMessage({source})"):
+                    messages = self._get_material_source_messages(source_chat, read_limit, goback=goback)
         materials, runtime_messages, rebuilt = rebuild_material_pool_for_source(
             self._load_material_outreach_materials(),
             source,
@@ -2211,7 +2241,7 @@ class WXBot:
         kept_runtime_messages.update(runtime_messages)
         self._material_runtime_messages = kept_runtime_messages
         self._save_material_outreach_materials(materials)
-        log(message=f"[素材转发] 已重建素材池：来源 {source}，可用 {len(rebuilt)} 条，上限 {limit}")
+        log(message=f"[素材转发] 已重建素材池：来源 {source}，读取 {read_limit} 条，可用 {len(rebuilt)} 条，上限 {limit}")
         return materials
 
     def _rebuild_material_pool_for_source(self, source, *, goback=True):
@@ -2279,7 +2309,7 @@ class WXBot:
         limit = max(1, int(limit or 1))
         get_history = getattr(source_chat, "GetHistoryMessage", None)
         if callable(get_history):
-            return get_history(limit, interval=0.2, speed=2, goback=goback) or []
+            return get_history(limit, interval=0.2, speed=5, goback=goback) or []
         get_all = getattr(source_chat, "GetAllMessage", None)
         if callable(get_all):
             messages = list(get_all() or [])
@@ -2882,9 +2912,7 @@ class WXBot:
                     self._record_received_message()
                     self.last_msg_time   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     self.last_msg_sender = msg.sender
-                    if takeover_runtime.consume_skip_next_admin_self_message(self):
-                        return True
-                    if takeover_runtime.consume_admin_mirror_message(self, getattr(msg, "content", "")):
+                    if takeover_runtime.consume_admin_echo_message(self, getattr(msg, "content", "")):
                         self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
                         return True
                     with takeover_runtime.capture_admin_chat_replies(self, chat):
@@ -4568,7 +4596,7 @@ class WXBot:
                 result = send_audio(str(audio_path))
             if ReplyCountStore.was_send_success(result) or self._private_reply_send_allows_memory_save(result):
                 if chat.who == getattr(self.config, "cmd", ""):
-                    takeover_runtime.mark_skip_next_admin_self_message(self)
+                    takeover_runtime.remember_admin_echo_message(self, clean_reply)
                 self._save_private_reply_memory_message(chat, clean_reply, msg_type="voice")
                 limiter.mark_sent(state_key, now=now, limit_hours=limit_hours)
                 return True
@@ -4615,7 +4643,7 @@ class WXBot:
                                 if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
                                     break
                             if chat.who == getattr(self.config, "cmd", ""):
-                                takeover_runtime.remember_admin_mirror_message(self, segment)
+                                takeover_runtime.remember_admin_echo_message(self, segment)
                             result = chat.SendMsg(segment)
                             current_success = ReplyCountStore.was_send_success(result)
                             if current_success or self._private_reply_send_allows_memory_save(result):
@@ -4624,7 +4652,7 @@ class WXBot:
                             send_success = send_success or current_success
                     else:
                         if chat.who == getattr(self.config, "cmd", ""):
-                            takeover_runtime.remember_admin_mirror_message(self, part)
+                            takeover_runtime.remember_admin_echo_message(self, part)
                         result = chat.SendMsg(part)
                         current_success = ReplyCountStore.was_send_success(result)
                         if current_success or self._private_reply_send_allows_memory_save(result):

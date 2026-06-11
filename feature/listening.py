@@ -479,11 +479,10 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
 def remove_listen_chat_verified(bot, nickname):
     try:
         def remove_action():
-            with bot._get_wechat_action_lock():
-                with warn_slow_wechat_ui_action(f"RemoveListenChat({nickname})"):
-                    return bot.wx.RemoveListenChat(nickname)
+            with warn_slow_wechat_ui_action(f"RemoveListenChat({nickname})"):
+                return bot.wx.RemoveListenChat(nickname)
 
-        run_with_wechat_rebind_retry(
+        remove_result = run_with_wechat_rebind_retry(
             bot,
             remove_action,
             attempts=2,
@@ -493,6 +492,7 @@ def remove_listen_chat_verified(bot, nickname):
                 message=f"{nickname} 删除监听异常，重新初始化微信客户端后重试: {exc}",
             ),
         )
+        _bot_log(bot, message=f"{nickname} 删除监听返回: {listen_add_error(remove_result)}")
     except Exception as exc:
         _bot_log(bot, level="ERROR", message=f"{nickname} 删除监听失败: {exc}")
         return False

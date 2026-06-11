@@ -76,6 +76,13 @@ DEFAULT_MATERIAL_OWNERSHIP = "我的作品"
 MATERIAL_OWNERSHIP_VALUES = {"我的作品", "第三方作品"}
 MATERIAL_STATUS_VALUES = {"active", "disabled"}
 FORWARD_TEST_STATUS_VALUES = {"unknown", "success", "failed"}
+MATERIAL_REPLACEMENT_METADATA_FIELDS = (
+    "ownership",
+    "copy_note",
+    "status",
+    "forward_test_status",
+    "last_error",
+)
 
 PROGRESS_STATUS_LABELS = {
     "pending": "待转发",
@@ -405,6 +412,37 @@ def build_material_entry(material_id, source, message, *, now=None):
     }
 
 
+def _material_signature(material):
+    return str((material or {}).get("stable_signature") or "").strip()
+
+
+def _material_source(material):
+    return str((material or {}).get("source") or "").strip()
+
+
+def _copy_replaced_material_metadata(entry, matched):
+    matched = matched if isinstance(matched, dict) else {}
+    if not matched:
+        return entry
+    matched_id = str(matched.get("id") or "").strip()
+    if matched_id:
+        entry["id"] = matched_id
+    for field in MATERIAL_REPLACEMENT_METADATA_FIELDS:
+        if field not in matched:
+            continue
+        if field == "ownership":
+            entry[field] = normalize_material_ownership(matched.get(field))
+        elif field == "status":
+            entry[field] = _normalize_material_status(matched.get(field))
+        elif field == "forward_test_status":
+            entry[field] = _normalize_forward_test_status(matched.get(field))
+        elif field == "copy_note":
+            entry[field] = str(matched.get(field) or "").strip()
+        else:
+            entry[field] = str(matched.get(field) or "").strip()
+    return entry
+
+
 def trim_material_pool_by_source(materials, *, limit_per_source=DEFAULT_MATERIAL_POOL_LIMIT, limit_map=None):
     default_limit = coerce_material_pool_limit(limit_per_source)
     source_limits = normalize_material_source_pool_limit_map(limit_map)
@@ -423,7 +461,23 @@ def trim_material_pool_by_source(materials, *, limit_per_source=DEFAULT_MATERIAL
 
 def append_material_to_pool(materials, source, message, *, material_id, limit_map=None, now=None):
     entry = build_material_entry(material_id, source, message, now=now)
+    source = str(source or "").strip()
+    signature = _material_signature(entry)
     materials = list(materials or [])
+    retained = []
+    matched = None
+    for item in materials:
+        if (
+            signature
+            and _material_source(item) == source
+            and _material_signature(item) == signature
+        ):
+            matched = item
+            continue
+        retained.append(item)
+    if matched:
+        entry = _copy_replaced_material_metadata(entry, matched)
+    materials = retained
     materials.append(entry)
     return trim_material_pool_by_source(materials, limit_map=limit_map), entry
 
@@ -440,7 +494,7 @@ def collect_material_source_message(materials, source, message, *, material_id_f
         limit_map=limit_map,
         now=now,
     )
-    return pool, entry, material_id
+    return pool, entry, str((entry or {}).get("id") or material_id)
 
 
 def rebuild_material_pool_for_source(
@@ -462,9 +516,9 @@ def rebuild_material_pool_for_source(
         if item.get("source") != source:
             continue
         signature = str(item.get("stable_signature") or "").strip()
-        if signature and signature not in source_existing_by_signature:
+        if signature:
             source_existing_by_signature[signature] = item
-    rebuilt = []
+    rebuilt_by_signature = {}
     runtime_messages = {}
     for message in messages or []:
         if not is_forwardable_material_message(message):
@@ -473,16 +527,17 @@ def rebuild_material_pool_for_source(
         entry = build_material_entry(material_id, source, message, now=now)
         matched = source_existing_by_signature.get(entry.get("stable_signature"))
         if matched:
-            matched_id = str(matched.get("id") or "").strip()
-            if matched_id:
-                entry["id"] = matched_id
-                material_id = matched_id
-            entry["ownership"] = normalize_material_ownership(matched.get("ownership"))
-            entry["copy_note"] = str(matched.get("copy_note") or "").strip()
+            entry = _copy_replaced_material_metadata(entry, matched)
+            material_id = str(entry.get("id") or material_id).strip()
+        signature = _material_signature(entry) or str(material_id)
+        if signature in rebuilt_by_signature:
+            rebuilt_by_signature.pop(signature, None)
+        rebuilt_by_signature[signature] = (entry, message)
+    rebuilt_pairs = list(rebuilt_by_signature.values())[-limit:]
+    rebuilt = []
+    for entry, message in rebuilt_pairs:
         rebuilt.append(entry)
-        runtime_messages[material_id] = message
-        if len(rebuilt) >= limit:
-            break
+        runtime_messages[str(entry.get("id") or "")] = message
     pool = trim_material_pool_by_source(existing + rebuilt, limit_map=limit_map)
     return pool, runtime_messages, rebuilt
 

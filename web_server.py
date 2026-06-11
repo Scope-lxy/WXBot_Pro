@@ -5889,7 +5889,7 @@ def relationship_scan_clear():
             return jsonify({'status': 'error', 'message': '全量扫描正在运行，请先停止扫描后再清空结果。'})
         state = relationship_scan.save_state(DATA_DIR, relationship_scan.clear_state(state))
         payload = _relationship_scan_payload(state.get('wx_id') or wx_id)
-        return jsonify({'status': 'success', 'message': '已清空关系扫描结果和待同步队列', 'payload': payload})
+        return jsonify({'status': 'success', 'message': '已清空关系扫描结果和待同步队列，并暂停自动扫描和微信标签同步', 'payload': payload})
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
