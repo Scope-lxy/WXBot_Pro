@@ -172,9 +172,12 @@ from feature.material_outreach import (
     build_progress_record,
     build_send_record,
     build_skip_record,
+    build_material_entry,
+    build_stable_material_signature,
     build_target_snapshot,
     collect_material_source_message,
     iter_enabled_material_outreach_tasks,
+    is_forwardable_material_message,
     is_material_source,
     is_target_in_cooldown,
     iter_material_outreach_listen_sources,
@@ -184,6 +187,7 @@ from feature.material_outreach import (
     execute_material_outreach_task,
     material_pool_limit_for_source,
     material_title,
+    trim_material_pool_by_source,
     material_random_time_window,
     material_sources_for_task,
     material_type_label,
@@ -2210,20 +2214,7 @@ class WXBot:
             return self._load_material_outreach_materials()
         limit = self._material_pool_limit_for_source(source)
         read_limit = limit + 10
-        with self._get_material_source_read_lock(source):
-            source_chat = self._ensure_material_source_chat(source)
-            if callable(getattr(source_chat, "GetHistoryMessage", None)):
-                with warn_slow_wechat_ui_action(f"GetHistoryMessage({source}, n={read_limit})"):
-                    messages = self._get_material_source_messages(source_chat, read_limit, goback=goback)
-            elif callable(getattr(self.wx, "GetHistoryMessage", None)) and callable(getattr(self.wx, "ChatWith", None)):
-                with self._get_wechat_action_lock():
-                    with warn_slow_wechat_ui_action(f"ChatWith({source})"):
-                        self.wx.ChatWith(source, exact=True)
-                    with warn_slow_wechat_ui_action(f"GetHistoryMessage({source}, n={read_limit})"):
-                        messages = self._get_material_source_messages(self.wx, read_limit, goback=goback)
-            else:
-                with warn_slow_wechat_ui_action(f"GetAllMessage({source})"):
-                    messages = self._get_material_source_messages(source_chat, read_limit, goback=goback)
+        messages = self._read_material_source_messages(source, read_limit, goback=goback)
         materials, runtime_messages, rebuilt = rebuild_material_pool_for_source(
             self._load_material_outreach_materials(),
             source,
@@ -2246,6 +2237,38 @@ class WXBot:
 
     def _rebuild_material_pool_for_source(self, source, *, goback=True):
         return self._rebuild_material_runtime_pool_for_source(source, goback=goback)
+
+    def _read_material_source_messages(self, source, limit, *, goback=True, target_signature=""):
+        source = str(source or "").strip()
+        limit = max(1, int(limit or 1))
+        with self._get_material_source_read_lock(source):
+            source_chat = self._ensure_material_source_chat(source)
+            if callable(getattr(source_chat, "GetHistoryMessage", None)):
+                with warn_slow_wechat_ui_action(f"GetHistoryMessage({source}, n={limit})"):
+                    return self._get_material_source_messages(
+                        source_chat,
+                        limit,
+                        goback=goback,
+                        target_signature=target_signature,
+                    )
+            if callable(getattr(self.wx, "GetHistoryMessage", None)) and callable(getattr(self.wx, "ChatWith", None)):
+                with self._get_wechat_action_lock():
+                    with warn_slow_wechat_ui_action(f"ChatWith({source})"):
+                        self.wx.ChatWith(source, exact=True)
+                    with warn_slow_wechat_ui_action(f"GetHistoryMessage({source}, n={limit})"):
+                        return self._get_material_source_messages(
+                            self.wx,
+                            limit,
+                            goback=goback,
+                            target_signature=target_signature,
+                        )
+            with warn_slow_wechat_ui_action(f"GetAllMessage({source})"):
+                return self._get_material_source_messages(
+                    source_chat,
+                    limit,
+                    goback=goback,
+                    target_signature=target_signature,
+                )
 
     def _material_source_chat_is_usable(self, chat):
         return bool(
@@ -2305,11 +2328,30 @@ class WXBot:
             log(message=f"[素材转发] 已恢复素材来源子窗口：{source}")
             return result
 
-    def _get_material_source_messages(self, source_chat, limit, *, goback=True):
+    def _get_material_source_messages(self, source_chat, limit, *, goback=True, target_signature=""):
         limit = max(1, int(limit or 1))
+        target_signature = str(target_signature or "").strip()
         get_history = getattr(source_chat, "GetHistoryMessage", None)
         if callable(get_history):
-            return get_history(limit, interval=0.2, speed=5, goback=goback) or []
+            forwardable_seen = 0
+            stop_sign = getattr(WxParam, "CALLBACK_STOP_SIGN", "stop")
+
+            def stop_after_enough_materials(message):
+                nonlocal forwardable_seen
+                if target_signature and build_stable_material_signature(message) == target_signature:
+                    return stop_sign
+                if is_forwardable_material_message(message):
+                    forwardable_seen += 1
+                if forwardable_seen >= limit:
+                    return stop_sign
+
+            return get_history(
+                limit,
+                callback=stop_after_enough_materials,
+                interval=0.2,
+                speed=5,
+                goback=goback,
+            ) or []
         get_all = getattr(source_chat, "GetAllMessage", None)
         if callable(get_all):
             messages = list(get_all() or [])
@@ -2399,7 +2441,59 @@ class WXBot:
         source = str(material.get("source") or "").strip()
         stable_signature = str(material.get("stable_signature") or "").strip()
         material_id = str(material.get("id") or "").strip()
-        if source:
+        if source and stable_signature:
+            limit = self._material_pool_limit_for_source(source) + 10
+            messages = self._read_material_source_messages(
+                source,
+                limit,
+                goback=True,
+                target_signature=stable_signature,
+            )
+            matched_message = None
+            for candidate in messages or []:
+                if build_stable_material_signature(candidate) == stable_signature:
+                    matched_message = candidate
+                    break
+            if matched_message is not None:
+                materials = materials if isinstance(materials, list) else self._load_material_outreach_materials()
+                matched_material = None
+                retained = []
+                for item in materials or []:
+                    if not isinstance(item, dict):
+                        continue
+                    item_source = str(item.get("source") or "").strip()
+                    item_id = str(item.get("id") or "").strip()
+                    item_signature = str(item.get("stable_signature") or "").strip()
+                    if item_source == source and (
+                        (stable_signature and item_signature == stable_signature)
+                        or (material_id and item_id == material_id)
+                    ):
+                        matched_material = item
+                        continue
+                    retained.append(item)
+                refreshed_entry = build_material_entry(
+                    material_id or f"mat_{uuid.uuid4().hex}",
+                    source,
+                    matched_message,
+                )
+                if matched_material:
+                    refreshed_entry["id"] = str(matched_material.get("id") or refreshed_entry.get("id") or "").strip()
+                    for field in ("ownership", "copy_note", "status", "forward_test_status", "last_error"):
+                        if field in matched_material:
+                            refreshed_entry[field] = matched_material.get(field)
+                retained.append(refreshed_entry)
+                materials = trim_material_pool_by_source(
+                    retained,
+                    limit_map=getattr(self.config, "material_source_pool_limit_map", {}) or {},
+                )
+                refreshed_id = str(refreshed_entry.get("id") or "").strip()
+                if refreshed_id:
+                    self._material_runtime_messages[refreshed_id] = matched_message
+                self._save_material_outreach_materials(materials)
+                log(message=f"[素材转发] 已定向刷新素材句柄：来源 {source}，素材 {refreshed_id or stable_signature}")
+            else:
+                materials = self._rebuild_material_pool_for_source(source)
+        elif source:
             materials = self._rebuild_material_pool_for_source(source)
         else:
             materials = materials if isinstance(materials, list) else self._load_material_outreach_materials()
