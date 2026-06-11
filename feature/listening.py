@@ -143,6 +143,128 @@ def try_get_all_subwindow_names(bot):
     return {who for who in (subwindow_who(chat) for chat in (chats or [])) if who}
 
 
+def _dynamic_listener_entry_name(entry):
+    if isinstance(entry, (list, tuple)) and entry:
+        return str(entry[0] or "").strip()
+    return str(entry or "").strip()
+
+
+def has_dynamic_listener_entry(bot, nickname):
+    nickname = str(nickname or "").strip()
+    if not nickname:
+        return False
+    return any(
+        _dynamic_listener_entry_name(item) == nickname
+        for item in (getattr(bot, "all_Mode_listen_list", []) or [])
+    )
+
+
+def remove_dynamic_listener_entries(bot, nickname):
+    nickname = str(nickname or "").strip()
+    runtime_list = getattr(bot, "all_Mode_listen_list", None)
+    if not nickname or not isinstance(runtime_list, list):
+        return False
+    kept = [item for item in runtime_list if _dynamic_listener_entry_name(item) != nickname]
+    removed = len(kept) != len(runtime_list)
+    if removed:
+        runtime_list[:] = kept
+    return removed
+
+
+def _forget_runtime_listener_caches(bot, nickname):
+    runtime_chat_state.remove_listen_chat(bot, nickname)
+    material_chats = getattr(bot, "_material_source_chats", None)
+    if isinstance(material_chats, dict):
+        material_chats.pop(str(nickname or "").strip(), None)
+
+
+def _call_remove_listen_chat(bot, nickname):
+    remove_listen_chat = getattr(getattr(bot, "wx", None), "RemoveListenChat", None)
+    if not callable(remove_listen_chat):
+        raise RuntimeError("当前微信客户端不支持删除监听")
+    try:
+        return remove_listen_chat(nickname, close_window=True)
+    except TypeError:
+        return remove_listen_chat(nickname)
+
+
+def _candidate_subwindows_for_close(bot, nickname):
+    candidates = []
+    seen_ids = set()
+
+    def add_candidate(chat):
+        if not chat or isinstance(chat, dict):
+            return
+        marker = id(chat)
+        if marker in seen_ids:
+            return
+        seen_ids.add(marker)
+        candidates.append(chat)
+
+    get_subwindow = getattr(getattr(bot, "wx", None), "GetSubWindow", None)
+    if callable(get_subwindow):
+        try:
+            add_candidate(get_subwindow(nickname=nickname))
+        except TypeError:
+            try:
+                add_candidate(get_subwindow(nickname))
+            except Exception as exc:
+                _bot_log(bot, level="WARNING", message=f"获取残留监听子窗口 {nickname} 失败: {exc}")
+        except Exception as exc:
+            _bot_log(bot, level="WARNING", message=f"获取残留监听子窗口 {nickname} 失败: {exc}")
+
+    add_candidate(runtime_chat_state.get_listen_chat(bot, nickname))
+    return candidates
+
+
+def _close_subwindow_object(bot, nickname, chat):
+    close_window = getattr(chat, "Close", None)
+    if not callable(close_window):
+        return False
+    try:
+        with warn_slow_wechat_ui_action(f"CloseListenSubWindow({nickname})"):
+            close_window()
+        return True
+    except Exception as exc:
+        _bot_log(bot, level="WARNING", message=f"{nickname} 残留监听子窗口关闭失败: {exc}")
+        return False
+
+
+def close_residual_listener_subwindow(bot, nickname):
+    nickname = str(nickname or "").strip()
+    if not nickname:
+        return False
+    closed = False
+    for chat in _candidate_subwindows_for_close(bot, nickname):
+        if _close_subwindow_object(bot, nickname, chat):
+            closed = True
+    if closed:
+        _bot_sleep(bot, 0.2)
+    return closed
+
+
+def close_dynamic_listener_subwindows(bot, nicknames):
+    if isinstance(nicknames, str):
+        raw_names = [nicknames]
+    else:
+        raw_names = list(nicknames or [])
+    closed_names = []
+    seen = set()
+    for raw_name in raw_names:
+        nickname = str(raw_name or "").strip()
+        if not nickname or nickname in seen:
+            continue
+        seen.add(nickname)
+        if not has_dynamic_listener_entry(bot, nickname):
+            continue
+        remove_fn = getattr(bot, "_remove_listen_chat_verified", None)
+        removed = remove_fn(nickname) if callable(remove_fn) else remove_listen_chat_verified(bot, nickname)
+        if removed:
+            remove_dynamic_listener_entries(bot, nickname)
+            closed_names.append(nickname)
+    return closed_names
+
+
 def add_listen_chat_once(bot, nickname, label):
     def add_action():
         with bot._get_wechat_action_lock():
@@ -480,7 +602,7 @@ def remove_listen_chat_verified(bot, nickname):
     try:
         def remove_action():
             with warn_slow_wechat_ui_action(f"RemoveListenChat({nickname})"):
-                return bot.wx.RemoveListenChat(nickname)
+                return _call_remove_listen_chat(bot, nickname)
 
         remove_result = run_with_wechat_rebind_retry(
             bot,
@@ -495,17 +617,34 @@ def remove_listen_chat_verified(bot, nickname):
         _bot_log(bot, message=f"{nickname} 删除监听返回: {listen_add_error(remove_result)}")
     except Exception as exc:
         _bot_log(bot, level="ERROR", message=f"{nickname} 删除监听失败: {exc}")
-        return False
 
     _bot_sleep(bot, 0.2)
     listened_names = try_get_all_subwindow_names(bot)
     if listened_names is None:
+        residual_closed = close_residual_listener_subwindow(bot, nickname)
+        if residual_closed:
+            _forget_runtime_listener_caches(bot, nickname)
+            _bot_log(bot, level="WARNING", message=f"{nickname} 删除监听后无法校验，已尝试关闭残留子窗口并清理运行缓存")
+            return True
         _bot_log(bot, level="ERROR", message=f"{nickname} 删除监听后无法校验，保留在动态监听列表")
         return False
     if str(nickname).strip() not in listened_names:
-        runtime_chat_state.remove_listen_chat(bot, nickname)
+        _forget_runtime_listener_caches(bot, nickname)
         _bot_log(bot, message=f"{nickname} 删除监听校验通过")
         return True
+
+    _bot_log(bot, level="WARNING", message=f"{nickname} 删除监听后仍有残留子窗口，尝试直接关闭")
+    residual_closed = close_residual_listener_subwindow(bot, nickname)
+    if residual_closed:
+        listened_names = try_get_all_subwindow_names(bot)
+        if listened_names is not None and str(nickname).strip() not in listened_names:
+            _forget_runtime_listener_caches(bot, nickname)
+            _bot_log(bot, message=f"{nickname} 残留监听子窗口已关闭")
+            return True
+        if listened_names is None:
+            _forget_runtime_listener_caches(bot, nickname)
+            _bot_log(bot, level="WARNING", message=f"{nickname} 残留监听子窗口已尝试关闭，无法再次校验，已清理运行缓存")
+            return True
 
     _bot_log(bot, level="ERROR", message=f"{nickname} 删除监听校验失败，子窗口仍存在，保留在动态监听列表")
     return False

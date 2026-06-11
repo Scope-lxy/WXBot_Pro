@@ -407,6 +407,7 @@ class WXBot:
         self._random_msg_state        = {}     # 随机定时消息运行状态缓存 {task_id: state_dict}
         self._material_runtime_messages = {}
         self._material_source_chats = {}
+        self._material_source_read_strategies = {}
         self._random_material_outreach_state = {}
         self._runtime_task_reload_lock = threading.RLock()
         self._runtime_task_reload_requested = False
@@ -1678,6 +1679,9 @@ class WXBot:
     def _remove_listen_chat_verified(self, nickname):
         return listening.remove_listen_chat_verified(self, nickname)
 
+    def _close_dynamic_listener_subwindows(self, nicknames):
+        return listening.close_dynamic_listener_subwindows(self, nicknames)
+
     def _verify_initial_listeners(self, expected_chats, retry_count=3):
         return listening.verify_initial_listeners(self, expected_chats, retry_count=retry_count)
 
@@ -2224,9 +2228,21 @@ class WXBot:
             return self._load_material_outreach_materials()
         limit = self._material_pool_limit_for_source(source)
         read_limit = limit + 10
+        existing_materials = self._load_material_outreach_materials()
         messages = self._read_material_source_messages(source, read_limit, goback=goback)
+        if not any(is_forwardable_material_message(message) for message in messages or []):
+            if any(str((item or {}).get("source") or "").strip() == source for item in existing_materials or []):
+                read_strategy = self._material_source_read_strategy(source)
+                log(
+                    level="WARNING",
+                    message=(
+                        f"[素材转发] 重建素材池未读取到可转发素材，已保留旧素材池："
+                        f"来源 {source}，读取 {read_limit} 条，读取方案：{read_strategy}"
+                    ),
+                )
+                return existing_materials
         materials, runtime_messages, rebuilt = rebuild_material_pool_for_source(
-            self._load_material_outreach_materials(),
+            existing_materials,
             source,
             messages,
             limit=limit,
@@ -2242,43 +2258,187 @@ class WXBot:
         kept_runtime_messages.update(runtime_messages)
         self._material_runtime_messages = kept_runtime_messages
         self._save_material_outreach_materials(materials)
-        log(message=f"[素材转发] 已重建素材池：来源 {source}，读取 {read_limit} 条，可用 {len(rebuilt)} 条，上限 {limit}")
+        read_strategy = self._material_source_read_strategy(source)
+        log(
+            message=(
+                f"[素材转发] 已重建素材池：来源 {source}，读取 {read_limit} 条，"
+                f"可用 {len(rebuilt)} 条，上限 {limit}，读取方案：{read_strategy}"
+            )
+        )
         return materials
 
     def _rebuild_material_pool_for_source(self, source, *, goback=True):
         return self._rebuild_material_runtime_pool_for_source(source, goback=goback)
 
-    def _read_material_source_messages(self, source, limit, *, goback=True, target_signature=""):
+    def _read_material_source_messages(self, source, limit, *, goback=True, target_signature="", require_forwardable=True):
         source = str(source or "").strip()
         limit = max(1, int(limit or 1))
+        last_messages = None
+
+        def normalize_messages(messages):
+            return list(messages or [])
+
+        def messages_are_usable(messages):
+            if not require_forwardable:
+                return True
+            return any(is_forwardable_material_message(message) for message in messages or [])
+
+        def remember_unusable_messages(messages, strategy):
+            nonlocal last_messages
+            last_messages = messages
+            log(
+                level="WARNING",
+                message=(
+                    f"[素材转发] 读取素材历史未发现可转发素材，准备尝试下一读取方案："
+                    f"来源 {source}，方案 {strategy}，读取 {len(messages)} 条"
+                ),
+            )
+
         with self._get_material_source_read_lock(source):
             source_chat = self._ensure_material_source_chat(source)
-            if callable(getattr(source_chat, "GetHistoryMessage", None)):
-                with warn_slow_wechat_ui_action(f"GetHistoryMessage({source}, n={limit})"):
-                    return self._get_material_source_messages(
-                        source_chat,
-                        limit,
-                        goback=goback,
-                        target_signature=target_signature,
-                    )
-            if callable(getattr(self.wx, "GetHistoryMessage", None)) and callable(getattr(self.wx, "ChatWith", None)):
-                with self._get_wechat_action_lock():
-                    with warn_slow_wechat_ui_action(f"ChatWith({source})"):
-                        self.wx.ChatWith(source, exact=True)
-                    with warn_slow_wechat_ui_action(f"GetHistoryMessage({source}, n={limit})"):
-                        return self._get_material_source_messages(
-                            self.wx,
+            for source_reader, source_strategy in self._material_history_readers(
+                source_chat,
+                window_label="子窗口",
+                prefer_internal=True,
+            ):
+                try:
+                    with warn_slow_wechat_ui_action(f"{source_strategy}({source}, n={limit})"):
+                        messages = self._get_material_history_messages(
+                            source_reader,
                             limit,
                             goback=goback,
                             target_signature=target_signature,
                         )
-            with warn_slow_wechat_ui_action(f"GetAllMessage({source})"):
-                return self._get_material_source_messages(
-                    source_chat,
-                    limit,
-                    goback=goback,
-                    target_signature=target_signature,
-                )
+                    messages = normalize_messages(messages)
+                    if messages_are_usable(messages):
+                        self._set_material_source_read_strategy(source, source_strategy)
+                        return messages
+                    remember_unusable_messages(messages, source_strategy)
+                except Exception as exc:
+                    log(
+                        level="WARNING",
+                        message=f"[素材转发] 子窗口读取素材历史失败，准备尝试下一读取方案：来源 {source}，方案 {source_strategy}，{exc}",
+                    )
+            if callable(getattr(self.wx, "GetHistoryMessage", None)) and callable(getattr(self.wx, "ChatWith", None)):
+                try:
+                    with self._get_wechat_action_lock():
+                        with warn_slow_wechat_ui_action(f"ChatWith({source})"):
+                            self.wx.ChatWith(source, exact=True)
+                        main_reader, main_strategy = self._material_history_reader(
+                            self.wx,
+                            window_label="主窗口",
+                            allow_internal=False,
+                        )
+                        with warn_slow_wechat_ui_action(f"{main_strategy}({source}, n={limit})"):
+                            messages = self._get_material_history_messages(
+                                main_reader,
+                                limit,
+                                goback=goback,
+                                target_signature=target_signature,
+                            )
+                        messages = normalize_messages(messages)
+                        if messages_are_usable(messages):
+                            self._set_material_source_read_strategy(source, main_strategy)
+                            return messages
+                        remember_unusable_messages(messages, main_strategy)
+                except Exception as exc:
+                    log(
+                        level="WARNING",
+                        message=f"[素材转发] 主窗口读取素材历史失败，准备尝试子窗口可见消息兜底：来源 {source}，{exc}",
+                    )
+            if callable(getattr(source_chat, "GetAllMessage", None)):
+                with warn_slow_wechat_ui_action(f"子窗口可见 GetAllMessage({source}, n={limit})"):
+                    visible_strategy = "子窗口可见 GetAllMessage"
+                    messages = normalize_messages(self._get_material_visible_messages(source_chat, limit))
+                    if messages_are_usable(messages):
+                        self._set_material_source_read_strategy(source, visible_strategy)
+                        return messages
+                    remember_unusable_messages(messages, visible_strategy)
+            if last_messages is not None:
+                self._set_material_source_read_strategy(source, "未读取到可转发素材")
+                return last_messages
+            raise RuntimeError("素材来源窗口不支持读取消息")
+
+    def _material_history_readers(self, chat, *, window_label, prefer_internal=False, allow_internal=True):
+        if not chat or isinstance(chat, dict):
+            return []
+        readers = []
+        chat_box = getattr(chat, "ChatBox", None)
+        get_internal_history = getattr(chat_box, "get_msgs_from_history", None)
+        get_history = getattr(chat, "GetHistoryMessage", None)
+        internal_reader = (
+            (get_internal_history, f"{window_label}内部 ChatBox.get_msgs_from_history")
+            if allow_internal and callable(get_internal_history)
+            else None
+        )
+        public_reader = (
+            (get_history, f"{window_label}公开 GetHistoryMessage")
+            if callable(get_history)
+            else None
+        )
+        ordered = (internal_reader, public_reader) if prefer_internal else (public_reader, internal_reader)
+        for item in ordered:
+            if item is not None:
+                readers.append(item)
+        return readers
+
+    def _material_history_reader(self, chat, *, window_label, prefer_internal=False, allow_internal=True):
+        readers = self._material_history_readers(
+            chat,
+            window_label=window_label,
+            prefer_internal=prefer_internal,
+            allow_internal=allow_internal,
+        )
+        if not readers:
+            return None, ""
+        return readers[0]
+
+    def _set_material_source_read_strategy(self, source, strategy):
+        source = str(source or "").strip()
+        strategy = str(strategy or "").strip() or "未知"
+        if not hasattr(self, "_material_source_read_strategies") or self._material_source_read_strategies is None:
+            self._material_source_read_strategies = {}
+        if source:
+            self._material_source_read_strategies[source] = strategy
+
+    def _material_source_read_strategy(self, source):
+        source = str(source or "").strip()
+        strategy = ""
+        if hasattr(self, "_material_source_read_strategies") and isinstance(self._material_source_read_strategies, dict):
+            strategy = str(self._material_source_read_strategies.get(source) or "").strip()
+        return strategy or "未知"
+
+    def _get_material_history_messages(self, get_history, limit, *, goback=True, target_signature=""):
+        limit = max(1, int(limit or 1))
+        target_signature = str(target_signature or "").strip()
+        forwardable_seen = 0
+        stop_sign = getattr(WxParam, "CALLBACK_STOP_SIGN", "stop")
+
+        def stop_after_enough_materials(message):
+            nonlocal forwardable_seen
+            if target_signature and build_stable_material_signature(message) == target_signature:
+                return stop_sign
+            if is_forwardable_material_message(message):
+                forwardable_seen += 1
+            if forwardable_seen >= limit:
+                return stop_sign
+
+        return get_history(
+            limit,
+            callback=stop_after_enough_materials,
+            interval=0.2,
+            speed=5,
+            goback=goback,
+        ) or []
+
+    def _get_material_visible_messages(self, source_chat, limit):
+        get_all = getattr(source_chat, "GetAllMessage", None)
+        if callable(get_all):
+            messages = list(get_all() or [])
+            if len(messages) > limit:
+                return messages[-limit:]
+            return messages
+        raise RuntimeError("素材来源子窗口不支持读取可见消息")
 
     def _material_source_chat_is_usable(self, chat):
         return bool(
@@ -2286,6 +2446,7 @@ class WXBot:
             and not isinstance(chat, dict)
             and (
                 callable(getattr(chat, "GetHistoryMessage", None))
+                or bool(self._material_history_reader(chat, window_label="子窗口", prefer_internal=True)[0])
                 or callable(getattr(chat, "GetAllMessage", None))
             )
         )
@@ -2339,35 +2500,20 @@ class WXBot:
             return result
 
     def _get_material_source_messages(self, source_chat, limit, *, goback=True, target_signature=""):
-        limit = max(1, int(limit or 1))
-        target_signature = str(target_signature or "").strip()
-        get_history = getattr(source_chat, "GetHistoryMessage", None)
+        get_history, _strategy = self._material_history_reader(
+            source_chat,
+            window_label="子窗口",
+            prefer_internal=True,
+        )
         if callable(get_history):
-            forwardable_seen = 0
-            stop_sign = getattr(WxParam, "CALLBACK_STOP_SIGN", "stop")
-
-            def stop_after_enough_materials(message):
-                nonlocal forwardable_seen
-                if target_signature and build_stable_material_signature(message) == target_signature:
-                    return stop_sign
-                if is_forwardable_material_message(message):
-                    forwardable_seen += 1
-                if forwardable_seen >= limit:
-                    return stop_sign
-
-            return get_history(
+            return self._get_material_history_messages(
+                get_history,
                 limit,
-                callback=stop_after_enough_materials,
-                interval=0.2,
-                speed=5,
                 goback=goback,
-            ) or []
-        get_all = getattr(source_chat, "GetAllMessage", None)
-        if callable(get_all):
-            messages = list(get_all() or [])
-            if len(messages) > limit:
-                return messages[-limit:]
-            return messages
+                target_signature=target_signature,
+            )
+        if callable(getattr(source_chat, "GetAllMessage", None)):
+            return self._get_material_visible_messages(source_chat, limit)
         raise RuntimeError("素材来源子窗口不支持读取消息")
 
     def _material_pool_limit_for_source(self, source):
@@ -2380,8 +2526,12 @@ class WXBot:
         last_error = None
         for attempt in range(max(1, int(attempts or 1))):
             try:
-                source_chat = self._ensure_material_source_chat(source)
-                self._get_material_source_messages(source_chat, 1, goback=True)
+                self._read_material_source_messages(
+                    source,
+                    1,
+                    goback=True,
+                    require_forwardable=False,
+                )
                 if attempt:
                     log(message=f"[素材转发] 恢复素材源最新位置成功：{source}")
                 return True
@@ -2500,7 +2650,13 @@ class WXBot:
                 if refreshed_id:
                     self._material_runtime_messages[refreshed_id] = matched_message
                 self._save_material_outreach_materials(materials)
-                log(message=f"[素材转发] 已定向刷新素材句柄：来源 {source}，素材 {refreshed_id or stable_signature}")
+                read_strategy = self._material_source_read_strategy(source)
+                log(
+                    message=(
+                        f"[素材转发] 已定向刷新素材句柄：来源 {source}，"
+                        f"素材 {refreshed_id or stable_signature}，读取方案：{read_strategy}"
+                    )
+                )
             else:
                 materials = self._rebuild_material_pool_for_source(source)
         elif source:
@@ -2532,7 +2688,14 @@ class WXBot:
             return material, message, materials
         return self._refresh_material_runtime_message(material, materials)
 
-    def _forward_material_message(self, message, targets, *, preface=""):
+    def _forward_material_message(self, message, targets, *, preface="", material_source=""):
+        material_source = str(material_source or "").strip()
+        if material_source:
+            with self._get_material_source_read_lock(material_source):
+                return self._forward_material_message_unlocked(message, targets, preface=preface)
+        return self._forward_material_message_unlocked(message, targets, preface=preface)
+
+    def _forward_material_message_unlocked(self, message, targets, *, preface=""):
         with self._get_wechat_action_lock():
             target_label = "、".join(str(item or "").strip() for item in (targets or []) if str(item or "").strip())
             with warn_slow_wechat_ui_action(f"message.forward({target_label or 'unknown'})"):
@@ -2680,14 +2843,24 @@ class WXBot:
         success = False
         error = ""
         try:
-            success, error = self._forward_material_message(message, [record.get("target")], preface=preface)
+            success, error = self._forward_material_message(
+                message,
+                [record.get("target")],
+                preface=preface,
+                material_source=material.get("source") or record.get("material_source", ""),
+            )
             if not success and self._material_forward_error_needs_refresh(error):
                 log(level="WARNING", message=f"[素材转发] 素材句柄失效，已刷新来源子窗口后重试：{title}")
                 material, message, materials = self._refresh_material_runtime_message(material, materials)
                 material_id = str(material.get("id") or material_id).strip()
                 title = material_title(material) or title
                 if message is not None:
-                    success, error = self._forward_material_message(message, [record.get("target")], preface=preface)
+                    success, error = self._forward_material_message(
+                        message,
+                        [record.get("target")],
+                        preface=preface,
+                        material_source=material.get("source") or record.get("material_source", ""),
+                    )
         except Exception as exc:
             error = str(exc)
             if self._material_forward_error_needs_refresh(error):
@@ -2697,7 +2870,12 @@ class WXBot:
                     material_id = str(material.get("id") or material_id).strip()
                     title = material_title(material) or title
                     if message is not None:
-                        success, error = self._forward_material_message(message, [record.get("target")], preface=preface)
+                        success, error = self._forward_material_message(
+                            message,
+                            [record.get("target")],
+                            preface=preface,
+                            material_source=material.get("source") or record.get("material_source", ""),
+                        )
                 except Exception as retry_exc:
                     error = str(retry_exc)
         finally:
@@ -2850,7 +3028,12 @@ class WXBot:
         error = ""
         batch_id = f"batch_{uuid.uuid4().hex}"
         try:
-            success, error = self._forward_material_message(message, targets, preface=preface)
+            success, error = self._forward_material_message(
+                message,
+                targets,
+                preface=preface,
+                material_source=material_source,
+            )
             if not success and self._material_forward_error_needs_refresh(error):
                 log(level="WARNING", message=f"[素材转发] 素材句柄失效，已刷新来源子窗口后重试：{title}")
                 material, message, materials = self._refresh_material_runtime_message(material, materials)
@@ -2859,7 +3042,12 @@ class WXBot:
                 material_type = material.get("type_bucket") or material.get("type")
                 material_source = material.get("source", "")
                 if message is not None:
-                    success, error = self._forward_material_message(message, targets, preface=preface)
+                    success, error = self._forward_material_message(
+                        message,
+                        targets,
+                        preface=preface,
+                        material_source=material_source,
+                    )
         except Exception as exc:
             error = str(exc)
             if self._material_forward_error_needs_refresh(error):
@@ -2871,7 +3059,12 @@ class WXBot:
                     material_type = material.get("type_bucket") or material.get("type")
                     material_source = material.get("source", "")
                     if message is not None:
-                        success, error = self._forward_material_message(message, targets, preface=preface)
+                        success, error = self._forward_material_message(
+                            message,
+                            targets,
+                            preface=preface,
+                            material_source=material_source,
+                        )
                 except Exception as retry_exc:
                     error = str(retry_exc)
         finally:
@@ -5450,12 +5643,22 @@ class WXBot:
         error = ""
         try:
             preface = record.get("preface") if record.get("preface_enabled") else ""
-            success, error = self._forward_material_message(runtime_message, [record.get("target")], preface=preface)
+            success, error = self._forward_material_message(
+                runtime_message,
+                [record.get("target")],
+                preface=preface,
+                material_source=material.get("source") or record.get("material_source", ""),
+            )
             if not success and self._material_forward_error_needs_refresh(error):
                 log(level="WARNING", message=f"[AI素材转发] 素材句柄失效，已刷新来源子窗口后重试：{record.get('material_title', '')}")
                 material, runtime_message, _materials = self._refresh_material_runtime_message(material)
                 if runtime_message is not None:
-                    success, error = self._forward_material_message(runtime_message, [record.get("target")], preface=preface)
+                    success, error = self._forward_material_message(
+                        runtime_message,
+                        [record.get("target")],
+                        preface=preface,
+                        material_source=material.get("source") or record.get("material_source", ""),
+                    )
         except Exception as exc:
             success = False
             error = str(exc)
@@ -5465,7 +5668,12 @@ class WXBot:
                     material, runtime_message, _materials = self._refresh_material_runtime_message(material)
                     if runtime_message is not None:
                         preface = record.get("preface") if record.get("preface_enabled") else ""
-                        success, error = self._forward_material_message(runtime_message, [record.get("target")], preface=preface)
+                        success, error = self._forward_material_message(
+                            runtime_message,
+                            [record.get("target")],
+                            preface=preface,
+                            material_source=material.get("source") or record.get("material_source", ""),
+                        )
                 except Exception as retry_exc:
                     error = str(retry_exc)
         self._append_material_send_record(

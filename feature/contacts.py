@@ -25,6 +25,7 @@ from core.wechat_window import (
 )
 from core.wechat_observability import warn_slow_wechat_ui_action
 from core.logger import log
+from feature import listening
 from feature import takeover_runtime
 from feature.material_outreach import append_bounded_record
 
@@ -213,6 +214,38 @@ def friend_info_edit_success(response: Any) -> bool:
     return isinstance(response, dict) and response.get("status") == "成功"
 
 
+def _friend_edit_cleanup_names(target_name: str, expected_names: set[str] | None, remark: str | None) -> list[str]:
+    names = [target_name]
+    names.extend(expected_names or [])
+    if remark:
+        names.append(remark)
+    cleaned = []
+    seen = set()
+    for name in names:
+        name = _clean_text(name)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        cleaned.append(name)
+    return cleaned
+
+
+def close_dynamic_listener_after_friend_edit(
+    bot,
+    target_name: str,
+    *,
+    expected_names: set[str] | None = None,
+    remark: str | None = None,
+    log_prefix: str = "[通讯录维护]",
+) -> list[str]:
+    close_fn = getattr(bot, "_close_dynamic_listener_subwindows", None)
+    names = _friend_edit_cleanup_names(target_name, expected_names, remark)
+    closed_names = close_fn(names) if callable(close_fn) else listening.close_dynamic_listener_subwindows(bot, names)
+    if closed_names:
+        _bot_log(bot, message=f"{log_prefix} 已关闭临时监听子窗口：{', '.join(closed_names)}")
+    return closed_names
+
+
 def edit_friend_info_via_chat_profile(
     bot,
     target_name: str,
@@ -221,6 +254,8 @@ def edit_friend_info_via_chat_profile(
     remark: str | None = None,
     add_tags: list[str] | None = None,
     remove_tags: list[str] | None = None,
+    close_dynamic_listener: bool = True,
+    log_prefix: str = "[通讯录维护]",
 ) -> Any:
     target_name = _clean_text(target_name)
     if not target_name:
@@ -264,9 +299,16 @@ def edit_friend_info_via_chat_profile(
         response = dict(response)
         response["status"] = "成功"
         response["noop"] = True
-        return response
-    if not friend_info_edit_success(response):
+    elif not friend_info_edit_success(response):
         raise RuntimeError(f"修改好友信息未返回明确成功：{response}")
+    if close_dynamic_listener:
+        close_dynamic_listener_after_friend_edit(
+            bot,
+            target_name,
+            expected_names=expected_names,
+            remark=remark,
+            log_prefix=log_prefix,
+        )
     return response
 
 
@@ -323,6 +365,7 @@ def modify_friend_tags_via_chat_profile(
                 expected_names={target_name},
                 add_tags=add_tags,
                 remove_tags=remove_tags,
+                log_prefix=log_prefix,
             )
 
         try:
@@ -1757,6 +1800,7 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
                     target_name,
                     expected_names=contact_expected_chat_names(contact, target_name),
                     remark=suggested_remark,
+                    log_prefix="[通讯录维护]",
                 )
 
             try:

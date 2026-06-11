@@ -913,6 +913,43 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(calls[2][0], "EditFriendInfo")
         self.assertEqual(calls[2][1]["add_tags"], ["付费用户"])
 
+    def test_modify_friend_tags_closes_dynamic_listener_after_success(self):
+        calls = []
+
+        class FakeWeChat:
+            def ChatWith(self, who, exact=True):
+                calls.append(("ChatWith", who, exact))
+
+            def ChatInfo(self):
+                calls.append(("ChatInfo",))
+                return {"chat_type": "friend", "chat_name": "阿英2"}
+
+            def EditFriendInfo(self, **kwargs):
+                calls.append(("EditFriendInfo", kwargs))
+                return {"status": "成功", "message": None, "data": None}
+
+        class FakeBot:
+            wx = FakeWeChat()
+
+            def __init__(self):
+                self.all_Mode_listen_list = [["阿英2", 1]]
+
+            def _close_dynamic_listener_subwindows(self, names):
+                calls.append(("CloseDynamic", list(names)))
+                self.all_Mode_listen_list.clear()
+                return ["阿英2"]
+
+        with patch("feature.contacts.bring_wechat_to_front", return_value=1):
+            result = modify_friend_tags_via_chat_profile(
+                FakeBot(),
+                [{"name": "阿英2"}],
+                add_tags=["付费用户"],
+                log_prefix="[关系扫描]",
+            )
+
+        self.assertEqual(result["status"], "success")
+        self.assertIn(("CloseDynamic", ["阿英2"]), calls)
+
     def test_modify_friend_tags_treats_noop_as_success_without_retry(self):
         calls = []
 

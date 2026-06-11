@@ -5,9 +5,10 @@
 ## 先看哪份文档
 
 - `README.md`：给使用者看的功能说明、目录说明、配置/打包边界。
-- `本地项目开发指南.md`：给开发维护者看的当前代码结构、运行链路和改动边界。
-- `docs/docs.md`：给需要导出或对外同步完整使用说明时用，内容应该和当前面板行为一致。
-- `人设编写规范模板.md`：给维护者写基础人设与人设近况时用，属于根目录下的辅助模板，需要时可直接删除或替换。
+- `docs/本地项目开发指南.md`：给开发维护者看的当前代码结构、运行链路和改动边界。
+- `docs/人设编写规范模板.md`：给维护者写基础人设与人设近况时用的辅助模板。
+- `docs/产品UI排版规范.md`：给后续改管理面板时用的统一排版约束。
+- `docs/伪BUG记录.md`：给排查和回归时用，避免重复把已接受机制当成 BUG。
 - `AGENTS.md`：给 AI 协作时用，约束项目边界、红线和推荐检查命令。
 
 ## 维护原则
@@ -30,7 +31,7 @@
 - `core/`：可复用底座能力。
 - `feature/`：机器人业务规则。
 - `extension/`：外部增强通道。
-- 根目录 `diagnose_*.py`：本地诊断脚本。
+- `tools/`：本地复现脚本、备份脚本和专项测试辅助。
 - `tests/`：行为保护测试。
 
 ## 当前运行链路
@@ -220,6 +221,8 @@
 - `feature/admin_commands.py`：管理员命令入口和分发。
 - `feature/admin_status.py`：`/状态`、`/监听列表`、`/自动回复状态`、`/当前会话` 文案拼装。
 - `feature/admin_control.py`：管理员命令对应的业务动作。
+- `feature/admin_moments_flow.py`：管理员发圈前台的草稿收集、超时和确认流程。
+- `feature/admin_forward_flow.py`：管理员素材转发前台的草稿收集、目标选择和确认流程。
 - `feature/takeover_runtime.py`：管理员工作台模式、接管会话、消息镜像、管理员普通消息路由。
 - `core/daily_runtime_stats.py`：管理员 `/状态` 使用的全局当天统计真源，不按 `wx_id` 隔离，也不受任务执行记录清空影响。
 - `feature/message_routing.py`：新消息过滤、黑白名单/群私聊分流、关键词前置判断、接管与普通回复入口路由。
@@ -229,14 +232,23 @@
 - `feature/contacts.py`：通讯录建档、自动维护、批次分析、状态摘要。
 - `feature/listening.py`：监听窗口维护、监听初始化、全局监听收消息、新好友通过、群欢迎语和监听超时移除。
 - `feature/new_friends.py`：新好友通过、自动备注标签和状态文案。
+- `feature/relationship_scan.py`：关系扫描结果、微信标签同步和“删除我的人 / 拉黑我的人”状态沉淀。
+- `feature/friend_request.py`：好友申请设置、候选人、调度和执行记录。
+- `feature/friend_request_senders.py`：好友申请发送器；当前真实发送方式是会话验证入口。
 - `feature/material_outreach.py`：素材池、目标解析、批次规划、发送 / 跳过 / 进度记录、随机素材转发计划。
 - `feature/ai_material_outreach.py`：AI 自动转发判断、pending 队列、节流和取消逻辑。
+- `feature/material_outreach_storage.py`：素材任务、素材池和运行记录的存取适配。
+- `feature/material_outreach_preface.py`：素材转发附加文案相关的结构化辅助。
 - `feature/scheduled_messages.py`：定时消息真实执行适配。
 - `feature/scheduled_message_tasks.py`：统一定时消息任务对象、运行态、执行历史和回退逻辑。
+- `feature/runtime_task_runner.py`：统一时间任务执行入口和运行时推进。
 - `feature/moments_tasks.py`：发圈草稿、候选文案、任务规范化、排队和退回状态。
 - `feature/moments_publisher.py`：朋友圈真实发布动作封装。
 - `feature/moments_like.py`：随机朋友圈点赞。
+- `feature/voice_reply.py`：语音回复触发判定、限流和运行态持久化。
+- `feature/task_display_titles.py`：任务工作台标题、摘要和展示文案归一化。
 - `feature/task_workbench_contract.py`：统一任务卡片 / 队列 / 执行记录的数据契约。
+- `feature/task_workbench_runtime_summary.py`：任务工作台运行时实例和执行记录摘要聚合。
 - `feature/task_workbench_storage.py`：按模块读写 `tasks / runtime / history` 的存储适配层。
 - `feature/task_workbench_service.py`：定时消息、素材转发、发圈任务共用的工作台服务层。
 
@@ -275,6 +287,9 @@
 - `data/accounts/<wx_id>/tasks/material_outreach/{tasks,runtime,history,materials}.json`：素材转发任务、运行态、执行记录和素材池。
 - `data/accounts/<wx_id>/tasks/moments/{tasks,runtime,history}.json`：发朋友圈任务定义、运行态和执行记录。
 - `data/accounts/<wx_id>/tasks/moments/uploads/`：发圈上传图片。
+- `data/accounts/<wx_id>/relationship_scan/relationships.json`：关系扫描结果、同步状态和事件记录。
+- `data/accounts/<wx_id>/friend_request/state.json`：好友申请设置、候选人、执行记录和日统计。
+- `data/accounts/<wx_id>/config/voice_reply_state.json`：语音回复限流和最近触发运行态。
 - `data/accounts/<wx_id>/moments_drafts/active_draft.json`：管理员发圈草稿运行态。
 - `data/config/daily_runtime_stats.json`：机器人级别的当天统计；当前记录已收消息、已回复消息、定时消息、素材转发、AI 转发和发朋友圈次数。
 - `data/accounts/default/`：只有在没有运行中微信号、没有 `last_wx_id`、也没有任何已有账号数据时才使用的默认账号空间；不要把它理解成所有场景下的固定主目录。
@@ -301,7 +316,7 @@
 
 ### 打包边界
 
-`打包发布.ps1` 当前的真实行为是：输出 `dist/WXBot_Pro.zip`，并自动带上本地 Python 3.12 runtime。它只打包 `core/`、`feature/`、`extension/`、`templates/`、`data/system_prompts/` 和启动所需根目录文件；`data/config/`、`data/prompt/`、`data/accounts/`、`panel_logs/`、`docs/`、`backups/`、`dist/`、`tests/`、本地 `venv/` 和 `.git/` 都不会进包。因为整个 `venv/` 都不打包，自动下载到 `venv\tools\ffmpeg\` 的 `ffmpeg` / `ffprobe` 也不会随包分发，工作机首次运行 `打开软件.bat` 时会按启动链路自动补齐。
+当前仓库没有可直接使用的 `打包发布.ps1`，也没有默认产出的 `dist/WXBot_Pro.zip`。这份 fork 现在按“整目录复制”交付最稳：复制代码目录、`data/system_prompts/`，以及需要继承的 `data/config/`、`data/prompt/`、`data/accounts/` 等用户数据即可。新机器首次运行继续执行 `打开软件.bat`，让它按启动链路自动补齐 `venv`、依赖和缺失的 `ffmpeg` / `ffprobe`。
 
 ## 当前关键行为边界
 
@@ -377,7 +392,7 @@ git diff --cached --name-only
 
 - 面板新增 / 删除功能卡片、接口或运行入口：更新 `README.md`。
 - 代码结构、模块职责、运行链路或打包边界变化：更新 `本地项目开发指南.md`。
-- 对外完整使用说明或网页文档行为变化：同步更新 `docs/docs.md`。
+- 对外完整使用说明变化：当前仓库默认以 `README.md` 为主；如果另外新增了对外文档，再一起同步更新。
 - AI 协作边界、风险点、推荐检查命令变化：更新 `AGENTS.md`。
 
 文档不要写成阶段日志。开发说明要写“现在是什么”，不是“上次做到了哪一步、下次准备做什么”。

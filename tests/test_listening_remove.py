@@ -40,6 +40,58 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertTrue(any("张三 删除监听返回" in item and "窗口忙" in item for item in logs))
 
+    def test_remove_listen_chat_closes_residual_window_when_registration_missing(self):
+        calls = []
+        windows = []
+
+        class ResidualChat:
+            who = "张三"
+
+            def Close(self):
+                calls.append(("Close", self.who))
+                windows.clear()
+
+        class FakeWeChat:
+            def RemoveListenChat(self, nickname, close_window=True):
+                calls.append(("RemoveListenChat", nickname, close_window))
+                return {"status": "失败", "message": "未找到监听对象"}
+
+            def GetAllSubWindow(self):
+                return list(windows)
+
+            def GetSubWindow(self, nickname=None):
+                calls.append(("GetSubWindow", nickname))
+                return windows[0] if windows else None
+
+        windows.append(ResidualChat())
+        bot = SimpleNamespace(
+            _listen_chats={"张三": windows[0]},
+            _material_source_chats={"张三": windows[0]},
+            wx=FakeWeChat(),
+        )
+
+        with mock.patch.object(listening, "_bot_sleep", return_value=None):
+            result = listening.remove_listen_chat_verified(bot, "张三")
+
+        self.assertTrue(result)
+        self.assertEqual(calls[0], ("RemoveListenChat", "张三", True))
+        self.assertIn(("Close", "张三"), calls)
+        self.assertNotIn("张三", bot._listen_chats)
+        self.assertNotIn("张三", bot._material_source_chats)
+
+    def test_close_dynamic_listener_subwindows_removes_runtime_entry_after_close(self):
+        calls = []
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[["张三", 1], ["李四", 2]],
+        )
+        bot._remove_listen_chat_verified = lambda name: calls.append(name) or True
+
+        closed = listening.close_dynamic_listener_subwindows(bot, ["张三", "王五"])
+
+        self.assertEqual(closed, ["张三"])
+        self.assertEqual(calls, ["张三"])
+        self.assertEqual(bot.all_Mode_listen_list, [["李四", 2]])
+
 
 if __name__ == "__main__":
     unittest.main()
