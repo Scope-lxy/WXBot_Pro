@@ -109,6 +109,7 @@ from core.message_pipeline import (
     MAX_MERGED_PRIVATE_IMAGES,
     QUOTE_IMAGE_MARKER,
     build_merged_private_message,
+    message_content_fingerprint,
     message_unique_id,
     split_quoted_image_message,
 )
@@ -448,6 +449,7 @@ class WXBot:
         self._init_prompt_system()
         self._incoming_seen_lock = threading.Lock()
         self._incoming_seen_ids = {}
+        self._incoming_seen_fingerprints = {}
         self._wechat_action_lock = threading.RLock()
         self._chat_merge_lock = threading.Lock()
         self._chat_merge_buffers = {}
@@ -3232,6 +3234,7 @@ class WXBot:
         :param chat: 聊天窗口子对象（含 who 等属性）
         """
         try:
+            setattr(msg, "_wxbot_ingress_source", "subwindow")
             # 记录原始消息日志
             msg_type_label = {
                 "text": "文本",
@@ -4337,6 +4340,8 @@ class WXBot:
             self._incoming_seen_lock = threading.Lock()
         if not hasattr(self, '_incoming_seen_ids'):
             self._incoming_seen_ids = {}
+        if not hasattr(self, '_incoming_seen_fingerprints'):
+            self._incoming_seen_fingerprints = {}
         if not hasattr(self, '_chat_merge_lock'):
             self._chat_merge_lock = threading.Lock()
         if not hasattr(self, '_chat_merge_buffers'):
@@ -4381,6 +4386,38 @@ class WXBot:
             if key in self._incoming_seen_ids:
                 return False
             self._incoming_seen_ids[key] = now
+            return True
+
+    def _mark_message_content_fingerprint_seen(self, chat_name, message, ttl=10):
+        self._ensure_message_runtime_state()
+        key = message_content_fingerprint(chat_name, message)
+        now = time.time()
+        source = str(getattr(message, "_wxbot_ingress_source", "") or "").strip()
+
+        def fingerprint_seen_at(value):
+            if isinstance(value, (list, tuple)) and value:
+                return float(value[0] or 0)
+            return float(value or 0)
+
+        def fingerprint_seen_source(value):
+            if isinstance(value, (list, tuple)) and len(value) >= 2:
+                return str(value[1] or "").strip()
+            return ""
+
+        with self._incoming_seen_lock:
+            cutoff = now - max(1, int(ttl or 1))
+            self._incoming_seen_fingerprints = {
+                k: v for k, v in self._incoming_seen_fingerprints.items() if fingerprint_seen_at(v) >= cutoff
+            }
+            previous = self._incoming_seen_fingerprints.get(key)
+            if (
+                previous
+                and fingerprint_seen_at(previous) >= cutoff
+                and fingerprint_seen_source(previous)
+                and fingerprint_seen_source(previous) != source
+            ):
+                return False
+            self._incoming_seen_fingerprints[key] = (now, source)
             return True
 
     def _mark_recent_private_image_seen(self, chat_name, image_path, ttl=60):
@@ -4457,11 +4494,17 @@ class WXBot:
             if not self._mark_message_seen(chat.who, message):
                 log(message=f"私聊 {chat.who} 重复失败语音已跳过：" + str(getattr(message, 'content', '')))
                 return True
+            if not self._mark_message_content_fingerprint_seen(chat.who, message):
+                log(message=f"私聊 {chat.who} 短时间重复失败语音回调已跳过：" + str(getattr(message, 'content', '')))
+                return True
             return self._send_private_voice_transcription_fallback(chat)
         if self._should_skip_private_ai_message(message):
             return True
         if not self._mark_message_seen(chat.who, message):
             log(message=f"私聊 {chat.who} 重复消息已跳过：" + str(getattr(message, 'content', '')))
+            return True
+        if not self._mark_message_content_fingerprint_seen(chat.who, message):
+            log(message=f"私聊 {chat.who} 短时间重复回调已跳过：" + str(getattr(message, 'content', '')))
             return True
         if self._should_skip_recent_duplicate_private_image(chat.who, message):
             log(message=f"私聊 {chat.who} 短时间重复图片已跳过：" + str(getattr(message, 'content', '')))

@@ -4,6 +4,7 @@ from unittest import mock
 
 from core.api import API_ERROR_REPLY_TEXT, DusAPI, OpenAIAPI, build_api_config_snapshot
 from feature import message_routing
+from wxbot_core import WXBot
 
 
 class ApiBehaviorTests(unittest.TestCase):
@@ -155,6 +156,50 @@ class MessageBehaviorTests(unittest.TestCase):
             message_routing._update_alllisten_timestamp(bot, "张三")
 
         self.assertEqual(bot.all_Mode_listen_list, [["张三", 9.0]])
+
+    def test_private_message_dedupes_same_content_from_different_ingress_sources(self):
+        bot = WXBot.__new__(WXBot)
+        first = SimpleNamespace(
+            type="text",
+            attr="friend",
+            sender="张三",
+            content="你好",
+            id="global-id",
+            _wxbot_ingress_source="global",
+        )
+        duplicate = SimpleNamespace(
+            type="text",
+            attr="friend",
+            sender="张三",
+            content="你好",
+            id="subwindow-id",
+            _wxbot_ingress_source="subwindow",
+        )
+
+        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", first))
+        self.assertFalse(bot._mark_message_content_fingerprint_seen("张三", duplicate))
+
+    def test_private_message_allows_same_content_from_same_ingress_source(self):
+        bot = WXBot.__new__(WXBot)
+        first = SimpleNamespace(
+            type="text",
+            attr="friend",
+            sender="张三",
+            content="你好",
+            id="subwindow-id-1",
+            _wxbot_ingress_source="subwindow",
+        )
+        second = SimpleNamespace(
+            type="text",
+            attr="friend",
+            sender="张三",
+            content="你好",
+            id="subwindow-id-2",
+            _wxbot_ingress_source="subwindow",
+        )
+
+        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", first))
+        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", second))
 
 
 if __name__ == "__main__":

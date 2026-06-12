@@ -25,6 +25,18 @@ def message_unique_id(chat_name, message):
     return "hash:" + hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
 
 
+def message_content_fingerprint(chat_name, message):
+    """Build a short-lived fingerprint for duplicate callbacks of the same message."""
+    raw = "|".join([
+        str(chat_name).strip(),
+        str(getattr(message, "sender", "")).strip(),
+        str(getattr(message, "type", "")).strip(),
+        str(getattr(message, "attr", "")).strip(),
+        str(getattr(message, "content", "")).strip(),
+    ])
+    return "content:" + hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
 def split_quoted_image_message(content):
     """Split merged text+image content into text and ordered image paths."""
     raw = str(content or "")

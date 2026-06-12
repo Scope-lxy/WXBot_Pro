@@ -166,6 +166,30 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(touched)
         self.assertEqual(bot.all_Mode_listen_list, [["阿英2", 9.0]])
 
+    def test_cached_listener_subwindow_matches_requires_same_who(self):
+        bot = SimpleNamespace(_listen_chats={"张三": SimpleNamespace(who="张三")})
+
+        self.assertTrue(listening.cached_listener_subwindow_matches(bot, "张三"))
+        self.assertFalse(listening.cached_listener_subwindow_matches(bot, "李四"))
+
+    def test_schedule_global_listener_fallback_processes_message_later(self):
+        processed = []
+        bot = SimpleNamespace(
+            run_flag=True,
+            process_message=lambda chat, msg: processed.append((chat.who, msg.content)) or True,
+            _maybe_update_conversation_memory=lambda _chat, _msg: None,
+        )
+        msg = SimpleNamespace(content="你好")
+
+        with mock.patch.object(listening.threading, "Timer") as fake_timer:
+            fake_timer.return_value = SimpleNamespace(daemon=False, start=lambda: None)
+            scheduled = listening.schedule_global_listener_fallback(bot, "张三", msg)
+            callback = fake_timer.call_args.args[1]
+
+        self.assertTrue(scheduled)
+        callback()
+        self.assertEqual(processed, [("张三", "你好")])
+
     def test_add_listen_chat_once_returns_wechat_result(self):
         calls = []
         logs = []
