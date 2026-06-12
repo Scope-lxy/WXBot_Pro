@@ -273,6 +273,9 @@ class RelationshipScanTests(unittest.TestCase):
         self.assertEqual([item for item in calls if item == "go_top"], ["go_top", "go_top"])
         self.assertLess(calls.index("get_session"), len(calls) - 1)
         self.assertEqual(result["payload"]["summary"]["last_scan_mode"], "full")
+        progress = result["payload"]["summary"]["full_scan_progress"]
+        self.assertEqual(progress["status"], "completed")
+        self.assertEqual(progress["unique_count"], 1)
 
     def test_full_scan_keeps_result_when_final_go_top_fails(self):
         calls = []
@@ -369,6 +372,47 @@ class RelationshipScanTests(unittest.TestCase):
         self.assertIn(("flush", 20), calls)
         self.assertGreaterEqual(calls.count("lock_enter"), 2)
         self.assertEqual(result["payload"]["summary"]["last_scan_count"], 3)
+
+    def test_full_scan_allow_running_takes_over_starting_state(self):
+        class FakeLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+        class FakeSessionBox:
+            def go_top(self):
+                pass
+
+        class FakeWeChat:
+            SessionBox = FakeSessionBox()
+
+            def GetSession(self):
+                return [{"name": "阿英2", "content": "普通消息"}]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = {
+                "wx_id": "wxid_test",
+                "runtime": {
+                    "full_scan_running": True,
+                    "full_scan_progress": {"status": "running", "message": "全量扫描正在启动"},
+                },
+            }
+            save_state(tmp, state)
+            bot = SimpleNamespace(
+                wx=FakeWeChat(),
+                wx_id="wxid_test",
+                config=SimpleNamespace(DATA_DIR=tmp),
+                _get_wechat_action_lock=lambda: FakeLock(),
+            )
+
+            blocked = scan_full_sessions(bot, max_scrolls=1)
+            result = scan_full_sessions(bot, max_scrolls=1, allow_running=True)
+
+        self.assertTrue(blocked["already_running"])
+        self.assertEqual(result["payload"]["summary"]["last_scan_count"], 1)
+        self.assertEqual(result["payload"]["summary"]["full_scan_progress"]["status"], "completed")
 
     def test_tag_sync_does_not_reenable_disabled_settings_after_action(self):
         calls = []

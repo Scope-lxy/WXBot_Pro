@@ -1795,16 +1795,17 @@ class WXBot:
         )
 
     def _execute_moments_publish_task(self, task):
-        return execute_moments_publish_task(
-            task=task,
-            open_moments=self._open_moments_with_recovery,
-            sleep=time.sleep,
-            random_delay=random.uniform,
-            notify_error=self.is_err,
-            nickname=self.wx.nickname,
-            log_info=lambda message: log(message=message),
-            log_error=lambda message: log(level="ERROR", message=message),
-        )
+        with self._get_wechat_action_lock():
+            return execute_moments_publish_task(
+                task=task,
+                open_moments=self._open_moments_with_recovery,
+                sleep=time.sleep,
+                random_delay=random.uniform,
+                notify_error=self.is_err,
+                nickname=self.wx.nickname,
+                log_info=lambda message: log(message=message),
+                log_error=lambda message: log(level="ERROR", message=message),
+            )
 
     def _open_moments_with_recovery(self):
         def open_moments():
@@ -2049,8 +2050,8 @@ class WXBot:
     def scan_relationship_sessions(self):
         return relationship_scan.scan_current_sessions(self, mode="manual")
 
-    def full_scan_relationship_sessions(self):
-        return relationship_scan.scan_full_sessions(self)
+    def full_scan_relationship_sessions(self, *, allow_running=False):
+        return relationship_scan.scan_full_sessions(self, allow_running=allow_running)
 
     def stop_relationship_full_scan(self):
         return relationship_scan.request_stop_full_scan(self)

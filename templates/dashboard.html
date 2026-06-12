@@ -4249,7 +4249,8 @@ $(function(){
   };
   var _relationshipScanSeed = {{ relationship_scan_seed|tojson|safe }};
   var _relationshipScanState = {
-    payload: _relationshipScanSeed || {}
+    payload: _relationshipScanSeed || {},
+    pollTimer: null
   };
   var _friendRequestSeed = {{ friend_request_seed|tojson|safe }};
   var _friendRequestState = {
@@ -4967,8 +4968,10 @@ $(function(){
     _relationshipScanState.payload = payload;
     var settings = payload.settings || {};
     var summary = payload.summary || {};
+    var progress = summary.full_scan_progress || {};
     var records = Array.isArray(payload.records) ? payload.records : [];
     var autoEnabled = summary.auto_scan_enabled !== false;
+    var fullScanRunning = summary.full_scan_running === true || progress.status === 'running' || progress.status === 'saving';
     $('#relationship-scan-auto-pill').toggleClass('is-success', autoEnabled).toggleClass('is-danger', !autoEnabled);
     $('#relationship-scan-auto-state').text(autoEnabled ? '已开启' : '已关闭');
     $('#relationship-scan-today-blocked').text(String(summary.today_blocked || 0));
@@ -4976,8 +4979,20 @@ $(function(){
     $('#relationship-scan-today-recovered').text(String(summary.today_recovered || 0));
     $('#relationship-scan-synced-today').text(String(summary.wechat_synced_today || 0));
     $('#relationship-scan-pending-sync').text(String(summary.wechat_pending || 0));
-    $('#relationship-scan-result-desc').text('本轮扫描 ' + String(summary.last_scan_count || 0) + ' 个会话');
+    if(fullScanRunning){
+      $('#relationship-scan-result-desc').text(
+        '全量扫描中 ' + String(progress.unique_count || 0) + ' 个会话，滚动 ' +
+        String(progress.scrolled_rounds || 0) + '/' + String(progress.max_scrolls || 1000) + ' 轮'
+      );
+    } else if(progress.status === 'failed'){
+      $('#relationship-scan-result-desc').text(progress.message || '全量扫描失败');
+    } else {
+      $('#relationship-scan-result-desc').text('本轮扫描 ' + String(summary.last_scan_count || 0) + ' 个会话');
+    }
     $('#relationship-scan-last-time').text('最近扫描 ' + (summary.last_scan_at ? relationshipScanShortTime(summary.last_scan_at) : '未扫描'));
+    $('#btn-relationship-scan-full').prop('disabled', fullScanRunning);
+    $('#btn-relationship-scan-stop').prop('disabled', !fullScanRunning);
+    updateRelationshipScanPolling(fullScanRunning);
     $('#relationship_scan_auto_enabled').prop('checked', settings.auto_scan_enabled !== false);
     $('#relationship_scan_auto_sync_wechat_tags').val(settings.auto_sync_wechat_tags !== false ? 'auto' : 'off');
     $('#relationship_scan_sync_batch_size').val(settings.sync_batch_size || 5);
@@ -4988,6 +5003,19 @@ $(function(){
       return;
     }
     $('#relationship-scan-record-list').removeClass('is-empty').html(records.map(renderRelationshipScanRecord).join(''));
+  }
+  function updateRelationshipScanPolling(active){
+    if(active){
+      if(_relationshipScanState.pollTimer) return;
+      _relationshipScanState.pollTimer = setInterval(function(){
+        loadRelationshipScanStatus(_contactDirectoryBrowserState.wxId, {silent:true});
+      }, 2000);
+      return;
+    }
+    if(_relationshipScanState.pollTimer){
+      clearInterval(_relationshipScanState.pollTimer);
+      _relationshipScanState.pollTimer = null;
+    }
   }
   function relationshipScanSettingsPayload(){
     return {
@@ -8523,7 +8551,9 @@ $(function(){
   });
   $('#btn-relationship-scan-full').click(function(){
     svModal.confirm('全量扫描会滚动微信主窗口会话列表。确定现在开始？', function(){
-      runRelationshipScanAction('/relationship_scan/full_scan', 'btn-relationship-scan-full', '扫描中...', '全量扫描完成');
+      runRelationshipScanAction('/relationship_scan/full_scan', 'btn-relationship-scan-full', '启动中...', '全量扫描已开始').done(function(){
+        loadRelationshipScanStatus(_contactDirectoryBrowserState.wxId, {silent:true});
+      });
     }, '全量扫描确认', '开始扫描', '取消');
   });
   $('#btn-relationship-scan-stop').click(function(){

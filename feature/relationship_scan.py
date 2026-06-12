@@ -137,6 +137,7 @@ def default_state(wx_id: str) -> dict[str, Any]:
             "last_wechat_tag_sync_at": "",
             "full_scan_running": False,
             "stop_requested": False,
+            "full_scan_progress": {},
         },
         "records": [],
         "events": [],
@@ -440,6 +441,7 @@ def relationship_scan_summary(state: dict[str, Any], *, now: Any = None) -> dict
         if _clean_text((record or {}).get("wechat_sync_status")) == SYNC_PENDING
     )
     runtime = state.get("runtime") or {}
+    full_scan_progress = runtime.get("full_scan_progress") if isinstance(runtime.get("full_scan_progress"), dict) else {}
     return {
         **counts,
         "auto_scan_enabled": bool((state.get("settings") or {}).get("auto_scan_enabled", True)),
@@ -447,6 +449,7 @@ def relationship_scan_summary(state: dict[str, Any], *, now: Any = None) -> dict
         "last_scan_mode": _clean_text(runtime.get("last_scan_mode")),
         "last_scan_count": int(runtime.get("last_scan_count", 0) or 0),
         "full_scan_running": bool(runtime.get("full_scan_running", False)),
+        "full_scan_progress": dict(full_scan_progress),
     }
 
 
@@ -557,6 +560,18 @@ def stop_requested(bot) -> bool:
     return bool((_load_bot_state(bot).get("runtime") or {}).get("stop_requested", False))
 
 
+def _update_full_scan_progress(bot, **updates) -> dict[str, Any]:
+    state = _load_bot_state(bot)
+    runtime = state.setdefault("runtime", {})
+    progress = runtime.get("full_scan_progress")
+    if not isinstance(progress, dict):
+        progress = {}
+    progress.update({key: value for key, value in updates.items() if value is not None})
+    runtime["full_scan_progress"] = progress
+    _save_bot_state(bot, state)
+    return progress
+
+
 def _safe_session_box_go_top(bot) -> bool:
     session_box = getattr(getattr(bot, "wx", None), "SessionBox", None)
     go_top = getattr(session_box, "go_top", None)
@@ -581,15 +596,25 @@ def _flush_after_full_scan_lock_release(bot) -> None:
         log(level="WARNING", message=f"[关系扫描] 分片释放锁后处理轻量发送队列失败：{exc}")
 
 
-def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS) -> dict[str, Any]:
+def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_running: bool = False) -> dict[str, Any]:
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化")
     state = _load_bot_state(bot)
     runtime = state.setdefault("runtime", {})
-    if runtime.get("full_scan_running"):
+    if runtime.get("full_scan_running") and not allow_running:
         return {"sessions": [], "state": state, "payload": relationship_scan_payload(state), "already_running": True}
     runtime["full_scan_running"] = True
     runtime["stop_requested"] = False
+    runtime["full_scan_progress"] = {
+        "status": "running",
+        "started_at": _iso_timestamp(),
+        "updated_at": _iso_timestamp(),
+        "scrolled_rounds": 0,
+        "max_scrolls": max(1, int(max_scrolls or 1)),
+        "unique_count": 0,
+        "last_name": "",
+        "message": "全量扫描已开始",
+    }
     _save_bot_state(bot, state)
 
     sessions_by_name: dict[str, dict[str, str]] = {}
@@ -618,6 +643,17 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS) -> dict
                         name = session["name"]
                         if name and name not in sessions_by_name:
                             sessions_by_name[name] = session
+                    last_name = _clean_text((batch[-1] or {}).get("name")) if batch else ""
+                    _update_full_scan_progress(
+                        bot,
+                        status="running",
+                        updated_at=_iso_timestamp(),
+                        scrolled_rounds=scrolled_rounds,
+                        max_scrolls=max_rounds,
+                        unique_count=len(sessions_by_name),
+                        last_name=last_name,
+                        message=f"已读取 {len(sessions_by_name)} 个会话",
+                    )
                     if len(sessions_by_name) == before_count:
                         stale_rounds += 1
                     else:
@@ -643,6 +679,18 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS) -> dict
         runtime = state.setdefault("runtime", {})
         runtime["full_scan_running"] = False
         runtime["stop_requested"] = False
+        progress = runtime.get("full_scan_progress")
+        if not isinstance(progress, dict):
+            progress = {}
+        progress.update({
+            "status": "saving",
+            "updated_at": _iso_timestamp(),
+            "scrolled_rounds": scrolled_rounds,
+            "max_scrolls": max(1, int(max_scrolls or 1)),
+            "unique_count": len(sessions_by_name),
+            "message": "全量扫描结果保存中",
+        })
+        runtime["full_scan_progress"] = progress
         _save_bot_state(bot, state)
 
     sessions = list(sessions_by_name.values())
@@ -653,6 +701,16 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS) -> dict
     runtime["last_scan_at"] = _iso_timestamp()
     runtime["last_scan_mode"] = "full"
     runtime["last_scan_count"] = len(sessions)
+    runtime["full_scan_progress"] = {
+        "status": "completed",
+        "started_at": _clean_text(((state.get("runtime") or {}).get("full_scan_progress") or {}).get("started_at")),
+        "updated_at": _iso_timestamp(),
+        "scrolled_rounds": scrolled_rounds,
+        "max_scrolls": max(1, int(max_scrolls or 1)),
+        "unique_count": len(sessions),
+        "last_name": _clean_text((sessions[-1] or {}).get("name")) if sessions else "",
+        "message": f"全量扫描完成，读取 {len(sessions)} 个会话",
+    }
     state = _save_bot_state(bot, state)
     return {"sessions": sessions, "state": state, "payload": relationship_scan_payload(state)}
 

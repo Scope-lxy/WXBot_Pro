@@ -4267,6 +4267,8 @@ def persona_status_route(prompt_name):
 # 启动/停止机器人
 bot = None
 bot_thread = None
+relationship_full_scan_thread = None
+relationship_full_scan_thread_lock = threading.Lock()
 BOT_STOP_WAIT_TIMEOUT_SECONDS = 10
 BOT_START_WAIT_TIMEOUT_SECONDS = 8
 BOT_START_PENDING_MESSAGE = '正在连接微信，请稍候'
@@ -5524,6 +5526,21 @@ def _relationship_scan_payload(wx_id=''):
     if not wx_id:
         wx_id = _contact_profiles_wx_id_from_request()
     state = relationship_scan.load_state(DATA_DIR, wx_id)
+    runtime = state.setdefault('runtime', {})
+    if (
+        runtime.get('full_scan_running')
+        and not (relationship_full_scan_thread and relationship_full_scan_thread.is_alive())
+    ):
+        runtime['full_scan_running'] = False
+        runtime['stop_requested'] = False
+        progress = runtime.get('full_scan_progress') if isinstance(runtime.get('full_scan_progress'), dict) else {}
+        progress.update({
+            'status': 'failed',
+            'updated_at': datetime.now().replace(microsecond=0).isoformat(),
+            'message': '全量扫描已中断，请重新开始',
+        })
+        runtime['full_scan_progress'] = progress
+        state = relationship_scan.save_state(DATA_DIR, state)
     payload = relationship_scan.relationship_scan_payload(state)
     wx_ids = _available_account_wx_ids(CONTACT_PROFILES_DIR)
     if wx_id and wx_id not in wx_ids:
@@ -5883,26 +5900,96 @@ def relationship_scan_manual_scan():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+def _relationship_full_scan_worker():
+    global relationship_full_scan_thread
+    try:
+        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'full_scan_relationship_sessions')):
+            wx_id = str(getattr(bot, 'wx_id', '') or '').strip() if bot else ''
+            state = relationship_scan.load_state(DATA_DIR, wx_id)
+            runtime = state.setdefault('runtime', {})
+            runtime['full_scan_running'] = False
+            runtime['stop_requested'] = False
+            runtime['full_scan_progress'] = {
+                **(runtime.get('full_scan_progress') if isinstance(runtime.get('full_scan_progress'), dict) else {}),
+                'status': 'failed',
+                'updated_at': datetime.now().replace(microsecond=0).isoformat(),
+                'message': '机器人已停止，全量扫描中断',
+            }
+            relationship_scan.save_state(DATA_DIR, state)
+            return
+        result = bot.full_scan_relationship_sessions(allow_running=True)
+        if result.get('already_running'):
+            log('INFO', '[关系扫描] 全量扫描已在运行，本次后台任务退出')
+            return
+        count = len(result.get('sessions') or [])
+        log('INFO', f'[关系扫描] 后台全量扫描完成，本轮读取 {count} 个会话')
+    except Exception as e:
+        log('ERROR', f'[关系扫描] 后台全量扫描失败：{e}')
+        try:
+            wx_id = str(getattr(bot, 'wx_id', '') or '').strip() if bot else ''
+            state = relationship_scan.load_state(DATA_DIR, wx_id)
+            runtime = state.setdefault('runtime', {})
+            runtime['full_scan_running'] = False
+            runtime['stop_requested'] = False
+            runtime['full_scan_progress'] = {
+                **(runtime.get('full_scan_progress') if isinstance(runtime.get('full_scan_progress'), dict) else {}),
+                'status': 'failed',
+                'updated_at': datetime.now().replace(microsecond=0).isoformat(),
+                'message': f'全量扫描失败：{e}',
+                'error': str(e),
+            }
+            relationship_scan.save_state(DATA_DIR, state)
+        except Exception as state_exc:
+            log('ERROR', f'[关系扫描] 写入后台扫描失败状态失败：{state_exc}')
+    finally:
+        with relationship_full_scan_thread_lock:
+            relationship_full_scan_thread = None
+
+
 @app.route('/relationship_scan/full_scan', methods=['POST'])
 @login_required
 def relationship_scan_full_scan():
     try:
+        global relationship_full_scan_thread
         if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'full_scan_relationship_sessions')):
             return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
         _require_running_contact_profiles_wx_id()
         log('INFO', '[关系扫描] 收到全量扫描请求')
-        result = bot.full_scan_relationship_sessions()
-        if result.get('already_running'):
+        wx_id = _relationship_scan_wx_id_from_request()
+        state = relationship_scan.load_state(DATA_DIR, wx_id)
+        if (state.get('runtime') or {}).get('full_scan_running'):
             return jsonify({
                 'status': 'success',
                 'message': '全量扫描正在运行，本次点击已忽略',
-                'payload': result.get('payload') or {},
+                'payload': relationship_scan.relationship_scan_payload(state),
             })
-        count = len(result.get('sessions') or [])
+        with relationship_full_scan_thread_lock:
+            if relationship_full_scan_thread and relationship_full_scan_thread.is_alive():
+                return jsonify({
+                    'status': 'success',
+                    'message': '全量扫描正在运行，本次点击已忽略',
+                    'payload': relationship_scan.relationship_scan_payload(state),
+                })
+            runtime = state.setdefault('runtime', {})
+            runtime['full_scan_running'] = True
+            runtime['stop_requested'] = False
+            runtime['full_scan_progress'] = {
+                'status': 'running',
+                'started_at': datetime.now().replace(microsecond=0).isoformat(),
+                'updated_at': datetime.now().replace(microsecond=0).isoformat(),
+                'scrolled_rounds': 0,
+                'max_scrolls': relationship_scan.FULL_SCAN_MAX_SCROLLS,
+                'unique_count': 0,
+                'last_name': '',
+                'message': '全量扫描正在启动',
+            }
+            state = relationship_scan.save_state(DATA_DIR, state)
+            relationship_full_scan_thread = threading.Thread(target=_relationship_full_scan_worker, daemon=True)
+            relationship_full_scan_thread.start()
         return jsonify({
             'status': 'success',
-            'message': f'全量扫描完成，本轮读取 {count} 个会话',
-            'payload': result.get('payload') or {},
+            'message': '全量扫描已开始，可在面板查看进度',
+            'payload': relationship_scan.relationship_scan_payload(state),
         })
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
