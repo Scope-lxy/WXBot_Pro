@@ -165,29 +165,120 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(touched)
         self.assertEqual(bot.all_Mode_listen_list, [["阿英2", 9.0]])
 
-    def test_cached_listener_subwindow_matches_requires_same_who(self):
-        bot = SimpleNamespace(_listen_chats={"张三": SimpleNamespace(who="张三")})
-
-        self.assertTrue(listening.cached_listener_subwindow_matches(bot, "张三"))
-        self.assertFalse(listening.cached_listener_subwindow_matches(bot, "李四"))
-
-    def test_schedule_global_listener_fallback_processes_message_later(self):
+    def test_alllisten_dispatches_first_batch_to_real_subwindow_once(self):
         processed = []
+        sub_chat = SimpleNamespace(who="张三", chat_type="private")
+        msgs = [
+            SimpleNamespace(id="1", type="text", attr="friend", sender="张三", content="第一条"),
+            SimpleNamespace(id="2", type="text", attr="friend", sender="张三", content="第二条"),
+        ]
+
         bot = SimpleNamespace(
-            run_flag=True,
-            process_message=lambda chat, msg: processed.append((chat.who, msg.content)) or True,
-            _maybe_update_conversation_memory=lambda _chat, _msg: None,
+            all_Mode_listen_list=[],
+            config=SimpleNamespace(
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=False,
+                memory_switch=False,
+                custom_forward_switch=False,
+            ),
+            wx=SimpleNamespace(
+                chat_type="private",
+                GetNextNewMessage=lambda **_kwargs: {
+                    "chat_name": "张三",
+                    "chat_type": "private",
+                    "msg": msgs,
+                },
+            ),
+            memory_manager=None,
+            add_chat_to_listen=lambda chat: sub_chat,
+            is_chat_listened=lambda _chat: False,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            process_message=lambda chat, msg: processed.append((chat, msg.content)) or True,
         )
-        msg = SimpleNamespace(content="你好")
 
-        with mock.patch.object(listening.threading, "Timer") as fake_timer:
-            fake_timer.return_value = SimpleNamespace(daemon=False, start=lambda: None)
-            scheduled = listening.schedule_global_listener_fallback(bot, "张三", msg)
-            callback = fake_timer.call_args.args[1]
+        new_last_time = listening.alllisten_mode(bot, last_time=9999999999)
 
-        self.assertTrue(scheduled)
-        callback()
-        self.assertEqual(processed, [("张三", "你好")])
+        self.assertEqual(new_last_time, 9999999999)
+        self.assertEqual(processed, [(sub_chat, "第一条"), (sub_chat, "第二条")])
+
+    def test_alllisten_skips_global_processing_when_chat_already_listened(self):
+        processed = []
+        add_calls = []
+        sub_chat = SimpleNamespace(who="张三")
+        msg = SimpleNamespace(id="1", type="text", attr="friend", sender="张三", content="你好")
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[["张三", 1.0]],
+            _listen_chats={"张三": sub_chat},
+            config=SimpleNamespace(
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=False,
+                memory_switch=False,
+                custom_forward_switch=False,
+            ),
+            wx=SimpleNamespace(
+                chat_type="private",
+                GetNextNewMessage=lambda **_kwargs: {
+                    "chat_name": "张三",
+                    "chat_type": "private",
+                    "msg": [msg],
+                },
+            ),
+            memory_manager=None,
+            add_chat_to_listen=lambda chat: add_calls.append(chat),
+            is_chat_listened=lambda _chat: True,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            process_message=lambda chat, message: processed.append((chat, message)),
+        )
+        logs = []
+
+        with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))):
+            listening.alllisten_mode(bot, last_time=9999999999)
+
+        self.assertEqual(add_calls, [])
+        self.assertEqual(processed, [])
+        self.assertTrue(any("已由子窗口监听接管，跳过全局处理" in item for item in logs))
+
+    def test_alllisten_does_not_fake_process_when_listened_subwindow_missing(self):
+        processed = []
+        add_calls = []
+        msg = SimpleNamespace(id="1", type="text", attr="friend", sender="张三", content="你好")
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[["张三", 1.0]],
+            _listen_chats={},
+            config=SimpleNamespace(
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=False,
+                memory_switch=False,
+                custom_forward_switch=False,
+            ),
+            wx=SimpleNamespace(
+                chat_type="private",
+                GetNextNewMessage=lambda **_kwargs: {
+                    "chat_name": "张三",
+                    "chat_type": "private",
+                    "msg": [msg],
+                },
+            ),
+            memory_manager=None,
+            add_chat_to_listen=lambda chat: add_calls.append(chat),
+            is_chat_listened=lambda _chat: True,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            process_message=lambda chat, message: processed.append((chat, message)),
+        )
+        logs = []
+
+        with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))):
+            listening.alllisten_mode(bot, last_time=9999999999)
+
+        self.assertEqual(add_calls, [])
+        self.assertEqual(processed, [])
+        self.assertTrue(any("未确认真实子窗口" in item for item in logs))
 
     def test_add_listen_chat_once_returns_wechat_result(self):
         calls = []

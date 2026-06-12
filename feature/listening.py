@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import random
 import sys
-import threading
 import time
 from typing import Any
 
@@ -27,7 +26,6 @@ from feature.new_friends import build_new_friend_remark, iter_new_friend_welcome
 from feature.voice_reply import load_voice_reply_state
 
 LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS = 5
-GLOBAL_LISTENER_FALLBACK_DELAY_SECONDS = 2.0
 LISTENER_RECOVERY_HRESULTS = {
     -2147220991,  # 事件无法调用任何订户
     -2147023174,  # RPC 服务器不可用
@@ -895,35 +893,6 @@ def is_chat_listened(bot, chat):
     return any(_dynamic_listener_entry_name(listen_chat) == chat for listen_chat in bot.all_Mode_listen_list)
 
 
-def cached_listener_subwindow_matches(bot, chat):
-    chat = str(chat or "").strip()
-    if not chat:
-        return False
-    cached = runtime_chat_state.get_listen_chat(bot, chat)
-    return bool(cached and not isinstance(cached, dict) and subwindow_who(cached) == chat)
-
-
-def schedule_global_listener_fallback(bot, chat, msg, delay=GLOBAL_LISTENER_FALLBACK_DELAY_SECONDS):
-    chat = str(chat or "").strip()
-    if not chat:
-        return False
-
-    def run_fallback():
-        if hasattr(bot, "run_flag") and not getattr(bot, "run_flag", False):
-            return
-        import types as _types
-
-        fallback_chat = _types.SimpleNamespace(who=chat, chat_type="private")
-        _bot_log(bot, message=f"全局监听 {chat}：执行延迟兜底处理")
-        bot.process_message(fallback_chat, msg)
-        bot._maybe_update_conversation_memory(fallback_chat, msg)
-
-    timer = threading.Timer(max(0.0, float(delay or 0.0)), run_fallback)
-    timer.daemon = True
-    timer.start()
-    return True
-
-
 def alllisten_mode(bot, last_time, timeout=10):
     def remove_timeout_listen(chat_time_out=600):
         for listen_chat in bot.all_Mode_listen_list[:]:
@@ -986,6 +955,18 @@ def alllisten_mode(bot, last_time, timeout=10):
             return
 
         if msgs:
+            is_listened_fn = getattr(bot, "is_chat_listened", None)
+            if chat_type != "group" and callable(is_listened_fn) and is_listened_fn(chat):
+                cached = runtime_chat_state.get_listen_chat(bot, chat)
+                if cached and not isinstance(cached, dict) and subwindow_who(cached) == str(chat or "").strip():
+                    _bot_log(bot, message=f"全局监听 {chat}：已由子窗口监听接管，跳过全局处理")
+                else:
+                    _bot_log(bot, level="WARNING", message=f"全局监听 {chat}：已在动态监听列表但未确认真实子窗口，跳过全局处理并等待监听恢复")
+                return
+
+            processed_msgs = []
+            import types as _types
+
             for msg in msgs:
                 setattr(msg, "_wxbot_ingress_source", "global")
                 if msg.type == "image":
@@ -1020,8 +1001,6 @@ def alllisten_mode(bot, last_time, timeout=10):
                         except Exception as exc:
                             _bot_log(bot, level="WARNING", message=f"写入记忆失败: {exc}")
 
-                    import types as _types
-
                     if bot._handle_material_source_message(_types.SimpleNamespace(who=chat), msg):
                         continue
 
@@ -1036,27 +1015,15 @@ def alllisten_mode(bot, last_time, timeout=10):
                             _bot_log(bot, level="ERROR", message=f"自定义转发处理出错: {exc}")
 
                     if not takeover_handled:
-                        is_listened_fn = getattr(bot, "is_chat_listened", None)
-                        add_chat_fn = getattr(bot, "add_chat_to_listen", None)
-
-                        if callable(is_listened_fn) and not is_listened_fn(chat):
-                            sub_chat = add_chat_fn(chat) if callable(add_chat_fn) else add_chat_to_listen(bot, chat)
-                            if sub_chat:
-                                bot.process_message(sub_chat, msg)
-                                bot._maybe_update_conversation_memory(sub_chat, msg)
-                            else:
-                                _bot_log(bot, level="ERROR", message=f"{chat} 未获取到子窗口，跳过本次消息处理")
-                        else:
-                            if cached_listener_subwindow_matches(bot, chat):
-                                _bot_log(bot, message=f"全局监听 {chat}：已由子窗口监听接管，延迟兜底避免重复处理")
-                                schedule_global_listener_fallback(bot, chat, msg)
-                            else:
-                                _bot_log(bot, level="WARNING", message=f"全局监听 {chat}：已在监听列表但缓存子窗口不可用，改由全局本次兜底处理")
-                                import types as _types
-
-                                fallback_chat = _types.SimpleNamespace(who=chat, chat_type="private")
-                                bot.process_message(fallback_chat, msg)
-                                bot._maybe_update_conversation_memory(fallback_chat, msg)
+                        processed_msgs.append(msg)
+            if processed_msgs:
+                add_chat_fn = getattr(bot, "add_chat_to_listen", None)
+                sub_chat = add_chat_fn(chat) if callable(add_chat_fn) else add_chat_to_listen(bot, chat)
+                if not sub_chat:
+                    _bot_log(bot, level="ERROR", message=f"{chat} 未获取到真实子窗口，跳过本批全局消息处理")
+                    return
+                for msg in processed_msgs:
+                    bot.process_message(sub_chat, msg)
 
     get_next_new_message()
 
