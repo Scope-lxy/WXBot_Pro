@@ -739,6 +739,9 @@ def init_wx_listeners(bot):
     bot.memory_manager = MemoryManager(wx_id, memory_base)
     bot._init_prompt_system(str(account_area_dir(os.path.join(_base, "data"), wx_id, "conversation_memory", create=True)))
     _bot_log(bot, message=f"记忆管理器已初始化，微信号: {wx_id}")
+    enqueue_memory_checks = getattr(bot, "_enqueue_existing_conversation_memory_checks", None)
+    if callable(enqueue_memory_checks):
+        enqueue_memory_checks()
     rebuild_listener_runtime(bot, verify_retry_count=3, clear_runtime_cache=True, finish_message="监听器初始化完成")
     bot._register_runtime_task_schedules()
     return runtime_chat_state.get_listen_chat(bot, bot.config.cmd)
@@ -998,6 +1001,9 @@ def alllisten_mode(bot, last_time, timeout=10):
                                 msg_attr=msg.attr,
                                 max_count=bot.config.memory_max_count,
                             )
+                            mark_memory_dirty = getattr(bot, "_mark_conversation_memory_dirty", None)
+                            if callable(mark_memory_dirty):
+                                mark_memory_dirty(_types.SimpleNamespace(who=chat, chat_type="private"), msg)
                         except Exception as exc:
                             _bot_log(bot, level="WARNING", message=f"写入记忆失败: {exc}")
 

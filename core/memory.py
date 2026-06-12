@@ -283,6 +283,23 @@ class MemoryManager:
             pass
         return []
 
+    def list_chat_names(self):
+        base = account_area_dir(self.base_path, self.wx_id, "memory")
+        if not os.path.isdir(base):
+            return []
+        names = []
+        for chat_dir in os.listdir(base):
+            chat_path = os.path.join(base, chat_dir)
+            if not os.path.isdir(chat_path):
+                continue
+            try:
+                has_memory_file = any(filename.endswith("_memory.json") for filename in os.listdir(chat_path))
+            except OSError:
+                has_memory_file = False
+            if has_memory_file:
+                names.append(read_memory_original_name(chat_path, chat_dir))
+        return sorted(set(name for name in names if str(name or "").strip()))
+
     def clear_messages(self, chat_name):
         path = self._find_existing_memory_file(chat_name)
         if not os.path.exists(path):
