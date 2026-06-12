@@ -948,6 +948,7 @@ class WXBot:
                 current,
                 prompt=getattr(self.config, "prompt", ""),
                 max_retries=getattr(self.config, "max_retries", 5),
+                interface_index=api_index,
             )
             self.config.current_api_config = api_config
         sdk = api_config.sdk
@@ -974,6 +975,7 @@ class WXBot:
             cfg,
             prompt='',
             max_retries=getattr(self.config, "max_retries", 5),
+            interface_index=idx,
         )
         sdk = tmp.sdk
 
@@ -3230,10 +3232,19 @@ class WXBot:
         """
         try:
             # 记录原始消息日志
-            text = (
-                f'类型：{msg.type} 属性：{msg.attr} 窗口：{chat.who}'
-                + f' 发送人：{msg.sender} - 消息：{msg.content}'
-            )
+            msg_type_label = {
+                "text": "文本",
+                "voice": "语音",
+                "image": "图片",
+                "video": "视频",
+                "file": "文件",
+            }.get(str(getattr(msg, "type", "") or "").lower(), str(getattr(msg, "type", "") or "未知"))
+            is_private = getattr(msg, "attr", "") == "friend"
+            scene_label = "私聊" if is_private else "消息"
+            text = f"{scene_label} {chat.who}：收到{msg_type_label}消息"
+            if not is_private:
+                text += f"，发送人：{msg.sender}"
+            text += f"，内容：{msg.content}"
             log(message=text)
             callback_result = None
 
@@ -3636,7 +3647,14 @@ class WXBot:
         :param message: 消息对象
         :return:        发送结果
         """
-        log(message=f"处理 {chat.who} 窗口 {message.sender} 消息：{message.content}")
+        chat_name = getattr(chat, "who", "")
+        sender = getattr(message, "sender", "")
+        is_group_chat = getattr(chat, "chat_type", "private") == "group" or chat_name in getattr(self.config, "group", [])
+        process_log = f"消息处理 {chat_name}：开始处理"
+        if is_group_chat and sender:
+            process_log += f"，发送人：{sender}"
+        process_log += f"，内容：{message.content}"
+        log(message=process_log)
         result = True  # 默认返回成功（WxResponse 类型）
 
         route = message_routing.route_process_message(self, chat, message)
@@ -3646,7 +3664,7 @@ class WXBot:
         if action == "takeover_mirror":
             return takeover_runtime.mirror_takeover_message_to_admin(self, chat, message)
         if action == "group_keyword_reply":
-            log(message=f"群组 {chat.who} 关键字消息：" + message.content)
+            log(message=f"群组 {chat.who}：命中关键词回复，内容：{message.content}")
             send_success, result = self._send_keyword_reply_actions(
                 chat,
                 route.get("reply_actions", []),
@@ -3657,7 +3675,7 @@ class WXBot:
             return result
         if action == "group_ai":
             content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
-            log(message=f"群组 {chat.who} 消息：" + content_without_at)
+            log(message=f"群组 {chat.who}：触发 AI 回复，内容：{content_without_at}")
             content_with_sender = f"{message.sender}: {content_without_at}"
             group_voice_candidate_hit = False
             try:
@@ -3889,6 +3907,7 @@ class WXBot:
             current,
             prompt=self.config.prompt,
             max_retries=getattr(self.config, 'max_retries', 5),
+            interface_index=api_index,
         )
 
     def _reset_chat_api_failover_state(self, *, active_index=None):
@@ -4567,13 +4586,13 @@ class WXBot:
 
     def _log_reply_split_outcome(self, *, scene_label, chat_name, split_source, split_count):
         if split_source == "newline":
-            log(message=f"{scene_label} {chat_name} 命中换行自动拆分，共 {split_count} 条")
+            log(message=f"{scene_label} {chat_name}：命中换行，已自动拆分成 {split_count} 条")
             return
         if split_source == "sentence":
-            log(message=f"{scene_label} {chat_name} 命中句末标点自动拆分，共 {split_count} 条")
+            log(message=f"{scene_label} {chat_name}：命中句末标点，已自动拆分成 {split_count} 条")
             return
         if split_source == "space":
-            log(message=f"{scene_label} {chat_name} 命中中文空格停顿自动拆分，共 {split_count} 条")
+            log(message=f"{scene_label} {chat_name}：命中中文空格停顿，已自动拆分成 {split_count} 条")
             return
 
     def _log_empty_cleaned_reply(self):

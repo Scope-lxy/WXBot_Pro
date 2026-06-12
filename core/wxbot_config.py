@@ -839,6 +839,7 @@ class WXBotConfig:
             _cur,
             prompt=self.prompt,
             max_retries=getattr(self, "max_retries", 5),
+            interface_index=self.api_index,
         )
 
         # 微信基础配置

@@ -3755,13 +3755,14 @@ def save_config_route():
         return jsonify({'status': 'error', 'message': str(e)})
 
 
-def _build_temp_api_config(cfg):
+def _build_temp_api_config(cfg, *, interface_index=None):
     """用于测试单个接口配置的健康检查快照，不读写 config.json。"""
     return build_api_config_snapshot(
         cfg,
         prompt=API_TEXT_TEST_PROMPT,
         max_retries=0,
         max_output_tokens=API_TEST_MAX_OUTPUT_TOKENS,
+        interface_index=interface_index,
     )
 
 
@@ -4038,7 +4039,7 @@ def test_api_config_route():
         if not isinstance(cfg, dict):
             return jsonify({'status': 'error', 'message': '接口配置格式无效'})
 
-        tmp_config = _build_temp_api_config(cfg)
+        tmp_config = _build_temp_api_config(cfg, interface_index=api_index)
         if not tmp_config.key:
             return jsonify({'status': 'error', 'message': 'API Key 不能为空'})
         if not tmp_config.url:

@@ -116,6 +116,15 @@ def listen_add_error(result):
     return str(result)
 
 
+def listen_add_action_label(label):
+    label = str(label or "").strip()
+    if not label:
+        return "添加监听"
+    if label.endswith("监听"):
+        return f"添加{label}"
+    return f"添加{label}监听"
+
+
 def subwindow_who(chat):
     try:
         return str(getattr(chat, "who", "") or "").strip()
@@ -127,7 +136,7 @@ def get_verified_subwindow(bot, nickname):
     try:
         chat = bot.wx.GetSubWindow(nickname=nickname)
     except Exception as exc:
-        _bot_log(bot, level="WARNING", message=f"获取监听子窗口 {nickname} 失败: {exc}")
+        _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：获取监听子窗口失败，详情：{exc}")
         return None
     if chat and subwindow_who(chat) == str(nickname).strip():
         return chat
@@ -305,13 +314,13 @@ def add_listen_chat_once(bot, nickname, label):
         on_retry=lambda exc, _attempt: _bot_log(
             bot,
             level="WARNING",
-            message=f"添加{label} {nickname} 监听异常，重新初始化微信客户端后重试: {exc}",
+            message=f"监听管理 {nickname}：{listen_add_action_label(label)}异常，重新初始化微信客户端后重试，详情：{exc}",
         ),
     )
     if result:
-        _bot_log(bot, message=f"添加{label} {nickname} 监听完成")
+        _bot_log(bot, message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用成功")
     else:
-        _bot_log(bot, level="ERROR", message=f"添加{label} {nickname} 监听失败, {listen_add_error(result)}")
+        _bot_log(bot, level="ERROR", message=f"监听管理 {nickname}：{listen_add_action_label(label)}失败，详情：{listen_add_error(result)}")
     return result
 
 
@@ -641,9 +650,11 @@ def remove_listen_chat_verified(bot, nickname):
                 message=f"{nickname} 删除监听异常，重新初始化微信客户端后重试: {exc}",
             ),
         )
-        _bot_log(bot, message=f"{nickname} 删除监听返回: {listen_add_error(remove_result)}")
+        remove_result_text = str(listen_add_error(remove_result)).strip()
+        if not (remove_result_text.lower() in {"ok", "success", "true"} or remove_result_text in {"成功", "已成功"}):
+            _bot_log(bot, message=f"监听管理 {nickname}：删除监听结果：{remove_result_text}")
     except Exception as exc:
-        _bot_log(bot, level="ERROR", message=f"{nickname} 删除监听失败: {exc}")
+        _bot_log(bot, level="ERROR", message=f"监听管理 {nickname}：删除监听调用异常，详情：{exc}")
 
     _bot_sleep(bot, 0.2)
     listened_names = try_get_all_subwindow_names(bot)
@@ -651,32 +662,32 @@ def remove_listen_chat_verified(bot, nickname):
         residual_closed = close_residual_listener_subwindow(bot, nickname)
         if residual_closed:
             _forget_runtime_listener_caches(bot, nickname)
-            _bot_log(bot, level="WARNING", message=f"{nickname} 删除监听后无法校验，已尝试关闭残留子窗口并清理运行缓存")
+            _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：删除监听后无法校验，已尝试关闭残留子窗口并清理运行缓存")
             return True
-        _bot_log(bot, level="ERROR", message=f"{nickname} 删除监听后无法校验，保留在动态监听列表")
+        _bot_log(bot, level="ERROR", message=f"监听管理 {nickname}：删除监听后无法校验，保留在动态监听列表")
         return False
     if str(nickname).strip() not in listened_names:
         _forget_runtime_listener_caches(bot, nickname)
-        _bot_log(bot, message=f"{nickname} 删除监听校验通过")
+        _bot_log(bot, message=f"监听管理 {nickname}：删除监听完成")
         return True
 
-    _bot_log(bot, level="WARNING", message=f"{nickname} 删除监听后仍有残留子窗口，尝试直接关闭")
+    _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：删除监听后仍有残留子窗口，正在尝试直接关闭")
     residual_closed = close_residual_listener_subwindow(bot, nickname)
     if residual_closed:
-        _bot_log(bot, message=f"{nickname} 残留监听子窗口直接关闭已执行，正在复查")
+        _bot_log(bot, message=f"监听管理 {nickname}：残留监听子窗口直接关闭已执行，正在复查")
         listened_names = try_get_all_subwindow_names(bot)
         if listened_names is not None and str(nickname).strip() not in listened_names:
             _forget_runtime_listener_caches(bot, nickname)
-            _bot_log(bot, message=f"{nickname} 残留监听子窗口已关闭")
+            _bot_log(bot, message=f"监听管理 {nickname}：残留监听子窗口已关闭")
             return True
         if listened_names is None:
             _forget_runtime_listener_caches(bot, nickname)
-            _bot_log(bot, level="WARNING", message=f"{nickname} 残留监听子窗口已尝试关闭，无法再次校验，已清理运行缓存")
+            _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：残留监听子窗口已尝试关闭，无法再次校验，已清理运行缓存")
             return True
     else:
-        _bot_log(bot, level="WARNING", message=f"{nickname} 残留监听子窗口直接关闭未成功：未找到可关闭窗口或关闭调用失败")
+        _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：残留监听子窗口直接关闭未成功，未找到可关闭窗口或关闭调用失败")
 
-    _bot_log(bot, level="ERROR", message=f"{nickname} 删除监听校验失败，子窗口仍存在，保留在动态监听列表")
+    _bot_log(bot, level="ERROR", message=f"监听管理 {nickname}：删除监听校验失败，子窗口仍存在，保留在动态监听列表")
     return False
 
 
@@ -699,7 +710,7 @@ def verify_initial_listeners(bot, expected_chats, retry_count=3):
             if sub_chat:
                 runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
     if not missing:
-        _bot_log(bot, message="初始化监听子窗口校验通过")
+        _bot_log(bot, message="监听管理：初始化监听子窗口校验通过")
         return
 
     for name in missing:
@@ -889,9 +900,9 @@ def add_chat_to_listen(bot, chat):
     if callable(is_listened_fn) and is_listened_fn(chat):
         touch_dynamic_listener_entry(bot, chat)
         return sub_chat
-    _bot_log(bot, message=chat + " 已添加监听，正在加入动态监听列表")
+    _bot_log(bot, message=f"全局监听 {chat}：已添加监听，正在加入动态监听列表")
     touch_dynamic_listener_entry(bot, chat)
-    _bot_log(bot, message="当前全局模式动态监听列表：" + str(bot.all_Mode_listen_list))
+    _bot_log(bot, message=f"全局监听：动态监听列表已更新，详情：{bot.all_Mode_listen_list}")
     return sub_chat
 
 
@@ -904,7 +915,7 @@ def alllisten_mode(bot, last_time, timeout=10):
     def remove_timeout_listen(chat_time_out=600):
         for listen_chat in bot.all_Mode_listen_list[:]:
             if time.time() - listen_chat[1] >= chat_time_out:
-                _bot_log(bot, message=str(listen_chat[0]) + "对话超时，正在删除监听")
+                _bot_log(bot, message=f"全局监听 {listen_chat[0]}：对话超时，正在删除监听")
                 remove_fn = getattr(bot, "_remove_listen_chat_verified", None)
                 if callable(remove_fn):
                     removed = remove_fn(listen_chat[0])
@@ -919,7 +930,7 @@ def alllisten_mode(bot, last_time, timeout=10):
         def next_callback(msg):
             nonlocal next_callback_down_map
             if bot.wx.chat_type != "group":
-                _bot_log(bot, message=f"收到私聊消息：{msg.sender}: {msg.content}")
+                _bot_log(bot, message=f"全局监听 {msg.sender}：收到私聊消息，内容：{msg.content}")
                 any_img_enabled = bot.config.chat_image_recognition_switch
                 any_voice_enabled = bot.config.chat_voice_recognition_switch
                 try:
@@ -940,7 +951,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                             if path:
                                 next_callback_down_map[msg.id] = path
                             else:
-                                _bot_log(bot, "ERROR", "Next_callback下载图片出错，请尝试将windows屏幕设置的缩放调整为100%后重试")
+                                _bot_log(bot, "ERROR", "全局监听：图片下载失败，请尝试将 Windows 屏幕缩放设置为 100%")
                         elif msg.type == "quote":
                             path = msg.download_quote_image()
                             if path:
@@ -948,7 +959,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                             else:
                                 _bot_log(bot, "INFO", "引用内容不是图片或视频")
                 except Exception as exc:
-                    _bot_log(bot, level="ERROR", message=f"Next_callback下载图片出错，请尝试将windows屏幕设置的缩放调整为100%后重试: {exc}")
+                    _bot_log(bot, level="ERROR", message=f"全局监听：图片下载失败，请尝试将 Windows 屏幕缩放设置为 100%，详情：{exc}")
             else:
                 _bot_log(bot, "INFO", "私聊全局监听收到群聊消息，跳过")
 
@@ -1021,7 +1032,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                         if callable(is_listened_fn) and not is_listened_fn(chat):
                             sub_chat = add_chat_fn(chat) if callable(add_chat_fn) else add_chat_to_listen(bot, chat)
                         else:
-                            _bot_log(bot, message=chat + "在监听列表")
+                            _bot_log(bot, message=f"全局监听 {chat}：已在监听列表")
                             if callable(get_subwindow_fn):
                                 sub_chat = get_subwindow_fn(chat)
                             else:

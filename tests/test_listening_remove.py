@@ -8,6 +8,7 @@ from feature import listening
 class RemoveListenChatTests(unittest.TestCase):
     def test_remove_listen_chat_does_not_require_outer_wechat_action_lock(self):
         removed = []
+        logs = []
 
         class FakeBot:
             _listen_chats = {"张三": object()}
@@ -19,10 +20,12 @@ class RemoveListenChatTests(unittest.TestCase):
             def _get_wechat_action_lock(self):
                 raise AssertionError("RemoveListenChat should not take the outer bot UI lock")
 
-        result = listening.remove_listen_chat_verified(FakeBot(), "张三")
+        with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))):
+            result = listening.remove_listen_chat_verified(FakeBot(), "张三")
 
         self.assertTrue(result)
         self.assertEqual(removed, ["张三"])
+        self.assertEqual(logs.count("监听管理 张三：删除监听完成"), 1)
 
     def test_remove_listen_chat_logs_wxautox_return_value(self):
         bot = SimpleNamespace(
@@ -38,7 +41,7 @@ class RemoveListenChatTests(unittest.TestCase):
             result = listening.remove_listen_chat_verified(bot, "张三")
 
         self.assertFalse(result)
-        self.assertTrue(any("张三 删除监听返回" in item and "窗口忙" in item for item in logs))
+        self.assertTrue(any("监听管理 张三：删除监听结果：窗口忙" in item for item in logs))
 
     def test_remove_listen_chat_closes_residual_window_when_registration_missing(self):
         calls = []
@@ -112,8 +115,8 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(calls, ["Close"])
-        self.assertTrue(any("张三 残留监听子窗口直接关闭已执行，正在复查" in item for item in logs))
-        self.assertTrue(any("张三 残留监听子窗口已关闭" in item for item in logs))
+        self.assertTrue(any("监听管理 张三：残留监听子窗口直接关闭已执行，正在复查" in item for item in logs))
+        self.assertTrue(any("监听管理 张三：残留监听子窗口已关闭" in item for item in logs))
 
     def test_remove_listen_chat_logs_residual_close_not_successful(self):
         logs = []
@@ -131,8 +134,8 @@ class RemoveListenChatTests(unittest.TestCase):
             result = listening.remove_listen_chat_verified(bot, "张三")
 
         self.assertFalse(result)
-        self.assertTrue(any("张三 残留监听子窗口直接关闭未成功" in item for item in logs))
-        self.assertTrue(any("张三 删除监听校验失败，子窗口仍存在" in item for item in logs))
+        self.assertTrue(any("监听管理 张三：残留监听子窗口直接关闭未成功" in item for item in logs))
+        self.assertTrue(any("监听管理 张三：删除监听校验失败，子窗口仍存在" in item for item in logs))
 
     def test_close_dynamic_listener_subwindows_removes_runtime_entry_after_close(self):
         calls = []
@@ -162,6 +165,32 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertTrue(touched)
         self.assertEqual(bot.all_Mode_listen_list, [["阿英2", 9.0]])
+
+    def test_add_listen_chat_once_returns_wechat_result(self):
+        calls = []
+        logs = []
+
+        class NoopLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeWeChat:
+            def AddListenChat(self, nickname=None, callback=None):
+                calls.append((nickname, callback))
+                return {"status": "success"}
+
+        bot = SimpleNamespace(wx=FakeWeChat(), message_handle_callback=object())
+        bot._get_wechat_action_lock = lambda: NoopLock()
+
+        with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))):
+            result = listening.add_listen_chat_once(bot, "张三", "动态监听")
+
+        self.assertEqual(result, {"status": "success"})
+        self.assertEqual(calls, [("张三", bot.message_handle_callback)])
+        self.assertTrue(any("监听管理 张三：添加动态监听调用成功" in item for item in logs))
 
 
 if __name__ == "__main__":

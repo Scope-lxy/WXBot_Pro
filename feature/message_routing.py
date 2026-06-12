@@ -58,7 +58,7 @@ def _update_alllisten_timestamp(bot, chat_name: str) -> None:
     now_ts = _bot_time_module(bot).time()
     for listen_chat in getattr(bot, "all_Mode_listen_list", []):
         if listen_chat[0] == chat_name:
-            _bot_log(bot, message=chat_name + " 对话最新消息时间已更新")
+            _bot_log(bot, message=f"全局监听 {chat_name}：最新消息时间已更新")
             listen_chat[1] = now_ts
             break
 
@@ -72,8 +72,7 @@ def _prepare_friend_message_media(bot, msg, chat) -> None:
                 if down_path:
                     msg.content = str(down_path)
                 else:
-                    _bot_log(bot, "ERROR", f"{down_path}")
-                    _bot_log(bot, "ERROR", "message_handle_callback下载图片出错")
+                    _bot_log(bot, "ERROR", "消息处理：图片下载失败，详情：未返回文件路径")
             elif msg.type == "quote":
                 down_path = msg.download_quote_image()
                 if down_path:
@@ -81,7 +80,7 @@ def _prepare_friend_message_media(bot, msg, chat) -> None:
                 else:
                     _bot_log(bot, "INFO", "引用内容不是图片或视频")
     except Exception as exc:
-        _bot_log(bot, level="ERROR", message=f"message_handle_callback下载图片出错,请尝试将windows设置屏幕缩放设置为100%后再尝试: {exc}")
+        _bot_log(bot, level="ERROR", message=f"消息处理：图片下载失败，请尝试将 Windows 屏幕缩放设置为 100%，详情：{exc}")
 
     if msg.type != "voice":
         return
