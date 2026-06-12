@@ -3301,7 +3301,6 @@ class WXBot:
                         msg_type=msg.type,
                         msg_attr=msg.attr,
                         max_count=self.config.memory_max_count,
-                        message_time=message_time,
                     )
                     if (
                         msg.attr == "self"
