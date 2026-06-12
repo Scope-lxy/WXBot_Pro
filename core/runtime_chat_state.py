@@ -87,6 +87,15 @@ def remove_listen_chat(bot, name):
 
 def send_text_to_target(bot, target, msg):
     chat = get_listen_chat(bot, target)
+    verifier = getattr(bot, "_verified_send_chat", None)
+    if callable(verifier):
+        verified = verifier(target, chat)
+        if verified is not chat:
+            if verified:
+                remember_listen_chat(bot, target, verified)
+            else:
+                remove_listen_chat(bot, target)
+            chat = verified
     if listen_chat_has_method(chat, "SendMsg"):
         with bot._get_chat_send_lock(target):
             return chat.SendMsg(msg)
@@ -98,6 +107,15 @@ def send_text_to_target(bot, target, msg):
 
 def send_file_to_target(bot, target, path):
     chat = get_listen_chat(bot, target)
+    verifier = getattr(bot, "_verified_send_chat", None)
+    if callable(verifier):
+        verified = verifier(target, chat)
+        if verified is not chat:
+            if verified:
+                remember_listen_chat(bot, target, verified)
+            else:
+                remove_listen_chat(bot, target)
+            chat = verified
     if listen_chat_has_method(chat, "SendFiles"):
         with bot._get_chat_send_lock(target):
             return chat.SendFiles(filepath=path)

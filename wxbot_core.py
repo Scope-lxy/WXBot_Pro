@@ -697,21 +697,26 @@ class WXBot:
         if not target:
             return None
         chat = runtime_chat_state.get_listen_chat(self, target)
-        if runtime_chat_state.listen_chat_has_method(chat, "SendMsg"):
+        if runtime_chat_state.listen_chat_has_method(chat, "SendMsg") and self._listen_chat_matches_target(chat, target):
             return chat
+        if chat:
+            runtime_chat_state.remove_listen_chat(self, target)
         lock = self._get_wechat_action_lock()
         if not lock.acquire(blocking=False):
             return None
         try:
             chat = runtime_chat_state.get_listen_chat(self, target)
-            if runtime_chat_state.listen_chat_has_method(chat, "SendMsg"):
+            if runtime_chat_state.listen_chat_has_method(chat, "SendMsg") and self._listen_chat_matches_target(chat, target):
                 return chat
+            if chat:
+                runtime_chat_state.remove_listen_chat(self, target)
             with warn_slow_wechat_ui_action(f"AddListenChat({target})"):
                 result = self.wx.AddListenChat(nickname=target, callback=self.message_handle_callback)
-            if result and not isinstance(result, dict):
-                runtime_chat_state.remember_listen_chat(self, target, result)
+            verified_chat = self._verified_send_chat(target, result)
+            if verified_chat:
+                runtime_chat_state.remember_listen_chat(self, target, verified_chat)
                 log(message=f"[轻量发送队列] 已自动恢复监听子窗口：{target}")
-                return result
+                return verified_chat
             log(level="WARNING", message=f"[轻量发送队列] 自动恢复监听子窗口失败：{target}，{result}")
             return None
         except Exception as exc:
@@ -720,9 +725,28 @@ class WXBot:
         finally:
             lock.release()
 
+    def _listen_chat_matches_target(self, chat, target):
+        target = str(target or "").strip()
+        if not target or not chat or isinstance(chat, dict):
+            return False
+        who = listening.subwindow_who(chat)
+        return bool(who and who == target)
+
+    def _verified_send_chat(self, target, candidate=None):
+        target = str(target or "").strip()
+        if not target:
+            return None
+        if runtime_chat_state.listen_chat_has_method(candidate, "SendMsg") and self._listen_chat_matches_target(candidate, target):
+            return candidate
+        get_verified = getattr(self, "_get_verified_subwindow", None)
+        verified = get_verified(target) if callable(get_verified) else listening.get_verified_subwindow(self, target)
+        if runtime_chat_state.listen_chat_has_method(verified, "SendMsg") and self._listen_chat_matches_target(verified, target):
+            return verified
+        return None
+
     def _send_lightweight_actions_to_child(self, target, actions):
         chat = runtime_chat_state.get_listen_chat(self, target)
-        if not runtime_chat_state.listen_chat_has_method(chat, "SendMsg"):
+        if not (runtime_chat_state.listen_chat_has_method(chat, "SendMsg") and self._listen_chat_matches_target(chat, target)):
             chat = self._ensure_target_listen_chat_for_send(target)
         if not chat:
             return False
@@ -808,6 +832,32 @@ class WXBot:
             )
         with self._get_chat_send_lock(target):
             return chat.SendMsg(str(msg or ""))
+
+    def _queue_text_reply_until_target_verified(self, target, parts, *, source="reply"):
+        actions = [
+            {"type": "text", "text": str(part or "")}
+            for part in (parts or [])
+            if str(part or "").strip()
+        ]
+        if not actions:
+            return False
+        return self._queue_lightweight_send(target, actions, source=source)
+
+    def _queue_keyword_reply_until_target_verified(self, target, actions):
+        queued_actions = []
+        for action in actions or []:
+            action_type = str((action or {}).get("type") or "").strip().lower()
+            if action_type == "text":
+                content = str((action or {}).get("content") or "").strip()
+                if content:
+                    queued_actions.append({"type": "text", "text": content})
+            else:
+                path = str((action or {}).get("path") or "").strip()
+                if path:
+                    queued_actions.append({"type": "file", "path": path})
+        if not queued_actions:
+            return False
+        return self._queue_lightweight_send(target, queued_actions, source="keyword_reply")
 
     def _send_file_to_target_without_child(self, target, path):
         target = str(target or "").strip()
@@ -3180,10 +3230,8 @@ class WXBot:
         """
         try:
             # 记录原始消息日志
-            message_time = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
             text = (
-                message_time + " "
-                + f'类型：{msg.type} 属性：{msg.attr} 窗口：{chat.who}'
+                f'类型：{msg.type} 属性：{msg.attr} 窗口：{chat.who}'
                 + f' 发送人：{msg.sender} - 消息：{msg.content}'
             )
             log(message=text)
@@ -3460,7 +3508,17 @@ class WXBot:
             )
 
         if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
-            log(message=f"私聊 {chat.who} 旧 AI 回复已过期，跳过发送")
+            skipped = 0
+            skipped_by_chat = getattr(self, "_model_context_skipped_by_chat", None)
+            if isinstance(skipped_by_chat, dict):
+                try:
+                    skipped = int(skipped_by_chat.pop(chat.who, 0) or 0)
+                except (TypeError, ValueError):
+                    skipped = 0
+            if skipped > 0:
+                log(message=f"私聊 {chat.who}：旧 AI 回复过期，已跳过回复 {skipped} 条")
+            else:
+                log(message=f"私聊 {chat.who}：旧 AI 回复过期，已跳过发送")
             return True
 
         if voice_candidate and not api_error_reply:
@@ -4909,6 +4967,15 @@ class WXBot:
     def _send_private_ai_reply_parts(self, chat, parts, *, expected_version=None):
         send_success = False
         result = True
+        target = str(getattr(chat, "who", "") or "").strip()
+        send_chat = self._verified_send_chat(target, chat)
+        if send_chat is None:
+            send_chat = self._ensure_target_listen_chat_for_send(target)
+        if send_chat is None:
+            queued = self._queue_text_reply_until_target_verified(target, parts, source="private_ai_reply")
+            log(level="WARNING", message=f"私聊 {target} 发送前未能确认目标子窗口，已进入延迟发送队列，避免回错人")
+            return False, queued
+        chat = send_chat
         runtime_turn = self._begin_private_reply_runtime_turn(chat.who)
         try:
             with self._get_chat_send_lock(chat.who):
@@ -4967,6 +5034,13 @@ class WXBot:
         if not actions:
             log(level="ERROR", message=f"关键词回复命中但没有可发送内容，已停止处理：{chat.who}")
             return False, False
+        if getattr(chat, "chat_type", "") != "group" and chat.who != getattr(self.config, "cmd", ""):
+            send_chat = self._verified_send_chat(chat.who, chat) or self._ensure_target_listen_chat_for_send(chat.who)
+            if send_chat is None:
+                queued = self._queue_keyword_reply_until_target_verified(chat.who, actions)
+                log(level="WARNING", message=f"关键词回复 {chat.who} 发送前未能确认目标子窗口，已进入延迟发送队列，避免回错人")
+                return False, queued
+            chat = send_chat
         with self._get_chat_send_lock(chat.who):
             for action in actions:
                 if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
@@ -5035,8 +5109,14 @@ class WXBot:
                 merged_history,
                 assistant_limit=getattr(self.config, 'memory_context_assistant_count', 10),
             )
+            skipped_by_chat = getattr(self, "_model_context_skipped_by_chat", None)
+            if not isinstance(skipped_by_chat, dict):
+                skipped_by_chat = {}
+                self._model_context_skipped_by_chat = skipped_by_chat
             if skipped:
-                log(message=f"AI上下文 {chat_who} 已跳过旧机器人回复 {skipped} 条")
+                skipped_by_chat[chat_who] = skipped
+            else:
+                skipped_by_chat.pop(chat_who, None)
             return history
         except Exception as e:
             log(level="WARNING", message=f"读取AI上下文失败: {e}")

@@ -5891,6 +5891,12 @@ def relationship_scan_full_scan():
         _require_running_contact_profiles_wx_id()
         log('INFO', '[关系扫描] 收到全量扫描请求')
         result = bot.full_scan_relationship_sessions()
+        if result.get('already_running'):
+            return jsonify({
+                'status': 'success',
+                'message': '全量扫描正在运行，本次点击已忽略',
+                'payload': result.get('payload') or {},
+            })
         count = len(result.get('sessions') or [])
         return jsonify({
             'status': 'success',

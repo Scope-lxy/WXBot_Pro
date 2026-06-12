@@ -1,5 +1,7 @@
 import unittest
+import tempfile
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from feature.relationship_scan import (
     STATUS_BLOCKED,
@@ -14,8 +16,11 @@ from feature.relationship_scan import (
     merge_state_into_contact_directory,
     normalize_settings,
     pending_sync_records,
+    process_pending_wechat_tag_sync,
     relationship_scan_summary,
     relationship_status_from_preview,
+    save_state,
+    scan_full_sessions,
     update_state_from_sessions,
 )
 
@@ -229,6 +234,195 @@ class RelationshipScanTests(unittest.TestCase):
         self.assertEqual(record["wechat_sync_error"], "上一轮失败")
         self.assertEqual(record["wechat_sync_next_retry_at"], "2026-06-11T10:10:00")
         self.assertEqual(record["wechat_sync_retry_count"], 1)
+
+    def test_full_scan_returns_session_list_to_top_after_finish(self):
+        calls = []
+
+        class FakeLock:
+            def __enter__(self):
+                calls.append("lock_enter")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                calls.append("lock_exit")
+
+        class FakeSessionBox:
+            def go_top(self):
+                calls.append("go_top")
+
+            def roll_down(self):
+                calls.append("roll_down")
+
+        class FakeWeChat:
+            SessionBox = FakeSessionBox()
+
+            def GetSession(self):
+                calls.append("get_session")
+                return [{"name": "阿英2", "content": "普通消息"}]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = SimpleNamespace(
+                wx=FakeWeChat(),
+                wx_id="wxid_test",
+                config=SimpleNamespace(DATA_DIR=tmp),
+                _get_wechat_action_lock=lambda: FakeLock(),
+            )
+
+            result = scan_full_sessions(bot, max_scrolls=1)
+
+        self.assertEqual([item for item in calls if item == "go_top"], ["go_top", "go_top"])
+        self.assertLess(calls.index("get_session"), len(calls) - 1)
+        self.assertEqual(result["payload"]["summary"]["last_scan_mode"], "full")
+
+    def test_full_scan_keeps_result_when_final_go_top_fails(self):
+        calls = []
+
+        class FakeLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+        class FakeSessionBox:
+            go_top_calls = 0
+
+            def go_top(self):
+                self.go_top_calls += 1
+                calls.append("go_top")
+                if self.go_top_calls >= 2:
+                    raise RuntimeError("top failed")
+
+            def roll_down(self):
+                calls.append("roll_down")
+
+        class FakeWeChat:
+            SessionBox = FakeSessionBox()
+
+            def GetSession(self):
+                calls.append("get_session")
+                return [{"name": "阿英2", "content": "普通消息"}]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = SimpleNamespace(
+                wx=FakeWeChat(),
+                wx_id="wxid_test",
+                config=SimpleNamespace(DATA_DIR=tmp),
+                _get_wechat_action_lock=lambda: FakeLock(),
+            )
+
+            result = scan_full_sessions(bot, max_scrolls=1)
+
+        self.assertEqual(result["payload"]["summary"]["last_scan_mode"], "full")
+        self.assertEqual(result["payload"]["summary"]["last_scan_count"], 1)
+
+    def test_full_scan_releases_lock_between_scroll_slices_and_flushes_queue(self):
+        calls = []
+
+        class FakeLock:
+            def __enter__(self):
+                calls.append("lock_enter")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                calls.append("lock_exit")
+                return None
+
+        class FakeSessionBox:
+            def go_top(self):
+                calls.append("go_top")
+
+            def roll_down(self):
+                calls.append("roll_down")
+
+        class FakeWeChat:
+            SessionBox = FakeSessionBox()
+
+            def GetSession(self):
+                calls.append("get_session")
+                index = calls.count("get_session")
+                return [{"name": f"阿英{index}", "content": "普通消息"}]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = SimpleNamespace(
+                wx=FakeWeChat(),
+                wx_id="wxid_test",
+                config=SimpleNamespace(DATA_DIR=tmp),
+                _get_wechat_action_lock=lambda: FakeLock(),
+                _flush_lightweight_send_queue=lambda limit=20: calls.append(("flush", limit)),
+            )
+            from feature import relationship_scan
+
+            old_slice = relationship_scan.FULL_SCAN_LOCK_SLICE_SCROLLS
+            old_wait = relationship_scan.FULL_SCAN_SCROLL_SETTLE_SECONDS
+            old_release_wait = relationship_scan.FULL_SCAN_LOCK_RELEASE_SETTLE_SECONDS
+            relationship_scan.FULL_SCAN_LOCK_SLICE_SCROLLS = 2
+            relationship_scan.FULL_SCAN_SCROLL_SETTLE_SECONDS = 0
+            relationship_scan.FULL_SCAN_LOCK_RELEASE_SETTLE_SECONDS = 0
+            try:
+                result = scan_full_sessions(bot, max_scrolls=3)
+            finally:
+                relationship_scan.FULL_SCAN_LOCK_SLICE_SCROLLS = old_slice
+                relationship_scan.FULL_SCAN_SCROLL_SETTLE_SECONDS = old_wait
+                relationship_scan.FULL_SCAN_LOCK_RELEASE_SETTLE_SECONDS = old_release_wait
+
+        self.assertIn(("flush", 20), calls)
+        self.assertGreaterEqual(calls.count("lock_enter"), 2)
+        self.assertEqual(result["payload"]["summary"]["last_scan_count"], 3)
+
+    def test_tag_sync_does_not_reenable_disabled_settings_after_action(self):
+        calls = []
+
+        class FakeLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = {
+                "wx_id": "wxid_test",
+                "settings": {"auto_sync_wechat_tags": True, "sync_interval_minutes": 10},
+                "records": [
+                    {
+                        "name": "阿英2",
+                        "status": STATUS_DELETED,
+                        "wechat_sync_status": SYNC_PENDING,
+                    }
+                ],
+            }
+            save_state(tmp, state)
+            bot = SimpleNamespace(
+                wx=object(),
+                wx_id="wxid_test",
+                config=SimpleNamespace(DATA_DIR=tmp),
+                _get_wechat_action_lock=lambda: FakeLock(),
+            )
+
+            def fake_modify(_bot, targets, **_kwargs):
+                calls.append(targets[0]["name"])
+                latest = save_state(tmp, {
+                    **state,
+                    "settings": {"auto_sync_wechat_tags": False, "sync_interval_minutes": 10},
+                })
+                return {"status": "success", "payload": latest}
+
+            from feature import relationship_scan
+
+            original = relationship_scan.modify_friend_tags_via_chat_profile
+            relationship_scan.modify_friend_tags_via_chat_profile = fake_modify
+            try:
+                result = process_pending_wechat_tag_sync(bot, now=datetime(2026, 6, 11, 10, 0, 0))
+                latest_payload = relationship_scan.relationship_scan_payload(
+                    relationship_scan.load_state(tmp, "wxid_test")
+                )
+            finally:
+                relationship_scan.modify_friend_tags_via_chat_profile = original
+
+        self.assertEqual(calls, ["阿英2"])
+        self.assertFalse(latest_payload["settings"]["auto_sync_wechat_tags"])
+        self.assertEqual(result["processed"], 0)
 
 
 if __name__ == "__main__":

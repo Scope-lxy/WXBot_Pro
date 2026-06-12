@@ -11913,6 +11913,12 @@ $(function(){
     $('.log-title-sub').text($logPanel.hasClass('expanded') ? '查看全部' : '最近两条');
   }
 
+  function escapeLogHtml(value){
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
+    });
+  }
+
   function syncMobileRecentLogs(){
     var $preview = $('#mobileLogPreview');
     if(!window.matchMedia('(max-width: 900px)').matches || !$logPanel.hasClass('collapsed')){
@@ -11932,8 +11938,8 @@ $(function(){
       var time = $entry.find('.log-time').text();
       var msg = $entry.find('.log-msg').text();
       html += '<div class="mobile-log-card">' +
-        '<div class="mobile-log-meta"><span class="mobile-log-time">' + time + '</span>' + badge + '</div>' +
-        '<div class="mobile-log-msg">' + msg + '</div>' +
+        '<div class="mobile-log-meta"><span class="mobile-log-time">' + escapeLogHtml(time) + '</span>' + badge + '</div>' +
+        '<div class="mobile-log-msg">' + escapeLogHtml(msg) + '</div>' +
       '</div>';
     });
     if(!html){
@@ -12852,14 +12858,14 @@ $(function(){
     return isNaN(logId) ? 0 : logId;
   }
   function buildLogEntryHtml(log){
-    var lvl = (log.level||'INFO').toUpperCase();
+    var lvl = String(log.level||'INFO').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 16) || 'INFO';
     var levelMap={INFO:'log-info',SUCCESS:'log-success',WARNING:'log-warning',ERROR:'log-error',DEBUG:'log-debug'};
     var cls = levelMap[lvl]||'log-info';
     var logId = parseLogId(log.id);
     return '<div class="log-entry" data-level="'+lvl+'" data-log-id="'+logId+'">'+
-      '<span class="log-time">'+log.time+'</span>'+
-      '<span class="log-badge '+cls+'">'+lvl+'</span>'+
-      '<span class="log-msg">'+log.message+'</span></div>';
+      '<span class="log-time">'+escapeLogHtml(log.time)+'</span>'+
+      '<span class="log-badge '+cls+'">'+escapeLogHtml(lvl)+'</span>'+
+      '<span class="log-msg">'+escapeLogHtml(log.message)+'</span></div>';
   }
   var lastLogId = (function(){
     var last = $logBody.find('.log-entry').last();

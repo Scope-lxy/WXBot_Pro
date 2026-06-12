@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,12 @@ SYNC_SKIPPED = "skipped"
 TAG_BLOCKED = "拉黑我的人"
 TAG_DELETED = "删除我的人"
 RELATION_TAGS = (TAG_BLOCKED, TAG_DELETED)
+
+FULL_SCAN_MAX_SCROLLS = 1000
+FULL_SCAN_LOCK_SLICE_SCROLLS = 200
+FULL_SCAN_STALE_ROUNDS = 8
+FULL_SCAN_SCROLL_SETTLE_SECONDS = 1.0
+FULL_SCAN_LOCK_RELEASE_SETTLE_SECONDS = 0.2
 
 EVENT_BLOCKED = "blocked"
 EVENT_DELETED = "deleted"
@@ -550,43 +557,87 @@ def stop_requested(bot) -> bool:
     return bool((_load_bot_state(bot).get("runtime") or {}).get("stop_requested", False))
 
 
-def scan_full_sessions(bot, *, max_scrolls: int = 80) -> dict[str, Any]:
+def _safe_session_box_go_top(bot) -> bool:
+    session_box = getattr(getattr(bot, "wx", None), "SessionBox", None)
+    go_top = getattr(session_box, "go_top", None)
+    if not callable(go_top):
+        return False
+    try:
+        go_top()
+        time.sleep(FULL_SCAN_SCROLL_SETTLE_SECONDS)
+        return True
+    except Exception as exc:
+        log(level="WARNING", message=f"[关系扫描] 消息列表回到顶部失败：{exc}")
+        return False
+
+
+def _flush_after_full_scan_lock_release(bot) -> None:
+    flush_queue = getattr(bot, "_flush_lightweight_send_queue", None)
+    if not callable(flush_queue):
+        return
+    try:
+        flush_queue(limit=20)
+    except Exception as exc:
+        log(level="WARNING", message=f"[关系扫描] 分片释放锁后处理轻量发送队列失败：{exc}")
+
+
+def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS) -> dict[str, Any]:
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化")
     state = _load_bot_state(bot)
     runtime = state.setdefault("runtime", {})
+    if runtime.get("full_scan_running"):
+        return {"sessions": [], "state": state, "payload": relationship_scan_payload(state), "already_running": True}
     runtime["full_scan_running"] = True
     runtime["stop_requested"] = False
     _save_bot_state(bot, state)
 
     sessions_by_name: dict[str, dict[str, str]] = {}
     stale_rounds = 0
+    scrolled_rounds = 0
+    started = False
+    finished = False
     lock = bot._get_wechat_action_lock()
     try:
+        max_rounds = max(1, int(max_scrolls or 1))
+        slice_rounds = max(1, min(FULL_SCAN_LOCK_SLICE_SCROLLS, max_rounds))
+        while not finished and scrolled_rounds < max_rounds:
+            with lock:
+                session_box = getattr(bot.wx, "SessionBox", None)
+                roll_down = getattr(session_box, "roll_down", None)
+                if not started:
+                    _safe_session_box_go_top(bot)
+                    started = True
+                for _index in range(min(slice_rounds, max_rounds - scrolled_rounds)):
+                    if stop_requested(bot):
+                        finished = True
+                        break
+                    batch = _read_sessions(bot)
+                    before_count = len(sessions_by_name)
+                    for session in batch:
+                        name = session["name"]
+                        if name and name not in sessions_by_name:
+                            sessions_by_name[name] = session
+                    if len(sessions_by_name) == before_count:
+                        stale_rounds += 1
+                    else:
+                        stale_rounds = 0
+                    if stale_rounds >= FULL_SCAN_STALE_ROUNDS:
+                        finished = True
+                        break
+                    if not callable(roll_down):
+                        finished = True
+                        break
+                    roll_down()
+                    scrolled_rounds += 1
+                    time.sleep(FULL_SCAN_SCROLL_SETTLE_SECONDS)
+                if scrolled_rounds >= max_rounds:
+                    finished = True
+            if not finished:
+                time.sleep(FULL_SCAN_LOCK_RELEASE_SETTLE_SECONDS)
+                _flush_after_full_scan_lock_release(bot)
         with lock:
-            session_box = getattr(bot.wx, "SessionBox", None)
-            go_top = getattr(session_box, "go_top", None)
-            roll_down = getattr(session_box, "roll_down", None)
-            if callable(go_top):
-                go_top()
-            for _index in range(max(1, int(max_scrolls or 1))):
-                if stop_requested(bot):
-                    break
-                batch = _read_sessions(bot)
-                before_count = len(sessions_by_name)
-                for session in batch:
-                    name = session["name"]
-                    if name and name not in sessions_by_name:
-                        sessions_by_name[name] = session
-                if len(sessions_by_name) == before_count:
-                    stale_rounds += 1
-                else:
-                    stale_rounds = 0
-                if stale_rounds >= 3:
-                    break
-                if not callable(roll_down):
-                    break
-                roll_down()
+            _safe_session_box_go_top(bot)
     finally:
         state = _load_bot_state(bot)
         runtime = state.setdefault("runtime", {})
@@ -684,6 +735,73 @@ def desired_wechat_tag_update(status: str) -> tuple[list[str], list[str]]:
     return _relation_tags_for_status(status)
 
 
+def _sync_record_still_current(state: dict[str, Any], name: str, status: str) -> bool:
+    if not normalize_settings((state or {}).get("settings"))["auto_sync_wechat_tags"]:
+        return False
+    record = _record_map(state).get(_clean_text(name))
+    return bool(
+        record
+        and _clean_text(record.get("wechat_sync_status")) == SYNC_PENDING
+        and _clean_text(record.get("status")) == _clean_text(status)
+    )
+
+
+def _merge_new_events(target_state: dict[str, Any], source_state: dict[str, Any]) -> None:
+    target_events = target_state.setdefault("events", [])
+    existing = {
+        (
+            _clean_text((event or {}).get("at")),
+            _clean_text((event or {}).get("type")),
+            _clean_text((event or {}).get("name")),
+            _clean_text((event or {}).get("status")),
+            _clean_text((event or {}).get("evidence")),
+            _clean_text((event or {}).get("error")),
+        )
+        for event in target_events
+        if isinstance(event, dict)
+    }
+    for event in (source_state or {}).get("events") or []:
+        if not isinstance(event, dict):
+            continue
+        key = (
+            _clean_text(event.get("at")),
+            _clean_text(event.get("type")),
+            _clean_text(event.get("name")),
+            _clean_text(event.get("status")),
+            _clean_text(event.get("evidence")),
+            _clean_text(event.get("error")),
+        )
+        if key in existing:
+            continue
+        target_events.append(dict(event))
+        existing.add(key)
+    del target_events[:-1000]
+
+
+def _save_tag_sync_record_if_current(
+    bot,
+    source_state: dict[str, Any],
+    *,
+    name: str,
+    expected_status: str,
+    now: Any = None,
+) -> tuple[bool, dict[str, Any], dict[str, dict[str, Any]]]:
+    latest_state = _load_bot_state(bot)
+    if not _sync_record_still_current(latest_state, name, expected_status):
+        return False, latest_state, _record_map(latest_state)
+    source_records = _record_map(source_state)
+    updated_record = source_records.get(_clean_text(name))
+    if not updated_record:
+        return False, latest_state, _record_map(latest_state)
+    latest_records = _record_map(latest_state)
+    latest_records[_clean_text(name)] = updated_record
+    latest_state["records"] = sorted(latest_records.values(), key=lambda item: _clean_text(item.get("changed_at")), reverse=True)
+    latest_state.setdefault("runtime", {})["last_wechat_tag_sync_at"] = _iso_timestamp(now)
+    _merge_new_events(latest_state, source_state)
+    saved_state = _save_bot_state(bot, latest_state)
+    return True, saved_state, _record_map(saved_state)
+
+
 def process_pending_wechat_tag_sync(bot, *, limit: int | None = None, now: Any = None, force: bool = False) -> dict[str, Any]:
     if not getattr(bot, "wx", None):
         return {"processed": 0, "success": 0, "failed": 0}
@@ -706,6 +824,25 @@ def process_pending_wechat_tag_sync(bot, *, limit: int | None = None, now: Any =
         state_records = _record_map(state)
         for record in records:
             name = record["name"]
+            latest_state = _load_bot_state(bot)
+            latest_settings = normalize_settings(latest_state.get("settings"))
+            if not latest_settings["auto_sync_wechat_tags"]:
+                state = latest_state
+                state_records = _record_map(state)
+                log(message="[关系扫描] 微信标签同步已关闭，停止处理待同步队列")
+                break
+            latest_records = _record_map(latest_state)
+            latest_record = latest_records.get(name)
+            if (
+                not latest_record
+                or _clean_text(latest_record.get("wechat_sync_status")) != SYNC_PENDING
+                or _clean_text(latest_record.get("status")) != _clean_text(record.get("status"))
+            ):
+                continue
+            state = latest_state
+            settings = latest_settings
+            state_records = latest_records
+            record = latest_record
             add_tags, remove_tags = desired_wechat_tag_update(record["status"])
             attempt_at = _iso_timestamp(current_time)
             try:
@@ -716,38 +853,93 @@ def process_pending_wechat_tag_sync(bot, *, limit: int | None = None, now: Any =
                     remove_tags=remove_tags,
                     log_prefix="[关系扫描]",
                 )
+                post_state = _load_bot_state(bot)
+                post_settings = normalize_settings(post_state.get("settings"))
+                post_records = _record_map(post_state)
+                post_record = post_records.get(name)
+                if not post_settings["auto_sync_wechat_tags"]:
+                    state = post_state
+                    state_records = post_records
+                    log(message="[关系扫描] 微信标签同步已关闭，放弃写回本轮剩余同步结果")
+                    break
+                if (
+                    not post_record
+                    or _clean_text(post_record.get("wechat_sync_status")) != SYNC_PENDING
+                    or _clean_text(post_record.get("status")) != _clean_text(record.get("status"))
+                ):
+                    state = post_state
+                    state_records = post_records
+                    continue
+                state = post_state
+                settings = post_settings
+                state_records = post_records
+                current_record = post_record
                 processed += 1
-                current_record = state_records.get(name)
-                if current_record:
-                    current_record["wechat_sync_attempted_at"] = attempt_at
-                    current_record["wechat_sync_retry_count"] = int(current_record.get("wechat_sync_retry_count", 0) or 0) + 1
-                if result.get("status") == "success" and current_record:
+                current_record["wechat_sync_attempted_at"] = attempt_at
+                current_record["wechat_sync_retry_count"] = int(current_record.get("wechat_sync_retry_count", 0) or 0) + 1
+                if result.get("status") == "success":
                     current_record["wechat_sync_status"] = SYNC_SYNCED
                     current_record["wechat_sync_error"] = ""
                     current_record["wechat_sync_next_retry_at"] = ""
                     current_record["wechat_synced_at"] = _iso_timestamp()
                     success += 1
                     _append_event(state, EVENT_WECHAT_SYNCED, name, status=current_record.get("status", ""), now=current_record["wechat_synced_at"])
-                elif current_record:
+                else:
                     current_record["wechat_sync_status"] = SYNC_PENDING
                     current_record["wechat_sync_error"] = result.get("message") or "微信标签同步失败"
                     current_record["wechat_sync_next_retry_at"] = (current_time + timedelta(minutes=settings["sync_interval_minutes"])).replace(microsecond=0).isoformat()
                     failed += 1
                     _append_event(state, EVENT_WECHAT_SYNC_FAILED, name, status=current_record.get("status", ""), now=_iso_timestamp(), error=current_record["wechat_sync_error"])
+                saved, state, state_records = _save_tag_sync_record_if_current(
+                    bot,
+                    state,
+                    name=name,
+                    expected_status=record.get("status", ""),
+                    now=current_time,
+                )
+                if not saved:
+                    log(message="[关系扫描] 微信标签同步状态已变化，放弃写回本轮结果")
+                    break
             except Exception as exc:
+                post_state = _load_bot_state(bot)
+                post_settings = normalize_settings(post_state.get("settings"))
+                post_records = _record_map(post_state)
+                post_record = post_records.get(name)
+                if not post_settings["auto_sync_wechat_tags"]:
+                    state = post_state
+                    state_records = post_records
+                    log(message="[关系扫描] 微信标签同步已关闭，放弃写回本轮失败结果")
+                    break
+                if (
+                    not post_record
+                    or _clean_text(post_record.get("wechat_sync_status")) != SYNC_PENDING
+                    or _clean_text(post_record.get("status")) != _clean_text(record.get("status"))
+                ):
+                    state = post_state
+                    state_records = post_records
+                    continue
+                state = post_state
+                settings = post_settings
+                state_records = post_records
                 processed += 1
                 failed += 1
-                failed_record = state_records.get(name)
-                if failed_record:
-                    failed_record["wechat_sync_status"] = SYNC_PENDING
-                    failed_record["wechat_sync_error"] = str(exc)
-                    failed_record["wechat_sync_attempted_at"] = attempt_at
-                    failed_record["wechat_sync_retry_count"] = int(failed_record.get("wechat_sync_retry_count", 0) or 0) + 1
-                    failed_record["wechat_sync_next_retry_at"] = (current_time + timedelta(minutes=settings["sync_interval_minutes"])).replace(microsecond=0).isoformat()
+                failed_record = post_record
+                failed_record["wechat_sync_status"] = SYNC_PENDING
+                failed_record["wechat_sync_error"] = str(exc)
+                failed_record["wechat_sync_attempted_at"] = attempt_at
+                failed_record["wechat_sync_retry_count"] = int(failed_record.get("wechat_sync_retry_count", 0) or 0) + 1
+                failed_record["wechat_sync_next_retry_at"] = (current_time + timedelta(minutes=settings["sync_interval_minutes"])).replace(microsecond=0).isoformat()
                 _append_event(state, EVENT_WECHAT_SYNC_FAILED, name, status=record.get("status", ""), now=_iso_timestamp(), error=str(exc))
-        state["records"] = sorted(state_records.values(), key=lambda item: _clean_text(item.get("changed_at")), reverse=True)
-        state.setdefault("runtime", {})["last_wechat_tag_sync_at"] = _iso_timestamp(current_time)
-        _save_bot_state(bot, state)
+                saved, state, state_records = _save_tag_sync_record_if_current(
+                    bot,
+                    state,
+                    name=name,
+                    expected_status=record.get("status", ""),
+                    now=current_time,
+                )
+                if not saved:
+                    log(message="[关系扫描] 微信标签同步状态已变化，放弃写回本轮失败结果")
+                    break
         if processed:
             log(message=f"[关系扫描] 微信标签同步完成：成功 {success}，失败 {failed}")
         return {"processed": processed, "success": success, "failed": failed}

@@ -171,6 +171,33 @@ def remove_dynamic_listener_entries(bot, nickname):
     return removed
 
 
+def touch_dynamic_listener_entry(bot, nickname, timestamp=None):
+    nickname = str(nickname or "").strip()
+    if not nickname:
+        return False
+    runtime_list = getattr(bot, "all_Mode_listen_list", None)
+    if not isinstance(runtime_list, list):
+        return False
+    now_ts = time.time() if timestamp is None else float(timestamp)
+    for item in runtime_list:
+        if _dynamic_listener_entry_name(item) != nickname:
+            continue
+        if isinstance(item, list):
+            if len(item) >= 2:
+                item[1] = now_ts
+            else:
+                item.append(now_ts)
+        elif isinstance(item, tuple):
+            index = runtime_list.index(item)
+            runtime_list[index] = [nickname, now_ts]
+        else:
+            index = runtime_list.index(item)
+            runtime_list[index] = [nickname, now_ts]
+        return True
+    runtime_list.append([nickname, now_ts])
+    return True
+
+
 def _forget_runtime_listener_caches(bot, nickname):
     runtime_chat_state.remove_listen_chat(bot, nickname)
     material_chats = getattr(bot, "_material_source_chats", None)
@@ -636,6 +663,7 @@ def remove_listen_chat_verified(bot, nickname):
     _bot_log(bot, level="WARNING", message=f"{nickname} 删除监听后仍有残留子窗口，尝试直接关闭")
     residual_closed = close_residual_listener_subwindow(bot, nickname)
     if residual_closed:
+        _bot_log(bot, message=f"{nickname} 残留监听子窗口直接关闭已执行，正在复查")
         listened_names = try_get_all_subwindow_names(bot)
         if listened_names is not None and str(nickname).strip() not in listened_names:
             _forget_runtime_listener_caches(bot, nickname)
@@ -645,6 +673,8 @@ def remove_listen_chat_verified(bot, nickname):
             _forget_runtime_listener_caches(bot, nickname)
             _bot_log(bot, level="WARNING", message=f"{nickname} 残留监听子窗口已尝试关闭，无法再次校验，已清理运行缓存")
             return True
+    else:
+        _bot_log(bot, level="WARNING", message=f"{nickname} 残留监听子窗口直接关闭未成功：未找到可关闭窗口或关闭调用失败")
 
     _bot_log(bot, level="ERROR", message=f"{nickname} 删除监听校验失败，子窗口仍存在，保留在动态监听列表")
     return False
@@ -857,15 +887,17 @@ def add_chat_to_listen(bot, chat):
         return None
     is_listened_fn = getattr(bot, "is_chat_listened", None)
     if callable(is_listened_fn) and is_listened_fn(chat):
+        touch_dynamic_listener_entry(bot, chat)
         return sub_chat
     _bot_log(bot, message=chat + " 已添加监听，正在加入动态监听列表")
-    bot.all_Mode_listen_list.append([chat, time.time()])
+    touch_dynamic_listener_entry(bot, chat)
     _bot_log(bot, message="当前全局模式动态监听列表：" + str(bot.all_Mode_listen_list))
     return sub_chat
 
 
 def is_chat_listened(bot, chat):
-    return any(listen_chat[0] == chat for listen_chat in bot.all_Mode_listen_list)
+    chat = str(chat or "").strip()
+    return any(_dynamic_listener_entry_name(listen_chat) == chat for listen_chat in bot.all_Mode_listen_list)
 
 
 def alllisten_mode(bot, last_time, timeout=10):
@@ -930,6 +962,8 @@ def alllisten_mode(bot, last_time, timeout=10):
             return
 
         if msgs:
+            if chat and chat_type != "group":
+                touch_dynamic_listener_entry(bot, chat)
             for msg in msgs:
                 if msg.type == "image":
                     if msg.id in next_callback_down_map:

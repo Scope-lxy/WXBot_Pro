@@ -87,6 +87,36 @@ def bring_wechat_main_window_to_front(*, wait: float = 0.3) -> int:
     return bring_top_windows_to_front("微信", wait=wait) + bring_top_windows_to_front("WeChat", wait=wait)
 
 
+def move_cursor_to_wechat_main_window_center(*, wait: float = 0.05) -> bool:
+    if os.name != "nt":
+        return False
+    handles = top_window_handles_by_title("微信", visible_only=False) or top_window_handles_by_title("WeChat", visible_only=False)
+    if not handles:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return False
+
+    user32 = ctypes.windll.user32
+    hwnd = int(handles[0])
+    rect = wintypes.RECT()
+    try:
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return False
+        width = max(1, int(rect.right - rect.left))
+        height = max(1, int(rect.bottom - rect.top))
+        x = int(rect.left + width * 0.5)
+        y = int(rect.top + height * 0.5)
+        user32.SetCursorPos(x, y)
+        if wait:
+            time.sleep(max(0.0, float(wait)))
+        return True
+    except Exception:
+        return False
+
+
 def click_wechat_main_window_chat_nav(*, wait: float = 0.1) -> bool:
     if os.name != "nt":
         return False

@@ -15,12 +15,14 @@ from core.contact_profiles import (
     directory_path as contact_directory_path,
     load_directory as load_contact_directory,
     merge_directory as merge_contact_directory,
+    normalize_tag_list,
     repair_candidates as contact_repair_candidates,
     save_directory as save_contact_directory,
 )
 from core.wechat_window import (
     bring_wechat_main_window_to_front,
     click_wechat_main_window_chat_nav,
+    move_cursor_to_wechat_main_window_center,
     run_with_wechat_rebind_retry,
 )
 from core.wechat_observability import warn_slow_wechat_ui_action
@@ -77,6 +79,24 @@ def friend_info_edit_noop(response: Any) -> bool:
 
 def bring_wechat_to_front() -> int:
     return bring_wechat_main_window_to_front(wait=0.3)
+
+
+def _chat_info_tags(raw_info: Any) -> list[str] | None:
+    if not isinstance(raw_info, dict):
+        return None
+    for key in ("标签", "tags", "Tags", "tag", "Tag", "raw_tags"):
+        if key in raw_info:
+            return normalize_tag_list(raw_info.get(key))
+    return None
+
+
+def _tags_update_is_noop(current_tags: list[str] | None, *, add_tags: list[str] | None, remove_tags: list[str] | None) -> bool:
+    if current_tags is None:
+        return False
+    current = set(normalize_tag_list(current_tags))
+    add_set = {tag for tag in normalize_tag_list(add_tags or []) if tag}
+    remove_set = {tag for tag in normalize_tag_list(remove_tags or []) if tag}
+    return add_set.issubset(current) and not (remove_set & current)
 
 
 def normalize_refresh_mode(mode: Any) -> str:
@@ -272,6 +292,7 @@ def edit_friend_info_via_chat_profile(
     with warn_slow_wechat_ui_action(f"ChatWith({target_name})"):
         chat_with(target_name, exact=True)
     bring_wechat_to_front()
+    move_cursor_to_wechat_main_window_center()
 
     chat_info = {}
     get_chat_info = getattr(bot.wx, "ChatInfo", None)
@@ -286,8 +307,16 @@ def edit_friend_info_via_chat_profile(
                 raise RuntimeError(f"当前会话不是好友会话：{chat_type}")
             if chat_name and allowed_names and chat_name not in allowed_names:
                 raise RuntimeError(f"当前会话不是目标好友：{chat_name}")
+            if remark is None and _tags_update_is_noop(_chat_info_tags(chat_info), add_tags=add_tags, remove_tags=remove_tags):
+                _bot_log(bot, message=f"{log_prefix} {target_name} 标签已满足要求，跳过微信资料修改")
+                return {
+                    "status": "成功",
+                    "message": "标签已满足要求，未进行任何修改",
+                    "noop": True,
+                }
 
     bring_wechat_to_front()
+    move_cursor_to_wechat_main_window_center()
     with warn_slow_wechat_ui_action(f"EditFriendInfo({target_name})"):
         response = bot.wx.EditFriendInfo(
             remark=remark,
