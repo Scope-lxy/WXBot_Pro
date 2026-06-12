@@ -5957,13 +5957,28 @@ def relationship_scan_full_scan():
         log('INFO', '[关系扫描] 收到全量扫描请求')
         wx_id = _relationship_scan_wx_id_from_request()
         state = relationship_scan.load_state(DATA_DIR, wx_id)
-        if (state.get('runtime') or {}).get('full_scan_running'):
-            return jsonify({
-                'status': 'success',
-                'message': '全量扫描正在运行，本次点击已忽略',
-                'payload': relationship_scan.relationship_scan_payload(state),
-            })
         with relationship_full_scan_thread_lock:
+            runtime = state.setdefault('runtime', {})
+            stale_running = bool(runtime.get('full_scan_running')) and not (
+                relationship_full_scan_thread and relationship_full_scan_thread.is_alive()
+            )
+            if stale_running:
+                runtime['full_scan_running'] = False
+                runtime['stop_requested'] = False
+                progress = runtime.get('full_scan_progress') if isinstance(runtime.get('full_scan_progress'), dict) else {}
+                progress.update({
+                    'status': 'failed',
+                    'updated_at': datetime.now().replace(microsecond=0).isoformat(),
+                    'message': '上次全量扫描已中断，已允许重新开始',
+                })
+                runtime['full_scan_progress'] = progress
+                state = relationship_scan.save_state(DATA_DIR, state)
+            elif runtime.get('full_scan_running'):
+                return jsonify({
+                    'status': 'success',
+                    'message': '全量扫描正在运行，本次点击已忽略',
+                    'payload': relationship_scan.relationship_scan_payload(state),
+                })
             if relationship_full_scan_thread and relationship_full_scan_thread.is_alive():
                 return jsonify({
                     'status': 'success',
@@ -6004,10 +6019,17 @@ def relationship_scan_stop():
     try:
         if bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'stop_relationship_full_scan'):
             _require_running_contact_profiles_wx_id()
+            wx_id = _relationship_scan_wx_id_from_request()
+            state = relationship_scan.load_state(DATA_DIR, wx_id)
+            runtime = state.setdefault('runtime', {})
+            if not runtime.get('full_scan_running'):
+                return jsonify({'status': 'success', 'message': '当前没有正在运行的全量扫描', 'payload': relationship_scan.relationship_scan_payload(state)})
             payload = bot.stop_relationship_full_scan()
         else:
             wx_id = _relationship_scan_wx_id_from_request()
             state = relationship_scan.load_state(DATA_DIR, wx_id)
+            if not (state.get('runtime') or {}).get('full_scan_running'):
+                return jsonify({'status': 'success', 'message': '当前没有正在运行的全量扫描', 'payload': relationship_scan.relationship_scan_payload(state)})
             state.setdefault('runtime', {})['stop_requested'] = True
             state = relationship_scan.save_state(DATA_DIR, state)
             payload = relationship_scan.relationship_scan_payload(state)

@@ -497,7 +497,11 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
     lock = bot._get_wechat_action_lock()
     acquired = lock.acquire(blocking=False)
     if not acquired:
-        return {"status": "skipped", "message": "微信操作锁占用中", "payload": friend_request_payload(state)}
+        message = "微信操作锁占用中，稍后会自动重试"
+        candidate["last_result"] = message
+        state.setdefault("runtime", {})["last_result"] = f"{candidate.get('display_name') or candidate.get('send_name')}: {message}"
+        state = save_state(bot.config.DATA_DIR, state)
+        return {"status": "skipped", "message": message, "payload": friend_request_payload(state)}
     addmsg = ""
     try:
         addmsg = select_message_for_candidate(state, candidate)

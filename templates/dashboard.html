@@ -5091,6 +5091,7 @@ $(function(){
       showMsg('relationship-scan-msg', fallbackMessage + '失败：' + (xhr.responseText || xhr.status), false);
     }).always(function(){
       $btn.prop('disabled', false).html(oldHtml);
+      renderRelationshipScan(_relationshipScanState.payload || {});
     });
   }
   function friendRequestShortTime(value){

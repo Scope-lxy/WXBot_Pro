@@ -828,12 +828,13 @@ def pass_new_friends(bot):
                 _bot_log(bot, message="已通过" + send_name + "的好友请求")
                 bot.wx.SwitchToChat()
                 _bot_sleep(bot, 5)
-                for action in iter_new_friend_welcome_actions(getattr(bot.config, "new_frien_msg", [])):
-                    if action["type"] == "file":
-                        bot.wx.SendFiles(who=send_name, filepath=action["path"])
-                    else:
-                        bot.wx.SendMsg(who=send_name, msg=action["content"])
-                    bot.config.human_delay()
+                if bool(getattr(bot.config, "new_friend_reply_switch", False)):
+                    for action in iter_new_friend_welcome_actions(getattr(bot.config, "new_friend_msg", {})):
+                        if action["type"] == "file":
+                            bot.wx.SendFiles(who=send_name, filepath=action["path"])
+                        else:
+                            bot.wx.SendMsg(who=send_name, msg=action["content"])
+                        bot.config.human_delay()
                 bot.wx.ChatWith(who="文件传输助手")
                 _bot_sleep(bot, 1)
                 bot.wx.SwitchToContact()

@@ -156,6 +156,39 @@ class FriendRequestLogicTest(unittest.TestCase):
             self.assertEqual(saved["candidates"][0]["status"], "failed")
             self.assertIn("微信未初始化", saved["executions"][-1]["message"])
 
+    def test_run_once_records_lock_busy_as_visible_last_result(self):
+        class FakeBot:
+            wx_id = "wxid_test"
+
+            def __init__(self, data_dir):
+                self.config = SimpleNamespace(DATA_DIR=data_dir)
+                self._lock = threading.Lock()
+                self._lock.acquire()
+
+            def _get_wechat_action_lock(self):
+                return self._lock
+
+        with tempfile.TemporaryDirectory() as data_dir:
+            state = friend_request.default_state("wxid_test")
+            state["candidates"] = [friend_request.normalize_candidate({
+                "display_name": "瑞东",
+                "send_name": "瑞东",
+                "tags": ["删除我的人"],
+            })]
+            friend_request.save_state(data_dir, state)
+
+            bot = FakeBot(data_dir)
+            try:
+                result = friend_request.run_once(bot, force=True, now=datetime(2026, 6, 11, 9, 30, 0))
+            finally:
+                bot._lock.release()
+
+            saved = friend_request.load_state(data_dir, "wxid_test")
+            self.assertEqual(result["status"], "skipped")
+            self.assertIn("微信操作锁占用中", result["message"])
+            self.assertIn("微信操作锁占用中", saved["runtime"]["last_result"])
+            self.assertIn("微信操作锁占用中", saved["candidates"][0]["last_result"])
+
     def test_select_message_by_add_object_random_pool(self):
         state = friend_request.default_state("wxid_test")
         state["message_rules"] = [
