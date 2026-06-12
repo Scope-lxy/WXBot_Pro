@@ -740,10 +740,6 @@ class WXBot:
             return None
         if runtime_chat_state.listen_chat_has_method(candidate, "SendMsg") and self._listen_chat_matches_target(candidate, target):
             return candidate
-        get_verified = getattr(self, "_get_verified_subwindow", None)
-        verified = get_verified(target) if callable(get_verified) else listening.get_verified_subwindow(self, target)
-        if runtime_chat_state.listen_chat_has_method(verified, "SendMsg") and self._listen_chat_matches_target(verified, target):
-            return verified
         return None
 
     def _send_lightweight_actions_to_child(self, target, actions):
@@ -5031,7 +5027,7 @@ class WXBot:
         result = True
         target = str(getattr(chat, "who", "") or "").strip()
         send_chat = self._verified_send_chat(target, chat)
-        if send_chat is None:
+        if send_chat is None and target:
             send_chat = self._ensure_target_listen_chat_for_send(target)
         if send_chat is None:
             queued = self._queue_text_reply_until_target_verified(target, parts, source="private_ai_reply")

@@ -5,27 +5,19 @@ from core import runtime_chat_state
 
 
 class RuntimeChatStateSendTests(unittest.TestCase):
-    def test_send_text_revalidates_cached_chat_before_sending(self):
+    def test_send_text_uses_cached_chat_without_revalidation(self):
         sends = []
 
-        class WrongChat:
+        class CachedChat:
             def SendMsg(self, msg):
-                sends.append(("wrong", msg))
+                sends.append(("cached", msg))
                 return True
-
-        class RightChat:
-            def SendMsg(self, msg):
-                sends.append(("right", msg))
-                return True
-
-        right_chat = RightChat()
 
         class Bot:
-            _listen_chats = {"阿英2": WrongChat()}
+            _listen_chats = {"阿英2": CachedChat()}
 
             def _verified_send_chat(self, target, candidate=None):
-                self.verified_args = (target, candidate)
-                return right_chat
+                raise AssertionError("cached send should not touch verifier")
 
             def _get_chat_send_lock(self, _target):
                 class Lock:
@@ -42,16 +34,13 @@ class RuntimeChatStateSendTests(unittest.TestCase):
         result = runtime_chat_state.send_text_to_target(bot, "阿英2", "你好")
 
         self.assertTrue(result)
-        self.assertEqual(sends, [("right", "你好")])
-        self.assertIs(bot._listen_chats["阿英2"], right_chat)
+        self.assertEqual(sends, [("cached", "你好")])
 
     def test_send_text_falls_back_when_cached_chat_is_not_verified(self):
         sends = []
 
         class WrongChat:
-            def SendMsg(self, msg):
-                sends.append(("wrong", msg))
-                return True
+            who = "别人"
 
         bot = SimpleNamespace(
             _listen_chats={"阿英2": WrongChat()},

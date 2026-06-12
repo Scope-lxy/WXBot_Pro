@@ -201,6 +201,12 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", first))
         self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", second))
 
+    def test_verified_send_chat_does_not_probe_wechat_when_candidate_missing(self):
+        bot = WXBot.__new__(WXBot)
+        bot._get_verified_subwindow = lambda _target: self.fail("不应主动探测微信子窗口")
+
+        self.assertIsNone(bot._verified_send_chat("张三", None))
+
 
 if __name__ == "__main__":
     unittest.main()
