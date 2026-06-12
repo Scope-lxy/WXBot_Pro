@@ -16,6 +16,7 @@ HWND_NOTOPMOST = -2
 SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_SHOWWINDOW = 0x0040
+WECHAT_AUTO_RESIZE_SIZE = (1000, 6000)
 
 
 def top_window_handles_by_title(title: str, *, visible_only: bool = True) -> list[int]:
@@ -128,8 +129,10 @@ def rebind_wechat_client(bot, *, versions: Iterable[str] = ("微信", "WeChat"))
     last_exc = None
     for version_name in versions:
         try:
+            from wxautox4.param import WxParam
             from wxautox4 import WeChat
 
+            WxParam.CHAT_WINDOW_SIZE = WECHAT_AUTO_RESIZE_SIZE
             bot.wx = WeChat(version=version_name)
             return bot.wx
         except Exception as exc:
