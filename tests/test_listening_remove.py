@@ -6,9 +6,19 @@ from feature import listening
 
 
 class RemoveListenChatTests(unittest.TestCase):
-    def test_remove_listen_chat_does_not_require_outer_wechat_action_lock(self):
+    def test_remove_listen_chat_uses_wechat_action_lock(self):
         removed = []
         logs = []
+        lock_events = []
+
+        class RecordingLock:
+            def __enter__(self):
+                lock_events.append("enter")
+                return self
+
+            def __exit__(self, *_args):
+                lock_events.append("exit")
+                return False
 
         class FakeBot:
             _listen_chats = {"张三": object()}
@@ -16,15 +26,17 @@ class RemoveListenChatTests(unittest.TestCase):
                 RemoveListenChat=lambda _nickname: removed.append(_nickname) or {"status": "成功", "message": "ok"},
                 GetAllSubWindow=lambda: [],
             )
+            lock = RecordingLock()
 
             def _get_wechat_action_lock(self):
-                raise AssertionError("RemoveListenChat should not take the outer bot UI lock")
+                return self.lock
 
         with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))):
             result = listening.remove_listen_chat_verified(FakeBot(), "张三")
 
         self.assertTrue(result)
         self.assertEqual(removed, ["张三"])
+        self.assertEqual(lock_events, ["enter", "exit"])
         self.assertEqual(logs.count("监听管理 张三：删除监听完成"), 1)
 
     def test_remove_listen_chat_logs_wxautox_return_value_and_keeps_state_when_residual_remains(self):

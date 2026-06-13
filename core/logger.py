@@ -12,7 +12,7 @@ def _base_dir():
     return os.path.abspath(".")
 
 DATA_DIR = os.path.join(_base_dir(), "data")
-LOG_PATH = os.path.join(_base_dir(), "panel_logs")
+LOG_PATH = os.path.join(_base_dir(), "wxbot_logs")
 os.makedirs(LOG_PATH, exist_ok=True)
 # 日志颜色映射
 LOG_COLORS = {

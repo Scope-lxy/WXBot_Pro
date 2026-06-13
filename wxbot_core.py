@@ -310,10 +310,14 @@ set_chat_api_app_version(version)
 WxParam.MESSAGE_HASH = True         # 启用消息哈希，辅助消息去重判断
 WxParam.FORCE_MESSAGE_XBIAS = True  # 每次启动强制重新获取 X 偏移量
 WxParam.DEFAULT_MESSAGE_YBIAS = 40
+WXAUTO_SAVE_DIR_NAME = "wxauto_save"
 
 
 def _wxbot_runtime_base_dir():
     return os.path.dirname(sys.executable) if hasattr(sys, "_MEIPASS") else os.path.abspath(".")
+
+
+WxParam.DEFAULT_SAVE_PATH = os.path.join(_wxbot_runtime_base_dir(), WXAUTO_SAVE_DIR_NAME)
 
 
 def detect_local_ffmpeg_paths(base_dir=None):
@@ -6711,8 +6715,10 @@ class WXBot:
         return existing_local_image_path(value, self._wxauto_download_dir())
 
     def _wxauto_download_dir(self):
-        base = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath(".")
-        return os.path.join(base, "wxautox文件下载")
+        configured = str(getattr(WxParam, "DEFAULT_SAVE_PATH", "") or "").strip()
+        if configured:
+            return configured
+        return os.path.join(_wxbot_runtime_base_dir(), WXAUTO_SAVE_DIR_NAME)
 
     def Pass_New_Friends(self):
         return listening.pass_new_friends(self)

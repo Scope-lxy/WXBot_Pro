@@ -3742,6 +3742,7 @@ var svModal = (function(){
       buttons: buttons || []
     }); },
     custom: function(opts){ _show(opts || {}); },
+    close: function(){ _close(); },
     warnActivate: function(onContinue){ _show({
       icon: '<i class="bi bi-shield-exclamation" style="color:#FA5151;font-size:36px;"></i>',
       title: '本设备 wxautox4 未激活',
@@ -11832,7 +11833,7 @@ $(function(){
   function finishBotStopped(message){
     clearBotStopPolling();
     setBotStopButtonsStopping(false);
-    svModal.success(message || '机器人已停止', '已停止');
+    svModal.close();
     triggerStatusPolling(true);
   }
   function pollBotStopped(deadline){

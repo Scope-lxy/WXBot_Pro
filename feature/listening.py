@@ -6,6 +6,7 @@ import os
 import random
 import sys
 import time
+from contextlib import nullcontext
 from typing import Any
 
 from wxautox4 import WeChat
@@ -123,6 +124,13 @@ def listen_add_action_label(label):
     if label.endswith("监听"):
         return f"添加{label}"
     return f"添加{label}监听"
+
+
+def _wechat_action_lock_context(bot):
+    lock_getter = getattr(bot, "_get_wechat_action_lock", None)
+    if not callable(lock_getter):
+        return nullcontext()
+    return lock_getter()
 
 
 def subwindow_who(chat):
@@ -329,29 +337,30 @@ def is_stale_listen_registration_error(result):
 
 
 def add_and_verify_subwindow(bot, nickname, retry_count=3):
-    for attempt in range(max(1, int(retry_count or 1))):
-        if attempt > 0:
-            _bot_sleep(bot, 0.5)
-        result = add_listen_chat_once(bot, nickname, "动态监听")
-        sub_chat = get_verified_subwindow(bot, nickname)
-        if sub_chat:
-            runtime_chat_state.remember_listen_chat(bot, nickname, sub_chat)
-            return sub_chat
-        if is_stale_listen_registration_error(result):
-            remove_fn = getattr(bot, "_remove_listen_chat_verified", None)
-            if callable(remove_fn):
-                cleared = remove_fn(nickname)
-            else:
-                cleared = remove_listen_chat_verified(bot, nickname)
-            if cleared:
-                _bot_sleep(bot, 0.2)
-                retry_result = add_listen_chat_once(bot, nickname, "动态监听")
-                sub_chat = get_verified_subwindow(bot, nickname)
-                if sub_chat:
-                    runtime_chat_state.remember_listen_chat(bot, nickname, sub_chat)
-                    return sub_chat
-                if is_stale_listen_registration_error(retry_result):
-                    continue
+    with _wechat_action_lock_context(bot):
+        for attempt in range(max(1, int(retry_count or 1))):
+            if attempt > 0:
+                _bot_sleep(bot, 0.5)
+            result = add_listen_chat_once(bot, nickname, "动态监听")
+            sub_chat = get_verified_subwindow(bot, nickname)
+            if sub_chat:
+                runtime_chat_state.remember_listen_chat(bot, nickname, sub_chat)
+                return sub_chat
+            if is_stale_listen_registration_error(result):
+                remove_fn = getattr(bot, "_remove_listen_chat_verified", None)
+                if callable(remove_fn):
+                    cleared = remove_fn(nickname)
+                else:
+                    cleared = remove_listen_chat_verified(bot, nickname)
+                if cleared:
+                    _bot_sleep(bot, 0.2)
+                    retry_result = add_listen_chat_once(bot, nickname, "动态监听")
+                    sub_chat = get_verified_subwindow(bot, nickname)
+                    if sub_chat:
+                        runtime_chat_state.remember_listen_chat(bot, nickname, sub_chat)
+                        return sub_chat
+                    if is_stale_listen_registration_error(retry_result):
+                        continue
     _bot_log(bot, level="ERROR", message=f"{nickname} 动态监听子窗口校验失败，已跳过实际监听")
     return None
 
@@ -635,6 +644,11 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
 
 
 def remove_listen_chat_verified(bot, nickname):
+    with _wechat_action_lock_context(bot):
+        return _remove_listen_chat_verified_locked(bot, nickname)
+
+
+def _remove_listen_chat_verified_locked(bot, nickname):
     try:
         def remove_action():
             with warn_slow_wechat_ui_action(f"RemoveListenChat({nickname})"):

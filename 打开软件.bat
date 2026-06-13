@@ -7,6 +7,7 @@ set "LOCAL_FFMPEG_BIN=%LOCAL_FFMPEG_ROOT%\bin"
 set "LOCAL_FFMPEG_EXE=%CD%\venv\tools\ffmpeg\bin\ffmpeg.exe"
 set "LOCAL_FFPROBE_EXE=%CD%\venv\tools\ffmpeg\bin\ffprobe.exe"
 set "FFMPEG_RELEASE_PATH=https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+set PIP_DEPENDENCIES="flask" "pywin32" "openai" "requests" "schedule" "wxautox4>=40.1.14" "cozepy" "websockets"
 
 if /i "%~1"=="--create-venv-only" (
     call :create_venv
@@ -27,7 +28,7 @@ if not exist "venv\.deps_installed" (
         pause
         exit /b 1
     )
-    "venv\Scripts\python.exe" -m pip install -r requirements.txt
+    "venv\Scripts\python.exe" -m pip install %PIP_DEPENDENCIES%
     if errorlevel 1 (
         echo [ERROR] Failed to install dependencies.
         pause

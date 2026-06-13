@@ -6,7 +6,7 @@ from unittest import mock
 from core.api import API_ERROR_REPLY_TEXT, DusAPI, OpenAIAPI, build_api_config_snapshot
 from feature import message_routing
 from feature.scheduled_messages import execute_scheduled_message_task
-from wxbot_core import WXBot
+from wxbot_core import WXAUTO_SAVE_DIR_NAME, WXBot, WxParam
 
 
 class ApiBehaviorTests(unittest.TestCase):
@@ -265,6 +265,18 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._get_verified_subwindow = lambda _target: self.fail("不应主动探测微信子窗口")
 
         self.assertIsNone(bot._verified_send_chat("张三", None))
+
+    def test_wxauto_download_dir_follows_kernel_save_path(self):
+        bot = WXBot.__new__(WXBot)
+        original = getattr(WxParam, "DEFAULT_SAVE_PATH", "")
+        try:
+            WxParam.DEFAULT_SAVE_PATH = r"C:\tmp\wxauto_custom"
+            self.assertEqual(bot._wxauto_download_dir(), r"C:\tmp\wxauto_custom")
+
+            WxParam.DEFAULT_SAVE_PATH = ""
+            self.assertTrue(bot._wxauto_download_dir().endswith(WXAUTO_SAVE_DIR_NAME))
+        finally:
+            WxParam.DEFAULT_SAVE_PATH = original
 
     def test_stop_wxbot_cancels_pending_private_merge_timer(self):
         class FakeTimer:

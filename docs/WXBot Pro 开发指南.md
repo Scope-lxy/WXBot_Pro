@@ -40,12 +40,12 @@
 ```text
 打开软件.bat
 -> 创建 / 复用 venv
--> 安装 requirements.txt
+-> 安装脚本内置依赖清单
 -> 运行 web_server.py
 -> 面板优先开放在 http://127.0.0.1:10001（被占用时顺延）
 ```
 
-`打开软件.bat` 还会兜底 `ffmpeg` / `ffprobe`：优先复用系统 PATH 中已有工具；系统缺失时，自动下载到 `venv\tools\ffmpeg\`。开发和打包都以 Python 3.12 为准。
+`打开软件.bat` 现在自己维护 Python 依赖清单，不再读取外部 `requirements.txt`。它还会兜底 `ffmpeg` / `ffprobe`：优先复用系统 PATH 中已有工具；系统缺失时，自动下载到 `venv\tools\ffmpeg\`。开发和打包都以 Python 3.12 为准。
 
 ### 2. 面板层
 
@@ -155,7 +155,7 @@
 - `data/accounts/<wx_id>/config/voice_reply_state.json`：语音回复运行态
 - `data/accounts/<wx_id>/moments_drafts/active_draft.json`：管理员发圈草稿运行态
 - `data/accounts/default/`：只有没有运行中微信号、没有 `last_wx_id`、也没有历史账号数据时才使用
-- `panel_logs/`：面板运行日志
+- `wxbot_logs/`：面板运行日志
 - `backups/data_时间戳/`：面板一键备份产物
 
 ## 当前关键行为边界

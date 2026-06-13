@@ -23,7 +23,9 @@ runtime/
 
 # Logs and historical backups
 panel_logs/
+wxbot_logs/
 wxauto_logs/
+wxauto_save/
 logs/
 backups/
 backup/
@@ -38,4 +40,3 @@ data/system_prompts/prompt_backup/
 
 # Local test assets
 tools/ui_conflict_test_config.json
-

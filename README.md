@@ -78,15 +78,15 @@
 - `feature/`：机器人业务规则，例如监听维护、管理员工作台、素材转发、任务执行。
 - `extension/`：邮件通知、Webhook、SiverPanel 远程访问等外部增强。
 - `templates/`：Web 管理面板模板与静态资源。
-- `panel_logs/`：面板运行日志。
+- `wxbot_logs/`：面板运行日志。
 - `backups/`：一键备份产物。
 
 ## 使用与维护边界
 
 - 微信主窗口需要保持可见，不要最小化。
 - 这是个人自用 fork，默认优先当前目录结构和当前使用方式，不额外维护旧版迁移壳。
-- 当前运行目录以 `data/`、`panel_logs/`、`backups/` 为准；跨设备继续使用时，优先复制这些真实数据目录。
-- 公开同步代码前，不要提交 `data/config/`、`data/prompt/`、`data/accounts/`、`panel_logs/`、`backups/` 等本地私有数据。
+- 当前运行目录以 `data/`、`wxbot_logs/`、`backups/` 为准；跨设备继续使用时，优先复制这些真实数据目录。
+- 公开同步代码前，不要提交 `data/config/`、`data/prompt/`、`data/accounts/`、`wxbot_logs/`、`backups/` 等本地私有数据。
 
 ## 迁移与打包
 
@@ -98,7 +98,7 @@
 .\打包发布.ps1
 ```
 
-默认产物是 `dist/WXBot_Pro.zip`。脚本会打包运行所需代码、`data/system_prompts/` 和内置 Python 3.12 runtime，不会把 `data/config/`、`data/prompt/`、`data/accounts/`、`panel_logs/`、`backups/`、`docs/`、`tests/`、本地 `venv/` 或 Git 元数据带进去。
+默认产物是 `dist/WXBot_Pro.zip`。脚本会打包运行所需代码、`data/system_prompts/` 和内置 Python 3.12 runtime，不会把 `data/config/`、`data/prompt/`、`data/accounts/`、`wxbot_logs/`、`backups/`、`docs/`、`tests/`、本地 `venv/` 或 Git 元数据带进去。
 
 ## 常见问题
 

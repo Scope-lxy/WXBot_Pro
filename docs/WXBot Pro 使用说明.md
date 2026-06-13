@@ -46,7 +46,7 @@ WXBot Pro 自用增强版基于上游 `SiverWXBot Plus` 继续维护，核心用
 .\打包发布.ps1
 ```
 
-产物默认输出到 `dist/WXBot_Pro.zip`。脚本只会打包 `core/`、`feature/`、`extension/`、`templates/`、`data/system_prompts/` 和启动所需的根目录文件，并附带本地 Python 3.12 runtime。`data/config/`、`data/prompt/`、`data/accounts/`、`panel_logs/`、`docs/`、`tests/`、本地 `venv/` 和 `.git/` 都不会进包。自动下载到 `venv\tools\ffmpeg\` 的 `ffmpeg` / `ffprobe` 也不打包；工作机首次启动时会按同一套规则补齐。
+产物默认输出到 `dist/WXBot_Pro.zip`。脚本只会打包 `core/`、`feature/`、`extension/`、`templates/`、`data/system_prompts/` 和启动所需的根目录文件，并附带本地 Python 3.12 runtime。`data/config/`、`data/prompt/`、`data/accounts/`、`wxbot_logs/`、`docs/`、`tests/`、本地 `venv/` 和 `.git/` 都不会进包。自动下载到 `venv\tools\ffmpeg\` 的 `ffmpeg` / `ffprobe` 也不打包；工作机首次启动时会按同一套规则补齐。
 
 启动后默认访问 `http://127.0.0.1:10001`。如果端口被占用，会顺延到后续空闲端口，请以启动日志里打印的地址为准。
 
@@ -399,7 +399,7 @@ AI 可见历史会统一做媒体净化：图片、视频、文件不会把本�
 4. 关闭微信自动更新，避免 wxautox 适配失效。
 5. 程序接管微信运行时，尽量不要手动操作微信。
 6. 适配环境以当前 wxautox Plus 要求为准。
-7. 公开同步代码前，不要提交 `data/config/`、`data/prompt/`、`data/accounts/`、`panel_logs/`、`backups/` 等本地私有数据。
+7. 公开同步代码前，不要提交 `data/config/`、`data/prompt/`、`data/accounts/`、`wxbot_logs/`、`backups/` 等本地私有数据。
 
 ## 常见问题
 
