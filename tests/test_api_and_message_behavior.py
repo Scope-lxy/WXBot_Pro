@@ -45,6 +45,63 @@ class ApiBehaviorTests(unittest.TestCase):
         fake_log.assert_called_once()
         self.assertIn("接口1：actual-model", fake_log.call_args.kwargs["message"])
 
+    def test_openai_chat_empty_content_logs_request_and_response_for_debugging(self):
+        api = OpenAIAPI.__new__(OpenAIAPI)
+        api.config = build_api_config_snapshot(
+            {"sdk": "OpenAI", "model": "configured-model", "api_protocol": "chat_completions"},
+            prompt="系统提示",
+            max_retries=0,
+            interface_index=3,
+        )
+        api.DS_NOW_MOD = api.config.model
+        api.last_protocol_status = {"status": "unknown"}
+
+        message_obj = SimpleNamespace(content="")
+        choice = SimpleNamespace(message=message_obj, finish_reason="stop")
+        response = SimpleNamespace(id="chatcmpl-test", model="mimo-v2.5", choices=[choice])
+        create = mock.Mock(return_value=response)
+        api.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with mock.patch("core.api.log") as fake_log:
+            result = api.chat("动画表情 [早上好]")
+
+        self.assertEqual(result, API_ERROR_REPLY_TEXT)
+        debug_messages = [
+            call.kwargs["message"]
+            for call in fake_log.call_args_list
+            if "API空响应诊断" in call.kwargs.get("message", "")
+        ]
+        self.assertEqual(len(debug_messages), 1)
+        self.assertIn("接口4：configured-model", debug_messages[0])
+        self.assertIn("动画表情 [早上好]", debug_messages[0])
+        self.assertIn("chatcmpl-test", debug_messages[0])
+
+    def test_openai_chat_nonstream_uses_reasoning_content_when_content_empty(self):
+        api = OpenAIAPI.__new__(OpenAIAPI)
+        api.config = build_api_config_snapshot(
+            {"sdk": "OpenAI", "model": "configured-model", "api_protocol": "chat_completions"},
+            prompt="系统提示",
+            max_retries=0,
+            interface_index=3,
+        )
+        api.DS_NOW_MOD = api.config.model
+        api.last_protocol_status = {"status": "unknown"}
+
+        message_obj = SimpleNamespace(content="", reasoning_content='{"add":[],"update":[],"delete":[]}')
+        choice = SimpleNamespace(message=message_obj, finish_reason="stop")
+        response = SimpleNamespace(id="chatcmpl-test", model="mimo-v2.5", choices=[choice])
+        create = mock.Mock(return_value=response)
+        api.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with mock.patch("core.api.log") as fake_log:
+            result = api.chat("请输出 JSON")
+
+        self.assertEqual(result, '{"add":[],"update":[],"delete":[]}')
+        self.assertEqual(api.last_protocol_status, {"status": "chat_completions_ok"})
+        self.assertTrue(
+            any("reasoning_content" in call.kwargs.get("message", "") for call in fake_log.call_args_list)
+        )
+
     def test_dusapi_gpt_nonstream_still_returns_text_and_sends_reasoning(self):
         api = DusAPI(
             build_api_config_snapshot(

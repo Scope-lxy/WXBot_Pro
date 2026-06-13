@@ -27,7 +27,7 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(removed, ["张三"])
         self.assertEqual(logs.count("监听管理 张三：删除监听完成"), 1)
 
-    def test_remove_listen_chat_logs_wxautox_return_value(self):
+    def test_remove_listen_chat_logs_wxautox_return_value_and_keeps_state_when_residual_remains(self):
         bot = SimpleNamespace(
             _listen_chats={"张三": object()},
             wx=SimpleNamespace(
@@ -40,10 +40,11 @@ class RemoveListenChatTests(unittest.TestCase):
         with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))):
             result = listening.remove_listen_chat_verified(bot, "张三")
 
-        self.assertTrue(result)
+        self.assertFalse(result)
         self.assertTrue(any("监听管理 张三：删除监听结果：窗口忙" in item for item in logs))
+        self.assertTrue(any("保留动态监听状态" in item for item in logs))
 
-    def test_remove_listen_chat_clears_cache_when_registration_missing(self):
+    def test_remove_listen_chat_closes_residual_window_when_registration_missing(self):
         calls = []
         windows = []
 
@@ -78,11 +79,11 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(calls[0], ("RemoveListenChat", "张三", True))
-        self.assertNotIn(("Close", "张三"), calls)
+        self.assertIn(("Close", "张三"), calls)
         self.assertNotIn("张三", bot._listen_chats)
         self.assertNotIn("张三", bot._material_source_chats)
 
-    def test_remove_listen_chat_does_not_close_residual_window(self):
+    def test_remove_listen_chat_logs_residual_close_result(self):
         calls = []
         logs = []
         windows = []
@@ -114,10 +115,11 @@ class RemoveListenChatTests(unittest.TestCase):
             result = listening.remove_listen_chat_verified(bot, "张三")
 
         self.assertTrue(result)
-        self.assertEqual(calls, [])
-        self.assertTrue(any("暂不强行关闭窗口" in item for item in logs))
+        self.assertEqual(calls, ["Close"])
+        self.assertTrue(any("残留监听子窗口直接关闭已执行" in item for item in logs))
+        self.assertTrue(any("残留监听子窗口已关闭" in item for item in logs))
 
-    def test_remove_listen_chat_clears_runtime_when_residual_still_exists(self):
+    def test_remove_listen_chat_keeps_runtime_when_residual_still_exists(self):
         logs = []
         stale_chat = SimpleNamespace(who="张三")
         bot = SimpleNamespace(
@@ -132,9 +134,10 @@ class RemoveListenChatTests(unittest.TestCase):
         with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))):
             result = listening.remove_listen_chat_verified(bot, "张三")
 
-        self.assertTrue(result)
-        self.assertNotIn("张三", bot._listen_chats)
-        self.assertTrue(any("暂不强行关闭窗口" in item for item in logs))
+        self.assertFalse(result)
+        self.assertIn("张三", bot._listen_chats)
+        self.assertTrue(any("残留监听子窗口直接关闭未成功" in item for item in logs))
+        self.assertTrue(any("保留动态监听状态" in item for item in logs))
 
     def test_close_dynamic_listener_subwindows_removes_runtime_entry_after_close(self):
         calls = []

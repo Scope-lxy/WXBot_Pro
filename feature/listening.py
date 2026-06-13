@@ -659,17 +659,36 @@ def remove_listen_chat_verified(bot, nickname):
     _bot_sleep(bot, 0.2)
     listened_names = try_get_all_subwindow_names(bot)
     if listened_names is None:
-        _forget_runtime_listener_caches(bot, nickname)
-        _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：删除监听后无法校验，已清理运行缓存并停止本轮动态监听")
-        return True
+        residual_closed = close_residual_listener_subwindow(bot, nickname)
+        if residual_closed:
+            _forget_runtime_listener_caches(bot, nickname)
+            _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：删除监听后无法校验，已尝试关闭残留子窗口并清理运行缓存")
+            return True
+        _bot_log(bot, level="ERROR", message=f"监听管理 {nickname}：删除监听后无法校验，保留动态监听状态，避免反复新增")
+        return False
     if str(nickname).strip() not in listened_names:
         _forget_runtime_listener_caches(bot, nickname)
         _bot_log(bot, message=f"监听管理 {nickname}：删除监听完成")
         return True
 
-    _forget_runtime_listener_caches(bot, nickname)
-    _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：删除监听后仍有残留子窗口，已清理运行缓存并停止本轮动态监听，暂不强行关闭窗口")
-    return True
+    _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：删除监听后仍有残留子窗口，正在尝试直接关闭")
+    residual_closed = close_residual_listener_subwindow(bot, nickname)
+    if residual_closed:
+        _bot_log(bot, message=f"监听管理 {nickname}：残留监听子窗口直接关闭已执行，正在复查")
+        listened_names = try_get_all_subwindow_names(bot)
+        if listened_names is not None and str(nickname).strip() not in listened_names:
+            _forget_runtime_listener_caches(bot, nickname)
+            _bot_log(bot, message=f"监听管理 {nickname}：残留监听子窗口已关闭")
+            return True
+        if listened_names is None:
+            _forget_runtime_listener_caches(bot, nickname)
+            _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：残留监听子窗口已尝试关闭，无法再次校验，已清理运行缓存")
+            return True
+    else:
+        _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：残留监听子窗口直接关闭未成功，未找到可关闭窗口或关闭调用失败")
+
+    _bot_log(bot, level="ERROR", message=f"监听管理 {nickname}：删除监听校验失败，子窗口仍存在，保留动态监听状态，避免反复新增")
+    return False
 
 
 def verify_initial_listeners(bot, expected_chats, retry_count=3):

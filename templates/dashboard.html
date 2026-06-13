@@ -79,10 +79,6 @@ html.icons-pref-local [class*=" bi-"]::before {
     </button>
     <div class="brand"><i class="bi bi-robot"></i> WXBot Pro</div>
   </div>
-  <div class="topbar-notice" id="topbar-notice" style="display:none;">
-    <i class="bi bi-exclamation-triangle-fill"></i>
-    机器人运行中，多数配置会自动同步；异常时再重启
-  </div>
   <div class="user-area">
     <a href="https://wxbot.siverking.online/" target="_blank" rel="noopener"
        style="display:inline-flex;align-items:center;gap:5px;color:rgba(255,255,255,.75);font-size:13px;text-decoration:none;border:1px solid rgba(255,255,255,.2);padding:4px 12px;border-radius:6px;transition:all .2s;"
@@ -12162,7 +12158,6 @@ $(function(){
       if(!res || res.status !== 'success') return;
       var d = res.data;
       if(d.bot_running){
-        $('#topbar-notice').show();
         if(d.listener_recovery_active){
           $('#status-dot').css('background', '#F59E0B');
           $('#status-text').text('等待桌面恢复中');
@@ -12173,7 +12168,6 @@ $(function(){
           $('#status-sub').text(d.callback_is_die ? '建议检查日志并确认微信窗口仍可用' : '机器人正在正常处理消息和任务');
         }
       } else {
-        $('#topbar-notice').hide();
         $('#status-dot').css('background', '#ccc');
         $('#status-text').text('未运行');
         $('#status-sub').text('点击“启动机器人”开始运行');

@@ -3750,13 +3750,14 @@ class WXBot:
         if is_group_chat and sender:
             process_log += f"，发送人：{sender}"
         process_log += f"，内容：{message.content}"
-        log(message=process_log)
         result = True  # 默认返回成功（WxResponse 类型）
 
         route = message_routing.route_process_message(self, chat, message)
         action = route.get("action", "skip")
         if action == "skip":
             return True
+        if action != "private_ai":
+            log(message=process_log)
         if action == "takeover_mirror":
             return takeover_runtime.mirror_takeover_message_to_admin(self, chat, message)
         if action == "group_keyword_reply":
@@ -4603,6 +4604,7 @@ class WXBot:
             log(message=f"私聊 {chat.who} 短时间重复图片已跳过：" + str(getattr(message, 'content', '')))
             return True
 
+        log(message=f"消息处理 {chat.who}：开始处理，内容：{message.content}")
         expected_version = self._bump_chat_reply_version(chat.who)
         delay = coerce_float_range(
             getattr(self.config, 'chat_message_merge_delay', 3.0), 3.0, 0.0, 10.0

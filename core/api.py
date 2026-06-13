@@ -71,6 +71,27 @@ def _truncate_log_text(value, limit=300):
     return text[:limit] + f"...（已截断，原始长度 {len(text)}）"
 
 
+def _to_debug_jsonable(value):
+    if hasattr(value, "model_dump"):
+        try:
+            return value.model_dump(mode="json")
+        except Exception:
+            pass
+    if isinstance(value, dict):
+        return {str(key): _to_debug_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_debug_jsonable(item) for item in value]
+    return value
+
+
+def _format_api_debug_payload(value, limit=12000):
+    try:
+        text = json.dumps(_to_debug_jsonable(value), ensure_ascii=False, default=str)
+    except Exception:
+        text = str(value)
+    return _truncate_log_text(text, limit)
+
+
 def _summarize_response_data(data):
     if not isinstance(data, dict):
         return _truncate_log_text(data)
@@ -349,8 +370,28 @@ class OpenAIAPI:
                 output = message_obj.content
                 log(message=f"API返回成功（{self._log_label('Chat Completions', model=model)}，非流式），内容：{output[:100]}...")
                 return output
+            if hasattr(message_obj, "reasoning_content") and message_obj.reasoning_content:
+                output = message_obj.reasoning_content
+                log(message=f"API返回成功（{self._log_label('Chat Completions', model=model)}，非流式 reasoning_content），内容：{output[:100]}...")
+                return output
+            log(
+                level="ERROR",
+                message=(
+                    f"API空响应诊断（{self._log_label('Chat Completions', model=model)}，非流式）："
+                    f"request={_format_api_debug_payload({'model': model, 'messages': messages})}；"
+                    f"response={_format_api_debug_payload(response)}"
+                ),
+            )
             raise ValueError("Chat Completions 非流式响应内容为空")
 
+        log(
+            level="ERROR",
+            message=(
+                f"API空响应诊断（{self._log_label('Chat Completions', model=model)}，非流式）："
+                f"request={_format_api_debug_payload({'model': model, 'messages': messages})}；"
+                f"response={_format_api_debug_payload(response)}"
+            ),
+        )
         raise ValueError("Chat Completions 响应中没有 choices")
 
     def _call_responses_api(self, message, model, stream, prompt, history=None, image_path="", image_url="", image_paths=None):
