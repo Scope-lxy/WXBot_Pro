@@ -605,7 +605,7 @@ def apply_scheduled_message_run_result(task, result, *, now=None, choice=None, r
         result = {**result, "execution_snapshot": execution_snapshot}
     result_type = _clean_str(result.get("result_type")) or "all_failed"
     finished_at = _iso_datetime(now)
-    if result_type == "all_failed":
+    if result_type in {"all_failed", "manual_stop"}:
         return return_scheduled_message_run(task, result, finished_at=finished_at)
 
     task = build_scheduled_message_task(task)

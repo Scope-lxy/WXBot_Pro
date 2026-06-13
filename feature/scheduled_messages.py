@@ -221,6 +221,7 @@ def execute_scheduled_message_task(
     send_file,
     is_image_path,
     human_delay,
+    should_stop=None,
     notify_error,
     nickname,
     scheduled_tasks,
@@ -232,6 +233,7 @@ def execute_scheduled_message_task(
     """Execute one concrete scheduled-message task that is already due."""
     log_info = log_info or (lambda message: None)
     log_error = log_error or (lambda message: None)
+    should_stop = should_stop if callable(should_stop) else (lambda: False)
     task = task if isinstance(task, dict) else {}
     targets = [str(target or "").strip() for target in (task.get("targets") or [])]
     targets = [target for target in targets if target]
@@ -271,10 +273,16 @@ def execute_scheduled_message_task(
         }
 
     for batch_index, start in enumerate(range(0, len(targets), SCHEDULED_MESSAGE_TARGET_BATCH_SIZE), start=1):
+        if should_stop():
+            log_info("定时消息检测到机器人停止请求，已停止后续发送")
+            break
         batch = targets[start : start + SCHEDULED_MESSAGE_TARGET_BATCH_SIZE]
         log_info(f"定时消息第 {batch_index} 批：{len(batch)} 个目标")
         for user in batch:
             for msg in messages:
+                if should_stop():
+                    log_info("定时消息检测到机器人停止请求，已停止后续发送")
+                    break
                 log_info(f"正在向 {user} 发送定时消息：{msg}")
                 try:
                     if is_image_path(msg) or _looks_like_local_file_path(msg):
@@ -303,8 +311,13 @@ def execute_scheduled_message_task(
                         f"{nickname} wxbot定时消息发送失败！",
                         f"{user} 定时消息发送失败：{exc}",
                     )
+            if should_stop():
+                break
 
-    if success_count and (failed_count or queued_count):
+    stopped = bool(should_stop())
+    if stopped:
+        result_type = "manual_stop"
+    elif success_count and (failed_count or queued_count):
         result_type = "partial_success"
     elif queued_count and not failed_count:
         result_type = "queued"

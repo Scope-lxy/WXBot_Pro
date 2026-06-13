@@ -4269,6 +4269,7 @@ bot = None
 bot_thread = None
 relationship_full_scan_thread = None
 relationship_full_scan_thread_lock = threading.Lock()
+bot_stop_requested = threading.Event()
 BOT_STOP_WAIT_TIMEOUT_SECONDS = 10
 BOT_START_WAIT_TIMEOUT_SECONDS = 8
 BOT_START_PENDING_MESSAGE = '正在连接微信，请稍候'
@@ -4367,6 +4368,13 @@ def _run_bot_worker(startup_event=None, startup_state=None):
             except Exception as _e:
                 log('WARNING', f'清理旧监听时出错（可忽略）: {_e}')
         bot = WXBot()
+        if bot_stop_requested.is_set():
+            try:
+                bot.stop_wxbot()
+            except Exception as _e:
+                log('WARNING', f'启动前停止机器人时出错（可忽略）: {_e}')
+            _report_bot_startup_state(False, '机器人启动过程中已被停止', startup_event, startup_state)
+            return
         bot._startup_callback = _startup_status_callback(startup_event, startup_state)
         bot.run()
         snapshot = _get_bot_startup_state_snapshot()
@@ -4382,6 +4390,7 @@ def _run_bot_worker(startup_event=None, startup_state=None):
 
 def _start_bot_runtime(wait_timeout=None):
     global bot_thread
+    bot_stop_requested.clear()
     startup_event = threading.Event() if wait_timeout else None
     startup_state = {}
     _set_bot_startup_state('pending', BOT_START_PENDING_MESSAGE)
@@ -4409,15 +4418,29 @@ def _start_bot_runtime(wait_timeout=None):
 
 def _stop_running_bot_and_wait(wait_timeout=BOT_STOP_WAIT_TIMEOUT_SECONDS):
     global bot_thread, bot
+    bot_stop_requested.set()
     thread = bot_thread
     current_bot = bot
     if not thread or not thread.is_alive():
+        bot_stop_requested.clear()
         _clear_bot_runtime_refs()
         _restore_sleep()
         return False, '机器人未运行'
     if not current_bot or not hasattr(current_bot, 'stop_wxbot'):
-        log('ERROR', '停止机器人失败：机器人实例异常')
-        return False, '停止机器人失败：机器人实例异常'
+        try:
+            thread.join(wait_timeout)
+        except Exception as e:
+            log('ERROR', f'等待启动中机器人停止时出错: {e}')
+            return False, f'等待机器人停止失败：{e}'
+        if thread.is_alive():
+            log('WARNING', '机器人仍在启动/停止交界中，请稍后重试')
+            return None, '机器人仍在停止中，请稍后再试'
+        bot_stop_requested.clear()
+        _clear_bot_runtime_refs()
+        _set_bot_startup_state('idle', '机器人未启动')
+        _restore_sleep()
+        log('SUCCESS', '机器人已停止')
+        return True, '机器人已停止'
     if not current_bot.stop_wxbot():
         log('ERROR', '停止机器人失败')
         return False, '停止机器人失败'
@@ -4428,8 +4451,9 @@ def _stop_running_bot_and_wait(wait_timeout=BOT_STOP_WAIT_TIMEOUT_SECONDS):
         return False, f'等待机器人停止失败：{e}'
     if thread.is_alive():
         log('WARNING', '机器人仍在停止中，请稍后重试')
-        return False, '机器人仍在停止中，请稍后再试'
+        return None, '机器人仍在停止中，请稍后再试'
     _clear_bot_runtime_refs()
+    bot_stop_requested.clear()
     _set_bot_startup_state('idle', '机器人未启动')
     log('SUCCESS', '机器人已停止')
     return True, '机器人已停止'
@@ -4473,6 +4497,8 @@ def stop_bot():
         ok, message = _stop_running_bot_and_wait()
         if ok:
             return jsonify({'status': 'success', 'message': message})
+        if ok is None:
+            return jsonify({'status': 'stopping', 'message': message})
         return jsonify({'status': 'error', 'message': message})
     else:
         log('WARNING', '状态：机器人未运行')
@@ -4864,6 +4890,7 @@ def get_status():
         try:
             status = bot.get_status()
             status['bot_running'] = True
+            status['bot_stopping'] = bool(bot_stop_requested.is_set() or getattr(bot, 'is_stop_requested', lambda: False)())
             status = _enrich_dashboard_status_snapshot(
                 status,
                 cfg=cfg,
@@ -4872,10 +4899,13 @@ def get_status():
             )
             return jsonify({'status': 'success', 'data': status})
         except Exception as e:
-            return jsonify({'status': 'success', 'data': {'bot_running': True, 'error': str(e)}})
+            return jsonify({'status': 'success', 'data': {'bot_running': True, 'bot_stopping': bot_stop_requested.is_set(), 'error': str(e)}})
+    elif bot_thread and bot_thread.is_alive():
+        return jsonify({'status': 'success', 'data': {'bot_running': True, 'bot_stopping': bot_stop_requested.is_set()}})
     else:
         status = _dashboard_config_status_snapshot(cfg)
         status['bot_running'] = False
+        status['bot_stopping'] = False
         status = _enrich_dashboard_status_snapshot(
             status,
             cfg=cfg,

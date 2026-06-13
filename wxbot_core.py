@@ -391,6 +391,7 @@ class WXBot:
         self.ver      = version
         self.ver_log  = version_log
         self.run_flag = True                    # 主循环运行标志
+        self._stop_requested = threading.Event()
         self.config   = WXBotConfig()           # 加载配置
         self._voice_reply_state = load_voice_reply_state(self._voice_reply_state_path())
 
@@ -466,6 +467,39 @@ class WXBot:
         self._conversation_memory_dirty_lock = threading.Lock()
         self._conversation_memory_dirty_chats = {}
         self._conversation_memory_worker_running = False
+
+    def _ensure_stop_requested_event(self):
+        event = getattr(self, "_stop_requested", None)
+        if event is None or not hasattr(event, "is_set"):
+            event = threading.Event()
+            self._stop_requested = event
+        return event
+
+    def _reset_stop_request(self):
+        self._ensure_stop_requested_event().clear()
+
+    def is_stop_requested(self):
+        return self._ensure_stop_requested_event().is_set()
+
+    def _wait_or_stop_requested(self, seconds):
+        seconds = max(0.0, float(seconds or 0))
+        if seconds <= 0:
+            return self.is_stop_requested()
+        return self._ensure_stop_requested_event().wait(seconds)
+
+    def _cancel_pending_private_message_timers(self):
+        self._ensure_message_runtime_state()
+        with self._chat_merge_lock:
+            timers = list(self._chat_merge_timers.values())
+            self._chat_merge_timers.clear()
+            self._chat_merge_buffers.clear()
+            for chat_name in list(self._chat_reply_versions):
+                self._chat_reply_versions[chat_name] = self._chat_reply_versions.get(chat_name, 0) + 1
+        for timer in timers:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
 
     def _daily_runtime_stats_path(self):
         data_dir = str(getattr(getattr(self, "config", None), "DATA_DIR", getattr(self, "DATA_DIR", "")) or "").strip()
@@ -1364,8 +1398,13 @@ class WXBot:
     def _material_outreach_preface_is_queued(self, result):
         return isinstance(result, dict) and str(result.get("status") or "").strip() == "queued_preface"
 
+    def _material_outreach_is_stopped(self, result):
+        return isinstance(result, dict) and str(result.get("status") or "").strip() == "stopped"
+
     def _material_outreach_result_failed(self, result):
         if self._material_outreach_preface_is_queued(result):
+            return False
+        if self._material_outreach_is_stopped(result):
             return False
         if isinstance(result, dict):
             status = str(result.get("status") or "").strip().lower()
@@ -1764,7 +1803,8 @@ class WXBot:
             send_text=lambda target, msg: runtime_chat_state.send_text_to_target(self, target, msg),
             send_file=lambda target, path: runtime_chat_state.send_file_to_target(self, target, path),
             is_image_path=self.is_image_path,
-            human_delay=self.config.human_delay,
+            human_delay=lambda: self._human_delay_or_stop(),
+            should_stop=self.is_stop_requested,
             notify_error=self.is_err,
             nickname=self.wx.nickname,
             scheduled_tasks=[],
@@ -1787,7 +1827,7 @@ class WXBot:
         """
         perform_moments_like(
             open_moments=self._open_moments_with_recovery,
-            sleep=time.sleep,
+            sleep=lambda seconds: self._wait_or_stop_requested(seconds),
             random_delay=random.uniform,
             notify_error=self.is_err,
             nickname=self.wx.nickname,
@@ -1801,7 +1841,7 @@ class WXBot:
             return execute_moments_publish_task(
                 task=task,
                 open_moments=self._open_moments_with_recovery,
-                sleep=time.sleep,
+                sleep=lambda seconds: self._wait_or_stop_requested(seconds),
                 random_delay=random.uniform,
                 notify_error=self.is_err,
                 nickname=self.wx.nickname,
@@ -1826,6 +1866,8 @@ class WXBot:
         )
 
     def send_material_outreach(self, task):
+        if self.is_stop_requested():
+            return {"status": "stopped", "message": "机器人正在停止，已跳过素材转发"}
         task = task or {}
         if not should_send_scheduled_message(
             task.get("repeat_type", "daily"),
@@ -2202,6 +2244,8 @@ class WXBot:
         return contacts.preview_contact_profile_remark_repairs(self, contact_keys=contact_keys)
 
     def _attempt_material_outreach_batches(self, task, send_records, *, allow_rebuild):
+        if self.is_stop_requested():
+            return {"status": "stopped", "message": "机器人正在停止，已跳过素材转发"}
         sources = material_sources_for_task(task, getattr(self.config, "material_source_list", []) or [])
         if not sources:
             for target in task.get("targets", []) or []:
@@ -2236,6 +2280,8 @@ class WXBot:
         all_success = True
         has_preface_queue = False
         for action in plan["send"]:
+            if self.is_stop_requested():
+                return {"status": "stopped", "message": "机器人正在停止，已停止后续素材转发"}
             result = self._send_material_outreach_action(task, action, materials)
             self._flush_lightweight_send_queue()
             if self._material_outreach_preface_is_queued(result):
@@ -2980,6 +3026,8 @@ class WXBot:
         return success
 
     def _process_material_outreach_preface_queue(self, now=None):
+        if self.is_stop_requested():
+            return False
         now = now or datetime.now()
         with self._material_outreach_runtime_lock():
             queue_records = self._load_material_outreach_preface_queue()
@@ -3012,6 +3060,8 @@ class WXBot:
                     mark_preface_failed(record, exc, now=now)
                 changed = True
             for record in due_send_records(queue_records, now=now):
+                if self.is_stop_requested():
+                    break
                 self._send_material_outreach_preface_record(record, now=now)
                 changed = True
             if changed:
@@ -3233,6 +3283,8 @@ class WXBot:
         :param msg:  消息对象（含 type、attr、sender、content 等属性）
         :param chat: 聊天窗口子对象（含 who 等属性）
         """
+        if self.is_stop_requested():
+            return True
         try:
             setattr(msg, "_wxbot_ingress_source", "subwindow")
             # 记录原始消息日志
@@ -3350,6 +3402,8 @@ class WXBot:
 
     def wx_send_ai(self, chat, message, expected_version=None):
         """私聊 AI 自动回复。支持最新回复失效检查与同窗口串行发送。"""
+        if self.is_stop_requested():
+            return True
         if self._pause_chat_reply or runtime_chat_state.is_single_chat_reply_paused(self, chat.who):
             return True
         result = True
@@ -3533,6 +3587,9 @@ class WXBot:
                 log(message=f"私聊 {chat.who}：旧 AI 回复过期，已跳过回复 {skipped} 条")
             else:
                 log(message=f"私聊 {chat.who}：旧 AI 回复过期，已跳过发送")
+            return True
+        if self.is_stop_requested():
+            log(message=f"私聊 {chat.who}：机器人正在停止，已跳过 AI 回复发送")
             return True
 
         if voice_candidate and not api_error_reply:
@@ -3892,11 +3949,17 @@ class WXBot:
             last_index = max(0, len(parts) - 1)
             with self._get_chat_send_lock(chat.who):
                 for i, part in enumerate(parts):
+                    if self.is_stop_requested():
+                        log(message=f"群聊 {chat.who}：机器人正在停止，已停止发送剩余回复")
+                        break
                     self._human_delay_for_reply_part(
                         part_text=part,
                         split_continuation=(i > 0),
                         is_last=(i == last_index),
                     )
+                    if self.is_stop_requested():
+                        log(message=f"群聊 {chat.who}：机器人正在停止，已停止发送剩余回复")
+                        break
                     if i == 0 and _quote and _at_msg:
                         result = message.quote(part, at=message.sender)
                     elif i == 0 and _quote:
@@ -4584,6 +4647,8 @@ class WXBot:
 
     def _enqueue_private_message_for_ai(self, chat, message):
         self._ensure_message_runtime_state()
+        if self.is_stop_requested():
+            return True
         if getattr(message, '_voice_transcription_failed', False):
             if not self._mark_message_seen(chat.who, message):
                 log(message=f"私聊 {chat.who} 重复失败语音已跳过：" + str(getattr(message, 'content', '')))
@@ -4630,6 +4695,8 @@ class WXBot:
         return True
 
     def _run_private_ai_message_worker(self, chat, message, expected_version):
+        if self.is_stop_requested():
+            return True
         com_ready = False
         pythoncom_module = globals().get("pythoncom", None)
         if pythoncom_module is not None:
@@ -4648,6 +4715,12 @@ class WXBot:
                     pass
 
     def _flush_private_message_buffer(self, chat):
+        if self.is_stop_requested():
+            self._ensure_message_runtime_state()
+            with self._chat_merge_lock:
+                self._chat_merge_buffers.pop(chat.who, None)
+                self._chat_merge_timers.pop(chat.who, None)
+            return True
         com_ready = False
         pythoncom_module = globals().get("pythoncom", None)
         if pythoncom_module is not None:
@@ -4701,10 +4774,22 @@ class WXBot:
 
     def _human_delay_for_reply_part(self, *, part_text="", split_continuation=False, is_last=False):
         if split_continuation:
-            time.sleep(self._split_reply_delay_seconds(part_text, is_last=is_last))
+            self._wait_or_stop_requested(self._split_reply_delay_seconds(part_text, is_last=is_last))
             return
+        self._human_delay_or_stop(split_continuation=False)
+
+    def _human_delay_or_stop(self, split_continuation=False):
         delay_fn = getattr(self.config, 'human_delay', None)
         if not callable(delay_fn):
+            return
+        if self.is_stop_requested():
+            return
+        if getattr(delay_fn, "__self__", None) is self.config and getattr(delay_fn, "__name__", "") == "human_delay":
+            lo = min(getattr(self.config, "reply_delay_first_min", 1), getattr(self.config, "reply_delay_first_max", 5))
+            hi = max(getattr(self.config, "reply_delay_first_min", 1), getattr(self.config, "reply_delay_first_max", 5))
+            if not getattr(self.config, "reply_delay_switch", True):
+                return
+            self._wait_or_stop_requested(random.randint(lo, hi))
             return
         try:
             delay_fn()
@@ -5138,6 +5223,9 @@ class WXBot:
             with self._get_chat_send_lock(chat.who):
                 last_index = max(0, len(parts) - 1)
                 for idx, part in enumerate(parts):
+                    if self.is_stop_requested():
+                        log(message=f"私聊 {chat.who}：机器人正在停止，已停止发送剩余回复")
+                        break
                     if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
                         log(message=f"私聊 {chat.who} 新消息已到达，停止发送旧回复剩余内容")
                         break
@@ -5149,10 +5237,15 @@ class WXBot:
                     if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
                         log(message=f"私聊 {chat.who} 新消息已到达，停止发送旧回复剩余内容")
                         break
+                    if self.is_stop_requested():
+                        log(message=f"私聊 {chat.who}：机器人正在停止，已停止发送剩余回复")
+                        break
                     if len(part) >= LONG_REPLY_SEGMENT_CHARS:
                         segments = list(self.config.split_long_text(part))
                         last_segment_index = max(0, len(segments) - 1)
                         for segment_index, segment in enumerate(segments):
+                            if self.is_stop_requested():
+                                break
                             if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
                                 break
                             if segment_index > 0:
@@ -5163,6 +5256,8 @@ class WXBot:
                                 )
                                 if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
                                     break
+                            if self.is_stop_requested():
+                                break
                             if chat.who == getattr(self.config, "cmd", ""):
                                 takeover_runtime.remember_admin_echo_message(self, segment)
                             result = chat.SendMsg(segment)
@@ -5200,11 +5295,17 @@ class WXBot:
             chat = send_chat
         with self._get_chat_send_lock(chat.who):
             for action in actions:
+                if self.is_stop_requested():
+                    log(message=f"{chat.who} 机器人正在停止，停止发送关键词回复剩余内容")
+                    break
                 if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
                     log(message=f"{chat.who} 新消息已到达，停止发送旧关键词回复剩余内容")
                     break
                 action_type = str(action.get("type") or "").strip().lower()
-                self.config.human_delay()
+                self._human_delay_or_stop()
+                if self.is_stop_requested():
+                    log(message=f"{chat.who} 机器人正在停止，停止发送关键词回复剩余内容")
+                    break
                 if action_type == "text":
                     content = str(action.get("content") or "").strip()
                     if not content:
@@ -5951,6 +6052,8 @@ class WXBot:
         return success, error
 
     def _process_ai_material_outreach_queue(self, now=None):
+        if self.is_stop_requested():
+            return False
         now = now or datetime.now()
         with self._material_outreach_runtime_lock():
             queue_records = self._load_ai_pending_queue()
@@ -5961,6 +6064,8 @@ class WXBot:
                 return changed
             changed = bool(expire_ai_pending_records(queue_records, now=now))
             for record in due_ai_pending_records(queue_records, now=now):
+                if self.is_stop_requested():
+                    break
                 success, error = self._send_ai_material_outreach_record(record, now=now)
                 record["status"] = "sent" if success else "failed"
                 record["error"] = str(error or "")
@@ -6728,7 +6833,9 @@ class WXBot:
     def stop_wxbot(self):
         """安全停止机器人：停止 wxautox 监听并退出主循环"""
         try:
+            self._ensure_stop_requested_event().set()
             self.run_flag = False
+            self._cancel_pending_private_message_timers()
             self._clear_conversation_memory_background_state()
             listener = getattr(self, "wx", None)
             if listener and hasattr(listener, "StopListening"):
@@ -6772,6 +6879,16 @@ class WXBot:
             check_new_counter  = 0
             last_time          = time.time()
             log(message='siver_wxbot初始化完成，开始监听消息(作者:https://www.siver.top)')
+            if self.is_stop_requested():
+                log(level="WARNING", message="启动过程中收到停止请求，已停止进入监听")
+                try:
+                    if self.wx and hasattr(self.wx, "StopListening"):
+                        self.wx.StopListening()
+                except Exception as stop_exc:
+                    log(level="WARNING", message=f"启动中停止监听失败：{stop_exc}")
+                self.run_flag = False
+                self._notify_startup_status(False, "机器人启动过程中已被停止")
+                return False
             self.run_flag = True
             self._notify_startup_status(True, "机器人已启动并进入监听")
         except Exception as e:
@@ -6789,9 +6906,11 @@ class WXBot:
         # 主循环
         while self.run_flag:
             try:
+                if self.is_stop_requested():
+                    break
                 recovery_state = self._process_listener_auto_recovery()
                 if recovery_state == "waiting":
-                    time.sleep(wait_time)
+                    self._wait_or_stop_requested(wait_time)
                     continue
                 if recovery_state == "failed":
                     self.stop_wxbot()
@@ -6799,6 +6918,8 @@ class WXBot:
                     break
 
                 # ---- 离线检测模块（每 check_interval 次循环执行一次）----
+                if self.is_stop_requested():
+                    break
                 check_counter += 1
                 if check_counter >= check_interval:
                     try:
@@ -6824,6 +6945,8 @@ class WXBot:
                     check_counter = 0
 
                 # ---- 新好友检测模块（随机检查，间隔由配置决定）----
+                if self.is_stop_requested():
+                    break
                 if self.config.new_frined_switch:
                     # 将秒数阈值除以循环周期得到循环次数（取整，最小1次）
                     check_new_friend_time_MIN = max(1, int(self.config.new_friend_check_min / wait_time))
@@ -6838,6 +6961,8 @@ class WXBot:
                         check_new_counter = 0
 
                 # ---- 全局监听模式（黑名单模式下启用）----
+                if self.is_stop_requested():
+                    break
                 if self.config.AllListen_switch:
                     try:
                         last_time = self.ALLListen_mode(last_time=last_time)
@@ -6848,6 +6973,8 @@ class WXBot:
                             log(level="ERROR", message=str(e) + "\n全局模式出错！！请检查程序！！")
 
                 try:
+                    if self.is_stop_requested():
+                        break
                     self._maybe_reconcile_listener_subwindows(retry_count=1)
                 except Exception as e:
                     if self._arm_listener_auto_recovery(e, source="监听窗口自动恢复"):
@@ -6855,51 +6982,71 @@ class WXBot:
                     log(level="ERROR", message=f"监听窗口自动恢复出错：{e}")
 
                 # ---- 运行中任务配置热更新（不打断当前执行中的动作）----
+                if self.is_stop_requested():
+                    break
                 self._process_pending_runtime_task_reload()
 
                 # ---- 统一时间内核扫描（固定任务 / 点赞间隔任务）----
                 try:
+                    if self.is_stop_requested():
+                        break
                     self._process_unified_runtime_tasks()
                 except Exception as e:
                     log(level="ERROR", message=f"统一时间任务扫描出错：{e}")
 
                 try:
+                    if self.is_stop_requested():
+                        break
                     self._process_material_outreach_preface_queue()
                 except Exception as e:
                     log(level="ERROR", message=f"素材转发 AI 文案预生成队列处理出错：{e}")
 
                 try:
+                    if self.is_stop_requested():
+                        break
                     self._process_ai_material_outreach_queue()
                 except Exception as e:
                     log(level="ERROR", message=f"AI 自动素材转发队列处理出错：{e}")
 
                 try:
+                    if self.is_stop_requested():
+                        break
                     self._process_ai_material_outreach_detection_scan()
                 except Exception as e:
                     log(level="ERROR", message=f"AI 自动素材转发判定扫描出错：{e}")
 
                 try:
+                    if self.is_stop_requested():
+                        break
                     self._check_admin_moments_auto_preview()
                 except Exception as e:
                     log(level="ERROR", message=f"管理员发圈自动预览出错：{e}")
 
                 try:
+                    if self.is_stop_requested():
+                        break
                     self._check_admin_forward_timeout()
                 except Exception as e:
                     log(level="ERROR", message=f"管理员转发流程超时检查出错：{e}")
 
                 try:
+                    if self.is_stop_requested():
+                        break
                     self._check_relationship_auto_scan()
                 except Exception as e:
                     log(level="ERROR", message=f"关系扫描模块出错：{e}")
 
                 try:
+                    if self.is_stop_requested():
+                        break
                     self._check_friend_request_auto_run()
                 except Exception as e:
                     log(level="ERROR", message=f"好友申请模块出错：{e}")
 
                 if self._contact_directory_auto_maintenance_enabled():
                     try:
+                        if self.is_stop_requested():
+                            break
                         self._check_contact_directory_auto_maintenance()
                     except Exception as e:
                         log(level="ERROR", message=f"通讯录自动维护模块出错：{e}")
@@ -6911,7 +7058,7 @@ class WXBot:
                 )
                 self.run_flag = False
 
-            time.sleep(wait_time)
+            self._wait_or_stop_requested(wait_time)
 
         log(level="WARNING", message='siver_wxbot主线程安全退出，正在退出监听...')
 

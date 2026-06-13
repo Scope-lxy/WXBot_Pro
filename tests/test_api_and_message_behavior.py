@@ -1,9 +1,11 @@
 import unittest
+import threading
 from types import SimpleNamespace
 from unittest import mock
 
 from core.api import API_ERROR_REPLY_TEXT, DusAPI, OpenAIAPI, build_api_config_snapshot
 from feature import message_routing
+from feature.scheduled_messages import execute_scheduled_message_task
 from wxbot_core import WXBot
 
 
@@ -263,6 +265,84 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._get_verified_subwindow = lambda _target: self.fail("不应主动探测微信子窗口")
 
         self.assertIsNone(bot._verified_send_chat("张三", None))
+
+    def test_stop_wxbot_cancels_pending_private_merge_timer(self):
+        class FakeTimer:
+            def __init__(self):
+                self.cancelled = False
+
+            def cancel(self):
+                self.cancelled = True
+
+        class FakeListener:
+            def __init__(self):
+                self.stopped = False
+
+            def StopListening(self):
+                self.stopped = True
+
+        bot = WXBot.__new__(WXBot)
+        timer = FakeTimer()
+        bot.run_flag = True
+        bot.wx = FakeListener()
+        bot._chat_merge_lock = threading.Lock()
+        bot._chat_merge_timers = {"张三": timer}
+        bot._chat_merge_buffers = {"张三": [SimpleNamespace(content="你好")]}
+        bot._chat_reply_versions = {"张三": 1}
+        bot._incoming_seen_lock = threading.Lock()
+        bot._incoming_seen_ids = {}
+        bot._incoming_seen_fingerprints = {}
+        bot._chat_send_locks = {}
+        bot._private_reply_runtime_turns = {}
+        bot._private_reply_persisted_echoes = {}
+        bot._pending_visual_contexts = {}
+        bot._conversation_memory_dirty_lock = threading.Lock()
+        bot._conversation_memory_dirty_chats = {}
+        bot._conversation_memory_worker_running = False
+        bot.is_err = lambda *_args, **_kwargs: self.fail("停止不应报错")
+
+        self.assertTrue(WXBot.stop_wxbot(bot))
+
+        self.assertFalse(bot.run_flag)
+        self.assertTrue(bot.is_stop_requested())
+        self.assertTrue(timer.cancelled)
+        self.assertEqual(bot._chat_merge_timers, {})
+        self.assertEqual(bot._chat_merge_buffers, {})
+        self.assertTrue(bot.wx.stopped)
+
+    def test_reset_stop_request_allows_next_start(self):
+        bot = WXBot.__new__(WXBot)
+        bot._ensure_stop_requested_event().set()
+
+        bot._reset_stop_request()
+
+        self.assertFalse(bot.is_stop_requested())
+
+    def test_scheduled_message_stops_before_next_send(self):
+        sends = []
+        stop_after_first_send = {"value": False}
+
+        def send_text(target, msg):
+            sends.append((target, msg))
+            stop_after_first_send["value"] = True
+            return True
+
+        result = execute_scheduled_message_task(
+            task={"targets": ["张三", "李四"], "msgs": ["你好"]},
+            send_text=send_text,
+            send_file=lambda *_args: True,
+            is_image_path=lambda _path: False,
+            human_delay=lambda: None,
+            should_stop=lambda: stop_after_first_send["value"],
+            notify_error=lambda *_args: None,
+            nickname="wxbot",
+            scheduled_tasks=[],
+            config_data={},
+            save_config=None,
+        )
+
+        self.assertEqual(sends, [("张三", "你好")])
+        self.assertEqual(result["result_type"], "manual_stop")
 
 
 if __name__ == "__main__":

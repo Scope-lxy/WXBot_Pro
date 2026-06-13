@@ -11804,11 +11804,83 @@ $(function(){
   updateSiverPanelUrlPreview();
 
   var _botStartupPollTimer = null;
+  var _botStopPollTimer = null;
   function clearBotStartupPolling(){
     if(_botStartupPollTimer){
       clearTimeout(_botStartupPollTimer);
       _botStartupPollTimer = null;
     }
+  }
+  function clearBotStopPolling(){
+    if(_botStopPollTimer){
+      clearTimeout(_botStopPollTimer);
+      _botStopPollTimer = null;
+    }
+  }
+  function setBotStopButtonsStopping(stopping){
+    $('#btnStop').prop('disabled', !!stopping).html(stopping ? '<i class="bi bi-hourglass-split"></i> 正在停止...' : '<i class="bi bi-stop-fill"></i> 停止机器人');
+    $('#btnStart').prop('disabled', !!stopping);
+  }
+  function showBotStopPendingModal(message){
+    svModal.custom({
+      icon: '<i class="bi bi-hourglass-split" style="color:var(--warning);font-size:36px;"></i>',
+      title: '正在停止',
+      body: message || '正在停止机器人，请稍候',
+      buttons: [{text:'先看日志', variant:'secondary'}]
+    });
+  }
+  function finishBotStopped(message){
+    clearBotStopPolling();
+    setBotStopButtonsStopping(false);
+    svModal.success(message || '机器人已停止', '已停止');
+    triggerStatusPolling(true);
+  }
+  function pollBotStopped(deadline){
+    $.getJSON('/get_status', function(res){
+      var d = res && res.status === 'success' ? (res.data || {}) : {};
+      if(!d.bot_running){
+        finishBotStopped('机器人已停止');
+        return;
+      }
+      if(Date.now() >= deadline){
+        clearBotStopPolling();
+        setBotStopButtonsStopping(false);
+        svModal.error('机器人仍在停止中，请稍后再试');
+        triggerStatusPolling(true);
+        return;
+      }
+      showBotStopPendingModal('正在停止机器人，请稍候');
+      clearBotStopPolling();
+      _botStopPollTimer = setTimeout(function(){ pollBotStopped(deadline); }, 1200);
+    }).fail(function(){
+      if(Date.now() >= deadline){
+        clearBotStopPolling();
+        setBotStopButtonsStopping(false);
+        svModal.error('停止状态确认失败，请稍后刷新状态');
+        return;
+      }
+      clearBotStopPolling();
+      _botStopPollTimer = setTimeout(function(){ pollBotStopped(deadline); }, 1500);
+    });
+  }
+  function handleBotStopStatus(res){
+    var status = res && res.status;
+    var message = (res && res.message) || '';
+    if(status === 'success'){
+      finishBotStopped(message || '机器人已停止');
+      return;
+    }
+    if(status === 'stopping'){
+      setBotStopButtonsStopping(true);
+      showBotStopPendingModal(message || '正在停止机器人，请稍候');
+      clearBotStopPolling();
+      _botStopPollTimer = setTimeout(function(){ pollBotStopped(Date.now() + 30000); }, 1200);
+      triggerStatusPolling(true);
+      return;
+    }
+    clearBotStopPolling();
+    setBotStopButtonsStopping(false);
+    svModal.error(message || '停止失败');
   }
   function showBotStartupPendingModal(message){
     svModal.custom({
@@ -11877,10 +11949,16 @@ $(function(){
   });
   $('#btnStop').click(function(){
     svModal.confirm('确定要停止机器人吗？', function(){
+      clearBotStopPolling();
+      setBotStopButtonsStopping(true);
+      showBotStopPendingModal('正在停止机器人，请稍候');
       $.post('/stop_bot', function(res){
-        if(res.status === 'success') svModal.success(res.message||'机器人已停止', '已停止');
-        else svModal.error(res.message||'停止失败');
-      }).fail(function(xhr){ svModal.error('停止失败: '+xhr.responseText); });
+        handleBotStopStatus(res || {});
+      }).fail(function(xhr){
+        clearBotStopPolling();
+        setBotStopButtonsStopping(false);
+        svModal.error('停止失败: '+xhr.responseText);
+      });
     }, '停止机器人', '确定停止', '取消');
   });
 
@@ -11893,13 +11971,47 @@ $(function(){
     function restartRunningBot(){
       $btn.html('<i class="bi bi-stop-fill"></i> 正在停止...');
       $.post('/stop_bot', function(res){
+        if(res.status === 'stopping'){
+          var deadline = Date.now() + 30000;
+          var waitForStoppedThenStart = function(){
+            $.getJSON('/get_status', function(statusRes){
+              var d = statusRes && statusRes.status === 'success' ? (statusRes.data || {}) : {};
+              if(!d.bot_running){
+                $btn.html('<i class="bi bi-hourglass-split"></i> 等待中(4s)...');
+                setTimeout(startAfterStopped, 4000);
+                return;
+              }
+              if(Date.now() >= deadline){
+                svModal.error('机器人仍在停止中，重启中断');
+                resetButton();
+                return;
+              }
+              setTimeout(waitForStoppedThenStart, 1200);
+            }).fail(function(){
+              if(Date.now() >= deadline){
+                svModal.error('停止状态确认失败，重启中断');
+                resetButton();
+                return;
+              }
+              setTimeout(waitForStoppedThenStart, 1500);
+            });
+          };
+          waitForStoppedThenStart();
+          return;
+        }
         if(res.status !== 'success'){
           svModal.error(res.message||'停止失败，重启中断');
           resetButton();
           return;
         }
         $btn.html('<i class="bi bi-hourglass-split"></i> 等待中(4s)...');
-        setTimeout(function(){
+        setTimeout(startAfterStopped, 4000);
+      }).fail(function(xhr){
+        svModal.error('停止失败: '+xhr.responseText);
+        resetButton();
+      });
+    }
+    function startAfterStopped(){
           $btn.html('<i class="bi bi-play-fill"></i> 正在启动...');
           $.post('/start_bot', function(res2){
             if(res2.status === 'success') svModal.success(res2.message||'机器人已重启并载入新配置', '重启成功');
@@ -11908,11 +12020,6 @@ $(function(){
             .always(function(){
               resetButton();
             });
-        }, 4000);
-      }).fail(function(xhr){
-        svModal.error('停止失败: '+xhr.responseText);
-        resetButton();
-      });
     }
     saveConfig(function(){
       $btn.prop('disabled', true).html('<i class="bi bi-search"></i> 检查状态...');
@@ -12157,7 +12264,11 @@ $(function(){
     return $.getJSON('/get_status', function(res){
       if(!res || res.status !== 'success') return;
       var d = res.data;
-      if(d.bot_running){
+      if(d.bot_stopping){
+        $('#status-dot').css('background', '#F59E0B');
+        $('#status-text').text('停止中');
+        $('#status-sub').text('正在停止机器人，请稍候');
+      } else if(d.bot_running){
         if(d.listener_recovery_active){
           $('#status-dot').css('background', '#F59E0B');
           $('#status-text').text('等待桌面恢复中');
