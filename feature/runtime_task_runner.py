@@ -490,7 +490,7 @@ def process_pending_runtime_task_reload(bot):
         bot.config.refresh_config()
         bot._reset_runtime_task_states()
         bot._register_runtime_task_schedules()
-        log(message="运行中任务配置同步完成，后续任务将按新配置执行")
+        log(level="SUCCESS", message="运行中任务配置同步完成，后续任务将按新配置执行")
         return {"reloaded": True, "success": True}
     except Exception as e:
         log(level="ERROR", message=f"运行中任务配置同步失败：{e}")

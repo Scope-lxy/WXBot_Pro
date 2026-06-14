@@ -463,7 +463,7 @@ def rebuild_listener_runtime(
 
     verify_initial_listeners(bot, expected_listeners, retry_count=verify_retry_count)
     bot._listener_reconcile_last_at = time.time()
-    _bot_log(bot, message=finish_message)
+    _bot_log(bot, level="SUCCESS", message=finish_message)
     admin_name = str(getattr(bot.config, "cmd", "") or "").strip()
     return bool(admin_name and runtime_chat_state.get_listen_chat(bot, admin_name))
 
@@ -512,7 +512,7 @@ def process_listener_auto_recovery(bot):
         clear_listener_auto_recovery(bot)
         if hasattr(bot, "callback_is_die"):
             bot.callback_is_die = False
-        _bot_log(bot, message="监听器已自动恢复")
+        _bot_log(bot, level="SUCCESS", message="监听器已自动恢复")
         return "recovered"
 
     bot._listener_auto_recovery_last_error = "监听器自动恢复后管理员窗口仍不可用"

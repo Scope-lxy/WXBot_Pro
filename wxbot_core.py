@@ -877,7 +877,7 @@ class WXBot:
                         if current is item:
                             self._lightweight_send_queue.pop(target, None)
                     flushed = True
-                    log(message=f"[轻量发送队列] {target} 延后发送已完成")
+                    log(level="SUCCESS", message=f"[轻量发送队列] {target} 延后发送已完成")
                     continue
                 log(level="WARNING", message=f"[轻量发送队列] {target} 待发送任务暂未发出，保留队列")
                 break
@@ -1415,7 +1415,7 @@ class WXBot:
             break
         self.config.config["material_outreach_list"] = self.config.material_outreach_list
         self._save_material_outreach_task_definitions_only(self.config.material_outreach_list)
-        log(message=f"一次性素材转发任务 {task_id} 已执行完毕，自动禁用")
+        log(level="SUCCESS", message=f"一次性素材转发任务 {task_id} 已执行完毕，自动禁用")
 
     def _result_error_text(self, result, default="处理结果为空或失败，未返回详细错误"):
         if isinstance(result, dict):
@@ -1577,7 +1577,7 @@ class WXBot:
                     if task.get("status") != "pending":
                         task["status"] = "pending"
                     changed = True
-                    log(message=f"一次性素材转发任务 {task_id} 已执行完毕，自动禁用")
+                    log(level="SUCCESS", message=f"一次性素材转发任务 {task_id} 已执行完毕，自动禁用")
             else:
                 error_text = ""
                 for item in cycle_records or [record]:
@@ -1883,6 +1883,7 @@ class WXBot:
                 notify_error=self.is_err,
                 nickname=self.wx.nickname,
                 log_info=lambda message: log(message=message),
+                log_success=lambda message: log(level="SUCCESS", message=message),
                 log_error=lambda message: log(level="ERROR", message=message),
             )
 
@@ -3729,7 +3730,7 @@ class WXBot:
                 ),
             )
             if updated:
-                log(message=f"会话记忆已更新：{chat.who}")
+                log(level="SUCCESS", message=f"会话记忆已更新：{chat.who}")
             return updated
         except Exception as e:
             log(level="WARNING", message=f"会话记忆自动维护失败：{e}")
@@ -6858,7 +6859,7 @@ class WXBot:
             check_counter      = 0
             check_new_counter  = 0
             last_time          = time.time()
-            log(message='启动阶段：监听器已就绪，开始接收消息')
+            log(level="SUCCESS", message='启动阶段：监听器已就绪，开始接收消息')
             if self.is_stop_requested():
                 log(level="WARNING", message="启动过程中收到停止请求，已停止进入监听")
                 try:

@@ -1225,7 +1225,7 @@ def refresh_contact_profiles_single_batch(
             if externally_paused:
                 _bot_log(bot, level="WARNING", message=f"[通讯录维护] {mode_label}已停止，本次读取 {len(raw_details)} 个好友")
             else:
-                _bot_log(bot, message=f"[通讯录维护] {mode_label}完成，本次读取 {len(raw_details)} 个好友")
+                _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] {mode_label}完成，本次读取 {len(raw_details)} 个好友")
         return {
             "mode": settings["mode"],
             "wx_id": wx_id,
@@ -1438,7 +1438,7 @@ def refresh_contact_profiles_batch(
     elif stopped_reason == "stalled":
         _bot_log(bot, level="WARNING", message=f"[通讯录维护] {mode_label}疑似卡住，停止重试，本次累计读取 {total_count} 个条目")
     else:
-        _bot_log(bot, message=f"[通讯录维护] {mode_label}完成，本次共读取 {total_count} 个好友")
+        _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] {mode_label}完成，本次共读取 {total_count} 个好友")
 
     last_result["count_returned"] = total_count
     last_result["read_item_count"] = total_count
@@ -1884,6 +1884,7 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
     result["directory"] = current_directory
     _bot_log(
         bot,
+        level="SUCCESS",
         message=(
             f"[通讯录维护] 备注修复完成：成功 {result['success_count']}，"
             f"失败 {result['failed_count']}，跳过 {result['skipped_count']}"

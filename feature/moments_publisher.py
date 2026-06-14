@@ -109,10 +109,12 @@ def publish_moments_post(
     notify_error,
     nickname,
     log_info=None,
+    log_success=None,
     log_error=None,
 ):
     """Publish one Moments post using injected wxautoX4 operations."""
     log_info = log_info or (lambda message: None)
+    log_success = log_success or log_info
     log_error = log_error or (lambda message: None)
     privacy_config = build_moments_privacy_config(privacy, tags)
     valid_images = [img for img in images or [] if img and img.strip()]
@@ -164,7 +166,7 @@ def publish_moments_post(
             return False
 
         preview = text[:30] + "..." if len(text) > 30 else text
-        log_info(f"朋友圈发布成功：内容：{preview}，图片数：{len(valid_images)}")
+        log_success(f"朋友圈发布成功：内容：{preview}，图片数：{len(valid_images)}")
         return True
     finally:
         delay2 = random_delay(2, 5)
@@ -181,10 +183,12 @@ def execute_moments_publish_task(
     notify_error,
     nickname,
     log_info=None,
+    log_success=None,
     log_error=None,
 ):
     """Execute one concrete Moments publish task that is already due."""
     log_info = log_info or (lambda message: None)
+    log_success = log_success or log_info
     log_error = log_error or (lambda message: None)
     task = task if isinstance(task, dict) else {}
 
@@ -201,6 +205,7 @@ def execute_moments_publish_task(
             notify_error=notify_error,
             nickname=nickname,
             log_info=log_info,
+            log_success=log_success,
             log_error=log_error,
         ))
     except Exception as exc:
