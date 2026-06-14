@@ -1516,6 +1516,9 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .chat-ability-note { margin-top: 12px; font-size: 12px; color: var(--muted); line-height: 1.7; }
 .chat-ability-note strong { color: var(--card-fg); font-weight: 600; }
 .chat-ability-note a { color: var(--primary-dark); font-weight: 600; }
+.reply-behavior-stats { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 16px; }
+.reply-behavior-stat { min-height: 30px; padding: 0 12px; font-size: 12px; }
+.reply-behavior-stat strong { color: inherit; font-weight: 800; }
 .listen-filter-row { visibility: hidden; opacity: 0; pointer-events: none; transition: opacity .15s; }
 .listen-filter-row.is-visible { visibility: visible; opacity: 1; pointer-events: auto; }
 @media (max-width: 900px) {

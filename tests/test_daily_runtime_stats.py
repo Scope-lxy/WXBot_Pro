@@ -16,6 +16,11 @@ class DailyRuntimeStatsTests(unittest.TestCase):
 
         self.assertEqual(stats["chat_api_requests"], 0)
         self.assertEqual(stats["other_api_requests"], 0)
+        self.assertEqual(stats["private_voice_replies"], 0)
+        self.assertEqual(stats["group_voice_replies"], 0)
+        self.assertEqual(stats["private_split_replies"], 0)
+        self.assertEqual(stats["group_split_replies"], 0)
+        self.assertEqual(stats["private_merged_messages"], 0)
 
     def test_api_request_increment_persists_by_day(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -26,6 +31,22 @@ class DailyRuntimeStatsTests(unittest.TestCase):
 
         self.assertEqual(stats["chat_api_requests"], 1)
         self.assertEqual(stats["other_api_requests"], 2)
+
+    def test_reply_behavior_increment_persists_by_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = DailyRuntimeStatsStore(Path(tmp) / "stats.json")
+
+            store.increment("private_voice_replies", now="2026-06-14T10:00:00")
+            store.increment("group_voice_replies", amount=2, now="2026-06-14T10:01:00")
+            store.increment("private_split_replies", amount=3, now="2026-06-14T10:02:00")
+            store.increment("group_split_replies", amount=4, now="2026-06-14T10:03:00")
+            stats = store.increment("private_merged_messages", amount=5, now="2026-06-14T10:04:00")
+
+        self.assertEqual(stats["private_voice_replies"], 1)
+        self.assertEqual(stats["group_voice_replies"], 2)
+        self.assertEqual(stats["private_split_replies"], 3)
+        self.assertEqual(stats["group_split_replies"], 4)
+        self.assertEqual(stats["private_merged_messages"], 5)
 
 
 class ApiRequestCounterTests(unittest.TestCase):
@@ -84,6 +105,11 @@ class StatusSnapshotTests(unittest.TestCase):
             "replied_messages": 2,
             "chat_api_requests": 5,
             "other_api_requests": 7,
+            "private_voice_replies": 11,
+            "group_voice_replies": 12,
+            "private_split_replies": 13,
+            "group_split_replies": 14,
+            "private_merged_messages": 15,
         }
         bot._get_current_chat_api_display_name = lambda: "未连接"
         bot._get_active_default_chat_api_index = lambda: 0
@@ -93,6 +119,11 @@ class StatusSnapshotTests(unittest.TestCase):
         self.assertEqual(status["msg_received"], 3)
         self.assertEqual(status["msg_replied"], 2)
         self.assertEqual(status["api_request_count"], 12)
+        self.assertEqual(status["private_voice_replies"], 11)
+        self.assertEqual(status["group_voice_replies"], 12)
+        self.assertEqual(status["private_split_replies"], 13)
+        self.assertEqual(status["group_split_replies"], 14)
+        self.assertEqual(status["private_merged_messages"], 15)
 
 
 class MomentsCandidateTests(unittest.TestCase):

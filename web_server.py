@@ -2394,6 +2394,11 @@ def _dashboard_config_status_snapshot(cfg):
     replied_messages = int((daily_stats or {}).get('replied_messages', 0) or 0)
     chat_api_requests = int((daily_stats or {}).get('chat_api_requests', 0) or 0)
     other_api_requests = int((daily_stats or {}).get('other_api_requests', 0) or 0)
+    private_voice_replies = int((daily_stats or {}).get('private_voice_replies', 0) or 0)
+    group_voice_replies = int((daily_stats or {}).get('group_voice_replies', 0) or 0)
+    private_split_replies = int((daily_stats or {}).get('private_split_replies', 0) or 0)
+    group_split_replies = int((daily_stats or {}).get('group_split_replies', 0) or 0)
+    private_merged_messages = int((daily_stats or {}).get('private_merged_messages', 0) or 0)
     return {
         'version': str(BOT_VERSION or '').strip(),
         'wx_nickname': '',
@@ -2409,6 +2414,11 @@ def _dashboard_config_status_snapshot(cfg):
         'api_request_count': chat_api_requests + other_api_requests,
         'chat_api_requests': chat_api_requests,
         'other_api_requests': other_api_requests,
+        'private_voice_replies': private_voice_replies,
+        'group_voice_replies': group_voice_replies,
+        'private_split_replies': private_split_replies,
+        'group_split_replies': group_split_replies,
+        'private_merged_messages': private_merged_messages,
         'last_msg_time': '',
         'last_msg_sender': '',
         'callback_is_die': False,

@@ -17,6 +17,11 @@ STAT_KEYS = (
     "moments_published",
     "chat_api_requests",
     "other_api_requests",
+    "private_voice_replies",
+    "group_voice_replies",
+    "private_split_replies",
+    "group_split_replies",
+    "private_merged_messages",
 )
 
 

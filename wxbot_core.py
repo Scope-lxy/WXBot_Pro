@@ -569,6 +569,16 @@ class WXBot:
     def _record_moments_published(self):
         self._increment_daily_runtime_stat("moments_published")
 
+    def _daily_reply_behavior_counts(self, daily_stats=None):
+        stats = daily_stats if isinstance(daily_stats, dict) else self.get_daily_runtime_stats()
+        return {
+            "private_voice_replies": int((stats or {}).get("private_voice_replies", 0) or 0),
+            "group_voice_replies": int((stats or {}).get("group_voice_replies", 0) or 0),
+            "private_split_replies": int((stats or {}).get("private_split_replies", 0) or 0),
+            "group_split_replies": int((stats or {}).get("group_split_replies", 0) or 0),
+            "private_merged_messages": int((stats or {}).get("private_merged_messages", 0) or 0),
+        }
+
     def _record_chat_api_request(self):
         self._increment_daily_runtime_stat("chat_api_requests")
 
@@ -3591,6 +3601,8 @@ class WXBot:
                 split_source=split_source,
                 split_count=split_source_count,
             )
+            if len(parts or []) > 1:
+                self._increment_daily_runtime_stat("private_split_replies")
         else:
             blocked_policy = self._meta_reply_policy_kwargs()
             parts = prepare_reply_parts(
@@ -3643,6 +3655,7 @@ class WXBot:
                     context_text=context_text,
                     section_id=section_id,
                 ):
+                    self._increment_daily_runtime_stat("private_voice_replies")
                     if image_reply_context_used:
                         self._clear_pending_visual_context(chat.who)
                     if start_voice_session:
@@ -3917,6 +3930,8 @@ class WXBot:
                     split_source=split_source,
                     split_count=split_source_count,
                 )
+                if len(parts or []) > 1:
+                    self._increment_daily_runtime_stat("group_split_replies")
             else:
                 blocked_policy = self._meta_reply_policy_kwargs()
                 parts = prepare_reply_parts(
@@ -3943,6 +3958,7 @@ class WXBot:
                         limit_hours=getattr(self.config, 'group_voice_reply_limit_hours', 24),
                         context_text=group_context_text,
                     ):
+                        self._increment_daily_runtime_stat("group_voice_replies")
                         self._save_voice_reply_state()
                         self._record_replied_message_success()
                         return True
@@ -4760,6 +4776,8 @@ class WXBot:
             merged = self._build_merged_private_message(messages)
             if not str(getattr(merged, 'content', '') or '').strip():
                 return True
+            if len(messages) > 1:
+                self._increment_daily_runtime_stat("private_merged_messages")
             return self.wx_send_ai(chat, merged, expected_version=version)
         finally:
             if com_ready:
@@ -6758,6 +6776,7 @@ class WXBot:
         replied_messages = int((daily_stats or {}).get("replied_messages", 0) or 0)
         chat_api_requests = int((daily_stats or {}).get("chat_api_requests", 0) or 0)
         other_api_requests = int((daily_stats or {}).get("other_api_requests", 0) or 0)
+        reply_behavior_counts = self._daily_reply_behavior_counts(daily_stats)
 
         return {
             "running":            self.run_flag,
@@ -6781,6 +6800,7 @@ class WXBot:
             "api_request_count":   chat_api_requests + other_api_requests,
             "chat_api_requests":   chat_api_requests,
             "other_api_requests":  other_api_requests,
+            **reply_behavior_counts,
             "last_msg_time":      self.last_msg_time,
             "last_msg_sender":    self.last_msg_sender,
             "callback_is_die":    self.callback_is_die,

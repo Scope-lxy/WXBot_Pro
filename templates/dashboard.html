@@ -1079,6 +1079,11 @@ html.icons-pref-local [class*=" bi-"]::before {
           <span class="desc">配置私聊回复的组织方式与节奏</span>
         </div>
       </div>
+      <div class="reply-behavior-stats" aria-label="私聊今日回复行为统计">
+        <span class="ui-pill reply-behavior-stat">语音回复 <strong id="chat-stat-voice-replies">0</strong> 次</span>
+        <span class="ui-pill reply-behavior-stat">拆分回复 <strong id="chat-stat-split-replies">0</strong> 次</span>
+        <span class="ui-pill reply-behavior-stat">合并消息 <strong id="chat-stat-merged-messages">0</strong> 次</span>
+      </div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--voice-reply">
           <div class="ui-head ui-head--item">
@@ -1382,6 +1387,10 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="ui-head__title-row"><i class="bi bi-reply"></i><h5>回复行为</h5></div>
           <span class="desc">配置群聊回复的组织方式</span>
         </div>
+      </div>
+      <div class="reply-behavior-stats" aria-label="群聊今日回复行为统计">
+        <span class="ui-pill reply-behavior-stat">语音回复 <strong id="group-stat-voice-replies">0</strong> 次</span>
+        <span class="ui-pill reply-behavior-stat">拆分回复 <strong id="group-stat-split-replies">0</strong> 次</span>
       </div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--voice-reply">
@@ -12271,6 +12280,10 @@ $(function(){
   function statusValueOrDash(value){
     return value === undefined || value === null || value === '' ? '-' : value;
   }
+  function statusCountValue(value){
+    var count = parseInt(value, 10);
+    return Number.isFinite(count) && count >= 0 ? count : 0;
+  }
   function refreshStatus(){
     return $.getJSON('/get_status', function(res){
       if(!res || res.status !== 'success') return;
@@ -12315,6 +12328,11 @@ $(function(){
       $('#sv-clean-reply').text(statusEnabledText(!!d.clean_ai_reply_switch));
       $('#sv-voice-reply').text(statusScopeText(!!d.chat_voice_reply_switch, !!d.group_voice_reply_switch));
       $('#sv-split-reply').text(statusScopeText(!!d.chat_split_reply_switch, !!d.group_split_reply_switch));
+      $('#chat-stat-voice-replies').text(statusCountValue(d.private_voice_replies));
+      $('#chat-stat-split-replies').text(statusCountValue(d.private_split_replies));
+      $('#chat-stat-merged-messages').text(statusCountValue(d.private_merged_messages));
+      $('#group-stat-voice-replies').text(statusCountValue(d.group_voice_replies));
+      $('#group-stat-split-replies').text(statusCountValue(d.group_split_replies));
       $('#sv-new-friend').text(statusEnabledText(!!d.new_friend_switch));
       $('#sv-contact-maintenance').text(statusEnabledText(!!d.contact_directory_auto_maintenance_switch));
 
