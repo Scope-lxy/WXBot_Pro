@@ -143,7 +143,7 @@
 - `data/config/email.json`：邮件通知配置
 - `data/config/webhook.json`：Webhook 配置
 - `data/config/reply_count.json`：私聊回复轮数限制计数
-- `data/config/daily_runtime_stats.json`：管理员 `/状态` 使用的当天统计
+- `data/config/daily_runtime_stats.json`：状态面板和管理员 `/状态` 使用的当天统计，包含收发消息、API 请求、任务发送和发圈发布计数
 - `data/prompt/`：人格模板和人格近况文件
 - `data/system_prompts/`：系统 Prompt 片段及其备份
 - `data/accounts/<wx_id>/memory/`：聊天记录
@@ -176,6 +176,7 @@
 - 定时消息、素材转发、发圈任务、朋友圈点赞都走统一时间模型；新增任务类面板时优先复用现有任务工作台 contract / storage / service。
 - `scheduled_message` 和 `material_outreach` 的任务卡片表达的是“生成运行时实例的规则”；`moments` 表达的是“一次明确的发布动作”，只有确认后的任务才进入待执行区。
 - 面板里的发圈任务创建当前拆成两段：先建任务，再异步生成候选文案。
+- 发圈文案生成有图片时统一走 `api.chat(..., image_path/image_paths=...)` 图片直传，不走辅助视觉转述路径；管理员 `/发圈` 和面板发圈任务不要再分叉维护专用多图 HTTP 请求。
 - 普通定时消息和随机消息优先走已监听的聊天子窗口，找不到时再回退主窗口。
 - 通讯录页和会话记忆页都已经是可操作的数据管理页，不要再按纯查看器心智改。
 - 群聊页勾选 `group_listen_only` 后，前端会自动保持 `group_switch` 为开启，并临时禁用依赖自动回复的相关选项。

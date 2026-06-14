@@ -15,6 +15,8 @@ STAT_KEYS = (
     "material_forwards_sent",
     "ai_material_forwards_sent",
     "moments_published",
+    "chat_api_requests",
+    "other_api_requests",
 )
 
 

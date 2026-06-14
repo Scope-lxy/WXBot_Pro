@@ -76,6 +76,8 @@ def _runtime_daily_stats(bot):
         "material_forwards_sent": int((stats or {}).get("material_forwards_sent", material_count) or 0),
         "ai_material_forwards_sent": int((stats or {}).get("ai_material_forwards_sent", ai_count) or 0),
         "moments_published": int((stats or {}).get("moments_published", 0) or 0),
+        "chat_api_requests": int((stats or {}).get("chat_api_requests", 0) or 0),
+        "other_api_requests": int((stats or {}).get("other_api_requests", 0) or 0),
     }
 
 
@@ -155,6 +157,9 @@ def build_status_message(bot):
         "数据统计：",
         f"已收消息：{daily_stats['received_messages']} 条",
         f"已回复消息：{daily_stats['replied_messages']} 次",
+        f"API请求数：{daily_stats['chat_api_requests'] + daily_stats['other_api_requests']} 次",
+        f"聊天请求：{daily_stats['chat_api_requests']} 次",
+        f"其他请求：{daily_stats['other_api_requests']} 次",
         f"定时消息：{daily_stats['scheduled_messages_sent']} 次",
         f"素材转发：{daily_stats['material_forwards_sent']} 次",
         f"AI转发次数：{daily_stats['ai_material_forwards_sent']} 次",

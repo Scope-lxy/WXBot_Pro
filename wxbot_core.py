@@ -62,7 +62,6 @@ from core.api import (
     default_tts_config,
     format_api_display_name,
     normalize_tts_settings,
-    normalize_reasoning_effort,
     is_api_error_reply,
     select_tts_config,
     set_chat_api_app_version,
@@ -366,7 +365,6 @@ MOMENTS_CAPTION_PROMPT_FILE = "moments_caption.md"
 MATERIAL_OUTREACH_DECISION_PROMPT_FILE = "material_decision.md"
 MATERIAL_OUTREACH_PREFACE_PROMPT_FILE = "material_preface.md"
 PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS = 30 * 60
-GENERATION_MAX_OUTPUT_TOKENS = 25600
 VOICE_TRANSCRIPTION_FALLBACK_TEXT = "这条语音我没转出来，你再发一次语音或直接发文字都可以。"
 
 
@@ -380,6 +378,19 @@ class _ChatAPIFailoverProxy:
 
     def chat(self, *args, **kwargs):
         return self._chat_callable(*args, **kwargs)
+
+
+class _CountingAPIProxy:
+    def __init__(self, api, record_request):
+        self._api = api
+        self._record_request = record_request
+
+    def __getattr__(self, name):
+        return getattr(self._api, name)
+
+    def chat(self, *args, **kwargs):
+        self._record_request()
+        return self._api.chat(*args, **kwargs)
 
 
 # ============================================================
@@ -557,6 +568,20 @@ class WXBot:
 
     def _record_moments_published(self):
         self._increment_daily_runtime_stat("moments_published")
+
+    def _record_chat_api_request(self):
+        self._increment_daily_runtime_stat("chat_api_requests")
+
+    def _record_other_api_request(self):
+        self._increment_daily_runtime_stat("other_api_requests")
+
+    def _wrap_api_request_counter(self, api, request_type):
+        stat_key = str(request_type or "").strip()
+        if stat_key == "chat":
+            return _CountingAPIProxy(api, self._record_chat_api_request)
+        if stat_key == "other":
+            return _CountingAPIProxy(api, self._record_other_api_request)
+        return api
 
     def _material_outreach_tasks_file(self, *, wx_id=None, create_parent=False):
         return self._material_outreach_store(wx_id=wx_id).tasks_file(create_parent=create_parent)
@@ -3680,7 +3705,7 @@ class WXBot:
                 chat.who,
                 getattr(self.config, 'memory_max_count', 5000)
             )
-            api = self._get_chat_api(chat.who)
+            api = self._get_other_api(self._get_chat_api_index(chat.who))
             updated = system.update_memory(
                 chat.who,
                 messages,
@@ -3864,31 +3889,6 @@ class WXBot:
                         image_paths,
                         text_part.strip(),
                     )
-                elif self.config.group_image_recognition_switch:
-                    if message.type == 'image':
-                        # 直接图片消息：content 已被替换为本地路径
-                        rec_api = self._init_api_by_index(self.config.group_image_recognition_api)
-                        reply = rec_api.chat(
-                            self._build_image_recognition_message("group", sender=message.sender),
-                            prompt=_effective_group_prompt,
-                            history=history,
-                            image_path=message.content
-                        )
-                    elif QUOTE_IMAGE_MARKER in content_without_at:
-                        # 引用图片消息：拆分文字部分和图片路径
-                        text_part, image_paths = split_quoted_image_message(content_without_at)
-                        primary_image_path = image_paths[0] if image_paths else ""
-                        rec_api = self._init_api_by_index(self.config.group_image_recognition_api)
-                        reply = rec_api.chat(
-                            f"{message.sender}: {text_part.strip()}" if text_part.strip() else self._build_image_recognition_message("group", sender=message.sender),
-                            prompt=_effective_group_prompt,
-                            history=history,
-                            image_path=primary_image_path
-                        )
-                    else:
-                        # 普通文字消息，走原有群组逻辑
-                        group_api = self._get_group_api(chat.who)
-                        reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
                 else:
                     group_api = self._get_group_api(chat.who)
                     reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
@@ -4183,7 +4183,13 @@ class WXBot:
             )
             log(message=f"主聊天接口连续失败达到阈值，已切换到备用聊天接口：{self._get_chat_api_name(backup_index)}")
 
-    def _retry_current_message_with_backup(self, *args, **kwargs):
+    def _record_api_request_by_type(self, request_type):
+        if str(request_type or "").strip() == "other":
+            self._record_other_api_request()
+        else:
+            self._record_chat_api_request()
+
+    def _retry_current_message_with_backup(self, *args, request_type="chat", **kwargs):
         self._ensure_chat_api_failover_state()
         backup_index = self._get_backup_chat_api_index()
         if backup_index < 0:
@@ -4195,6 +4201,7 @@ class WXBot:
         log(message=f"主聊天接口失败，当前消息改用备用接口：{self._get_chat_api_name(backup_index)}")
         backup_api = self._get_api_instance_by_index(backup_index)
         try:
+            self._record_api_request_by_type(request_type)
             result = backup_api.chat(*args, **kwargs)
         except Exception as exc:
             log(level="WARNING", message=f"备用聊天接口调用失败：{exc}")
@@ -4204,7 +4211,7 @@ class WXBot:
             log(level="WARNING", message="主备接口都失败，本次未发送回复")
         return True, result
 
-    def _try_restore_primary_chat_api(self, *args, **kwargs):
+    def _try_restore_primary_chat_api(self, *args, request_type="chat", **kwargs):
         self._ensure_chat_api_failover_state()
         primary_index = self._get_primary_chat_api_index()
         backup_index = self._get_backup_chat_api_index()
@@ -4222,6 +4229,7 @@ class WXBot:
 
         log(message=f"已到主聊天接口恢复检测时间，开始探测：{self._get_chat_api_name(primary_index)}")
         try:
+            self._record_api_request_by_type(request_type)
             result = self.api.chat(*args, **kwargs)
         except Exception as exc:
             log(message=f"主聊天接口恢复探测失败，继续使用备用聊天接口：{exc}")
@@ -4247,29 +4255,30 @@ class WXBot:
             self.api_cache[index] = self._init_api_by_index(index)
         return self.api_cache[index]
 
-    def _wrap_chat_api_for_failover(self, api, *, index, tracked_default):
+    def _wrap_chat_api_for_failover(self, api, *, index, tracked_default, request_type="chat"):
         if not tracked_default:
-            return api
+            return self._wrap_api_request_counter(api, request_type)
 
         def chat_callable(*args, **kwargs):
             if self.chat_api_using_backup and index == self._get_backup_chat_api_index():
-                restored, result = self._try_restore_primary_chat_api(*args, **kwargs)
+                restored, result = self._try_restore_primary_chat_api(*args, request_type=request_type, **kwargs)
                 if restored:
                     return result
                 log(message="当前使用备用聊天接口回复")
             try:
+                self._record_api_request_by_type(request_type)
                 result = api.chat(*args, **kwargs)
             except Exception:
                 if not self.chat_api_using_backup and index == self._get_primary_chat_api_index():
                     self._record_primary_chat_api_failure()
-                    retried, retry_result = self._retry_current_message_with_backup(*args, **kwargs)
+                    retried, retry_result = self._retry_current_message_with_backup(*args, request_type=request_type, **kwargs)
                     if retried:
                         return retry_result
                 raise
             if is_api_error_reply(result):
                 if not self.chat_api_using_backup and index == self._get_primary_chat_api_index():
                     self._record_primary_chat_api_failure()
-                    retried, retry_result = self._retry_current_message_with_backup(*args, **kwargs)
+                    retried, retry_result = self._retry_current_message_with_backup(*args, request_type=request_type, **kwargs)
                     if retried:
                         return retry_result
             elif not self.chat_api_using_backup and index == self._get_primary_chat_api_index():
@@ -4321,6 +4330,14 @@ class WXBot:
         idx, tracked_default = self._resolve_group_api_selection(group_name)
         api = self._get_api_instance_by_index(idx)
         return self._wrap_chat_api_for_failover(api, index=idx, tracked_default=tracked_default)
+
+    def _get_other_api(self, index=None):
+        try:
+            idx = int(index)
+        except (TypeError, ValueError):
+            idx = self._get_active_default_chat_api_index()
+        api = self._get_api_instance_by_index(idx)
+        return self._wrap_api_request_counter(api, "other")
 
     def _get_group_api_index(self, group_name):
         """Return the final reply API index for this group."""
@@ -4434,7 +4451,7 @@ class WXBot:
             final_api=final_api,
             recognition_api=(
                 None if final_api_supports_vision
-                else self._init_api_by_index(recognition_api_index)
+                else self._get_other_api(recognition_api_index)
             ),
             final_api_supports_vision=final_api_supports_vision,
             image_path=image_path,
@@ -5182,6 +5199,7 @@ class WXBot:
                 synth_cfg["context_text"] = str(context_text or "").strip()
             if str(section_id or "").strip():
                 synth_cfg["section_id"] = str(section_id or "").strip()
+            self._record_other_api_request()
             create_tts_client(synth_cfg).synthesize(tts_text, audio_path)
             if (
                 expected_version is not None
@@ -5623,7 +5641,7 @@ class WXBot:
             target=target,
         )
         try:
-            reply = self._get_default_chat_api().chat(message_text, prompt=prompt, history=history)
+            reply = self._get_other_api().chat(message_text, prompt=prompt, history=history)
             decision = parse_ai_outreach_decision(reply)
         except Exception:
             return self._ai_outreach_queue_result(evaluation_attempted=True)
@@ -5883,7 +5901,7 @@ class WXBot:
             )
             if part
         ).strip()
-        reply = self._get_default_chat_api().chat(message_text, prompt=prompt, history=history)
+        reply = self._get_other_api().chat(message_text, prompt=prompt, history=history)
         preface = self._parse_material_outreach_preface_reply(reply)
         if not preface:
             raise ValueError("AI 未生成可用附加文案")
@@ -6294,23 +6312,6 @@ class WXBot:
             system = self._init_prompt_system()
         return system.render_moments_caption_prompt(self.config.cmd, text_block)
 
-    def _extract_admin_moments_response_text(self, data):
-        if not isinstance(data, dict):
-            return ""
-        output_text = data.get("output_text")
-        if isinstance(output_text, str) and output_text.strip():
-            return output_text.strip()
-        result_parts = []
-        for item in data.get("output", []) if isinstance(data.get("output"), list) else []:
-            if not isinstance(item, dict):
-                continue
-            for block in item.get("content", []) if isinstance(item.get("content"), list) else []:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") in ("output_text", "text") and block.get("text"):
-                    result_parts.append(str(block.get("text")))
-        return "".join(result_parts).strip()
-
     def _parse_admin_moments_candidates(self, raw_reply):
         return parse_moments_candidates(raw_reply, cleaner=sanitize_ai_output_text)
 
@@ -6326,49 +6327,11 @@ class WXBot:
             return configured
         return 0
 
-    def _call_admin_moments_multi_image_api(self, *, api, api_index, prompt, message_text, image_paths):
-        cfg = (getattr(self.config, "api_configs", []) or [])[api_index]
-        sdk = str((cfg or {}).get("sdk", "") or "").strip()
-        model = str((cfg or {}).get("model", "") or "").strip()
-
-        if sdk == "DusAPI" and "gpt" in model.lower():
-            payload = {
-                "model": model,
-                "input": [
-                    {"role": "system", "content": prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": message_text},
-                            *[
-                                api._build_gpt_image_block(image_path=str(path))
-                                for path in image_paths
-                            ],
-                        ],
-                    },
-                ],
-                "max_output_tokens": GENERATION_MAX_OUTPUT_TOKENS,
-                "reasoning": {"effort": normalize_reasoning_effort(cfg.get("reasoning_effort"))},
-            }
-            headers = {
-                "Authorization": f"Bearer {api.api_key}",
-                "content-type": "application/json",
-                "user-agent": f"siver-wxbot-panel/{version}",
-            }
-            endpoint = f"{str(api.base_url or '').rstrip('/')}/v1/responses"
-            response = requests.post(endpoint, headers=headers, json=payload, timeout=180)
-            response.raise_for_status()
-            response.encoding = "utf-8"
-            data = response.json()
-            return self._extract_admin_moments_response_text(data)
-
-        raise RuntimeError(f"当前朋友圈接口暂不支持多图直连：{sdk} / {model}")
-
     def _generate_admin_moments_candidates(self, draft):
         api_index = self._resolve_admin_moments_api_index()
         if api_index < 0:
             raise RuntimeError("未找到可用的发朋友圈专用接口")
-        api = self._get_api_instance_by_index(api_index)
+        api = self._get_other_api(api_index)
         prompt = self._build_admin_moments_generation_prompt(draft)
         raw_text = self._get_admin_moments_raw_text(draft)
         message_text = "请基于这次素材生成 3 条可直接发布的朋友圈文案候选。"
@@ -6380,11 +6343,11 @@ class WXBot:
             if str(item or "").strip()
         ]
         if images:
-            raw_reply = self._call_admin_moments_multi_image_api(
-                api=api,
-                api_index=api_index,
+            raw_reply = api.chat(
+                message_text,
                 prompt=prompt,
-                message_text=message_text,
+                history=[],
+                stream=False,
                 image_paths=images,
             )
         else:
@@ -6790,6 +6753,11 @@ class WXBot:
         active_model = ""
         if api_configs:
             active_model = str((api_configs[active_index] or {}).get("model", "") or "").strip()
+        daily_stats = self.get_daily_runtime_stats()
+        received_messages = int((daily_stats or {}).get("received_messages", 0) or 0)
+        replied_messages = int((daily_stats or {}).get("replied_messages", 0) or 0)
+        chat_api_requests = int((daily_stats or {}).get("chat_api_requests", 0) or 0)
+        other_api_requests = int((daily_stats or {}).get("other_api_requests", 0) or 0)
 
         return {
             "running":            self.run_flag,
@@ -6808,8 +6776,11 @@ class WXBot:
             "group_switch":       self.config.group_switch,
             "group_listen_only":   getattr(self.config, "group_listen_only", False),
             "group_count":        len(self.config.group),
-            "msg_received":       self.msg_received_count,
-            "msg_replied":        self.msg_replied_count,
+            "msg_received":       received_messages,
+            "msg_replied":        replied_messages,
+            "api_request_count":   chat_api_requests + other_api_requests,
+            "chat_api_requests":   chat_api_requests,
+            "other_api_requests":  other_api_requests,
             "last_msg_time":      self.last_msg_time,
             "last_msg_sender":    self.last_msg_sender,
             "callback_is_die":    self.callback_is_die,

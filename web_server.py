@@ -56,6 +56,7 @@ from core.account_storage import (
 )
 from core.config import coerce_float_range, sanitize_api_capability_map, set_api_capability
 from core.config import api_supports_capability
+from core.daily_runtime_stats import DailyRuntimeStatsStore
 from core.memory import read_memory_original_name, resolve_memory_storage_name
 from core.chat_history_format import format_memory_record_for_display
 from core.contact_profiles import (
@@ -296,6 +297,25 @@ def normalize_voice_reply_config(config):
 # 启动时确保目录存在
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(PANEL_LOG_DIR, exist_ok=True)
+
+
+def _record_other_api_request():
+    try:
+        DailyRuntimeStatsStore(os.path.join(CONFIG_DIR, 'daily_runtime_stats.json')).increment('other_api_requests')
+    except Exception:
+        pass
+
+
+class _OtherAPIRequestCounter:
+    def __init__(self, api):
+        self._api = api
+
+    def __getattr__(self, name):
+        return getattr(self._api, name)
+
+    def chat(self, *args, **kwargs):
+        _record_other_api_request()
+        return self._api.chat(*args, **kwargs)
 
 
 def _account_area_dir(wx_id, area, *, create=False, base_dir=None):
@@ -2369,6 +2389,11 @@ def _dashboard_config_status_snapshot(cfg):
     global_blacklist = list(cfg.get('global_blacklist', []) or [])
     groups = list(cfg.get('group', []) or [])
     material_task_count = _count_enabled_tasks(cfg.get('material_outreach_list', []))
+    daily_stats = DailyRuntimeStatsStore(os.path.join(CONFIG_DIR, 'daily_runtime_stats.json')).load()
+    received_messages = int((daily_stats or {}).get('received_messages', 0) or 0)
+    replied_messages = int((daily_stats or {}).get('replied_messages', 0) or 0)
+    chat_api_requests = int((daily_stats or {}).get('chat_api_requests', 0) or 0)
+    other_api_requests = int((daily_stats or {}).get('other_api_requests', 0) or 0)
     return {
         'version': str(BOT_VERSION or '').strip(),
         'wx_nickname': '',
@@ -2379,8 +2404,11 @@ def _dashboard_config_status_snapshot(cfg):
         'listen_count': len(global_blacklist if cfg.get('AllListen_switch') else listen_list),
         'group_switch': bool(cfg.get('group_switch', False)),
         'group_count': len(groups),
-        'msg_received': '-',
-        'msg_replied': '-',
+        'msg_received': received_messages,
+        'msg_replied': replied_messages,
+        'api_request_count': chat_api_requests + other_api_requests,
+        'chat_api_requests': chat_api_requests,
+        'other_api_requests': other_api_requests,
         'last_msg_time': '',
         'last_msg_sender': '',
         'callback_is_die': False,
@@ -3125,8 +3153,6 @@ def _enrich_dashboard_status_snapshot(status, *, cfg=None, wx_id='', runtime_mat
     status['chat_split_reply_switch'] = bool(cfg.get('chat_split_reply_switch', False))
     status['group_split_reply_switch'] = bool(cfg.get('group_split_reply_switch', False))
     material_stats = _dashboard_material_home_stats(wx_id=wx_id, runtime_material_ids=runtime_material_ids)
-    status['material_available_count'] = material_stats['available_materials']
-    status['material_runtime_available'] = material_stats['available_runtime_materials']
     status['material_today_touched'] = material_stats['today_touched']
     return status
 
@@ -3789,9 +3815,9 @@ def _build_memory_extraction_api_config(cfg, *, prompt=""):
 def _build_test_api_client(tmp_config):
     sdk = tmp_config.sdk
     if sdk == "OpenAI SDK":
-        return OpenAIAPI(tmp_config)
+        return _OtherAPIRequestCounter(OpenAIAPI(tmp_config))
     if sdk == "DusAPI":
-        return DusAPI(tmp_config)
+        return _OtherAPIRequestCounter(DusAPI(tmp_config))
     raise ValueError(f"不支持的聊天接口 SDK：{sdk or '（空）'}")
 
 
@@ -3880,6 +3906,7 @@ def api_tts_preview():
         cache_dir = os.path.join(DATA_DIR, 'cache', 'tts_preview')
         client = create_tts_client(payload)
         out_path = make_tts_cache_path(cache_dir, suffix='mp3')
+        _record_other_api_request()
         client.synthesize(payload.get('sample_text') or '你好呀，这是一条语音回复试听。', out_path)
         return jsonify({
             'status': 'success',

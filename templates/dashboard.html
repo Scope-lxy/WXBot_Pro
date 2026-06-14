@@ -317,6 +317,21 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="stat-val" id="sv-replied">-</div>
           <div class="stat-sub">&nbsp;</div>
         </div>
+        <div class="stat-card" id="sc-api-requests">
+          <div class="stat-head"><div class="stat-icon"><i class="bi bi-cpu"></i></div><div class="stat-title">API请求数</div></div>
+          <div class="stat-val" id="sv-api-requests">-</div>
+          <div class="stat-sub">&nbsp;</div>
+        </div>
+        <div class="stat-card" id="sc-chat-api-requests">
+          <div class="stat-head"><div class="stat-icon"><i class="bi bi-chat-dots"></i></div><div class="stat-title">聊天请求</div></div>
+          <div class="stat-val" id="sv-chat-api-requests">-</div>
+          <div class="stat-sub">&nbsp;</div>
+        </div>
+        <div class="stat-card" id="sc-other-api-requests">
+          <div class="stat-head"><div class="stat-icon"><i class="bi bi-diagram-3"></i></div><div class="stat-title">其他请求</div></div>
+          <div class="stat-val" id="sv-other-api-requests">-</div>
+          <div class="stat-sub">&nbsp;</div>
+        </div>
         <div class="stat-card" id="sc-listen-friends">
           <div class="stat-head"><div class="stat-icon"><i class="bi bi-person-check"></i></div><div class="stat-title">监听好友</div></div>
           <div class="stat-val" id="sv-listen-friends">-</div>
@@ -340,11 +355,6 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div class="stat-card" id="sc-outreach-today">
           <div class="stat-head"><div class="stat-icon"><i class="bi bi-check2-circle"></i></div><div class="stat-title">今日转发</div></div>
           <div class="stat-val" id="sv-outreach-today">-</div>
-          <div class="stat-sub">&nbsp;</div>
-        </div>
-        <div class="stat-card" id="sc-material-available">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-collection-play"></i></div><div class="stat-title">可用素材</div></div>
-          <div class="stat-val" id="sv-material-available">-</div>
           <div class="stat-sub">&nbsp;</div>
         </div>
       </div>
@@ -12290,10 +12300,12 @@ $(function(){
 
       $('#sv-received').text(statusValueOrDash(d.msg_received));
       $('#sv-replied').text(statusValueOrDash(d.msg_replied));
+      $('#sv-api-requests').text(statusValueOrDash(d.api_request_count));
+      $('#sv-chat-api-requests').text(statusValueOrDash(d.chat_api_requests));
+      $('#sv-other-api-requests').text(statusValueOrDash(d.other_api_requests));
       $('#sv-listen-friends').text(statusValueOrDash(d.listen_count));
       $('#sv-group').text(d.group_switch ? statusValueOrDash(d.group_count) : '0');
       $('#sv-schedule').text(d.scheduled_switch ? statusValueOrDash(d.scheduled_count) : '0');
-      $('#sv-material-available').text(statusValueOrDash(d.material_available_count));
       $('#sv-outreach-tasks').text(statusValueOrDash(d.material_outreach_task_count));
       $('#sv-outreach-today').text(statusValueOrDash(d.material_today_touched));
 

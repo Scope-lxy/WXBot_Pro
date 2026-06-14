@@ -180,6 +180,7 @@ class VisionBridge:
     def _recognition_signature(recognition_api: Any) -> str:
         if recognition_api is None:
             return "none"
+        recognition_api = getattr(recognition_api, "_api", recognition_api)
         model = _clean_text(getattr(recognition_api, "DS_NOW_MOD", ""))
         if not model:
             config = getattr(recognition_api, "config", None)
