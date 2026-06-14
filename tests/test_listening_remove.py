@@ -152,12 +152,12 @@ class RemoveListenChatTests(unittest.TestCase):
         bot = SimpleNamespace(
             all_Mode_listen_list=[["张三", 1], ["李四", 2]],
         )
-        bot._remove_listen_chat_verified = lambda name: calls.append(name) or True
+        bot._remove_listen_chat_verified = lambda name, *, log_success=True: calls.append((name, log_success)) or True
 
         closed = listening.close_dynamic_listener_subwindows(bot, ["张三", "王五"])
 
         self.assertEqual(closed, ["张三"])
-        self.assertEqual(calls, ["张三"])
+        self.assertEqual(calls, [("张三", True)])
         self.assertEqual(bot.all_Mode_listen_list, [["李四", 2]])
 
     def test_touch_dynamic_listener_entry_updates_existing_timestamp(self):
@@ -178,6 +178,7 @@ class RemoveListenChatTests(unittest.TestCase):
 
     def test_alllisten_timeout_delete_is_idempotent_when_remove_clears_entry(self):
         removed = []
+        logs = []
         bot = SimpleNamespace(
             all_Mode_listen_list=[["张三", 1.0]],
             config=SimpleNamespace(
@@ -195,19 +196,22 @@ class RemoveListenChatTests(unittest.TestCase):
             ),
         )
 
-        def remove_and_clear(name):
+        def remove_and_clear(name, *, log_success=True):
             removed.append(name)
             listening.remove_dynamic_listener_entries(bot, name)
             return True
 
         bot._remove_listen_chat_verified = remove_and_clear
 
-        with mock.patch.object(listening.time, "time", return_value=999.0):
+        with mock.patch.object(listening.time, "time", return_value=999.0), mock.patch.object(
+            listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))
+        ):
             new_last_time = listening.alllisten_mode(bot, last_time=1.0, timeout=10)
 
         self.assertEqual(removed, ["张三"])
         self.assertEqual(bot.all_Mode_listen_list, [])
         self.assertEqual(new_last_time, 999.0)
+        self.assertEqual(logs, ["全局监听 张三：对话超时，已停止监听"])
 
     def test_alllisten_dispatches_first_batch_to_real_subwindow_once(self):
         processed = []
@@ -284,7 +288,7 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertEqual(add_calls, [])
         self.assertEqual(processed, [(sub_chat, msg)])
-        self.assertTrue(any("复用动态监听子窗口处理本批消息" in item for item in logs))
+        self.assertFalse(any("复用动态监听子窗口处理本批消息" in item for item in logs))
 
     def test_alllisten_repairs_once_when_listened_subwindow_missing(self):
         processed = []
@@ -350,6 +354,52 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(result, {"status": "success"})
         self.assertEqual(calls, [("张三", bot.message_handle_callback)])
         self.assertTrue(any("监听管理 张三：添加动态监听调用成功" in item for item in logs))
+
+    def test_dynamic_listener_add_failure_is_warning(self):
+        logs = []
+
+        class NoopLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeWeChat:
+            def AddListenChat(self, nickname=None, callback=None):
+                raise RuntimeError("无效的窗口句柄")
+
+        bot = SimpleNamespace(wx=FakeWeChat(), message_handle_callback=object())
+        bot._get_wechat_action_lock = lambda: NoopLock()
+
+        with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message") or (args[0] if args else "")))):
+            result = listening.add_listen_chat_once(bot, "张三", "动态监听")
+
+        self.assertIsNone(result)
+        self.assertTrue(any(level == "WARNING" and "添加动态监听调用异常" in message for level, message in logs))
+
+    def test_manual_listener_add_failure_stays_error(self):
+        logs = []
+
+        class NoopLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeWeChat:
+            def AddListenChat(self, nickname=None, callback=None):
+                raise RuntimeError("无效的窗口句柄")
+
+        bot = SimpleNamespace(wx=FakeWeChat(), message_handle_callback=object())
+        bot._get_wechat_action_lock = lambda: NoopLock()
+
+        with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message") or (args[0] if args else "")))):
+            result = listening.add_listen_chat_once(bot, "张三", "监听")
+
+        self.assertIsNone(result)
+        self.assertTrue(any(level == "ERROR" and "添加监听调用异常" in message for level, message in logs))
 
 
 if __name__ == "__main__":

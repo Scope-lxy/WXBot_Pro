@@ -253,6 +253,8 @@ def close_dynamic_listener_subwindows(bot, nicknames):
 
 
 def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
+    log_level = "WARNING" if str(label or "").strip() == "动态监听" else "ERROR"
+
     def add_action():
         with bot._get_wechat_action_lock():
             with warn_slow_wechat_ui_action(f"AddListenChat({nickname})"):
@@ -275,14 +277,14 @@ def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
     except Exception as exc:
         _bot_log(
             bot,
-            level="ERROR",
+            level=log_level,
             message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用异常，详情：{exc}",
         )
         return None
     if result:
         _bot_log(bot, message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用成功")
     else:
-        _bot_log(bot, level="ERROR", message=f"监听管理 {nickname}：{listen_add_action_label(label)}失败，详情：{listen_add_error(result)}")
+        _bot_log(bot, level=log_level, message=f"监听管理 {nickname}：{listen_add_action_label(label)}失败，详情：{listen_add_error(result)}")
     return result
 
 
@@ -321,7 +323,7 @@ def add_and_verify_subwindow(bot, nickname, retry_count=3):
     if is_stale_listen_registration_error(result):
         _bot_log(bot, level="WARNING", message=f"{name} 已存在监听登记但未获取到可用子窗口，本次不删除重建")
     else:
-        _bot_log(bot, level="ERROR", message=f"{name} 动态监听子窗口校验失败，已跳过实际监听")
+        _bot_log(bot, level="WARNING", message=f"全局监听 {name}：临时接管窗口不可用，本批消息交由后续监听重试")
     return None
 
 
@@ -603,12 +605,12 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
         lock.release()
 
 
-def remove_listen_chat_verified(bot, nickname):
+def remove_listen_chat_verified(bot, nickname, *, log_success=True):
     with _wechat_action_lock_context(bot):
-        return _remove_listen_chat_verified_locked(bot, nickname)
+        return _remove_listen_chat_verified_locked(bot, nickname, log_success=log_success)
 
 
-def _remove_listen_chat_verified_locked(bot, nickname):
+def _remove_listen_chat_verified_locked(bot, nickname, *, log_success=True):
     name = str(nickname or "").strip()
     try:
         with warn_slow_wechat_ui_action(f"RemoveListenChat({name})"):
@@ -621,7 +623,8 @@ def _remove_listen_chat_verified_locked(bot, nickname):
 
     _forget_runtime_listener_caches(bot, name)
     remove_dynamic_listener_entries(bot, name)
-    _bot_log(bot, message=f"监听管理 {name}：删除监听完成，已清理运行缓存")
+    if log_success:
+        _bot_log(bot, message=f"监听管理 {name}：删除监听完成，已清理运行缓存")
     return True
 
 
@@ -838,9 +841,8 @@ def add_chat_to_listen(bot, chat):
     if callable(is_listened_fn) and is_listened_fn(chat):
         touch_dynamic_listener_entry(bot, chat)
         return sub_chat
-    _bot_log(bot, message=f"全局监听 {chat}：已添加监听，正在加入动态监听列表")
     touch_dynamic_listener_entry(bot, chat)
-    _bot_log(bot, message=f"全局监听：动态监听列表已更新，详情：{bot.all_Mode_listen_list}")
+    _bot_log(bot, message=f"全局监听 {chat}：已加入监听")
     return sub_chat
 
 
@@ -853,14 +855,15 @@ def alllisten_mode(bot, last_time, timeout=10):
     def remove_timeout_listen(chat_time_out=600):
         for listen_chat in bot.all_Mode_listen_list[:]:
             if time.time() - listen_chat[1] >= chat_time_out:
-                _bot_log(bot, message=f"全局监听 {listen_chat[0]}：对话超时，正在删除监听")
+                listen_name = listen_chat[0]
                 remove_fn = getattr(bot, "_remove_listen_chat_verified", None)
                 if callable(remove_fn):
-                    removed = remove_fn(listen_chat[0])
+                    removed = remove_fn(listen_name, log_success=False)
                 else:
-                    removed = remove_listen_chat_verified(bot, listen_chat[0])
+                    removed = remove_listen_chat_verified(bot, listen_name, log_success=False)
                 if removed:
-                    remove_dynamic_listener_entries(bot, listen_chat[0])
+                    remove_dynamic_listener_entries(bot, listen_name)
+                    _bot_log(bot, message=f"全局监听 {listen_name}：对话超时，已停止监听")
 
     def get_next_new_message():
         next_callback_down_map = {}
@@ -975,7 +978,6 @@ def alllisten_mode(bot, last_time, timeout=10):
                     sub_chat = get_cached_or_verified_subwindow(bot, chat)
                     if sub_chat:
                         touch_dynamic_listener_entry(bot, chat)
-                        _bot_log(bot, message=f"全局监听 {chat}：复用动态监听子窗口处理本批消息")
                     else:
                         _bot_log(bot, level="WARNING", message=f"全局监听 {chat}：动态监听子窗口不可用，尝试轻量补一次")
                 if not sub_chat:
@@ -983,7 +985,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                 if not sub_chat:
                     _forget_runtime_listener_caches(bot, chat)
                     remove_dynamic_listener_entries(bot, chat)
-                    _bot_log(bot, level="ERROR", message=f"{chat} 未获取到真实子窗口，已清理动态监听运行状态，跳过本批全局消息处理")
+                    _bot_log(bot, level="WARNING", message=f"全局监听 {chat}：临时接管窗口不可用，已清理运行状态并等待后续重试")
                     return
                 for msg in processed_msgs:
                     bot.process_message(sub_chat, msg)

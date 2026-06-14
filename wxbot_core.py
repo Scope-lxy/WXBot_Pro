@@ -1808,8 +1808,8 @@ class WXBot:
     def _maybe_reconcile_listener_subwindows(self, force=False, retry_count=3):
         return listening.maybe_reconcile_listener_subwindows(self, force=force, retry_count=retry_count)
 
-    def _remove_listen_chat_verified(self, nickname):
-        return listening.remove_listen_chat_verified(self, nickname)
+    def _remove_listen_chat_verified(self, nickname, *, log_success=True):
+        return listening.remove_listen_chat_verified(self, nickname, log_success=log_success)
 
     def _close_dynamic_listener_subwindows(self, nicknames):
         return listening.close_dynamic_listener_subwindows(self, nicknames)

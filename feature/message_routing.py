@@ -58,7 +58,6 @@ def _update_alllisten_timestamp(bot, chat_name: str) -> None:
     now_ts = _bot_time_module(bot).time()
     for listen_chat in getattr(bot, "all_Mode_listen_list", []):
         if listen_chat[0] == chat_name:
-            _bot_log(bot, message=f"全局监听 {chat_name}：最新消息时间已更新")
             listen_chat[1] = now_ts
             break
 
