@@ -143,7 +143,7 @@
 - `data/config/email.json`：邮件通知配置
 - `data/config/webhook.json`：Webhook 配置
 - `data/config/reply_count.json`：私聊回复轮数限制计数
-- `data/config/daily_runtime_stats.json`：状态面板和管理员 `/状态` 使用的当天统计，包含收发消息、API 请求、任务发送和发圈发布计数
+- `data/config/daily_runtime_stats.json`：状态面板、回复行为胶囊和管理员 `/状态` 使用的当天统计，包含收发消息、API 请求、语音回复、拆分回复、私聊合并、任务发送和发圈发布计数
 - `data/prompt/`：人格模板和人格近况文件
 - `data/system_prompts/`：系统 Prompt 片段及其备份
 - `data/accounts/<wx_id>/memory/`：聊天记录

@@ -12364,7 +12364,8 @@ $(function(){
   }
 
   function isStatusTabActive(){
-    return getActiveTabId() === 'tab-status';
+    var tabId = getActiveTabId();
+    return tabId === 'tab-status' || tabId === 'tab-listen' || tabId === 'tab-group';
   }
 
   function isSiverPanelTabActive(){
