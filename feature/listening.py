@@ -275,11 +275,12 @@ def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
         else:
             result = add_action()
     except Exception as exc:
-        _bot_log(
-            bot,
-            level=log_level,
-            message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用异常，详情：{exc}",
-        )
+        if str(label or "").strip() != "动态监听":
+            _bot_log(
+                bot,
+                level=log_level,
+                message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用异常，详情：{exc}",
+            )
         return None
     if result:
         if str(label or "").strip() != "动态监听":
@@ -323,8 +324,6 @@ def add_and_verify_subwindow(bot, nickname, retry_count=3):
         return sub_chat
     if is_stale_listen_registration_error(result):
         _bot_log(bot, level="WARNING", message=f"{name} 已存在监听登记但未获取到可用子窗口，本次不删除重建")
-    else:
-        _bot_log(bot, level="WARNING", message=f"全局监听 {name}：临时接管窗口不可用，本批消息交由后续监听重试")
     return None
 
 
@@ -979,8 +978,6 @@ def alllisten_mode(bot, last_time, timeout=10):
                     sub_chat = get_cached_or_verified_subwindow(bot, chat)
                     if sub_chat:
                         touch_dynamic_listener_entry(bot, chat)
-                    else:
-                        _bot_log(bot, level="WARNING", message=f"全局监听 {chat}：动态监听子窗口不可用，尝试轻量补一次")
                 if not sub_chat:
                     sub_chat = add_chat_fn(chat) if callable(add_chat_fn) else add_chat_to_listen(bot, chat)
                 if not sub_chat:

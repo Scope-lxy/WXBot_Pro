@@ -327,7 +327,57 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertEqual(add_calls, ["张三"])
         self.assertEqual(processed, [(sub_chat, msg)])
-        self.assertTrue(any("动态监听子窗口不可用，尝试轻量补一次" in item for item in logs))
+        self.assertFalse(any("动态监听子窗口不可用，尝试轻量补一次" in item for item in logs))
+
+    def test_alllisten_dynamic_takeover_failure_logs_once(self):
+        msg = SimpleNamespace(
+            attr="friend",
+            type="text",
+            sender="张三",
+            content="你好",
+            time="2026-06-15 05:34:39",
+        )
+
+        class FakeChat:
+            who = "张三"
+
+            def GetNewMessage(self):
+                return [msg]
+
+        logs = []
+        bot = SimpleNamespace(
+            config=SimpleNamespace(
+                AllListen_switch=True,
+                listen_list=[],
+                group=[],
+                group_switch=False,
+                custom_forward_switch=False,
+                memory_switch=False,
+                memory_max_count=100,
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+            ),
+            memory_manager=None,
+            wx=SimpleNamespace(
+                GetAllListenMessage=lambda: {"张三": FakeChat()},
+                GetNextNewMessage=lambda **_kwargs: {"chat_name": "张三", "chat_type": "private", "msg": [msg]},
+                chat_type="private",
+            ),
+            all_Mode_listen_list=[["张三", 1.0]],
+            _get_listen_chat=lambda _chat: None,
+            _is_chat_in_dynamic_listen=lambda _chat: True,
+            add_chat_to_listen=lambda _chat: None,
+            _forget_runtime_listener_caches=lambda _chat: None,
+            _remove_dynamic_listener_entries=lambda _chat: None,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            process_message=lambda _chat, _message: self.fail("不应处理消息"),
+        )
+
+        with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))):
+            listening.alllisten_mode(bot, last_time=9999999999)
+
+        matching = [item for item in logs if "临时接管窗口不可用" in item]
+        self.assertEqual(matching, ["全局监听 张三：临时接管窗口不可用，已清理运行状态并等待后续重试"])
 
     def test_add_listen_chat_once_returns_wechat_result(self):
         calls = []
@@ -356,7 +406,7 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertFalse(any("监听管理 张三：添加动态监听调用成功" in item for item in logs))
         self.assertFalse(any("监听管理 张三：添加动态监听失败" in item for item in logs))
 
-    def test_dynamic_listener_add_failure_is_warning(self):
+    def test_dynamic_listener_add_failure_is_silent_until_global_retry_log(self):
         logs = []
 
         class NoopLock:
@@ -377,7 +427,7 @@ class RemoveListenChatTests(unittest.TestCase):
             result = listening.add_listen_chat_once(bot, "张三", "动态监听")
 
         self.assertIsNone(result)
-        self.assertTrue(any(level == "WARNING" and "添加动态监听调用异常" in message for level, message in logs))
+        self.assertEqual(logs, [])
 
     def test_manual_listener_add_failure_stays_error(self):
         logs = []
