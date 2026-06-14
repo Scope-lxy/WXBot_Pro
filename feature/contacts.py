@@ -59,6 +59,7 @@ STOP_INTERRUPT_ATTEMPTS = 5
 STOP_RETURN_TIMER_ATTR = "_contact_profiles_stop_return_timer"
 CONTACT_PROFILES_READING_ATTR = "_contact_profiles_reading_active"
 CONTACT_CURSOR_MATCH_SETTLE_SECONDS = 1.0
+CONTACT_READ_PROGRESS_LOG_INTERVAL = 20
 
 
 def _clean_text(value: Any) -> str:
@@ -69,6 +70,10 @@ def _bot_log(bot, *args, **kwargs) -> None:
     module = sys.modules.get(getattr(bot.__class__, "__module__", ""))
     log_fn = getattr(module, "log", log) if module else log
     log_fn(*args, **kwargs)
+
+
+def _should_log_contact_read_progress(count: int) -> bool:
+    return count > 0 and count % CONTACT_READ_PROGRESS_LOG_INTERVAL == 0
 
 
 def friend_info_edit_noop(response: Any) -> bool:
@@ -261,8 +266,6 @@ def close_dynamic_listener_after_friend_edit(
     close_fn = getattr(bot, "_close_dynamic_listener_subwindows", None)
     names = _friend_edit_cleanup_names(target_name, expected_names, remark)
     closed_names = close_fn(names) if callable(close_fn) else listening.close_dynamic_listener_subwindows(bot, names)
-    if closed_names:
-        _bot_log(bot, message=f"{log_prefix} 已关闭临时监听子窗口：{', '.join(closed_names)}")
     return closed_names
 
 
@@ -308,7 +311,6 @@ def edit_friend_info_via_chat_profile(
             if chat_name and allowed_names and chat_name not in allowed_names:
                 raise RuntimeError(f"当前会话不是目标好友：{chat_name}")
             if remark is None and _tags_update_is_noop(_chat_info_tags(chat_info), add_tags=add_tags, remove_tags=remove_tags):
-                _bot_log(bot, message=f"{log_prefix} {target_name} 标签已满足要求，跳过微信资料修改")
                 return {
                     "status": "成功",
                     "message": "标签已满足要求，未进行任何修改",
@@ -670,7 +672,6 @@ def prepare_contact_directory_window(bot) -> None:
         if not callable(switch):
             raise RuntimeError("当前微信客户端不支持切换通讯录。")
         switch()
-        _bot_log(bot, message="[通讯录维护] 已切换微信到通讯录页")
 
     return run_with_wechat_rebind_retry(
         bot,
@@ -738,7 +739,6 @@ def schedule_contact_profiles_stop_return_to_chat(bot, *, delay: float = STOP_IN
     def interrupt_once(attempt: int) -> bool:
         clicked = click_wechat_main_window_chat_nav()
         if clicked:
-            _bot_log(bot, message=f"[通讯录维护] 已发送停止建档中断点击 {attempt}/{STOP_INTERRUPT_ATTEMPTS}")
             return True
         _bot_log(bot, level="WARNING", message="[通讯录维护] 停止建档中断点击失败，尝试直接切回聊天页")
         switch_contact_directory_back_to_chat(bot, use_lock=False)
@@ -1106,7 +1106,9 @@ def refresh_contact_profiles_single_batch(
             display_name = _clean_text(name_text)
             if display_name and display_name not in callback_seen_names:
                 callback_seen_names.add(display_name)
-                _bot_log(bot, message=f"[通讯录维护] 正在读取联系人 {len(callback_seen_names)}：{display_name}")
+                read_count = len(callback_seen_names)
+                if _should_log_contact_read_progress(read_count):
+                    _bot_log(bot, message=f"[通讯录维护] 已读取联系人 {read_count} 人，当前：{display_name}")
             return True
         matched = contact_name_matches(name_text, callback_start_name)
         if matched and not matched_name:
@@ -1116,7 +1118,9 @@ def refresh_contact_profiles_single_batch(
             display_name = _clean_text(name_text)
             if display_name and display_name not in callback_seen_names:
                 callback_seen_names.add(display_name)
-                _bot_log(bot, message=f"[通讯录维护] 正在读取联系人 {len(callback_seen_names)}：{display_name}")
+                read_count = len(callback_seen_names)
+                if _should_log_contact_read_progress(read_count):
+                    _bot_log(bot, message=f"[通讯录维护] 已读取联系人 {read_count} 人，当前：{display_name}")
             if callback_start_name:
                 time.sleep(CONTACT_CURSOR_MATCH_SETTLE_SECONDS)
         return matched
@@ -1174,7 +1178,8 @@ def refresh_contact_profiles_single_batch(
             total_details = len(raw_details)
             for index, detail in enumerate(raw_details, start=1):
                 label = str(detail.get("备注") or detail.get("昵称") or detail.get("微信号") or f"联系人{index}")
-                _bot_log(bot, message=f"[通讯录维护] 正在读取联系人 {index}/{total_details}：{label}")
+                if _should_log_contact_read_progress(index):
+                    _bot_log(bot, message=f"[通讯录维护] 已读取联系人 {index}/{total_details} 人，当前：{label}")
         merged = merge_contact_directory(
             running_directory,
             raw_details,

@@ -100,8 +100,8 @@ class ApiBehaviorTests(unittest.TestCase):
 
         self.assertEqual(result, '{"add":[],"update":[],"delete":[]}')
         self.assertEqual(api.last_protocol_status, {"status": "chat_completions_ok"})
-        self.assertTrue(
-            any("reasoning_content" in call.kwargs.get("message", "") for call in fake_log.call_args_list)
+        self.assertFalse(
+            any("API返回成功" in call.kwargs.get("message", "") for call in fake_log.call_args_list)
         )
 
     def test_dusapi_gpt_nonstream_still_returns_text_and_sends_reasoning(self):
@@ -265,6 +265,35 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._get_verified_subwindow = lambda _target: self.fail("不应主动探测微信子窗口")
 
         self.assertIsNone(bot._verified_send_chat("张三", None))
+
+    def test_lightweight_send_queue_logs_only_final_outcome(self):
+        bot = WXBot.__new__(WXBot)
+        bot._get_wechat_action_lock = lambda: threading.RLock()
+        bot._get_chat_send_lock = lambda _target: threading.RLock()
+        bot._wechat_action_lock_is_busy = lambda: False
+        bot._ensure_target_listen_chat_for_send = lambda _target: SimpleNamespace(
+            SendMsg=lambda _text: True
+        )
+
+        logs = []
+        with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append(kwargs.get("message", ""))):
+            self.assertEqual(
+                bot._queue_lightweight_send("张三", [{"type": "text", "text": "你好"}], source="text")["status"],
+                "queued",
+            )
+            self.assertTrue(bot._flush_lightweight_send_queue())
+
+        self.assertEqual(logs, ["[轻量发送队列] 张三 延后发送已完成"])
+
+        bot._ensure_lightweight_send_queue_state()
+        bot._lightweight_send_queue.clear()
+        bot._send_lightweight_actions_to_child = lambda _target, _actions: False
+        logs = []
+        with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append(kwargs.get("message", ""))):
+            bot._queue_lightweight_send("李四", [{"type": "text", "text": "你好"}], source="text")
+            self.assertFalse(bot._flush_lightweight_send_queue())
+
+        self.assertEqual(logs, ["[轻量发送队列] 李四 待发送任务暂未发出，保留队列"])
 
     def test_wxauto_download_dir_follows_kernel_save_path(self):
         bot = WXBot.__new__(WXBot)

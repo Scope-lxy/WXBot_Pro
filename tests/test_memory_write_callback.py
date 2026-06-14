@@ -102,10 +102,37 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         marked = []
         bot._mark_conversation_memory_dirty = lambda chat, msg: marked.append((chat.who, msg.attr)) or True
 
-        count = bot._enqueue_existing_conversation_memory_checks()
+        with mock.patch("wxbot_core.log") as fake_log:
+            count = bot._enqueue_existing_conversation_memory_checks()
 
         self.assertEqual(count, 1)
         self.assertEqual(marked, [("张三", "friend")])
+        self.assertFalse(fake_log.called)
+
+    def test_memory_update_logs_success_without_api_text(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=True,
+            memory_max_count=5000,
+            group=[],
+            cmd="admin",
+        )
+        bot.memory_manager = SimpleNamespace(get_messages=lambda *_args, **_kwargs: [{"content": "hello"}])
+        bot._should_skip_message_memory = lambda chat, msg: False
+        bot._init_prompt_system = lambda: SimpleNamespace(
+            auto_memory_enabled_for=lambda *_args, **_kwargs: True,
+            update_memory=lambda *_args, **_kwargs: True,
+        )
+        bot._get_other_api = lambda *_args, **_kwargs: object()
+        bot._get_chat_api_index = lambda *_args, **_kwargs: 0
+
+        logs = []
+        with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append(kwargs.get("message", ""))):
+            result = bot._maybe_update_conversation_memory(SimpleNamespace(who="B-岁月静好3", chat_type="private"), SimpleNamespace(attr="friend"))
+
+        self.assertTrue(result)
+        self.assertTrue(any("会话记忆已更新：B-岁月静好3" == item for item in logs))
+        self.assertFalse(any("API返回成功" in item for item in logs))
 
 
 if __name__ == "__main__":

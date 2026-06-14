@@ -360,7 +360,6 @@ class OpenAIAPI:
                     content += delta.content
             result = content.strip() if content.strip() else reasoning_content.strip()
             if result:
-                log(message=f"API返回成功（{self._log_label('Chat Completions', model=model)}，流式），块数：{chunk_count}，内容：{result[:100]}...")
                 return result
             raise ValueError(f"Chat Completions 流式响应为空（收到 {chunk_count} 个块）")
 
@@ -368,11 +367,9 @@ class OpenAIAPI:
             message_obj = response.choices[0].message
             if hasattr(message_obj, "content") and message_obj.content:
                 output = message_obj.content
-                log(message=f"API返回成功（{self._log_label('Chat Completions', model=model)}，非流式），内容：{output[:100]}...")
                 return output
             if hasattr(message_obj, "reasoning_content") and message_obj.reasoning_content:
                 output = message_obj.reasoning_content
-                log(message=f"API返回成功（{self._log_label('Chat Completions', model=model)}，非流式 reasoning_content），内容：{output[:100]}...")
                 return output
             log(
                 level="ERROR",
@@ -397,7 +394,6 @@ class OpenAIAPI:
     def _call_responses_api(self, message, model, stream, prompt, history=None, image_path="", image_url="", image_paths=None):
         if stream:
             log(level="WARN", message=f"API调用模式（{self._log_label('Responses API', model=model)}）：Responses API 当前按非流式模式调用")
-        log(message=f"API调用开始（{self._log_label('Responses API', model=model)}），协议：Responses API")
         normalized_paths = self._normalize_image_paths(image_path, image_paths)
         input_payload = []
         if prompt and str(prompt).strip():
@@ -424,7 +420,6 @@ class OpenAIAPI:
         )
         text = self._extract_responses_text(response)
         if text:
-            log(message=f"API返回成功（{self._log_label('Responses API', model=model)}），内容：{text[:100]}...")
             return text
         raise ValueError("Responses API 响应内容为空")
 
@@ -659,10 +654,6 @@ class DusAPI:
                     try:
                         result = self._stream_claude_text(api_endpoint, headers, payload)
                         if result:
-                            if attempt > 0:
-                                log(message=f"API返回成功（{self._log_label('DusAPI Claude', model=model)}，流式），重试：第 {attempt} 次，内容：{result[:100]}...")
-                            else:
-                                log(message=f"API返回成功（{self._log_label('DusAPI Claude', model=model)}，流式），内容：{result[:100]}...")
                             return result
                         raise ValueError("DusAPI Claude 流式响应中未找到文本内容")
                     except Exception as e:
@@ -682,10 +673,6 @@ class DusAPI:
                     response.encoding = "utf-8"
                     response_data = response.json()
                     result = response_data["content"][0]["text"]
-                    if attempt > 0:
-                        log(message=f"API返回成功（{self._log_label('DusAPI Claude', model=model)}），重试：第 {attempt} 次，内容：{result[:100]}...")
-                    else:
-                        log(message=f"API返回成功（{self._log_label('DusAPI Claude', model=model)}），内容：{result[:100]}...")
                     return result
                 except Exception as e:
                     last_error = e
@@ -733,10 +720,6 @@ class DusAPI:
                     try:
                         result = self._stream_gpt_text(api_endpoint, headers, payload)
                         if result:
-                            if attempt > 0:
-                                log(message=f"API返回成功（{self._log_label('DusAPI GPT', model=model)}，流式），重试：第 {attempt} 次，内容：{result[:100]}...")
-                            else:
-                                log(message=f"API返回成功（{self._log_label('DusAPI GPT', model=model)}，流式），内容：{result[:100]}...")
                             return result
                         raise ValueError("DusAPI GPT 流式响应中未找到文本内容")
                     except Exception as e:
@@ -761,10 +744,6 @@ class DusAPI:
                             "DusAPI GPT 响应中未找到文本内容，"
                             f"response_summary={_summarize_response_data(response_data)}"
                         )
-                    if attempt > 0:
-                        log(message=f"API返回成功（{self._log_label('DusAPI GPT', model=model)}），重试：第 {attempt} 次，内容：{result[:100]}...")
-                    else:
-                        log(message=f"API返回成功（{self._log_label('DusAPI GPT', model=model)}），内容：{result[:100]}...")
                     return result
                 except Exception as e:
                     last_error = e

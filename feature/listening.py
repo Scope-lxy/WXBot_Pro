@@ -282,7 +282,8 @@ def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
         )
         return None
     if result:
-        _bot_log(bot, message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用成功")
+        if str(label or "").strip() != "动态监听":
+            _bot_log(bot, message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用成功")
     else:
         _bot_log(bot, level=log_level, message=f"监听管理 {nickname}：{listen_add_action_label(label)}失败，详情：{listen_add_error(result)}")
     return result

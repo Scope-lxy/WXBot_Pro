@@ -353,7 +353,8 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertEqual(result, {"status": "success"})
         self.assertEqual(calls, [("张三", bot.message_handle_callback)])
-        self.assertTrue(any("监听管理 张三：添加动态监听调用成功" in item for item in logs))
+        self.assertFalse(any("监听管理 张三：添加动态监听调用成功" in item for item in logs))
+        self.assertFalse(any("监听管理 张三：添加动态监听失败" in item for item in logs))
 
     def test_dynamic_listener_add_failure_is_warning(self):
         logs = []

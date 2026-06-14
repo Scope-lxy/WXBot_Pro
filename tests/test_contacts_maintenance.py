@@ -504,9 +504,10 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         class FakeWeChat:
             def GetFriendDetails(self, **kwargs):
-                kwargs["callback"]({"昵称": "阿英2"})
-                kwargs["callback"]({"备注": "阿英3"})
-                return [{"昵称": "阿英2"}, {"昵称": "阿英3"}]
+                details = [{"昵称": f"阿英{index}"} for index in range(1, 22)]
+                for detail in details:
+                    kwargs["callback"](detail)
+                return details
 
             def SwitchToChat(self):
                 pass
@@ -530,10 +531,9 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         ):
             refresh_contact_profiles_single_batch(FakeBot(), mode="standard")
 
-        read_logs = [message for message in log_messages if "正在读取联系人" in message]
+        read_logs = [message for message in log_messages if "已读取联系人" in message]
         self.assertEqual(read_logs, [
-            "[通讯录维护] 正在读取联系人 1：阿英2",
-            "[通讯录维护] 正在读取联系人 2：阿英3",
+            "[通讯录维护] 已读取联系人 20 人，当前：阿英20",
         ])
 
     def test_contact_positioning_does_not_log_every_scanned_callback_item(self):
@@ -577,8 +577,8 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         ):
             result = refresh_contact_profiles_single_batch(FakeBot(), mode="standard", start_name="阿英2")
 
-        read_logs = [message for message in log_messages if "正在读取联系人" in message]
-        self.assertEqual(read_logs, ["[通讯录维护] 正在读取联系人 1：阿英2"])
+        read_logs = [message for message in log_messages if "已读取联系人" in message]
+        self.assertEqual(read_logs, [])
         self.assertEqual(result["callback_names"], ["阿英2"])
 
     def test_force_callback_stops_when_pause_requested(self):

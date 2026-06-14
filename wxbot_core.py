@@ -768,7 +768,6 @@ class WXBot:
                 "source": str(source or "").strip(),
                 "queued_at": datetime.now().replace(microsecond=0).isoformat(),
             }
-        log(message=f"[轻量发送队列] {target} 已更新为最新待发送任务，来源：{source or 'runtime'}")
         return {"status": "queued", "message": "已进入轻量延后发送队列", "data": {"target": target}}
 
     def _ensure_target_listen_chat_for_send(self, target):
@@ -794,7 +793,6 @@ class WXBot:
             verified_chat = self._verified_send_chat(target, result)
             if verified_chat:
                 runtime_chat_state.remember_listen_chat(self, target, verified_chat)
-                log(message=f"[轻量发送队列] 已自动恢复监听子窗口：{target}")
                 return verified_chat
             log(level="WARNING", message=f"[轻量发送队列] 自动恢复监听子窗口失败：{target}，{result}")
             return None
@@ -879,7 +877,7 @@ class WXBot:
                         if current is item:
                             self._lightweight_send_queue.pop(target, None)
                     flushed = True
-                    log(message=f"[轻量发送队列] {target} 待发送任务已发出")
+                    log(message=f"[轻量发送队列] {target} 延后发送已完成")
                     continue
                 log(level="WARNING", message=f"[轻量发送队列] {target} 待发送任务暂未发出，保留队列")
                 break
@@ -1028,10 +1026,10 @@ class WXBot:
             self.config.current_api_config = api_config
         sdk = api_config.sdk
         if sdk == "OpenAI SDK":
-            log(message="使用OpenAI SDK")
+            log(message="聊天接口：OpenAI 已加载")
             return OpenAIAPI(api_config)
         elif sdk == "DusAPI":
-            log(message="使用DusAPI")
+            log(message="聊天接口：DusAPI 已加载")
             return DusAPI(api_config)
         else:
             raise ValueError(f"不支持的聊天接口 SDK：{sdk or '（空）'}")
@@ -1054,7 +1052,7 @@ class WXBot:
         )
         sdk = tmp.sdk
 
-        log(message=f"初始化接口：索引{idx}  SDK:{sdk}  模型:{tmp.model}")
+        log(message=f"聊天接口已就绪：接口{idx + 1}，{sdk}，模型 {tmp.model}")
         if sdk == "OpenAI SDK":
             return OpenAIAPI(tmp)
         elif sdk == "DusAPI":
@@ -1166,7 +1164,7 @@ class WXBot:
         self._moments_like_runtime_task = {}
 
     def _register_runtime_task_schedules(self):
-        log(message="统一时间扫描器已接管运行中任务，不再注册 schedule.every() 任务")
+        log(message="启动阶段：定时任务扫描已就绪")
 
     def _task_storage_data_dir(self):
         config_data_dir = str(getattr(getattr(self, "config", None), "DATA_DIR", "") or "").strip()
@@ -3326,7 +3324,6 @@ class WXBot:
             return True
         try:
             setattr(msg, "_wxbot_ingress_source", "subwindow")
-            # 记录原始消息日志
             msg_type_label = {
                 "text": "文本",
                 "voice": "语音",
@@ -3340,7 +3337,8 @@ class WXBot:
             if not is_private:
                 text += f"，发送人：{msg.sender}"
             text += f"，内容：{msg.content}"
-            log(message=text)
+            if getattr(msg, "attr", "") not in {"self", "system"}:
+                log(message=text)
             callback_result = None
 
             if msg.attr == "friend":
@@ -3731,7 +3729,7 @@ class WXBot:
                 ),
             )
             if updated:
-                log(message=f"会话记忆已增量更新：{chat.who}")
+                log(message=f"会话记忆已更新：{chat.who}")
             return updated
         except Exception as e:
             log(level="WARNING", message=f"会话记忆自动维护失败：{e}")
@@ -3791,8 +3789,6 @@ class WXBot:
             chat = SimpleNamespace(who=chat_name, chat_type='private')
             if self._mark_conversation_memory_dirty(chat, message):
                 count += 1
-        if count:
-            log(message=f"会话记忆启动补偿：已加入 {count} 个会话待后台检查")
         return count
 
     def _pop_conversation_memory_dirty_chat(self):
@@ -3842,21 +3838,12 @@ class WXBot:
         :param message: 消息对象
         :return:        发送结果
         """
-        chat_name = getattr(chat, "who", "")
-        sender = getattr(message, "sender", "")
-        is_group_chat = getattr(chat, "chat_type", "private") == "group" or chat_name in getattr(self.config, "group", [])
-        process_log = f"消息处理 {chat_name}：开始处理"
-        if is_group_chat and sender:
-            process_log += f"，发送人：{sender}"
-        process_log += f"，内容：{message.content}"
         result = True  # 默认返回成功（WxResponse 类型）
 
         route = message_routing.route_process_message(self, chat, message)
         action = route.get("action", "skip")
         if action == "skip":
             return True
-        if action != "private_ai":
-            log(message=process_log)
         if action == "takeover_mirror":
             return takeover_runtime.mirror_takeover_message_to_admin(self, chat, message)
         if action == "group_keyword_reply":
@@ -4688,25 +4675,24 @@ class WXBot:
             return True
         if getattr(message, '_voice_transcription_failed', False):
             if not self._mark_message_seen(chat.who, message):
-                log(message=f"私聊 {chat.who} 重复失败语音已跳过：" + str(getattr(message, 'content', '')))
+                log(message=f"私聊 {chat.who}：重复失败语音已忽略")
                 return True
             if not self._mark_message_content_fingerprint_seen(chat.who, message):
-                log(message=f"私聊 {chat.who} 短时间重复失败语音回调已跳过：" + str(getattr(message, 'content', '')))
+                log(message=f"私聊 {chat.who}：短时间重复失败语音回调已忽略")
                 return True
             return self._send_private_voice_transcription_fallback(chat)
         if self._should_skip_private_ai_message(message):
             return True
         if not self._mark_message_seen(chat.who, message):
-            log(message=f"私聊 {chat.who} 重复消息已跳过：" + str(getattr(message, 'content', '')))
+            log(message=f"私聊 {chat.who}：重复消息已忽略")
             return True
         if not self._mark_message_content_fingerprint_seen(chat.who, message):
-            log(message=f"私聊 {chat.who} 短时间重复回调已跳过：" + str(getattr(message, 'content', '')))
+            log(message=f"私聊 {chat.who}：短时间重复回调已忽略")
             return True
         if self._should_skip_recent_duplicate_private_image(chat.who, message):
-            log(message=f"私聊 {chat.who} 短时间重复图片已跳过：" + str(getattr(message, 'content', '')))
+            log(message=f"私聊 {chat.who}：短时间重复图片已忽略")
             return True
 
-        log(message=f"消息处理 {chat.who}：开始处理，内容：{message.content}")
         expected_version = self._bump_chat_reply_version(chat.who)
         delay = coerce_float_range(
             getattr(self.config, 'chat_message_merge_delay', 3.0), 3.0, 0.0, 10.0
@@ -6858,24 +6844,21 @@ class WXBot:
         else:
             log(level="ERROR", message="wxautox未激活，请购买激活后再运行程序！！")
             log(level="ERROR", message="购买激活地址：https://www.siverking.online/static/img/siver_wx.jpg")
-            log(level="ERROR", message="wxautox未激活，请购买激活后再运行程序！！")
-            log(level="ERROR", message="购买激活地址：https://www.siverking.online/static/img/siver_wx.jpg")
-            log(level="ERROR", message="wxautox未激活，请购买激活后再运行程序！！")
-            log(level="ERROR", message="购买激活地址：https://www.siverking.online/static/img/siver_wx.jpg")
             self._notify_startup_status(False, "wxautox 未激活，请激活后再启动机器人")
             return False
 
         # 初始化微信监听器
         try:
+            log(message="启动阶段：正在初始化微信监听器")
             self.init_wx_listeners()
-            log(message=f"UI面板状态更新完成")
+            log(message="启动阶段：已同步面板状态")
 
             wait_time      = 3   # 主循环每 3 秒轮询一次
             check_interval = 10  # 每 10 次循环执行一次离线检测
             check_counter      = 0
             check_new_counter  = 0
             last_time          = time.time()
-            log(message='siver_wxbot初始化完成，开始监听消息(作者:https://www.siver.top)')
+            log(message='启动阶段：监听器已就绪，开始接收消息')
             if self.is_stop_requested():
                 log(level="WARNING", message="启动过程中收到停止请求，已停止进入监听")
                 try:
@@ -6890,13 +6873,9 @@ class WXBot:
             self._notify_startup_status(True, "机器人已启动并进入监听")
         except Exception as e:
             print(traceback.format_exc())
-            log(level="ERROR", message=str(e) + "\n 初始化微信监听器失败，请检查微信是否启动登录正确，微信主窗口是否开着")
-            log(level="ERROR", message=str(e) + "\n 初始化微信监听器失败，请检查微信是否启动登录正确，微信主窗口是否开着")
-            log(level="ERROR", message=str(e) + "\n 请尝试退出wx再重新登录后再启动")
-            log(level="ERROR", message=str(e) + "\n 请尝试退出wx再重新登录后再启动")
-            log(level="ERROR", message=str(e) + "\n 若重启wx还是不行，就请重启整个面板程序，面板和wx都重启了还不行就请进入面板右上角文档检查环境要求，wx版本是否匹配,4.1.7 ~ 4.1.9.35")
-            log(level="ERROR", message=str(e) + "\n 若重启wx还是不行，就请重启整个面板程序，面板和wx都重启了还不行就请进入面板右上角文档检查环境要求，wx版本是否匹配,4.1.7 ~ 4.1.9.35")
-            log(level="ERROR", message=str(e) + "\n 若重启wx还是不行，就请重启整个面板程序，面板和wx都重启了还不行就请进入面板右上角文档检查环境要求，wx版本是否匹配,4.1.7 ~ 4.1.9.35")
+            log(level="ERROR", message=f"启动阶段：微信监听器初始化失败，{e}")
+            log(level="ERROR", message="启动建议：先检查微信是否已登录、主窗口是否正常显示")
+            log(level="ERROR", message="启动建议：仍不行时，重启微信和面板，再检查 wx 版本")
             self.run_flag = False
             self._notify_startup_status(False, f"初始化微信监听器失败：{e}")
 

@@ -11968,18 +11968,16 @@ $(function(){
     startBotWithSavedConfig();
   });
   $('#btnStop').click(function(){
-    svModal.confirm('确定要停止机器人吗？', function(){
+    clearBotStopPolling();
+    setBotStopButtonsStopping(true);
+    showBotStopPendingModal('正在停止机器人，请稍候');
+    $.post('/stop_bot', function(res){
+      handleBotStopStatus(res || {});
+    }).fail(function(xhr){
       clearBotStopPolling();
-      setBotStopButtonsStopping(true);
-      showBotStopPendingModal('正在停止机器人，请稍候');
-      $.post('/stop_bot', function(res){
-        handleBotStopStatus(res || {});
-      }).fail(function(xhr){
-        clearBotStopPolling();
-        setBotStopButtonsStopping(false);
-        svModal.error('停止失败: '+xhr.responseText);
-      });
-    }, '停止机器人', '确定停止', '取消');
+      setBotStopButtonsStopping(false);
+      svModal.error('停止失败: '+xhr.responseText);
+    });
   });
 
   $('#btnRestart').click(function(){

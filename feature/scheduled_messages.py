@@ -244,7 +244,7 @@ def execute_scheduled_message_task(
     skipped_count = 0
     queued_count = 0
 
-    log_info(f"定时消息时间到，目标：{targets}，正在发送...")
+    log_info(f"定时消息任务开始：目标 {len(targets)} 个，内容 {len(messages)} 条")
     if not targets:
         skipped_count = 1
         log_error("定时消息没有可发送目标，本次任务已跳过")
@@ -277,13 +277,11 @@ def execute_scheduled_message_task(
             log_info("定时消息检测到机器人停止请求，已停止后续发送")
             break
         batch = targets[start : start + SCHEDULED_MESSAGE_TARGET_BATCH_SIZE]
-        log_info(f"定时消息第 {batch_index} 批：{len(batch)} 个目标")
         for user in batch:
             for msg in messages:
                 if should_stop():
                     log_info("定时消息检测到机器人停止请求，已停止后续发送")
                     break
-                log_info(f"正在向 {user} 发送定时消息：{msg}")
                 try:
                     if is_image_path(msg) or _looks_like_local_file_path(msg):
                         result = send_file(user, msg)
@@ -293,7 +291,6 @@ def execute_scheduled_message_task(
                     result_status = _send_result_status(result)
                     if result_status == "queued":
                         queued_count += 1
-                        log_info(f"定时消息已进入轻量延后发送队列：{user}")
                     elif result_status != "success":
                         failed_count += 1
                         message = _send_error_message(result)

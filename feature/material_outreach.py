@@ -1624,7 +1624,6 @@ def trigger_random_material_outreach_if_due(
         return False
     log_info = log_info or (lambda message: None)
     log_error = log_error or (lambda message: None)
-    log_info(f"素材转发 {task_id}：触发发送...")
     try:
         send_material_outreach(task)
         state["last_fire_date"] = now.date()
@@ -1648,7 +1647,7 @@ def execute_material_outreach_task(
     task = task if isinstance(task, dict) else {}
     task_id = str(task.get("task_id") or task.get("id") or "").strip()
 
-    log_info(f"素材转发 {task_id or '未命名任务'}：开始执行...")
+    log_info(f"素材转发 {task_id or '未命名任务'}：开始执行")
     try:
         result = send_material_outreach(task)
         if isinstance(result, dict):
