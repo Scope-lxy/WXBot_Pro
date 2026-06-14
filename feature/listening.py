@@ -7,8 +7,6 @@ import random
 import sys
 import time
 from contextlib import nullcontext
-from typing import Any
-
 from wxautox4 import WeChat
 
 from core import runtime_chat_state
@@ -232,61 +230,6 @@ def _call_remove_listen_chat(bot, nickname):
         return remove_listen_chat(nickname)
 
 
-def _candidate_subwindows_for_close(bot, nickname):
-    candidates = []
-    seen_ids = set()
-
-    def add_candidate(chat):
-        if not chat or isinstance(chat, dict):
-            return
-        marker = id(chat)
-        if marker in seen_ids:
-            return
-        seen_ids.add(marker)
-        candidates.append(chat)
-
-    get_subwindow = getattr(getattr(bot, "wx", None), "GetSubWindow", None)
-    if callable(get_subwindow):
-        try:
-            add_candidate(get_subwindow(nickname=nickname))
-        except TypeError:
-            try:
-                add_candidate(get_subwindow(nickname))
-            except Exception as exc:
-                _bot_log(bot, level="WARNING", message=f"获取残留监听子窗口 {nickname} 失败: {exc}")
-        except Exception as exc:
-            _bot_log(bot, level="WARNING", message=f"获取残留监听子窗口 {nickname} 失败: {exc}")
-
-    add_candidate(runtime_chat_state.get_listen_chat(bot, nickname))
-    return candidates
-
-
-def _close_subwindow_object(bot, nickname, chat):
-    close_window = getattr(chat, "Close", None)
-    if not callable(close_window):
-        return False
-    try:
-        with warn_slow_wechat_ui_action(f"CloseListenSubWindow({nickname})"):
-            close_window()
-        return True
-    except Exception as exc:
-        _bot_log(bot, level="WARNING", message=f"{nickname} 残留监听子窗口关闭失败: {exc}")
-        return False
-
-
-def close_residual_listener_subwindow(bot, nickname):
-    nickname = str(nickname or "").strip()
-    if not nickname:
-        return False
-    closed = False
-    for chat in _candidate_subwindows_for_close(bot, nickname):
-        if _close_subwindow_object(bot, nickname, chat):
-            closed = True
-    if closed:
-        _bot_sleep(bot, 0.2)
-    return closed
-
-
 def close_dynamic_listener_subwindows(bot, nicknames):
     if isinstance(nicknames, str):
         raw_names = [nicknames]
@@ -309,22 +252,33 @@ def close_dynamic_listener_subwindows(bot, nicknames):
     return closed_names
 
 
-def add_listen_chat_once(bot, nickname, label):
+def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
     def add_action():
         with bot._get_wechat_action_lock():
             with warn_slow_wechat_ui_action(f"AddListenChat({nickname})"):
                 return bot.wx.AddListenChat(nickname=nickname, callback=bot.message_handle_callback)
 
-    result = run_with_wechat_rebind_retry(
-        bot,
-        add_action,
-        attempts=2,
-        on_retry=lambda exc, _attempt: _bot_log(
+    try:
+        if allow_rebind:
+            result = run_with_wechat_rebind_retry(
+                bot,
+                add_action,
+                attempts=2,
+                on_retry=lambda exc, _attempt: _bot_log(
+                    bot,
+                    level="WARNING",
+                    message=f"监听管理 {nickname}：{listen_add_action_label(label)}异常，重新初始化微信客户端后重试，详情：{exc}",
+                ),
+            )
+        else:
+            result = add_action()
+    except Exception as exc:
+        _bot_log(
             bot,
-            level="WARNING",
-            message=f"监听管理 {nickname}：{listen_add_action_label(label)}异常，重新初始化微信客户端后重试，详情：{exc}",
-        ),
-    )
+            level="ERROR",
+            message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用异常，详情：{exc}",
+        )
+        return None
     if result:
         _bot_log(bot, message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用成功")
     else:
@@ -336,32 +290,38 @@ def is_stale_listen_registration_error(result):
     return not result and "已监听" in listen_add_error(result)
 
 
+def get_cached_or_verified_subwindow(bot, nickname):
+    name = str(nickname or "").strip()
+    if not name:
+        return None
+    cached = runtime_chat_state.get_listen_chat(bot, name)
+    if cached and not isinstance(cached, dict) and subwindow_who(cached) == name:
+        return cached
+    if cached:
+        runtime_chat_state.remove_listen_chat(bot, name)
+    sub_chat = get_verified_subwindow(bot, name)
+    if sub_chat:
+        runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
+        return sub_chat
+    return None
+
+
 def add_and_verify_subwindow(bot, nickname, retry_count=3):
-    with _wechat_action_lock_context(bot):
-        for attempt in range(max(1, int(retry_count or 1))):
-            if attempt > 0:
-                _bot_sleep(bot, 0.5)
-            result = add_listen_chat_once(bot, nickname, "动态监听")
-            sub_chat = get_verified_subwindow(bot, nickname)
-            if sub_chat:
-                runtime_chat_state.remember_listen_chat(bot, nickname, sub_chat)
-                return sub_chat
-            if is_stale_listen_registration_error(result):
-                remove_fn = getattr(bot, "_remove_listen_chat_verified", None)
-                if callable(remove_fn):
-                    cleared = remove_fn(nickname)
-                else:
-                    cleared = remove_listen_chat_verified(bot, nickname)
-                if cleared:
-                    _bot_sleep(bot, 0.2)
-                    retry_result = add_listen_chat_once(bot, nickname, "动态监听")
-                    sub_chat = get_verified_subwindow(bot, nickname)
-                    if sub_chat:
-                        runtime_chat_state.remember_listen_chat(bot, nickname, sub_chat)
-                        return sub_chat
-                    if is_stale_listen_registration_error(retry_result):
-                        continue
-    _bot_log(bot, level="ERROR", message=f"{nickname} 动态监听子窗口校验失败，已跳过实际监听")
+    name = str(nickname or "").strip()
+    if not name:
+        return None
+    sub_chat = get_cached_or_verified_subwindow(bot, name)
+    if sub_chat:
+        return sub_chat
+    result = add_listen_chat_once(bot, name, "动态监听")
+    sub_chat = get_verified_subwindow(bot, name)
+    if sub_chat:
+        runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
+        return sub_chat
+    if is_stale_listen_registration_error(result):
+        _bot_log(bot, level="WARNING", message=f"{name} 已存在监听登记但未获取到可用子窗口，本次不删除重建")
+    else:
+        _bot_log(bot, level="ERROR", message=f"{name} 动态监听子窗口校验失败，已跳过实际监听")
     return None
 
 
@@ -492,7 +452,7 @@ def rebuild_listener_runtime(
     expected_listeners = []
     for label, name, cache_material in listener_registration_specs(bot):
         _bot_sleep(bot, 0.5)
-        result = add_listen_chat_once(bot, name, label)
+        result = add_listen_chat_once(bot, name, label, allow_rebind=True)
         expected_listeners.append(name)
         if result:
             runtime_chat_state.remember_listen_chat(bot, name, result)
@@ -649,60 +609,20 @@ def remove_listen_chat_verified(bot, nickname):
 
 
 def _remove_listen_chat_verified_locked(bot, nickname):
+    name = str(nickname or "").strip()
     try:
-        def remove_action():
-            with warn_slow_wechat_ui_action(f"RemoveListenChat({nickname})"):
-                return _call_remove_listen_chat(bot, nickname)
-
-        remove_result = run_with_wechat_rebind_retry(
-            bot,
-            remove_action,
-            attempts=2,
-            on_retry=lambda exc, _attempt: _bot_log(
-                bot,
-                level="WARNING",
-                message=f"{nickname} 删除监听异常，重新初始化微信客户端后重试: {exc}",
-            ),
-        )
+        with warn_slow_wechat_ui_action(f"RemoveListenChat({name})"):
+            remove_result = _call_remove_listen_chat(bot, name)
         remove_result_text = str(listen_add_error(remove_result)).strip()
         if not (remove_result_text.lower() in {"ok", "success", "true"} or remove_result_text in {"成功", "已成功"}):
-            _bot_log(bot, message=f"监听管理 {nickname}：删除监听结果：{remove_result_text}")
+            _bot_log(bot, message=f"监听管理 {name}：删除监听结果：{remove_result_text}")
     except Exception as exc:
-        _bot_log(bot, level="ERROR", message=f"监听管理 {nickname}：删除监听调用异常，详情：{exc}")
+        _bot_log(bot, level="WARNING", message=f"监听管理 {name}：删除监听调用异常，已清理运行缓存，详情：{exc}")
 
-    _bot_sleep(bot, 0.2)
-    listened_names = try_get_all_subwindow_names(bot)
-    if listened_names is None:
-        residual_closed = close_residual_listener_subwindow(bot, nickname)
-        if residual_closed:
-            _forget_runtime_listener_caches(bot, nickname)
-            _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：删除监听后无法校验，已尝试关闭残留子窗口并清理运行缓存")
-            return True
-        _bot_log(bot, level="ERROR", message=f"监听管理 {nickname}：删除监听后无法校验，保留动态监听状态，避免反复新增")
-        return False
-    if str(nickname).strip() not in listened_names:
-        _forget_runtime_listener_caches(bot, nickname)
-        _bot_log(bot, message=f"监听管理 {nickname}：删除监听完成")
-        return True
-
-    _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：删除监听后仍有残留子窗口，正在尝试直接关闭")
-    residual_closed = close_residual_listener_subwindow(bot, nickname)
-    if residual_closed:
-        _bot_log(bot, message=f"监听管理 {nickname}：残留监听子窗口直接关闭已执行，正在复查")
-        listened_names = try_get_all_subwindow_names(bot)
-        if listened_names is not None and str(nickname).strip() not in listened_names:
-            _forget_runtime_listener_caches(bot, nickname)
-            _bot_log(bot, message=f"监听管理 {nickname}：残留监听子窗口已关闭")
-            return True
-        if listened_names is None:
-            _forget_runtime_listener_caches(bot, nickname)
-            _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：残留监听子窗口已尝试关闭，无法再次校验，已清理运行缓存")
-            return True
-    else:
-        _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：残留监听子窗口直接关闭未成功，未找到可关闭窗口或关闭调用失败")
-
-    _bot_log(bot, level="ERROR", message=f"监听管理 {nickname}：删除监听校验失败，子窗口仍存在，保留动态监听状态，避免反复新增")
-    return False
+    _forget_runtime_listener_caches(bot, name)
+    remove_dynamic_listener_entries(bot, name)
+    _bot_log(bot, message=f"监听管理 {name}：删除监听完成，已清理运行缓存")
+    return True
 
 
 def verify_initial_listeners(bot, expected_chats, retry_count=3):
@@ -940,7 +860,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                 else:
                     removed = remove_listen_chat_verified(bot, listen_chat[0])
                 if removed:
-                    bot.all_Mode_listen_list.remove(listen_chat)
+                    remove_dynamic_listener_entries(bot, listen_chat[0])
 
     def get_next_new_message():
         next_callback_down_map = {}
@@ -992,13 +912,6 @@ def alllisten_mode(bot, last_time, timeout=10):
 
         if msgs:
             is_listened_fn = getattr(bot, "is_chat_listened", None)
-            if chat_type != "group" and callable(is_listened_fn) and is_listened_fn(chat):
-                cached = runtime_chat_state.get_listen_chat(bot, chat)
-                if cached and not isinstance(cached, dict) and subwindow_who(cached) == str(chat or "").strip():
-                    _bot_log(bot, message=f"全局监听 {chat}：已由子窗口监听接管，跳过全局处理")
-                else:
-                    _bot_log(bot, level="WARNING", message=f"全局监听 {chat}：已在动态监听列表但未确认真实子窗口，跳过全局处理并等待监听恢复")
-                return
 
             processed_msgs = []
             import types as _types
@@ -1057,9 +970,20 @@ def alllisten_mode(bot, last_time, timeout=10):
                         processed_msgs.append(msg)
             if processed_msgs:
                 add_chat_fn = getattr(bot, "add_chat_to_listen", None)
-                sub_chat = add_chat_fn(chat) if callable(add_chat_fn) else add_chat_to_listen(bot, chat)
+                sub_chat = None
+                if chat_type != "group" and callable(is_listened_fn) and is_listened_fn(chat):
+                    sub_chat = get_cached_or_verified_subwindow(bot, chat)
+                    if sub_chat:
+                        touch_dynamic_listener_entry(bot, chat)
+                        _bot_log(bot, message=f"全局监听 {chat}：复用动态监听子窗口处理本批消息")
+                    else:
+                        _bot_log(bot, level="WARNING", message=f"全局监听 {chat}：动态监听子窗口不可用，尝试轻量补一次")
                 if not sub_chat:
-                    _bot_log(bot, level="ERROR", message=f"{chat} 未获取到真实子窗口，跳过本批全局消息处理")
+                    sub_chat = add_chat_fn(chat) if callable(add_chat_fn) else add_chat_to_listen(bot, chat)
+                if not sub_chat:
+                    _forget_runtime_listener_caches(bot, chat)
+                    remove_dynamic_listener_entries(bot, chat)
+                    _bot_log(bot, level="ERROR", message=f"{chat} 未获取到真实子窗口，已清理动态监听运行状态，跳过本批全局消息处理")
                     return
                 for msg in processed_msgs:
                     bot.process_message(sub_chat, msg)

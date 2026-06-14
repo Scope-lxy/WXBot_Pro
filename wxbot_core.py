@@ -6969,15 +6969,6 @@ class WXBot:
                         if not self.run_flag:
                             log(level="ERROR", message=str(e) + "\n全局模式出错！！请检查程序！！")
 
-                try:
-                    if self.is_stop_requested():
-                        break
-                    self._maybe_reconcile_listener_subwindows(retry_count=1)
-                except Exception as e:
-                    if self._arm_listener_auto_recovery(e, source="监听窗口自动恢复"):
-                        continue
-                    log(level="ERROR", message=f"监听窗口自动恢复出错：{e}")
-
                 # ---- 运行中任务配置热更新（不打断当前执行中的动作）----
                 if self.is_stop_requested():
                     break
