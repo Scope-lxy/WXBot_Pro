@@ -76,7 +76,7 @@ class WXBotConfig:
         self.backup_chat_api_index = -1
         self.backup_chat_api_failover_threshold = 3
         self.current_api_config = APIConfigSnapshot()
-        self.prompt   = ""             # AI 系统提示词
+        self.prompt   = ""
         self.AtMe     = ""             # 机器人被 @ 的标识（如 "@机器人昵称"）
 
         # ---------- 群聊配置 ----------
@@ -391,6 +391,7 @@ class WXBotConfig:
             persisted.pop('scheduled_message_task_list', None)
             persisted.pop('material_outreach_list', None)
             persisted.pop('moments_task_list', None)
+            persisted.pop('prompt', None)
             with open(self.CONFIG_FILE, 'w', encoding='utf-8') as file:
                 json.dump(persisted, file, ensure_ascii=False, indent=4)
         except Exception as e:
@@ -834,7 +835,7 @@ class WXBotConfig:
 
         # 当前默认聊天接口快照
         _cur = self.api_configs[self.api_index] if self.api_configs else {}
-        self.prompt   = self.config.get('prompt', "")
+        self.prompt   = ""
         self.current_api_config = build_api_config_snapshot(
             _cur,
             prompt=self.prompt,

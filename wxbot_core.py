@@ -1019,7 +1019,7 @@ class WXBot:
             current = api_configs[api_index] if api_configs and 0 <= api_index < len(api_configs) else {}
             api_config = build_api_config_snapshot(
                 current,
-                prompt=getattr(self.config, "prompt", ""),
+                prompt="",
                 max_retries=getattr(self.config, "max_retries", 5),
                 interface_index=api_index,
             )
@@ -4070,7 +4070,7 @@ class WXBot:
         self.config.config['backup_chat_api_failover_threshold'] = self.config.backup_chat_api_failover_threshold
 
         current = api_configs[api_index] if api_configs else {}
-        self.config.prompt = self.config.config.get('prompt', getattr(self.config, 'prompt', ''))
+        self.config.prompt = ''
         self.config.current_api_config = build_api_config_snapshot(
             current,
             prompt=self.config.prompt,
