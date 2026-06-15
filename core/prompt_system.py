@@ -932,7 +932,6 @@ class PromptBuilder:
             required_placeholders=(
                 "{{base_prompt}}",
                 "{{now}}",
-                "{{chat_name}}",
                 "{{conversation_memory_section}}",
                 "{{persona_status_block}}",
                 "{{image_parse_block}}",
