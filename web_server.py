@@ -59,6 +59,12 @@ from core.config import api_supports_capability
 from core.daily_runtime_stats import DailyRuntimeStatsStore
 from core.memory import read_memory_original_name, resolve_memory_storage_name
 from core.chat_history_format import format_memory_record_for_display
+from core.identity_index import (
+    dismiss_pending as dismiss_identity_pending,
+    load_index as load_identity_index,
+    reconcile_storage_names as reconcile_identity_storage_names,
+    save_index as save_identity_index,
+)
 from core.contact_profiles import (
     default_directory as default_contact_directory,
     directory_path as contact_directory_path,
@@ -336,6 +342,14 @@ def _account_conversation_memory_dir(wx_id, *, create=False):
 
 def _account_contact_profiles_dir(wx_id, *, create=False):
     return _account_area_dir(wx_id, 'contact_profiles', create=create, base_dir=CONTACT_PROFILES_DIR)
+
+
+def _identity_index_for_wx_id(wx_id):
+    return load_identity_index(DATA_DIR, wx_id)
+
+
+def _save_identity_index_for_wx_id(wx_id, index):
+    return save_identity_index(DATA_DIR, wx_id, index)
 
 
 def _account_moments_drafts_dir(wx_id, *, create=False):
@@ -5743,6 +5757,135 @@ def contact_profiles_browser():
     try:
         wx_id = _contact_profiles_wx_id_from_request()
         return jsonify({'status': 'success', **_contact_profiles_browser_payload(wx_id)})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/contact_profiles/identity_calibration')
+@login_required
+def contact_profiles_identity_calibration():
+    """返回身份校准待确认项。"""
+    try:
+        wx_id = _contact_profiles_wx_id_from_request()
+        index = _identity_index_for_wx_id(wx_id)
+        pending = [
+            item for item in (index.get('pending') or [])
+            if isinstance(item, dict) and str(item.get('status') or 'pending') == 'pending'
+        ]
+        return jsonify({
+            'status': 'success',
+            'wx_id': wx_id,
+            'pending': pending,
+            'count': len(pending),
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/contact_profiles/identity_calibration/<fingerprint>/dismiss', methods=['POST'])
+@login_required
+def contact_profiles_identity_calibration_dismiss(fingerprint):
+    """确认两个身份不是同一人，避免反复提示。"""
+    try:
+        wx_id = _contact_profiles_wx_id_from_request()
+        index = dismiss_identity_pending(_identity_index_for_wx_id(wx_id), fingerprint)
+        _save_identity_index_for_wx_id(wx_id, index)
+        log('INFO', f'[身份校准] 已标记不是同一人：{fingerprint}')
+        return jsonify({
+            'status': 'success',
+            'wx_id': wx_id,
+            'message': '已标记为不是同一人',
+            'pending': [item for item in (index.get('pending') or []) if item.get('status') == 'pending'],
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/contact_profiles/identity_calibration/<fingerprint>/merge', methods=['POST'])
+@login_required
+def contact_profiles_identity_calibration_merge(fingerprint):
+    """确认两个身份是同一人，并自动合并聊天记录和会话记忆。"""
+    try:
+        wx_id = _contact_profiles_wx_id_from_request()
+        index = _identity_index_for_wx_id(wx_id)
+        target = None
+        for item in index.get('pending') or []:
+            if isinstance(item, dict) and str(item.get('fingerprint') or '') == str(fingerprint or ''):
+                target = item
+                break
+        if not target:
+            return jsonify({'status': 'error', 'message': '待确认项不存在'}), 404
+        old_snapshot = target.get('old_snapshot') if isinstance(target.get('old_snapshot'), dict) else {}
+        new_snapshot = target.get('new_snapshot') if isinstance(target.get('new_snapshot'), dict) else {}
+        old_name = str(old_snapshot.get('current_chat_name') or '').strip()
+        new_name = str(new_snapshot.get('current_chat_name') or '').strip()
+        if not old_name or not new_name:
+            return jsonify({'status': 'error', 'message': '待确认项缺少可合并的会话名'}), 400
+        manifest = reconcile_identity_storage_names(
+            DATA_DIR,
+            wx_id,
+            old_name,
+            new_name,
+            reason='manual_identity_calibration',
+        )
+        new_identity_id = str(target.get('new_identity_id') or '').strip()
+        old_identity_id = str(target.get('old_identity_id') or '').strip()
+        merged_identities = []
+        for identity in index.get('identities') or []:
+            identity_id = str(identity.get('identity_id') or '').strip()
+            if new_identity_id and identity_id == new_identity_id:
+                continue
+            if identity_id == old_identity_id:
+                identity.update({
+                    'current_chat_name': new_name,
+                    'storage_name': resolve_memory_storage_name(new_name),
+                    'wechat_id': str(new_snapshot.get('wechat_id') or ''),
+                    'remark': str(new_snapshot.get('remark') or ''),
+                    'nickname': str(new_snapshot.get('nickname') or ''),
+                    'display_name': str(new_snapshot.get('display_name') or new_name),
+                    'send_name': str(new_snapshot.get('send_name') or new_name),
+                    'region': str(new_snapshot.get('region') or ''),
+                    'source': str(new_snapshot.get('source') or ''),
+                    'added_at': str(new_snapshot.get('added_at') or ''),
+                    'signature': str(new_snapshot.get('signature') or ''),
+                    'last_seen_at': str(new_snapshot.get('last_seen_at') or identity.get('last_seen_at') or ''),
+                    'updated_at': datetime.now().replace(microsecond=0).isoformat(),
+                })
+            merged_identities.append(identity)
+        index['identities'] = merged_identities
+        new_fingerprint_snapshot = json.dumps(new_snapshot, ensure_ascii=False, sort_keys=True)
+        index['pending'] = [
+            item for item in (index.get('pending') or [])
+            if not (
+                isinstance(item, dict)
+                and (
+                    str(item.get('fingerprint') or '') == str(fingerprint or '')
+                    or (old_identity_id and str(item.get('old_identity_id') or '') == old_identity_id)
+                    or (new_identity_id and str(item.get('new_identity_id') or '') == new_identity_id)
+                    or json.dumps(item.get('new_snapshot') if isinstance(item.get('new_snapshot'), dict) else {}, ensure_ascii=False, sort_keys=True) == new_fingerprint_snapshot
+                )
+            )
+        ]
+        index = _save_identity_index_for_wx_id(wx_id, index)
+        if bot_thread and bot_thread.is_alive() and bot:
+            load_identity_cache = getattr(bot, '_load_identity_index_cache', None)
+            if callable(load_identity_cache):
+                load_identity_cache()
+            refresh_config = getattr(getattr(bot, 'config', None), 'refresh_config', None)
+            if callable(refresh_config):
+                refresh_config()
+            reply_count_store = getattr(bot, 'reply_count_store', None)
+            reload_store = getattr(reply_count_store, '_load', None)
+            if callable(reload_store):
+                reply_count_store.data = reload_store()
+        log('SUCCESS', f'[身份校准] 已确认同一人并合并：{old_name} -> {new_name}')
+        return jsonify({
+            'status': 'success',
+            'wx_id': wx_id,
+            'message': '已合并聊天记录和会话记忆',
+            'manifest': manifest,
+            'pending': [item for item in (index.get('pending') or []) if item.get('status') == 'pending'],
+        })
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 

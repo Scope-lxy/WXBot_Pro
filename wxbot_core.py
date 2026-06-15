@@ -103,6 +103,13 @@ from core.prompting import (
 )
 from core.vision_bridge import VisionBridge
 from core.memory import MemoryManager
+from core.identity_index import (
+    load_index as load_identity_index,
+    resolve_chat_name as resolve_identity_chat_name,
+    save_index as save_identity_index,
+    update_index_from_directory,
+    reconcile_storage_names,
+)
 from core.media import existing_local_image_path, image_content_hash, is_image_path
 from core.message_pipeline import (
     MAX_MERGED_PRIVATE_IMAGES,
@@ -463,6 +470,8 @@ class WXBot:
         self._daily_runtime_stats_store_instance = DailyRuntimeStatsStore(
             os.path.join(_data, 'config', 'daily_runtime_stats.json')
         )
+        self._identity_index_lock = threading.RLock()
+        self._identity_index_cache = None
         self._init_prompt_system()
         self._incoming_seen_lock = threading.Lock()
         self._incoming_seen_ids = {}
@@ -982,8 +991,102 @@ class WXBot:
         wx_id = str(getattr(self, 'wx_id', '') or '').strip()
         _base = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath(".")
         prompt_dir = os.path.join(_base, 'data', 'prompt')
-        self.prompt_system = PromptSystem(self.config, state_dir=state_dir, prompt_dir=prompt_dir)
+        self.prompt_system = PromptSystem(
+            self.config,
+            state_dir=state_dir,
+            prompt_dir=prompt_dir,
+            chat_name_resolver=self._resolve_identity_chat_name,
+        )
         return self.prompt_system
+
+    def _identity_base_dir(self):
+        return os.path.join(
+            os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath("."),
+            'data',
+        )
+
+    def _load_identity_index_cache(self):
+        wx_id = str(getattr(self, 'wx_id', '') or '').strip()
+        if not wx_id:
+            self._identity_index_cache = None
+            return None
+        with self._identity_index_lock:
+            self._identity_index_cache = load_identity_index(self._identity_base_dir(), wx_id)
+            return self._identity_index_cache
+
+    def _identity_index(self):
+        index = getattr(self, "_identity_index_cache", None)
+        if index is None:
+            index = self._load_identity_index_cache()
+        return index
+
+    def _save_identity_index(self, index):
+        wx_id = str(getattr(self, 'wx_id', '') or '').strip()
+        if not wx_id:
+            return index
+        with self._identity_index_lock:
+            self._identity_index_cache = save_identity_index(self._identity_base_dir(), wx_id, index)
+            return self._identity_index_cache
+
+    def _resolve_identity_chat_name(self, chat_name):
+        chat_name = str(chat_name or "").strip()
+        if not chat_name:
+            return ""
+        try:
+            return resolve_identity_chat_name(self._identity_index(), chat_name) or chat_name
+        except Exception:
+            return chat_name
+
+    def _reconcile_identity_storage(self, old_chat_name, new_chat_name, *, reason=""):
+        old_chat_name = str(old_chat_name or "").strip()
+        new_chat_name = str(new_chat_name or "").strip()
+        if not old_chat_name or not new_chat_name or old_chat_name == new_chat_name:
+            return None
+        wx_id = str(getattr(self, 'wx_id', '') or '').strip()
+        if not wx_id:
+            return None
+        try:
+            manifest = reconcile_storage_names(
+                self._identity_base_dir(),
+                wx_id,
+                old_chat_name,
+                new_chat_name,
+                reason=reason,
+            )
+            log(
+                level="SUCCESS",
+                message=f"身份校准：已将 {old_chat_name} 合并/改名到 {new_chat_name}",
+            )
+            refresh_config = getattr(getattr(self, "config", None), "refresh_config", None)
+            if callable(refresh_config):
+                refresh_config()
+            self.reply_count_store = ReplyCountStore(os.path.join(self._identity_base_dir(), 'config', 'reply_count.json'))
+            return manifest
+        except Exception as exc:
+            log(level="WARNING", message=f"身份校准：{old_chat_name} -> {new_chat_name} 失败：{exc}")
+            return None
+
+    def _sync_identity_index_from_contact_directory(self, directory):
+        wx_id = str(getattr(self, 'wx_id', '') or '').strip()
+        if not wx_id:
+            return None
+        try:
+            index, actions = update_index_from_directory(
+                self._identity_index(),
+                directory,
+                wx_id=wx_id,
+            )
+            for action in actions:
+                if action.get("type") == "rename":
+                    self._reconcile_identity_storage(
+                        action.get("old_chat_name"),
+                        action.get("new_chat_name"),
+                        reason=action.get("reason", "contact_profiles"),
+                    )
+            return self._save_identity_index(index)
+        except Exception as exc:
+            log(level="WARNING", message=f"身份索引更新失败：{exc}")
+            return None
 
     def _build_prompt_with_context(
         self,
@@ -3387,8 +3490,9 @@ class WXBot:
                 and not self._should_skip_message_memory(chat, msg)
             ):
                 try:
+                    memory_chat_name = self._resolve_identity_chat_name(chat.who)
                     self.memory_manager.save_message(
-                        chat_name=chat.who,
+                        chat_name=memory_chat_name,
                         sender=msg.sender,
                         content=msg.content,
                         msg_type=msg.type,
@@ -3401,7 +3505,10 @@ class WXBot:
                         and getattr(chat, "chat_type", "private") != "group"
                     ):
                         self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
-                    self._mark_conversation_memory_dirty(chat, msg)
+                    self._mark_conversation_memory_dirty(
+                        SimpleNamespace(who=memory_chat_name, chat_type=getattr(chat, "chat_type", "private")),
+                        msg,
+                    )
                 except Exception as e:
                     log(level="WARNING", message=f"写入记忆失败: {e}")
             if callback_result is not None:
@@ -3484,7 +3591,7 @@ class WXBot:
             else:
                 history = []
                 if self.config.memory_switch and self.config.memory_context_switch and self.memory_manager:
-                    history = self._get_model_context_history(chat.who)
+                    history = self._get_model_context_history(self._resolve_identity_chat_name(chat.who))
                 voice_candidate, start_voice_session = private_voice_candidate(
                     self.config,
                     chat.who,
@@ -3714,12 +3821,12 @@ class WXBot:
             return None
         try:
             messages = self.memory_manager.get_messages(
-                chat.who,
+                self._resolve_identity_chat_name(chat.who),
                 getattr(self.config, 'memory_max_count', 5000)
             )
             api = self._get_other_api(self._get_chat_api_index(chat.who))
             updated = system.update_memory(
-                chat.who,
+                self._resolve_identity_chat_name(chat.who),
                 messages,
                 api,
                 chat_type='private',
@@ -4908,7 +5015,7 @@ class WXBot:
             return False
         try:
             save_message(
-                chat_name=chat.who,
+                chat_name=self._resolve_identity_chat_name(chat.who),
                 sender="self",
                 content=text,
                 msg_type=str(msg_type or "text").strip() or "text",

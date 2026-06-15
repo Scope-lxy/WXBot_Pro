@@ -1394,6 +1394,13 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .relationship-scan-sync-state.is-pending { color: var(--warning); background: rgba(245,158,11,.14); }
 .relationship-scan-sync-state.is-synced { color: var(--primary); background: rgba(7,193,96,.12); }
 .relationship-scan-sync-state.is-skipped { color: var(--muted); background: var(--surface-l4); }
+.identity-calibration-table { margin-top: 12px; }
+.identity-calibration-row { grid-template-columns: minmax(130px, 1fr) minmax(130px, 1fr) minmax(110px, .7fr) minmax(132px, auto); }
+.identity-calibration-person { display: grid; gap: 2px; min-width: 0; }
+.identity-calibration-person strong,
+.identity-calibration-person small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.identity-calibration-person small { color: var(--muted); font-size: 12px; font-weight: 500; }
+.identity-calibration-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-start; min-width: 0; }
 .friend-request-card { margin-top: 0; order: 1; }
 .friend-request-runtime-card { order: 2; }
 .new-friend-card { order: 3; }
@@ -1474,6 +1481,11 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .relationship-scan-row { grid-template-columns: minmax(88px, 1fr) 66px minmax(120px, 1.4fr); }
   .relationship-scan-row span:nth-child(4),
   .relationship-scan-row span:nth-child(5) { display: none; }
+  .identity-calibration-row { grid-template-columns: 1fr; gap: 6px; align-items: stretch; }
+  .identity-calibration-row span:nth-child(4),
+  .identity-calibration-row span:nth-child(5) { display: flex; }
+  .identity-calibration-row.relationship-scan-row--head { display: none; }
+  .identity-calibration-actions { flex-wrap: wrap; }
   .friend-request-rule-grid,
   .friend-request-source-grid,
   .friend-request-general-grid,

@@ -201,6 +201,78 @@ def contact_identity_key(contact: dict[str, Any]) -> str:
     return _local_contact_key("unknown", raw_fingerprint)
 
 
+def _contact_raw_text(contact: dict[str, Any], keys: tuple[str, ...]) -> str:
+    raw_detail = contact.get("raw_detail") if isinstance(contact.get("raw_detail"), dict) else {}
+    return _first_text(raw_detail, keys)
+
+
+def _contact_source(contact: dict[str, Any]) -> str:
+    return _contact_raw_text(contact, ("来源", "source", "Source"))
+
+
+def _contact_added_at(contact: dict[str, Any]) -> str:
+    return _contact_raw_text(contact, ("添加时间", "added_at", "AddedAt", "added_time"))
+
+
+def _no_remark_directory_key(contact: dict[str, Any]) -> str:
+    if _clean_text(contact.get("remark")):
+        return ""
+    nickname = _clean_text(contact.get("nickname"))
+    source = _contact_source(contact)
+    added_at = _contact_added_at(contact)
+    if not (nickname and source and added_at):
+        return ""
+    return "|".join([nickname, source, added_at])
+
+
+def _only_wechat_id_changed_for_directory(old_contact: dict[str, Any], new_contact: dict[str, Any]) -> bool:
+    return (
+        _clean_text(old_contact.get("remark")) == _clean_text(new_contact.get("remark"))
+        and _clean_text(old_contact.get("nickname")) == _clean_text(new_contact.get("nickname"))
+        and _contact_source(old_contact) == _contact_source(new_contact)
+        and _contact_added_at(old_contact) == _contact_added_at(new_contact)
+        and _clean_text(old_contact.get("wechat_id")) != _clean_text(new_contact.get("wechat_id"))
+    )
+
+
+def _find_existing_contact_for_probe(
+    probe: dict[str, Any],
+    old_subjects: list[dict[str, Any]],
+    incoming_probes: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    direct_key = contact_identity_key(probe)
+    old_by_key = {contact_identity_key(item): item for item in old_subjects if isinstance(item, dict)}
+    if direct_key in old_by_key:
+        return old_by_key[direct_key]
+
+    wechat_id = _clean_text(probe.get("wechat_id"))
+    if wechat_id:
+        matches = [item for item in old_subjects if _clean_text(item.get("wechat_id")) == wechat_id]
+        if len(matches) == 1:
+            return matches[0]
+
+    remark = _clean_text(probe.get("remark"))
+    if remark:
+        old_matches = [item for item in old_subjects if _clean_text(item.get("remark")) == remark]
+        incoming_matches = [item for item in incoming_probes if _clean_text(item.get("remark")) == remark]
+        if len(old_matches) == 1 and len(incoming_matches) <= 1:
+            return old_matches[0]
+        return None
+
+    no_remark_key = _no_remark_directory_key(probe)
+    if no_remark_key:
+        old_matches = [
+            item for item in old_subjects
+            if _no_remark_directory_key(item) == no_remark_key
+            and _only_wechat_id_changed_for_directory(item, probe)
+        ]
+        incoming_matches = [item for item in incoming_probes if _no_remark_directory_key(item) == no_remark_key]
+        if len(old_matches) == 1 and len(incoming_matches) <= 1:
+            return old_matches[0]
+
+    return None
+
+
 def stable_suffix_for_contact(contact: dict[str, Any]) -> str:
     existing = _clean_text(contact.get("stable_suffix"))
     if existing:
@@ -259,14 +331,17 @@ def merge_directory(
     timestamp = _iso_timestamp(now)
     existing = _normalize_directory_shape(existing_directory or {}, wx_id)
     old_subjects = list(existing.get("subjects") or [])
-    old_by_key = {contact_identity_key(item): item for item in old_subjects if isinstance(item, dict)}
 
     updated_by_key: dict[str, dict[str, Any]] = {}
     new_key_order: list[str] = []
-    for raw_detail in raw_details or []:
-        probe = normalize_friend_detail(raw_detail, now=timestamp)
-        key = contact_identity_key(probe)
-        old_contact = old_by_key.get(key)
+    incoming_items = [
+        (raw_detail, normalize_friend_detail(raw_detail, now=timestamp))
+        for raw_detail in (raw_details or [])
+    ]
+    incoming_probes = [probe for _raw_detail, probe in incoming_items]
+    for raw_detail, probe in incoming_items:
+        old_contact = _find_existing_contact_for_probe(probe, old_subjects, incoming_probes)
+        key = contact_identity_key(old_contact) if old_contact else contact_identity_key(probe)
         normalized = normalize_friend_detail(raw_detail, existing=old_contact, now=timestamp)
         updated_by_key[key] = normalized
         if key not in new_key_order:

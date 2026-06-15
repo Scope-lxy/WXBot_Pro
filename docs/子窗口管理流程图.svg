@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1450" viewBox="0 0 1600 1450">
+  <defs>
+    <style>
+      .title { font: 700 28px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #14324f; }
+      .subtitle { font: 400 14px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #56718b; }
+      .label { font: 600 15px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #17324d; }
+      .small { font: 400 13px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #3e5b77; }
+      .decision { font: 600 14px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #17324d; text-anchor: middle; }
+      .yesno { font: 700 12px "Microsoft YaHei", "PingFang SC", sans-serif; fill: #42617f; }
+      .card-blue { fill: #eef6ff; stroke: #4b89c8; stroke-width: 2; rx: 18; ry: 18; }
+      .card-green { fill: #eefaf3; stroke: #4f9a6d; stroke-width: 2; rx: 18; ry: 18; }
+      .card-gold { fill: #fff8e9; stroke: #c99a3a; stroke-width: 2; rx: 18; ry: 18; }
+      .card-rose { fill: #fff1f1; stroke: #c77979; stroke-width: 2; rx: 18; ry: 18; }
+      .decision-shape { fill: #ffffff; stroke: #6f8aa6; stroke-width: 2; }
+      .arrow { stroke: #5d7893; stroke-width: 2.4; fill: none; marker-end: url(#arrowhead); }
+      .arrow-soft { stroke: #8aa1b8; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .note { fill: #f7fbff; stroke: #b9d4ef; stroke-width: 1.5; rx: 14; ry: 14; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5d7893"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1600" height="1450" fill="#fbfdff"/>
+  <text x="60" y="58" class="title">WXBot Pro 当前版本子窗口管理流程图</text>
+  <text x="60" y="88" class="subtitle">当前真实策略是“固定监听启动时注册，陌生私聊按需补窗，空闲后回收，异常时自动重建”，不是高频巡检强维护。</text>
+
+  <rect x="60" y="140" width="300" height="78" class="card-blue"/>
+  <text x="210" y="176" text-anchor="middle" class="label">机器人启动 main()</text>
+  <text x="210" y="201" text-anchor="middle" class="small">初始化微信客户端和监听器</text>
+
+  <rect x="60" y="270" width="300" height="94" class="card-blue"/>
+  <text x="210" y="307" text-anchor="middle" class="label">init_wx_listeners()</text>
+  <text x="210" y="334" text-anchor="middle" class="small">绑定账号、初始化记忆、进入监听器重建</text>
+
+  <rect x="60" y="420" width="300" height="138" class="card-green"/>
+  <text x="210" y="458" text-anchor="middle" class="label">rebuild_listener_runtime()</text>
+  <text x="210" y="488" text-anchor="middle" class="small">StopListening - StartListening</text>
+  <text x="210" y="514" text-anchor="middle" class="small">注册固定监听：管理员、白名单用户、群聊</text>
+  <text x="210" y="540" text-anchor="middle" class="small">也包含自定义转发源、素材来源</text>
+
+  <rect x="60" y="610" width="300" height="104" class="card-gold"/>
+  <text x="210" y="647" text-anchor="middle" class="label">verify_initial_listeners()</text>
+  <text x="210" y="675" text-anchor="middle" class="small">校验固定子窗口是否真的存在</text>
+  <text x="210" y="699" text-anchor="middle" class="small">缺失就轻量补一次</text>
+
+  <rect x="60" y="766" width="300" height="92" class="card-blue"/>
+  <text x="210" y="803" text-anchor="middle" class="label">写入运行时缓存</text>
+  <text x="210" y="830" text-anchor="middle" class="small">_listen_chats / 素材来源缓存</text>
+
+  <rect x="480" y="140" width="350" height="90" class="card-blue"/>
+  <text x="655" y="176" text-anchor="middle" class="label">全局监听模式 AllListen 打开</text>
+  <text x="655" y="202" text-anchor="middle" class="small">主循环额外跑 GetNextNewMessage 抓陌生私聊</text>
+
+  <rect x="480" y="290" width="350" height="118" class="card-green"/>
+  <text x="655" y="326" text-anchor="middle" class="label">GetNextNewMessage()</text>
+  <text x="655" y="354" text-anchor="middle" class="small">先抓到“谁发来新消息”</text>
+  <text x="655" y="380" text-anchor="middle" class="small">顺带做图片下载、语音转文字预处理</text>
+
+  <polygon points="655,458 775,532 655,606 535,532" class="decision-shape"/>
+  <text x="655" y="524" class="decision">这批消息需要</text>
+  <text x="655" y="546" class="decision">正式进入 AI/规则处理吗？</text>
+
+  <rect x="465" y="670" width="220" height="94" class="card-gold"/>
+  <text x="575" y="707" text-anchor="middle" class="label">不用</text>
+  <text x="575" y="734" text-anchor="middle" class="small">黑名单 / 纯素材处理</text>
+  <text x="575" y="756" text-anchor="middle" class="small">到这里结束</text>
+
+  <polygon points="760,668 870,736 760,804 650,736" class="decision-shape"/>
+  <text x="760" y="728" class="decision">已有可用</text>
+  <text x="760" y="750" class="decision">目标子窗口吗？</text>
+
+  <rect x="930" y="670" width="250" height="94" class="card-blue"/>
+  <text x="1055" y="707" text-anchor="middle" class="label">复用已有子窗口</text>
+  <text x="1055" y="734" text-anchor="middle" class="small">刷新活跃时间戳</text>
+  <text x="1055" y="756" text-anchor="middle" class="small">继续处理这批消息</text>
+
+  <rect x="650" y="860" width="220" height="114" class="card-green"/>
+  <text x="760" y="898" text-anchor="middle" class="label">add_and_verify_subwindow()</text>
+  <text x="760" y="926" text-anchor="middle" class="small">没有就 AddListenChat 补一次</text>
+  <text x="760" y="950" text-anchor="middle" class="small">然后立刻校验拿到的子窗口是不是目标人</text>
+
+  <polygon points="760,1020 870,1088 760,1156 650,1088" class="decision-shape"/>
+  <text x="760" y="1080" class="decision">补窗成功？</text>
+  <text x="760" y="1102" class="decision">目标窗口对得上？</text>
+
+  <rect x="470" y="1190" width="250" height="98" class="card-rose"/>
+  <text x="595" y="1228" text-anchor="middle" class="label">补窗失败</text>
+  <text x="595" y="1256" text-anchor="middle" class="small">清理运行时缓存和动态监听记录</text>
+  <text x="595" y="1278" text-anchor="middle" class="small">等待后续新消息再次重试</text>
+
+  <rect x="800" y="1190" width="250" height="98" class="card-blue"/>
+  <text x="925" y="1228" text-anchor="middle" class="label">用真实子窗口处理消息</text>
+  <text x="925" y="1256" text-anchor="middle" class="small">再进入 process_message / wx_send_ai</text>
+  <text x="925" y="1278" text-anchor="middle" class="small">这一步才真正回复对方</text>
+
+  <rect x="1120" y="180" width="360" height="102" class="card-gold"/>
+  <text x="1300" y="217" text-anchor="middle" class="label">动态子窗口超时回收</text>
+  <text x="1300" y="245" text-anchor="middle" class="small">all_Mode_listen_list 记录最后活跃时间</text>
+  <text x="1300" y="269" text-anchor="middle" class="small">默认 600 秒没新消息就 RemoveListenChat</text>
+
+  <rect x="1120" y="360" width="360" height="110" class="card-blue"/>
+  <text x="1300" y="398" text-anchor="middle" class="label">发送前再次核对子窗口</text>
+  <text x="1300" y="426" text-anchor="middle" class="small">_ensure_target_listen_chat_for_send()</text>
+  <text x="1300" y="450" text-anchor="middle" class="small">宁可补窗或延后，也尽量避免回错人</text>
+
+  <polygon points="1300,532 1410,602 1300,672 1190,602" class="decision-shape"/>
+  <text x="1300" y="594" class="decision">发送时目标子窗口</text>
+  <text x="1300" y="616" class="decision">还能确认吗？</text>
+
+  <rect x="1145" y="740" width="230" height="92" class="card-green"/>
+  <text x="1260" y="777" text-anchor="middle" class="label">能确认</text>
+  <text x="1260" y="804" text-anchor="middle" class="small">直接发送回复或文件</text>
+
+  <rect x="1265" y="910" width="250" height="104" class="card-rose"/>
+  <text x="1390" y="948" text-anchor="middle" class="label">不能确认</text>
+  <text x="1390" y="976" text-anchor="middle" class="small">尝试补窗；仍失败就进轻量延后发送队列</text>
+  <text x="1390" y="1000" text-anchor="middle" class="small">目的：避免回错人</text>
+
+  <rect x="1120" y="1090" width="360" height="122" class="card-rose"/>
+  <text x="1300" y="1128" text-anchor="middle" class="label">桌面异常自动恢复</text>
+  <text x="1300" y="1156" text-anchor="middle" class="small">消息回调 / 在线检查 / 全局监听发现桌面不可操作</text>
+  <text x="1300" y="1180" text-anchor="middle" class="small">进入隐藏等待恢复态，探活成功后 rebuild_listener_runtime</text>
+
+  <rect x="60" y="1350" width="1480" height="66" class="note"/>
+  <text x="90" y="1390" class="small">当前版本最大的产品取向：稳定优先。它不依赖高频扫描去“死盯”所有子窗口，而是固定监听预注册 + 陌生私聊按需补窗 + 空闲回收 + 发送前复核。</text>
+
+  <path d="M210 218 L210 270" class="arrow"/>
+  <path d="M210 364 L210 420" class="arrow"/>
+  <path d="M210 558 L210 610" class="arrow"/>
+  <path d="M210 714 L210 766" class="arrow"/>
+
+  <path d="M360 490 L450 490 L450 185 L480 185" class="arrow-soft"/>
+
+  <path d="M655 230 L655 290" class="arrow"/>
+  <path d="M655 408 L655 458" class="arrow"/>
+  <path d="M575 588 L575 670" class="arrow"/>
+  <text x="535" y="636" class="yesno">不用</text>
+
+  <path d="M720 588 L760 668" class="arrow"/>
+  <text x="732" y="635" class="yesno">需要</text>
+
+  <path d="M870 736 L930 717" class="arrow"/>
+  <text x="894" y="708" class="yesno">有</text>
+
+  <path d="M760 804 L760 860" class="arrow"/>
+  <text x="774" y="836" class="yesno">没有</text>
+
+  <path d="M760 974 L760 1020" class="arrow"/>
+  <path d="M700 1128 L620 1190" class="arrow"/>
+  <text x="645" y="1162" class="yesno">失败</text>
+
+  <path d="M820 1128 L900 1190" class="arrow"/>
+  <text x="860" y="1162" class="yesno">成功</text>
+
+  <path d="M1180 282 L1180 320 L1300 320 L1300 360" class="arrow-soft"/>
+  <path d="M1300 470 L1300 532" class="arrow"/>
+  <path d="M1260 672 L1260 740" class="arrow"/>
+  <text x="1234" y="705" class="yesno">能</text>
+
+  <path d="M1360 664 L1390 910" class="arrow"/>
+  <text x="1398" y="788" class="yesno">不能</text>
+
+  <path d="M1055 764 L1055 810 L925 810 L925 1190" class="arrow-soft"/>
+</svg>

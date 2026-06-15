@@ -1832,6 +1832,9 @@ html.icons-pref-local [class*=" bi-"]::before {
         <span class="ui-pill is-danger contact-maintenance-pill">
           <span class="contact-maintenance-pill-label">待修复备注</span><span class="contact-maintenance-pill-value" id="contact-directory-repair-count">0</span>
         </span>
+        <span class="ui-pill is-warning contact-maintenance-pill">
+          <span class="contact-maintenance-pill-label">等待校准</span><span class="contact-maintenance-pill-value" id="identity-calibration-count">0</span>
+        </span>
       </div>
       <div class="contact-maintenance-body">
         <div class="new-friend-block contact-maintenance-manual-block">
@@ -1867,6 +1870,15 @@ html.icons-pref-local [class*=" bi-"]::before {
                 建档时会自动把微信界面切到前台，干扰微信界面可能会导致建档失败
               </div>
             </div>
+            <div class="relationship-scan-table identity-calibration-table" id="identity-calibration-card">
+              <div class="relationship-scan-row relationship-scan-row--head identity-calibration-row">
+                <span>新资料</span><span>原资料</span><span>依据</span><span>操作</span>
+              </div>
+              <div id="identity-calibration-list" class="relationship-scan-record-list ui-workbench-scroll-body is-empty">
+                <div class="relationship-scan-empty">暂无待确认项</div>
+              </div>
+            </div>
+            <div id="identity-calibration-msg" class="cfg-feedback" style="display:none;"></div>
           </div>
         </div>
         <div class="new-friend-block contact-maintenance-auto-block">
@@ -4251,6 +4263,10 @@ $(function(){
     tag: '__all__',
     payload: null
   };
+  var _identityCalibrationState = {
+    pending: [],
+    wxId: ''
+  };
   var _relationshipScanSeed = {{ relationship_scan_seed|tojson|safe }};
   var _relationshipScanState = {
     payload: _relationshipScanSeed || {},
@@ -4930,6 +4946,96 @@ $(function(){
       }, deleteAction, 'contact-directory-tag-item', false));
     });
     updateContactDirectoryContactList();
+  }
+  function identityCalibrationReasonLabel(reason){
+    reason = String(reason || '').trim();
+    if(reason === 'conflict_wechat_id') return '微信号重复';
+    if(reason === 'conflict_remark') return '备注重复';
+    if(reason === 'conflict_no_remark_snapshot') return '昵称+来源+添加时间重复';
+    if(reason === 'same_no_remark_snapshot') return '无备注资料相同';
+    if(reason === 'same_nickname_source_added') return '昵称+来源+添加时间相同';
+    if(reason === 'same_remark') return '备注相同';
+    if(reason === 'same_wechat_id') return '微信号相同';
+    return reason || '需要确认';
+  }
+  function identityCalibrationSnapshotLabel(snapshot){
+    snapshot = snapshot || {};
+    var name = String(snapshot.current_chat_name || snapshot.remark || snapshot.nickname || snapshot.wechat_id || '').trim() || '未命名';
+    var meta = [];
+    if(snapshot.remark) meta.push('备注：' + snapshot.remark);
+    if(snapshot.nickname) meta.push('昵称：' + snapshot.nickname);
+    if(snapshot.wechat_id) meta.push('微信号：' + snapshot.wechat_id);
+    return '<strong title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</strong>' +
+      (meta.length ? '<small title="'+escapeHtml(meta.join(' / '))+'">'+escapeHtml(meta.join(' / '))+'</small>' : '');
+  }
+  function renderIdentityCalibrationItem(item){
+    item = item || {};
+    var fingerprint = String(item.fingerprint || '').trim();
+    return ''+
+      '<div class="relationship-scan-row identity-calibration-row" data-identity-fingerprint="'+escapeHtml(fingerprint)+'">'+
+        '<span class="identity-calibration-person">'+identityCalibrationSnapshotLabel(item.new_snapshot || {})+'</span>'+
+        '<span class="identity-calibration-person">'+identityCalibrationSnapshotLabel(item.old_snapshot || {})+'</span>'+
+        '<span title="'+escapeHtml(item.reason || '')+'">'+escapeHtml(identityCalibrationReasonLabel(item.reason))+'</span>'+
+        '<span class="identity-calibration-actions">'+
+          '<button type="button" class="ui-btn ui-btn--primary ui-btn--l4" data-identity-calibration-merge="'+escapeHtml(fingerprint)+'">合并</button>'+
+          '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l4" data-identity-calibration-dismiss="'+escapeHtml(fingerprint)+'">忽略</button>'+
+        '</span>'+
+      '</div>';
+  }
+  function renderIdentityCalibration(payload){
+    payload = payload || {};
+    var pending = Array.isArray(payload.pending) ? payload.pending : [];
+    _identityCalibrationState.pending = pending;
+    _identityCalibrationState.wxId = String(payload.wx_id || _contactDirectoryBrowserState.wxId || '').trim();
+    $('#identity-calibration-count').text(String(pending.length));
+    if(!pending.length){
+      $('#identity-calibration-list').addClass('is-empty').html('<div class="relationship-scan-empty">暂无待确认项</div>');
+      return;
+    }
+    $('#identity-calibration-list').removeClass('is-empty').html(pending.map(renderIdentityCalibrationItem).join(''));
+  }
+  function loadIdentityCalibration(wxId, options){
+    options = options || {};
+    wxId = String(wxId || _contactDirectoryBrowserState.wxId || '').trim();
+    if(!wxId){
+      renderIdentityCalibration({pending: [], wx_id: ''});
+      return $.Deferred().resolve().promise();
+    }
+    return $.getJSON('/contact_profiles/identity_calibration', {wx_id: wxId}).done(function(res){
+      if(res.status === 'success'){
+        renderIdentityCalibration(res);
+      } else if(!options.silent){
+        showMsg('identity-calibration-msg', res.message || '身份校准加载失败', false);
+      }
+    }).fail(function(xhr){
+      if(!options.silent){
+        showMsg('identity-calibration-msg', '身份校准加载失败：' + (xhr.responseText || xhr.status), false);
+      }
+    });
+  }
+  function runIdentityCalibrationAction(fingerprint, action){
+    fingerprint = String(fingerprint || '').trim();
+    if(!fingerprint || (action !== 'merge' && action !== 'dismiss')) return;
+    var wxId = String(_identityCalibrationState.wxId || _contactDirectoryBrowserState.wxId || '').trim();
+    var message = action === 'merge' ? '确认后会自动合并聊天记录、会话记忆、关系扫描记录和相关配置。' : '忽略后这组资料不会再次提示，不会合并或删除任何本地资料。';
+    var okText = action === 'merge' ? '确认合并' : '确认忽略';
+    svModal.confirm(message, function(){
+      $.ajax({
+        url: '/contact_profiles/identity_calibration/' + encodeURIComponent(fingerprint) + '/' + action + '?wx_id=' + encodeURIComponent(wxId),
+        type: 'POST'
+      }).done(function(res){
+        if(res.status === 'success'){
+          showMsg('identity-calibration-msg', res.message || '身份校准已更新', true);
+          renderIdentityCalibration({wx_id: res.wx_id || wxId, pending: res.pending || []});
+          loadContactDirectoryBrowser(wxId);
+          loadRelationshipScanStatus(wxId, {silent:true});
+        } else {
+          showMsg('identity-calibration-msg', res.message || '身份校准失败', false);
+        }
+      }).fail(function(xhr){
+        showMsg('identity-calibration-msg', '身份校准失败：' + (xhr.responseText || xhr.status), false);
+      });
+    }, '身份校准确认', okText, '取消');
   }
   function relationshipScanStatusInfo(status){
     status = String(status || '').trim();
@@ -5612,9 +5718,11 @@ $(function(){
         _contactDirectoryBrowserState.tag = '__all__';
       }
       renderContactDirectoryBrowser(res);
+      loadIdentityCalibration(res.wx_id || _contactDirectoryBrowserState.wxId, {silent:true});
       setContactDirectoryBrowserMsg('', true);
     }).fail(function(xhr){
       resetContactDirectorySummary();
+      renderIdentityCalibration({pending: [], wx_id: ''});
       renderWxIdSelect($('#contact-directory-wx-select'), [], '微信号：暂无微信号', '', '微信号');
       $('#contact-directory-tag-list').html('<div class="memory-list-empty error">加载失败</div>');
       $('#contact-directory-contact-list').html('<div class="contact-directory-list-empty error">加载失败</div>');
@@ -5627,6 +5735,7 @@ $(function(){
   renderMaterialOutreachBrowser(_materialOutreachBrowserSeed || {});
   renderRelationshipScan(_relationshipScanSeed || {});
   renderFriendRequest(_friendRequestSeed || {});
+  renderIdentityCalibration({pending: [], wx_id: ''});
   loadTaskWorkbenchRuntime('material_outreach', {silent:true});
   setInterval(function(){
     if(typeof getActiveTabId === 'function' && getActiveTabId() === 'tab-schedule' && (!document.hidden)){
@@ -5697,6 +5806,7 @@ $(function(){
         if(res.browser){
           renderContactDirectoryBrowser(res.browser);
           _contactDirectoryBrowserState.loaded = true;
+          loadIdentityCalibration(res.browser.wx_id || _contactDirectoryBrowserState.wxId, {silent:true});
         } else {
           loadContactDirectoryBrowser((res.data || {}).wx_id || _contactDirectoryBrowserState.wxId);
         }
@@ -5729,6 +5839,7 @@ $(function(){
         if(res.browser){
           renderContactDirectoryBrowser(res.browser);
           _contactDirectoryBrowserState.loaded = true;
+          loadIdentityCalibration(res.browser.wx_id || _contactDirectoryBrowserState.wxId, {silent:true});
         } else {
           loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
         }
@@ -5758,6 +5869,7 @@ $(function(){
         if(res.browser){
           renderContactDirectoryBrowser(res.browser);
           _contactDirectoryBrowserState.loaded = true;
+          loadIdentityCalibration(res.browser.wx_id || _contactDirectoryBrowserState.wxId, {silent:true});
         } else {
           loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
         }
@@ -8411,6 +8523,7 @@ $(function(){
   });
   $(document).on('click', '[data-tab="tab-contact-directory"]', function(){
     loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
+    loadIdentityCalibration(_contactDirectoryBrowserState.wxId, {silent:true});
     loadRelationshipScanStatus(_contactDirectoryBrowserState.wxId, {silent:true});
     loadFriendRequestStatus(_contactDirectoryBrowserState.wxId, {silent:true});
   });
@@ -8422,6 +8535,7 @@ $(function(){
     if(wxId === String(_contactDirectoryBrowserState.wxId || '')) return;
     _contactDirectoryBrowserState.tag = '__all__';
     loadContactDirectoryBrowser(wxId);
+    loadIdentityCalibration(wxId, {silent:true});
     loadRelationshipScanStatus(wxId, {silent:true});
     loadFriendRequestStatus(wxId, {silent:true});
   });
@@ -8485,8 +8599,15 @@ $(function(){
   });
   $('#btn-refresh-contact-directory-browser').click(function(){
     loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
+    loadIdentityCalibration(_contactDirectoryBrowserState.wxId, {silent:true});
     loadRelationshipScanStatus(_contactDirectoryBrowserState.wxId, {silent:true});
     loadFriendRequestStatus(_contactDirectoryBrowserState.wxId, {silent:true});
+  });
+  $(document).on('click', '[data-identity-calibration-merge]', function(){
+    runIdentityCalibrationAction($(this).data('identity-calibration-merge'), 'merge');
+  });
+  $(document).on('click', '[data-identity-calibration-dismiss]', function(){
+    runIdentityCalibrationAction($(this).data('identity-calibration-dismiss'), 'dismiss');
   });
   $('#btn-contact-standard-build').click(function(){
     chooseContactDirectoryStart('standard');

@@ -692,7 +692,14 @@ def init_wx_listeners(bot):
     bot._set_admin_forward_draft_namespace(wx_id)
     _base = os.path.dirname(sys.executable) if hasattr(sys, "_MEIPASS") else os.path.abspath(".")
     memory_base = os.path.join(_base, "data")
-    bot.memory_manager = MemoryManager(wx_id, memory_base)
+    load_identity_index = getattr(bot, "_load_identity_index_cache", None)
+    if callable(load_identity_index):
+        load_identity_index()
+    bot.memory_manager = MemoryManager(
+        wx_id,
+        memory_base,
+        chat_name_resolver=getattr(bot, "_resolve_identity_chat_name", None),
+    )
     bot._init_prompt_system(str(account_area_dir(os.path.join(_base, "data"), wx_id, "conversation_memory", create=True)))
     _bot_log(bot, message=f"记忆管理器已初始化，微信号: {wx_id}")
     enqueue_memory_checks = getattr(bot, "_enqueue_existing_conversation_memory_checks", None)

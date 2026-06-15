@@ -73,13 +73,25 @@ class MemoryManager:
     Storage path: {base_path}/accounts/{wx_id}/memory/{storage_name}/{storage_name}_memory.json
     """
 
-    def __init__(self, wx_id, base_path):
+    def __init__(self, wx_id, base_path, chat_name_resolver=None):
         self.wx_id = wx_id
         self.base_path = base_path
+        self.chat_name_resolver = chat_name_resolver
         self._locks = {}
 
+    def resolve_chat_name(self, chat_name):
+        resolver = getattr(self, "chat_name_resolver", None)
+        if callable(resolver):
+            try:
+                resolved = normalize_memory_chat_name(resolver(chat_name))
+                if resolved:
+                    return resolved
+            except Exception:
+                pass
+        return normalize_memory_chat_name(chat_name)
+
     def _get_lock(self, chat_name):
-        key = normalize_memory_chat_name(chat_name)
+        key = self.resolve_chat_name(chat_name)
         if key not in self._locks:
             self._locks[key] = threading.Lock()
         return self._locks[key]
@@ -97,6 +109,7 @@ class MemoryManager:
             pass
 
     def _get_memory_path(self, chat_name, create=True):
+        chat_name = self.resolve_chat_name(chat_name)
         storage_name = resolve_memory_storage_name(chat_name)
         dir_path = os.path.join(account_area_dir(self.base_path, self.wx_id, "memory", create=create), storage_name)
         if not create:
@@ -107,6 +120,7 @@ class MemoryManager:
         return os.path.join(dir_path, f"{storage_name}_memory.json")
 
     def _find_existing_memory_file(self, chat_name):
+        chat_name = self.resolve_chat_name(chat_name)
         storage_name, dir_path = find_memory_chat_dir(self.base_path, self.wx_id, chat_name)
         preferred = os.path.join(dir_path, f"{storage_name}_memory.json")
         if os.path.exists(preferred):

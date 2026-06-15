@@ -27,7 +27,7 @@
 - `web_server.py`：Flask 面板和管理 API，负责登录、配置读写、接口测试、备份、页面 API，以及启动 / 停止机器人。
 - `templates/dashboard.html`：面板主体。
 - `wxbot_core.py`：机器人运行时总编排，负责 wxautox4、微信监听、AI 回复、统一时间任务扫描和真实微信发送。
-- `core/`：底座能力，例如配置、Prompt、媒体、记忆、发送和调度。
+- `core/`：底座能力，例如配置、Prompt、媒体、记忆、发送、身份索引和调度。
 - `feature/`：机器人业务规则，例如监听维护、管理员工作台、素材转发、定时任务和发圈任务。
 - `extension/`：外部增强，例如邮件通知、Webhook、SiverPanel 远程访问。
 - `tools/`：本地复现脚本、备份脚本和专项测试辅助。
@@ -126,7 +126,7 @@
 
 ### 当前分工
 
-- `core/`：配置、Prompt、媒体、记忆、发送、统一调度、通讯录持久化、运行态缓存。
+- `core/`：配置、Prompt、媒体、记忆、发送、身份索引、统一调度、通讯录持久化、运行态缓存。
 - `feature/`：管理员工作台、监听维护、消息路由、关键词回复、自定义转发、通讯录建档、新好友、关系扫描、好友申请、素材转发、AI 自动转发、定时消息、发圈任务、语音回复、任务工作台。
 - `extension/`：报错邮件、Webhook、SiverPanel 远程访问。
 
@@ -150,6 +150,8 @@
 - `data/accounts/<wx_id>/memory/`：聊天记录
 - `data/accounts/<wx_id>/conversation_memory/`：会话记忆 JSON 真源
 - `data/accounts/<wx_id>/contact_profiles/contacts.json`：通讯录档案真源
+- `data/accounts/<wx_id>/identity_index/contacts.json`：联系人身份索引和等待校准项
+- `data/accounts/<wx_id>/identity_backups/`：身份合并前的账号级保险备份
 - `data/accounts/<wx_id>/tasks/keyword_reply/`、`custom_forward/`、`scheduled_message/`、`material_outreach/`、`moments/`：各任务模块的规则、运行态和历史记录
 - `data/accounts/<wx_id>/relationship_scan/relationships.json`：关系扫描结果
 - `data/accounts/<wx_id>/friend_request/state.json`：好友申请设置、候选人和执行记录
@@ -157,7 +159,7 @@
 - `data/accounts/<wx_id>/moments_drafts/active_draft.json`：管理员发圈草稿运行态
 - `data/accounts/default/`：只有没有运行中微信号、没有 `last_wx_id`、也没有历史账号数据时才使用
 - `wxbot_logs/`：面板运行日志
-- `backups/data_时间戳/`：面板一键备份产物
+- `backups/data_时间戳/`：面板一键备份产物；`data/backups/` 下的身份迁移报告不是运行时真源
 
 ## 当前关键行为边界
 
@@ -181,6 +183,9 @@
 - 普通定时消息和随机消息优先走已监听的聊天子窗口，找不到时再回退主窗口。
 - 动态监听采用轻量按需补窗：普通增删监听不触发微信客户端重绑，不做残留子窗口强关闭；启动初始化和整体监听恢复仍可重建监听器。
 - 通讯录页和会话记忆页都已经是可操作的数据管理页，不要再按纯查看器心智改。
+- 身份校准跟随通讯录维护、手动建档和备注修复成功触发，不在每条消息热路径里刷新通讯录或扫描目录。
+- 身份索引必须按微信账号隔离；聊天记录、会话记忆、关系扫描、任务引用和回复计数的改名 / 合并都通过账号级身份合并链路处理。
+- 身份判定不做模糊匹配，不维护历史别名：同 wxid、唯一备注、无备注时 `nickname + source + added_at` 唯一且只变 wxid 才自动合并，其余有意义冲突进入等待校准。
 - 群聊页勾选 `group_listen_only` 后，前端会自动保持 `group_switch` 为开启，并临时禁用依赖自动回复的相关选项。
 
 ## 修改时的高风险点
@@ -194,7 +199,7 @@
 - 会话记忆提取、提案合并和保护规则
 - 定时任务 `next_fire_at` 推进、任务热更新和状态回写
 - 素材转发记录、进度记录和 AI pending 队列状态
-- 通讯录档案、备注修复和手动目标名解析
+- 通讯录档案、身份索引、备注修复和手动目标名解析
 
 ## 推荐验证命令
 

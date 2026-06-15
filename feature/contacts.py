@@ -1221,6 +1221,9 @@ def refresh_contact_profiles_single_batch(
         finished_maintenance["last_batch_outcome"] = str(analysis.get("outcome") or "")
         finished_maintenance["retry_count"] = 0
         save_contact_directory(directory_file, finished)
+        sync_identity_fn = getattr(bot, "_sync_identity_index_from_contact_directory", None)
+        if callable(sync_identity_fn):
+            sync_identity_fn(finished)
         if log_start_finish:
             if externally_paused:
                 _bot_log(bot, level="WARNING", message=f"[通讯录维护] {mode_label}已停止，本次读取 {len(raw_details)} 个好友")
@@ -1878,6 +1881,9 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
                     now=datetime.now(),
                 )
                 save_contact_directory(directory_file, current_directory)
+                sync_identity_fn = getattr(bot, "_sync_identity_index_from_contact_directory", None)
+                if callable(sync_identity_fn):
+                    sync_identity_fn(current_directory)
                 result["success_count"] += 1
             else:
                 result["failed_count"] += 1

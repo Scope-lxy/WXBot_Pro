@@ -1305,17 +1305,29 @@ class ConversationMemoryExtractor:
 class PromptSystem:
     """Route private chats to prompt templates and build dynamic prompts."""
 
-    def __init__(self, config, state_dir, state_store=None, prompt_builder=None, memory_extractor=None, prompt_dir=None):
+    def __init__(self, config, state_dir, state_store=None, prompt_builder=None, memory_extractor=None, prompt_dir=None, chat_name_resolver=None):
         self.config = config or {}
         self.state_store = state_store or ConversationMemoryStore(state_dir)
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.memory_extractor = memory_extractor or self._build_memory_extractor()
         self.prompt_dir = prompt_dir or os.path.join(app_base_dir(), "data", "prompt")
+        self.chat_name_resolver = chat_name_resolver
 
     def _get(self, key, default=None):
         if isinstance(self.config, dict):
             return self.config.get(key, default)
         return getattr(self.config, key, default)
+
+    def resolve_chat_name(self, chat_name):
+        resolver = getattr(self, "chat_name_resolver", None)
+        if callable(resolver):
+            try:
+                resolved = str(resolver(chat_name) or "").strip()
+                if resolved:
+                    return resolved
+            except Exception:
+                pass
+        return str(chat_name or "").strip()
 
     def _build_memory_extractor(self):
         return ConversationMemoryExtractor(
@@ -1376,21 +1388,22 @@ class PromptSystem:
             return ""
 
     def context_values_for(self, chat_name, *, chat_type="private", now=None, base_prompt=None):
-        chat_name = str(chat_name or "").strip()
-        prompt_name = self.prompt_name_for(chat_name, chat_type=chat_type)
+        display_chat_name = str(chat_name or "").strip()
+        storage_chat_name = self.resolve_chat_name(display_chat_name)
+        prompt_name = self.prompt_name_for(display_chat_name, chat_type=chat_type)
         resolved_base_prompt = str(
-            base_prompt if base_prompt is not None else self.base_prompt_for(chat_name, chat_type=chat_type)
+            base_prompt if base_prompt is not None else self.base_prompt_for(display_chat_name, chat_type=chat_type)
         ).strip()
         if not resolved_base_prompt:
             resolved_base_prompt = "（未提供）"
 
         persona_status_block = self.load_persona_status(prompt_name) if prompt_name else ""
         conversation_memory_section = ""
-        if self.enabled_for(chat_name, chat_type=chat_type):
-            if self.memory_enabled_for(chat_name, chat_type=chat_type):
-                state = self.state_store.load_state(chat_name, prompt_name, strict=True)
+        if self.enabled_for(display_chat_name, chat_type=chat_type):
+            if self.memory_enabled_for(display_chat_name, chat_type=chat_type):
+                state = self.state_store.load_state(storage_chat_name, prompt_name, strict=True)
             else:
-                state = self.state_store.default_state(chat_name, prompt_name)
+                state = self.state_store.default_state(display_chat_name, prompt_name)
             conversation_memory_section = str(
                 self.prompt_builder.build_conversation_memory_section(state) or ""
             ).strip()
@@ -1400,7 +1413,7 @@ class PromptSystem:
             "persona_status_block": str(persona_status_block or "").strip(),
             "conversation_memory_section": conversation_memory_section,
             "now": now or datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "chat_name": chat_name,
+            "chat_name": display_chat_name,
         }
 
     def render_template_prompt(
@@ -1486,16 +1499,18 @@ class PromptSystem:
         extra_block = str(prompt_extra or "").strip()
         if extra_block:
             resolved_base_prompt = "\n\n".join(part for part in (resolved_base_prompt, extra_block) if part)
-        if not self.enabled_for(chat_name, chat_type=chat_type):
+        display_chat_name = str(chat_name or "").strip()
+        storage_chat_name = self.resolve_chat_name(display_chat_name)
+        if not self.enabled_for(display_chat_name, chat_type=chat_type):
             return resolved_base_prompt
-        prompt_name = self.prompt_name_for(chat_name, chat_type=chat_type)
-        if self.memory_enabled_for(chat_name, chat_type=chat_type):
-            state = self.state_store.load_state(chat_name, prompt_name, strict=True)
+        prompt_name = self.prompt_name_for(display_chat_name, chat_type=chat_type)
+        if self.memory_enabled_for(display_chat_name, chat_type=chat_type):
+            state = self.state_store.load_state(storage_chat_name, prompt_name, strict=True)
         else:
-            state = self.state_store.default_state(chat_name, prompt_name)
+            state = self.state_store.default_state(display_chat_name, prompt_name)
         persona_status_block = self.load_persona_status(prompt_name)
         return self.prompt_builder.build(
-            chat_name,
+            display_chat_name,
             resolved_base_prompt,
             state,
             current_message=message,
@@ -1522,12 +1537,14 @@ class PromptSystem:
         return self.memory_enabled_for(chat_name, chat_type=chat_type)
 
     def update_memory(self, chat_name, messages, api, chat_type="private", protected_count=None, now=None):
-        if not self.auto_memory_enabled_for(chat_name, chat_type=chat_type):
+        display_chat_name = str(chat_name or "").strip()
+        storage_chat_name = self.resolve_chat_name(display_chat_name)
+        if not self.auto_memory_enabled_for(display_chat_name, chat_type=chat_type):
             return None
         messages = messages if isinstance(messages, list) else []
-        prompt_name = self.prompt_name_for(chat_name)
+        prompt_name = self.prompt_name_for(display_chat_name)
         try:
-            state = self.state_store.load_state(chat_name, prompt_name, strict=True)
+            state = self.state_store.load_state(storage_chat_name, prompt_name, strict=True)
         except ValueError:
             return None
         if not self.memory_extractor.should_extract(state, messages, protected_count=protected_count, now=now):
@@ -1541,14 +1558,14 @@ class PromptSystem:
             state.setdefault("maintenance", {})
             state["maintenance"]["last_attempted_at"] = now or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             try:
-                self.state_store.save_state(chat_name, state)
+                self.state_store.save_state(storage_chat_name, state)
             except ValueError:
                 pass
             return None
         merged = self.state_store.merge_proposal(
             state,
             proposal,
-            chat_name=chat_name,
+            chat_name=storage_chat_name,
             wx_id=state.get("wx_id", "") if isinstance(state, dict) else "",
             now=now or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         )
@@ -1557,7 +1574,7 @@ class PromptSystem:
             state.setdefault("maintenance", {})
             state["maintenance"]["last_attempted_at"] = now or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             try:
-                self.state_store.save_state(chat_name, state)
+                self.state_store.save_state(storage_chat_name, state)
             except ValueError:
                 pass
             return None
@@ -1567,12 +1584,12 @@ class PromptSystem:
         try:
             merged.setdefault("maintenance", {})
             merged["maintenance"].update(cursor)
-            return self.state_store.save_state(chat_name, merged)
+            return self.state_store.save_state(storage_chat_name, merged)
         except ValueError:
             state.setdefault("maintenance", {})
             state["maintenance"]["last_attempted_at"] = now or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             try:
-                self.state_store.save_state(chat_name, state)
+                self.state_store.save_state(storage_chat_name, state)
             except ValueError:
                 pass
             return None
