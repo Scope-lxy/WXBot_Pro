@@ -80,18 +80,6 @@ html.icons-pref-local [class*=" bi-"]::before {
     <div class="brand"><i class="bi bi-robot"></i> WXBot Pro</div>
   </div>
   <div class="user-area">
-    <a href="https://wxbot.siverking.online/" target="_blank" rel="noopener"
-       style="display:inline-flex;align-items:center;gap:5px;color:rgba(255,255,255,.75);font-size:13px;text-decoration:none;border:1px solid rgba(255,255,255,.2);padding:4px 12px;border-radius:6px;transition:all .2s;"
-       onmouseover="this.style.background='rgba(255,255,255,.1)';this.style.color='#fff';"
-       onmouseout="this.style.background='';this.style.color='rgba(255,255,255,.75)';">
-      <i class="bi bi-file-text"></i><span class="topbar-link-text">使用文档</span>
-    </a>
-    <a href="https://github.com/SiverKing/SiverWXbot_plus/blob/main/docs/docs.md" target="_blank" rel="noopener"
-       style="display:inline-flex;align-items:center;gap:5px;color:rgba(255,255,255,.75);font-size:13px;text-decoration:none;border:1px solid rgba(255,255,255,.2);padding:4px 12px;border-radius:6px;transition:all .2s;"
-       onmouseover="this.style.background='rgba(255,255,255,.1)';this.style.color='#fff';"
-       onmouseout="this.style.background='';this.style.color='rgba(255,255,255,.75)';">
-      <i class="bi bi-file-text"></i><span class="topbar-link-text">上游文档</span>
-    </a>
     <a href="https://github.com/SiverKing/SiverWXbot_plus" target="_blank" rel="noopener"
        style="display:inline-flex;align-items:center;gap:5px;color:rgba(255,255,255,.75);font-size:13px;text-decoration:none;border:1px solid rgba(255,255,255,.2);padding:4px 12px;border-radius:6px;transition:all .2s;"
        onmouseover="this.style.background='rgba(255,255,255,.1)';this.style.color='#fff';"
@@ -205,7 +193,7 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div id="custom-update-notice" class="page-inline-notice page-inline-notice--note" style="display:none;">
           <i class="bi bi-info-circle-fill page-inline-notice__icon"></i>
           <div class="page-inline-notice__content">
-            当前运行的是定制版。发现官方新版时，请不要在工作电脑直接下载或覆盖；请先在维护电脑合并官方更新、保留定制改动并重新打包，再拿到工作电脑替换。
+            当前运行的是私人定制版，不支持从官方源更新，请联系开发者合并更新。
           </div>
         </div>
       </div>
@@ -12223,7 +12211,7 @@ $(function(){
         if (isCustomBuild) {
           $('#update-download-title, #update-download-links').hide();
           $('#custom-update-notice').show();
-          $('#custom-update-notice .page-inline-notice__content').text('当前运行的是定制版。发现新版时，请在维护电脑合并更新、保留定制改动并重新打包，再拿到工作电脑替换。' + (sourceName ? ' 当前更新源：' + sourceName + '。' : ''));
+          $('#custom-update-notice .page-inline-notice__content').text('当前运行的是私人定制版，不支持从官方源更新，请联系开发者合并更新。');
         } else {
           $('#update-download-title, #update-download-links').show();
           $('#custom-update-notice').hide();

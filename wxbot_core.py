@@ -2,8 +2,8 @@
 # Siver微信机器人 siver_wxbot - 面向对象版本 - wxautox4版本
 # 作者：https://www.siver.top
 
-version = "V4.7.26"
-version_log = "V4.7.26 - 优化监听和全局窗口管理、优化记忆存储文件命名、监听新增只监听不AI回复模式"
+version = "V4.7.27"
+version_log = "V4.7.27 - 合并远程访问凭据恢复与内外网访问优化，保留本地接口测试能力"
 custom_build = True
 update_feed_url = "https://wxbot.siverking.online/version.json"
 update_source_name = "官方版本源"
