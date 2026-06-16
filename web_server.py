@@ -263,7 +263,7 @@ DEFAULT_EMAIL_CONFIG = {
     "user": "",
     "pass": "",
 }
-DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
+DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "这条语音有点听不清"
 
 
 def normalize_voice_reply_config(config):
@@ -283,8 +283,13 @@ def normalize_voice_reply_config(config):
     config['chat_voice_reply_trigger_modes'] = trigger_modes
     if 'incoming_voice' in trigger_modes:
         config['chat_voice_recognition_switch'] = True
-    fallback_text = str(config.get('voice_transcription_fallback_text') or '').strip()
-    config['voice_transcription_fallback_text'] = fallback_text or DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT
+    if 'voice_transcription_fallback_text' not in config:
+        config['voice_transcription_fallback_text'] = DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT
+    else:
+        config['voice_transcription_fallback_text'] = str(
+            config.get('voice_transcription_fallback_text') or ''
+        ).strip()
+    config.setdefault('voice_transcription_fallback_reply_once', False)
     config['chat_voice_reply_request_keywords'] = _split_inline_keyword_list(
         config.get('chat_voice_reply_request_keywords', DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
     ) or list(DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
@@ -2186,6 +2191,7 @@ def dashboard():
     config.setdefault('new_friend_remark_prefix_timestamp', False)
     config.setdefault('new_friend_remark_suffix_timestamp', False)
     config.setdefault('chat_voice_recognition_switch', False)
+    config.setdefault('voice_transcription_fallback_reply_once', False)
     config.setdefault('chat_message_merge_delay', 3.0)
     config.setdefault('chat_image_recognition_switch', False)   # 私聊图片识别开关
     config.setdefault('chat_image_recognition_api',    0)        # 私聊识别接口索引
@@ -2230,6 +2236,7 @@ def dashboard():
     config.setdefault('api_error_reply', '')               # 接口调用失败时的固定回复，留空=静默
     config.setdefault('api_error_reply_once', False)       # 接口失败固定回复是否同一用户只发一次
     config.setdefault('meta_reply_blocked_reply', '')      # 命中元话术后的固定回复，留空=静默
+    config.setdefault('meta_reply_blocked_reply_once', False)  # 命中元话术固定回复是否同一用户只发一次
     config.setdefault('text_reply_limit_switch', False)      # 单用户文本回复次数限制开关
     config.setdefault('text_reply_limit_count', 99)          # 默认最多回复次数
     config.setdefault('text_reply_limit_hours', 24)          # 滚动小时窗口，0=关闭限制
@@ -3189,6 +3196,7 @@ def _coerce_bool_fields(merged_config):
         'AllListen_filter_mute',
         'chat_listen_only',
         'chat_voice_recognition_switch',
+        'voice_transcription_fallback_reply_once',
         'group_switch',
         'group_listen_only',
         'group_reply_at',
@@ -3224,6 +3232,7 @@ def _coerce_bool_fields(merged_config):
         'group_voice_reply_switch',
         'siver_panel_enabled',
         'api_error_reply_once',             # API错误只回复一次
+        'meta_reply_blocked_reply_once',    # 元话术固定回复只回复一次
         'text_reply_limit_switch',          # 单用户文本回复次数限制开关
         'text_reply_limit_ai_reply',        # 超限后AI自动生成结束语
         'text_reply_limit_reply_once',      # 超限后只回复一次
@@ -7070,6 +7079,7 @@ def main():
                 "chat_image_recognition_switch": False,
                 "chat_voice_recognition_switch": False,
                 "voice_transcription_fallback_text": DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT,
+                "voice_transcription_fallback_reply_once": False,
                 "chat_message_merge_delay": 3.0,
                 "chat_image_recognition_api": 0,
                 "group_image_recognition_switch": False,
@@ -7089,6 +7099,7 @@ def main():
                 "api_error_reply": "",
                 "api_error_reply_once": False,
                 "meta_reply_blocked_reply": "",
+                "meta_reply_blocked_reply_once": False,
                 "text_reply_limit_switch": False,
                 "text_reply_limit_count": 99,
                 "text_reply_limit_hours": 24,

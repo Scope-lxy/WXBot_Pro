@@ -73,6 +73,105 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(len(bot.memory_manager.calls), 1)
         self.assertEqual(dirty_calls, [("chat-a", "hello")])
 
+    def test_group_voice_text_without_at_is_saved_but_not_replied(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=True,
+            memory_max_count=5000,
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_reply_at=True,
+            group_listen_only=False,
+            group_image_recognition_switch=False,
+            group_voice_recognition_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            AtMe="@机器人",
+            cmd="admin",
+        )
+        bot.memory_manager = CaptureMemory()
+        bot._should_skip_message_memory = lambda chat, msg: False
+        bot._handle_admin_forward_input = lambda _chat, _msg: False
+        bot._handle_admin_moments_input = lambda _chat, _msg: False
+        bot._handle_material_source_message = lambda _chat, _msg: False
+        bot._record_received_message = lambda: None
+        bot._pause_group_reply = False
+        bot.callback_is_die = False
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+
+        bot._get_group_api = lambda _group: self.fail("没 @ 的群聊语音转文字不应触发 AI 回复")
+
+        msg = SimpleNamespace(
+            attr="group",
+            sender="B",
+            content="",
+            type="voice",
+            to_text=lambda: "B 的语音内容",
+        )
+        chat = SimpleNamespace(who="测试群", chat_type="group")
+
+        bot.message_handle_callback(msg, chat)
+
+        self.assertEqual(len(bot.memory_manager.calls), 1)
+        self.assertEqual(bot.memory_manager.calls[0]["chat_name"], "测试群")
+        self.assertEqual(bot.memory_manager.calls[0]["sender"], "B")
+        self.assertEqual(bot.memory_manager.calls[0]["content"], "B 的语音内容")
+        self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "voice")
+
+    def test_group_image_without_at_is_saved_but_not_replied(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=True,
+            memory_max_count=5000,
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_reply_at=True,
+            group_listen_only=False,
+            group_image_recognition_switch=True,
+            group_voice_recognition_switch=False,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            AtMe="@机器人",
+            cmd="admin",
+        )
+        bot.memory_manager = CaptureMemory()
+        bot._should_skip_message_memory = lambda chat, msg: False
+        bot._handle_admin_forward_input = lambda _chat, _msg: False
+        bot._handle_admin_moments_input = lambda _chat, _msg: False
+        bot._handle_material_source_message = lambda _chat, _msg: False
+        bot._record_received_message = lambda: None
+        bot._pause_group_reply = False
+        bot.callback_is_die = False
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+        bot._get_group_api = lambda _group: self.fail("没 @ 的群聊图片不应触发 AI 回复")
+
+        msg = SimpleNamespace(
+            attr="group",
+            sender="B",
+            content="",
+            type="image",
+            download=lambda: r"C:\tmp\group-image.png",
+        )
+        chat = SimpleNamespace(who="测试群", chat_type="group")
+
+        bot.message_handle_callback(msg, chat)
+
+        self.assertEqual(len(bot.memory_manager.calls), 1)
+        self.assertEqual(bot.memory_manager.calls[0]["chat_name"], "测试群")
+        self.assertEqual(bot.memory_manager.calls[0]["sender"], "B")
+        self.assertEqual(bot.memory_manager.calls[0]["content"], r"C:\tmp\group-image.png")
+        self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "image")
+
     def test_conversation_memory_background_worker_uses_existing_update_logic(self):
         bot = WXBot.__new__(WXBot)
         bot.run_flag = True

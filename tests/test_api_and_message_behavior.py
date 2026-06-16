@@ -1,10 +1,13 @@
 import unittest
 import threading
+import tempfile
+from datetime import datetime, timedelta
 from collections import deque
 from types import SimpleNamespace
 from unittest import mock
 
 from core.api import API_ERROR_REPLY_TEXT, DusAPI, OpenAIAPI, build_api_config_snapshot
+from core.reply_count_store import ReplyCountStore
 from feature import message_routing
 from feature.scheduled_messages import execute_scheduled_message_task
 from wxbot_core import WXAUTO_SAVE_DIR_NAME, WXBot, WxParam
@@ -429,6 +432,586 @@ class MessageBehaviorTests(unittest.TestCase):
         pipeline = bot._private_message_pipelines["张三"]
         self.assertEqual([msg.content for msg in pipeline["open_messages"]], ["第一条", "第二条"])
         self.assertEqual(bot._get_private_message_sequence("张三"), 2)
+
+    def test_voice_transcription_fallback_once_resets_with_reply_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                voice_transcription_fallback_text="这条语音有点听不清",
+                voice_transcription_fallback_reply_once=True,
+                text_reply_limit_hours=24,
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot.wx = None
+            bot.is_stop_requested = lambda: False
+
+            sent = []
+            chat = SimpleNamespace(who="张三", SendMsg=lambda text: sent.append(text) or True)
+
+            self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
+            self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
+            self.assertEqual(sent, ["这条语音有点听不清"])
+
+            started_at = datetime.now() - timedelta(hours=25)
+            bot.reply_count_store.data["users"]["张三"]["window_started_at"] = started_at.isoformat(timespec="seconds")
+
+            self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
+            self.assertEqual(sent, ["这条语音有点听不清", "这条语音有点听不清"])
+
+    def test_empty_voice_transcription_fallback_is_silent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                voice_transcription_fallback_text="",
+                voice_transcription_fallback_reply_once=True,
+                text_reply_limit_hours=24,
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot.wx = None
+
+            sent = []
+            chat = SimpleNamespace(who="张三", SendMsg=lambda text: sent.append(text) or True)
+
+            self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
+            self.assertEqual(sent, [])
+
+    def test_meta_reply_blocked_reply_once_resets_with_reply_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                chat_keyword_switch=False,
+                keyword_dict={},
+                memory_switch=False,
+                memory_context_switch=False,
+                chat_image_recognition_switch=False,
+                chat_split_reply_switch=False,
+                chat_split_max_count=4,
+                chat_split_max_chars=100,
+                clean_ai_reply_switch=True,
+                meta_reply_blocked_reply="换个说法吧",
+                meta_reply_blocked_reply_once=True,
+                api_error_reply_once=False,
+                text_reply_limit_switch=False,
+                text_reply_limit_hours=24,
+                chat_voice_reply_switch=False,
+                cmd="文件传输助手",
+                split_long_text=lambda text: [text],
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot.memory_manager = None
+            bot._voice_reply_state = {}
+            bot._private_reply_can_continue = lambda *_args, **_kwargs: True
+            bot._current_ai_material_outreach_config = lambda: {"ai_material_outreach_switch": False}
+            bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+            bot._get_chat_api = lambda _user: SimpleNamespace(chat=lambda *_args, **_kwargs: "作为AI，我不能这样回复")
+            bot._verified_send_chat = lambda _target, chat: chat
+            bot._ensure_target_listen_chat_for_send = lambda _target: None
+            bot._get_chat_send_lock = lambda _name: threading.Lock()
+            bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+            bot._begin_private_reply_runtime_turn = lambda _name: []
+            bot._finish_private_reply_runtime_turn = lambda *_args, **_kwargs: None
+            bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
+            bot._record_replied_message_success = lambda: None
+            bot._private_reply_send_allows_memory_save = lambda _result: False
+            bot._increment_daily_runtime_stat = lambda *_args, **_kwargs: None
+
+            sent = []
+            chat = SimpleNamespace(who="张三", SendMsg=lambda text: sent.append(text) or True)
+            message = SimpleNamespace(type="text", attr="friend", sender="张三", content="测试", id="1")
+
+            self.assertTrue(bot.wx_send_ai(chat, message))
+            self.assertTrue(bot.wx_send_ai(chat, message))
+            self.assertEqual(sent, ["换个说法吧"])
+
+            started_at = datetime.now() - timedelta(hours=25)
+            bot.reply_count_store.data["users"]["张三"]["window_started_at"] = started_at.isoformat(timespec="seconds")
+
+            self.assertTrue(bot.wx_send_ai(chat, message))
+            self.assertEqual(sent, ["换个说法吧", "换个说法吧"])
+
+    def test_group_meta_reply_blocked_reply_once_uses_sender_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                AtMe="",
+                cmd="文件传输助手",
+                AllListen_switch=False,
+                listen_list=[],
+                global_blacklist=[],
+                group=["测试群"],
+                group_switch=True,
+                group_keyword_switch=False,
+                group_keyword_at_only=False,
+                keyword_dict={},
+                group_reply_at=False,
+                group_listen_only=False,
+                group_image_recognition_switch=False,
+                group_split_reply_switch=False,
+                group_split_max_count=4,
+                group_split_max_chars=100,
+                group_reply_at_msg=False,
+                group_reply_quote=False,
+                memory_switch=False,
+                memory_context_switch=False,
+                clean_ai_reply_switch=True,
+                meta_reply_blocked_reply="换个说法吧",
+                meta_reply_blocked_reply_once=True,
+                text_reply_limit_hours=24,
+                split_long_text=lambda text: [text],
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot.memory_manager = None
+            bot._pause_group_reply = False
+            bot.is_stop_requested = lambda: False
+            bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: "作为AI，我不能这样回复")
+            bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+            bot._get_chat_send_lock = lambda _name: threading.Lock()
+            bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+            bot._record_replied_message_success = lambda: None
+
+            sent = []
+            chat = SimpleNamespace(
+                who="测试群",
+                chat_type="group",
+                SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
+            )
+            message = SimpleNamespace(
+                type="text",
+                attr="group",
+                sender="张三",
+                content="测试",
+                quote=lambda text, at=None: sent.append((text, at)) or True,
+            )
+
+            self.assertTrue(bot.process_message(chat, message))
+            self.assertTrue(bot.process_message(chat, message))
+            self.assertEqual(sent, [("换个说法吧", None)])
+
+            key = "group:测试群:张三"
+            started_at = datetime.now() - timedelta(hours=25)
+            bot.reply_count_store.data["users"][key]["window_started_at"] = started_at.isoformat(timespec="seconds")
+
+            self.assertTrue(bot.process_message(chat, message))
+            self.assertEqual(sent, [("换个说法吧", None), ("换个说法吧", None)])
+
+    def test_group_meta_reply_blocked_reply_once_does_not_mark_failed_send(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                AtMe="",
+                cmd="文件传输助手",
+                AllListen_switch=False,
+                listen_list=[],
+                global_blacklist=[],
+                group=["测试群"],
+                group_switch=True,
+                group_keyword_switch=False,
+                group_keyword_at_only=False,
+                keyword_dict={},
+                group_reply_at=False,
+                group_listen_only=False,
+                group_image_recognition_switch=False,
+                group_split_reply_switch=False,
+                group_split_max_count=4,
+                group_split_max_chars=100,
+                group_reply_at_msg=False,
+                group_reply_quote=False,
+                memory_switch=False,
+                memory_context_switch=False,
+                clean_ai_reply_switch=True,
+                meta_reply_blocked_reply="换个说法吧",
+                meta_reply_blocked_reply_once=True,
+                text_reply_limit_hours=24,
+                split_long_text=lambda text: [text],
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot.memory_manager = None
+            bot._pause_group_reply = False
+            bot.is_stop_requested = lambda: False
+            bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: "作为AI，我不能这样回复")
+            bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+            bot._get_chat_send_lock = lambda _name: threading.Lock()
+            bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+            bot._record_replied_message_success = lambda: None
+
+            attempts = []
+            chat = SimpleNamespace(
+                who="测试群",
+                chat_type="group",
+                SendMsg=lambda msg, at=None: attempts.append((msg, at)) or False,
+            )
+            message = SimpleNamespace(
+                type="text",
+                attr="group",
+                sender="张三",
+                content="测试",
+                quote=lambda text, at=None: attempts.append((text, at)) or False,
+            )
+
+            self.assertFalse(bot.process_message(chat, message))
+            self.assertFalse(bot.process_message(chat, message))
+            self.assertEqual(attempts, [("换个说法吧", None), ("换个说法吧", None)])
+            user_data = bot.reply_count_store.get_user("group:测试群:张三")
+            self.assertFalse(user_data.get("meta_reply_blocked_notified"))
+
+    def test_group_api_error_reply_once_resets_with_reply_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                AtMe="",
+                cmd="文件传输助手",
+                AllListen_switch=False,
+                listen_list=[],
+                global_blacklist=[],
+                group=["测试群"],
+                group_switch=True,
+                group_keyword_switch=False,
+                group_keyword_at_only=False,
+                keyword_dict={},
+                group_reply_at=False,
+                group_listen_only=False,
+                group_image_recognition_switch=False,
+                group_split_reply_switch=False,
+                group_split_max_count=4,
+                group_split_max_chars=100,
+                group_reply_at_msg=False,
+                group_reply_quote=False,
+                memory_switch=False,
+                memory_context_switch=False,
+                clean_ai_reply_switch=True,
+                meta_reply_blocked_reply="",
+                meta_reply_blocked_reply_once=False,
+                api_error_reply="接口忙",
+                api_error_reply_once=True,
+                text_reply_limit_hours=24,
+                split_long_text=lambda text: [text],
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot.memory_manager = None
+            bot._pause_group_reply = False
+            bot.is_stop_requested = lambda: False
+            bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: API_ERROR_REPLY_TEXT)
+            bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+            bot._get_chat_send_lock = lambda _name: threading.Lock()
+            bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+            bot._record_replied_message_success = lambda: None
+
+            sent = []
+            chat = SimpleNamespace(
+                who="测试群",
+                chat_type="group",
+                SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
+            )
+            message = SimpleNamespace(
+                type="text",
+                attr="group",
+                sender="张三",
+                content="测试",
+                quote=lambda text, at=None: sent.append((text, at)) or True,
+            )
+
+            self.assertTrue(bot.process_message(chat, message))
+            self.assertTrue(bot.process_message(chat, message))
+            self.assertEqual(sent, [("接口忙", None)])
+
+            key = "group:测试群:张三"
+            started_at = datetime.now() - timedelta(hours=25)
+            bot.reply_count_store.data["users"][key]["window_started_at"] = started_at.isoformat(timespec="seconds")
+
+            self.assertTrue(bot.process_message(chat, message))
+            self.assertEqual(sent, [("接口忙", None), ("接口忙", None)])
+
+    def test_group_voice_transcription_fallback_once_uses_sender_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                AtMe="",
+                cmd="文件传输助手",
+                AllListen_switch=False,
+                listen_list=[],
+                global_blacklist=[],
+                group=["测试群"],
+                group_switch=True,
+                group_keyword_switch=False,
+                group_keyword_at_only=False,
+                keyword_dict={},
+                group_reply_at=False,
+                group_listen_only=False,
+                group_image_recognition_switch=False,
+                group_voice_recognition_switch=True,
+                group_reply_at_msg=True,
+                group_reply_quote=True,
+                voice_transcription_fallback_text="这条语音有点听不清",
+                voice_transcription_fallback_reply_once=True,
+                text_reply_limit_hours=24,
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot._pause_group_reply = False
+            bot.is_stop_requested = lambda: False
+
+            sent = []
+            chat = SimpleNamespace(
+                who="测试群",
+                chat_type="group",
+                SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
+            )
+            message = SimpleNamespace(
+                type="voice",
+                attr="group",
+                sender="张三",
+                content="",
+                _voice_transcription_failed=True,
+                quote=lambda text, at=None: sent.append((text, at)) or True,
+            )
+
+            self.assertTrue(bot.process_message(chat, message))
+            self.assertTrue(bot.process_message(chat, message))
+            self.assertEqual(sent, [("这条语音有点听不清", "张三")])
+
+            key = "group:测试群:张三"
+            started_at = datetime.now() - timedelta(hours=25)
+            bot.reply_count_store.data["users"][key]["window_started_at"] = started_at.isoformat(timespec="seconds")
+
+            self.assertTrue(bot.process_message(chat, message))
+            self.assertEqual(sent, [("这条语音有点听不清", "张三"), ("这条语音有点听不清", "张三")])
+
+    def test_group_voice_transcription_fallback_respects_at_only_groups(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                AtMe="@机器人",
+                cmd="文件传输助手",
+                AllListen_switch=False,
+                listen_list=[],
+                global_blacklist=[],
+                group=["测试群"],
+                group_switch=True,
+                group_keyword_switch=False,
+                group_keyword_at_only=False,
+                keyword_dict={},
+                group_reply_at=True,
+                group_listen_only=False,
+                group_image_recognition_switch=False,
+                group_voice_recognition_switch=True,
+                group_reply_at_msg=True,
+                group_reply_quote=True,
+                voice_transcription_fallback_text="这条语音有点听不清",
+                voice_transcription_fallback_reply_once=True,
+                text_reply_limit_hours=24,
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot._pause_group_reply = False
+            bot.is_stop_requested = lambda: False
+
+            sent = []
+            chat = SimpleNamespace(
+                who="测试群",
+                chat_type="group",
+                SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
+            )
+            message = SimpleNamespace(
+                type="voice",
+                attr="group",
+                sender="张三",
+                content="",
+                _voice_transcription_failed=True,
+                quote=lambda text, at=None: sent.append((text, at)) or True,
+            )
+
+            self.assertTrue(bot.process_message(chat, message))
+            self.assertEqual(sent, [])
+
+    def test_pending_visual_context_reference_intent_is_bilingual(self):
+        positives = [
+            "看看这是啥意思",
+            "帮我看看这票是什么",
+            "帮我看看上面那张写的是啥",
+            "这张图片里有什么",
+            "这发票写的什么",
+            "解释一下",
+            "刚才说到哪了",
+            "what does this mean",
+            "explain this",
+            "read the screenshot above",
+            "analyze this image",
+        ]
+        negatives = [
+            "this is a normal message",
+            "what is the plan today",
+            "give me more context",
+        ]
+
+        for text in positives:
+            with self.subTest(text=text):
+                self.assertTrue(WXBot._text_references_pending_visual_context(text))
+        for text in negatives:
+            with self.subTest(text=text):
+                self.assertFalse(WXBot._text_references_pending_visual_context(text))
+
+    def test_group_pending_image_context_can_be_used_by_later_sender(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AtMe="@机器人",
+            cmd="文件传输助手",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=True,
+            group_listen_only=False,
+            group_image_recognition_switch=True,
+            group_image_recognition_api=0,
+            group_split_reply_switch=False,
+            group_split_max_count=4,
+            group_split_max_chars=100,
+            group_reply_at_msg=False,
+            group_reply_quote=False,
+            memory_switch=False,
+            memory_context_switch=False,
+            clean_ai_reply_switch=False,
+            meta_reply_blocked_reply="",
+            meta_reply_blocked_reply_once=False,
+            group_voice_reply_switch=False,
+            split_long_text=lambda text: [text],
+        )
+        bot.memory_manager = None
+        bot.reply_count_store = ReplyCountStore("")
+        bot._pause_group_reply = False
+        bot.is_stop_requested = lambda: False
+        bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+        bot._get_chat_send_lock = lambda _name: threading.Lock()
+        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+        bot._record_replied_message_success = lambda: None
+
+        image_reply_calls = []
+        bot._reply_group_image_message = (
+            lambda _chat, _message, _history, image_paths=None, attached_text="":
+                image_reply_calls.append((list(image_paths or []), attached_text)) or "图片答案"
+        )
+        bot._get_group_api = lambda _group: self.fail("问图时应走图片回复管线，而不是普通群聊 AI")
+
+        chat = SimpleNamespace(
+            who="测试群",
+            chat_type="group",
+            SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
+        )
+        sent = []
+        bot._set_pending_visual_context("测试群", [r"C:\tmp\a-image.png"])
+        message = SimpleNamespace(
+            type="text",
+            attr="group",
+            sender="B",
+            content="@机器人 看看这是啥意思",
+            quote=lambda text, at=None: sent.append((text, at)) or True,
+        )
+
+        self.assertTrue(bot.process_message(chat, message))
+
+        self.assertEqual(image_reply_calls, [([r"C:\tmp\a-image.png"], "看看这是啥意思")])
+        self.assertEqual(sent, [("图片答案", None)])
+        self.assertIsNone(bot._get_pending_visual_context("测试群"))
+
+    def test_group_pending_image_context_ignores_unrelated_at_message(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AtMe="@机器人",
+            cmd="文件传输助手",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=True,
+            group_listen_only=False,
+            group_image_recognition_switch=True,
+            group_split_reply_switch=False,
+            group_split_max_count=4,
+            group_split_max_chars=100,
+            group_reply_at_msg=False,
+            group_reply_quote=False,
+            memory_switch=False,
+            memory_context_switch=False,
+            clean_ai_reply_switch=False,
+            meta_reply_blocked_reply="",
+            meta_reply_blocked_reply_once=False,
+            group_voice_reply_switch=False,
+            split_long_text=lambda text: [text],
+        )
+        bot.memory_manager = None
+        bot.reply_count_store = ReplyCountStore("")
+        bot._pause_group_reply = False
+        bot.is_stop_requested = lambda: False
+        bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+        bot._get_chat_send_lock = lambda _name: threading.Lock()
+        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+        bot._record_replied_message_success = lambda: None
+        bot._reply_group_image_message = lambda *_args, **_kwargs: self.fail("普通 @ 消息不应消费 pending 图片")
+        bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: "普通回答")
+
+        sent = []
+        chat = SimpleNamespace(
+            who="测试群",
+            chat_type="group",
+            SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
+        )
+        bot._set_pending_visual_context("测试群", [r"C:\tmp\a-image.png"])
+        message = SimpleNamespace(
+            type="text",
+            attr="group",
+            sender="B",
+            content="@机器人 今天天气怎么样",
+            quote=lambda text, at=None: sent.append((text, at)) or True,
+        )
+
+        self.assertTrue(bot.process_message(chat, message))
+
+        self.assertEqual(sent, [("普通回答", None)])
+        self.assertEqual(
+            bot._get_pending_visual_context("测试群")["image_paths"],
+            [r"C:\tmp\a-image.png"],
+        )
+
+    def test_group_image_message_only_sets_pending_context_when_not_at_only(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AtMe="@机器人",
+            cmd="文件传输助手",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=False,
+            group_listen_only=False,
+            group_image_recognition_switch=True,
+        )
+        bot._pause_group_reply = False
+        bot._reply_group_image_message = lambda *_args, **_kwargs: self.fail("群图片本身不应立即识图")
+        bot._get_group_api = lambda _group: self.fail("群图片本身不应触发普通群聊 AI")
+
+        chat = SimpleNamespace(who="测试群", chat_type="group")
+        message = SimpleNamespace(
+            type="image",
+            attr="group",
+            sender="A",
+            content=r"C:\tmp\group-image.png",
+        )
+
+        self.assertTrue(bot.process_message(chat, message))
+        self.assertEqual(
+            bot._get_pending_visual_context("测试群")["image_paths"],
+            [r"C:\tmp\group-image.png"],
+        )
 
     def test_private_message_pipeline_merges_batch_without_version_cancelling_reply(self):
         bot = WXBot.__new__(WXBot)

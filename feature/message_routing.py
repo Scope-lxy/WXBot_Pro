@@ -62,7 +62,13 @@ def _update_alllisten_timestamp(bot, chat_name: str) -> None:
             break
 
 
-def _prepare_friend_message_media(bot, msg, chat) -> None:
+def prepare_message_media(bot, msg, chat) -> None:
+    if getattr(msg, "_wxbot_media_prepared", False):
+        return
+    try:
+        setattr(msg, "_wxbot_media_prepared", True)
+    except Exception:
+        pass
     image_enabled, voice_enabled = _recognition_switches_for_chat(bot, chat)
     try:
         if image_enabled:
@@ -93,15 +99,12 @@ def _prepare_friend_message_media(bot, msg, chat) -> None:
             return
     except Exception:
         pass
-    if getattr(chat, "chat_type", "") == "group":
-        msg._skip_ai_reply = True
-    else:
-        msg._voice_transcription_failed = True
+    msg._voice_transcription_failed = True
     _bot_log(bot, "WARNING", "消息自动语音转文字失败")
 
 
 def handle_friend_message_callback(bot, msg, chat, *, text: str):
-    _prepare_friend_message_media(bot, msg, chat)
+    prepare_message_media(bot, msg, chat)
     record_received = getattr(bot, "_record_received_message", None)
     if callable(record_received):
         record_received()
@@ -192,6 +195,15 @@ def _route_group_message(bot, chat, message):
         )
     ):
         _bot_log(bot, message=f"群组 {chat.who} 图片识别未开启，跳过图片消息")
+        return {"action": "skip"}
+
+    if (
+        getattr(bot.config, "group_image_recognition_switch", False)
+        and getattr(message, "type", "") == "image"
+    ):
+        set_pending_visual_context = getattr(bot, "_set_pending_visual_context", None)
+        if callable(set_pending_visual_context):
+            set_pending_visual_context(chat.who, [getattr(message, "content", "")])
         return {"action": "skip"}
 
     keyword_plan = plan_group_keyword_reply(

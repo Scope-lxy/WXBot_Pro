@@ -43,6 +43,7 @@ from feature.task_workbench_storage import TaskWorkbenchStorage
 from feature.voice_reply import DEFAULT_CHAT_VOICE_REPLY_KEYWORDS, DEFAULT_GROUP_VOICE_REPLY_KEYWORDS
 
 LONG_REPLY_SEGMENT_CHARS = 1000
+DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "这条语音有点听不清"
 
 
 class WXBotConfig:
@@ -314,7 +315,8 @@ class WXBotConfig:
                     "clean_ai_reply_switch": True,
                     "chat_image_recognition_switch": False,
                     "chat_voice_recognition_switch": False,
-                    "voice_transcription_fallback_text": "刚才那条语音，我有点没听清",
+                    "voice_transcription_fallback_text": DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT,
+                    "voice_transcription_fallback_reply_once": False,
                     "chat_message_merge_delay": 3.0,
                     "chat_image_recognition_api": 0,
                     "group_image_recognition_switch": False,
@@ -323,6 +325,7 @@ class WXBotConfig:
                     "api_error_reply": "",
                     "api_error_reply_once": False,
                     "meta_reply_blocked_reply": "",
+                    "meta_reply_blocked_reply_once": False,
                     "text_reply_limit_switch": False,
                     "text_reply_limit_count": 99,
                     "text_reply_limit_hours": 24,
@@ -1034,9 +1037,13 @@ class WXBotConfig:
         # 图片识别配置
         self.chat_image_recognition_switch  = bool(self.config.get('chat_image_recognition_switch', False))
         self.chat_voice_recognition_switch  = bool(self.config.get('chat_voice_recognition_switch', False))
-        self.voice_transcription_fallback_text = str(
-            self.config.get('voice_transcription_fallback_text', '刚才那条语音，我有点没听清') or ''
-        ).strip() or '刚才那条语音，我有点没听清'
+        voice_fallback_text = str(
+            self.config.get('voice_transcription_fallback_text', DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT) or ''
+        ).strip()
+        self.voice_transcription_fallback_text = voice_fallback_text
+        self.voice_transcription_fallback_reply_once = bool(
+            self.config.get('voice_transcription_fallback_reply_once', False)
+        )
         self.chat_message_merge_delay = coerce_float_range(
             self.config.get('chat_message_merge_delay', 3.0), 3.0, 0.0, 10.0
         )
@@ -1094,6 +1101,7 @@ class WXBotConfig:
         self.api_error_reply = str(self.config.get('api_error_reply', '') or '').strip()
         self.api_error_reply_once = bool(self.config.get('api_error_reply_once', False))
         self.meta_reply_blocked_reply = str(self.config.get('meta_reply_blocked_reply', '') or '').strip()
+        self.meta_reply_blocked_reply_once = bool(self.config.get('meta_reply_blocked_reply_once', False))
 
         # 单用户最大回复轮数限制配置
         self.text_reply_limit_switch = bool(self.config.get('text_reply_limit_switch', False))

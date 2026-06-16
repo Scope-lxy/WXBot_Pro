@@ -165,7 +165,38 @@ from feature import contacts, friend_request, listening, message_routing, relati
 from feature import admin_forward_flow, admin_moments_flow
 
 
-PENDING_VISUAL_CONTEXT_TTL_SECONDS = 300
+PENDING_VISUAL_CONTEXT_TTL_SECONDS = 600
+PENDING_VISUAL_DIRECT_REFERENCE_RE = re.compile(
+    r"("
+    r"图|照|相|截|屏|画|码|表情|菜单|票|单|"
+    r"\b(?:image|picture|photo|photograph|screenshot|screen\s*shot|pic|img|meme|poster|"
+    r"qr\s*code|barcode)\b"
+    r")",
+    re.IGNORECASE,
+)
+PENDING_VISUAL_CONTEXT_REFERENCE_RE = re.compile(
+    r"("
+    r"这|那|刚|东西|张|上|前|后|"
+    r"\b(?:this|this\s+one|that|that\s+one|it|above|below|previous|last\s+one|next|the\s+one\s+above)\b"
+    r")",
+    re.IGNORECASE,
+)
+PENDING_VISUAL_ACTION_RE = re.compile(
+    r"("
+    r"看|听|说|读|写|什么|识别|解释|意思|含义|翻译|描述|分析|提取|"
+    r"\b(?:ocr|read|describe|analy[sz]e|recognize|identify|transcribe|extract|translate|"
+    r"explain|caption|what(?:'s| is)|what does|mean|say|says|text)\b"
+    r")",
+    re.IGNORECASE,
+)
+PENDING_VISUAL_STANDALONE_ACTION_RE = re.compile(
+    r"("
+    r"看|听|说|读|写|识别|解释|意思|含义|翻译|描述|分析|提取|"
+    r"\b(?:ocr|read|describe|analy[sz]e|recognize|identify|transcribe|extract|translate|"
+    r"explain|caption|mean|say|says|text)\b"
+    r")",
+    re.IGNORECASE,
+)
 PRIVATE_REPLY_ECHO_DEDUPE_SECONDS = 60
 CONVERSATION_MEMORY_BACKGROUND_INTERVAL_SECONDS = 30
 PRIVATE_MESSAGE_PIPELINE_MAX_QUEUED_BATCHES = 1
@@ -374,7 +405,7 @@ MOMENTS_CAPTION_PROMPT_FILE = "moments_caption.md"
 MATERIAL_OUTREACH_DECISION_PROMPT_FILE = "material_decision.md"
 MATERIAL_OUTREACH_PREFACE_PROMPT_FILE = "material_preface.md"
 PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS = 30 * 60
-VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
+VOICE_TRANSCRIPTION_FALLBACK_TEXT = "这条语音有点听不清"
 
 
 class _ChatAPIFailoverProxy:
@@ -3458,6 +3489,8 @@ class WXBot:
                 log(message=text)
             callback_result = None
 
+            message_routing.prepare_message_media(self, msg, chat)
+
             if msg.attr == "friend":
                 callback_result = message_routing.handle_friend_message_callback(self, msg, chat, text=text)
 
@@ -3586,6 +3619,7 @@ class WXBot:
 
         api_error_reply = False
         api_error_should_mark = False
+        meta_reply_should_mark = False
         voice_candidate = False
         start_voice_session = False
         image_reply_context_used = False
@@ -3697,7 +3731,7 @@ class WXBot:
             log(level="ERROR", message=str(e) + f"\n{API_ERROR_REPLY_TEXT}")
             api_error_reply = True
             if self.config.api_error_reply_once and user_key:
-                user_data = self.reply_count_store.get_user(user_key)
+                user_data = self._reply_once_user_data(user_key)
                 if user_data.get("api_err_notified"):
                     return True
                 api_error_should_mark = True
@@ -3705,7 +3739,7 @@ class WXBot:
 
         if is_api_error_reply(reply):
             if self.config.api_error_reply_once and user_key:
-                user_data = self.reply_count_store.get_user(user_key)
+                user_data = self._reply_once_user_data(user_key)
                 if user_data.get("api_err_notified"):
                     return True
                 api_error_should_mark = True
@@ -3713,6 +3747,11 @@ class WXBot:
             parts = self._api_error_reply_parts()
         elif self.config.chat_split_reply_switch:
             blocked_policy = self._meta_reply_policy_kwargs()
+            meta_reply_blocked, meta_reply_already_notified, meta_reply_should_mark = (
+                self._meta_reply_blocked_once_state(reply, blocked_policy, user_key)
+            )
+            if meta_reply_already_notified:
+                return True
             parts, split_source, split_source_count = prepare_reply_parts_with_source(
                 reply,
                 split_enabled=True,
@@ -3724,6 +3763,7 @@ class WXBot:
                 allow_chinese_space_split=True,
                 on_clean_empty=self._log_empty_cleaned_reply,
             )
+            meta_reply_should_mark = meta_reply_should_mark and parts == [blocked_policy["fallback_reply"]]
             self._log_reply_split_outcome(
                 scene_label="私聊",
                 chat_name=chat.who,
@@ -3734,6 +3774,11 @@ class WXBot:
                 self._increment_daily_runtime_stat("private_split_replies")
         else:
             blocked_policy = self._meta_reply_policy_kwargs()
+            meta_reply_blocked, meta_reply_already_notified, meta_reply_should_mark = (
+                self._meta_reply_blocked_once_state(reply, blocked_policy, user_key)
+            )
+            if meta_reply_already_notified:
+                return True
             parts = prepare_reply_parts(
                 reply,
                 split_enabled=False,
@@ -3744,6 +3789,7 @@ class WXBot:
                 max_chars=getattr(self.config, 'chat_split_max_chars', 20),
                 on_clean_empty=self._log_empty_cleaned_reply,
             )
+            meta_reply_should_mark = meta_reply_should_mark and parts == [blocked_policy["fallback_reply"]]
 
         if not self._private_reply_can_continue(chat):
             return True
@@ -3800,6 +3846,9 @@ class WXBot:
 
         if send_success and api_error_should_mark:
             self.reply_count_store.mark_api_err_notified(user_key)
+
+        if send_success and meta_reply_should_mark:
+            self.reply_count_store.mark_meta_reply_blocked_notified(user_key)
 
         if send_success and self.config.text_reply_limit_switch and user_key and not api_error_reply:
             self.reply_count_store.increment_ai_count(user_key)
@@ -3972,10 +4021,14 @@ class WXBot:
             time.sleep(1)
             return result
         if action == "group_ai":
+            if getattr(message, '_voice_transcription_failed', False):
+                return self._send_group_voice_transcription_fallback(chat, message)
+            group_image_reply_context_used = False
             content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
             log(message=f"群组 {chat.who}：触发 AI 回复，内容：{content_without_at}")
             content_with_sender = f"{message.sender}: {content_without_at}"
             group_voice_candidate_hit = False
+            group_meta_reply_should_mark = False
             try:
                 history = []
                 if self.config.memory_switch and self.config.memory_context_switch and self.memory_manager:
@@ -4004,6 +4057,23 @@ class WXBot:
                         image_paths,
                         text_part.strip(),
                     )
+                elif (
+                    self.config.group_image_recognition_switch
+                    and self._text_references_pending_visual_context(content_without_at)
+                ):
+                    pending_visual_context = self._get_pending_visual_context(chat.who)
+                    if pending_visual_context:
+                        reply = self._reply_group_image_message(
+                            chat,
+                            message,
+                            history,
+                            pending_visual_context.get("image_paths", []),
+                            content_without_at,
+                        )
+                        group_image_reply_context_used = True
+                    else:
+                        group_api = self._get_group_api(chat.who)
+                        reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
                 else:
                     group_api = self._get_group_api(chat.who)
                     reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
@@ -4013,9 +4083,23 @@ class WXBot:
                 reply = API_ERROR_REPLY_TEXT
             # 接口调用失败时替换为配置的固定回复；留空则静默
             if is_api_error_reply(reply):
+                group_user_key = self._get_group_reply_once_key(chat, message)
+                group_api_error_should_mark = False
+                if getattr(self.config, "api_error_reply_once", False) and group_user_key:
+                    user_data = self._reply_once_user_data(group_user_key)
+                    if user_data.get("api_err_notified"):
+                        return True
+                    group_api_error_should_mark = True
                 parts = self._api_error_reply_parts()
             elif self.config.group_split_reply_switch:
+                group_api_error_should_mark = False
                 blocked_policy = self._meta_reply_policy_kwargs()
+                group_user_key = self._get_group_reply_once_key(chat, message)
+                _blocked, already_notified, group_meta_reply_should_mark = (
+                    self._meta_reply_blocked_once_state(reply, blocked_policy, group_user_key)
+                )
+                if already_notified:
+                    return True
                 parts, split_source, split_source_count = prepare_reply_parts_with_source(
                     reply,
                     split_enabled=True,
@@ -4026,6 +4110,10 @@ class WXBot:
                     max_chars=getattr(self.config, 'group_split_max_chars', 20),
                     on_clean_empty=self._log_empty_cleaned_reply,
                 )
+                group_meta_reply_should_mark = (
+                    group_meta_reply_should_mark
+                    and parts == [blocked_policy["fallback_reply"]]
+                )
                 self._log_reply_split_outcome(
                     scene_label="群聊",
                     chat_name=chat.who,
@@ -4035,7 +4123,14 @@ class WXBot:
                 if len(parts or []) > 1:
                     self._increment_daily_runtime_stat("group_split_replies")
             else:
+                group_api_error_should_mark = False
                 blocked_policy = self._meta_reply_policy_kwargs()
+                group_user_key = self._get_group_reply_once_key(chat, message)
+                _blocked, already_notified, group_meta_reply_should_mark = (
+                    self._meta_reply_blocked_once_state(reply, blocked_policy, group_user_key)
+                )
+                if already_notified:
+                    return True
                 parts = prepare_reply_parts(
                     reply,
                     split_enabled=False,
@@ -4045,6 +4140,10 @@ class WXBot:
                     blocked_policy=blocked_policy["blocked_policy"],
                     max_chars=getattr(self.config, 'group_split_max_chars', 20),
                     on_clean_empty=self._log_empty_cleaned_reply,
+                )
+                group_meta_reply_should_mark = (
+                    group_meta_reply_should_mark
+                    and parts == [blocked_policy["fallback_reply"]]
                 )
 
             if group_voice_candidate_hit and not is_api_error_reply(reply):
@@ -4090,9 +4189,19 @@ class WXBot:
                         result = chat.SendMsg(msg=part, at=message.sender if i == 0 else None)
                     else:
                         result = chat.SendMsg(msg=part)
-                    sent_any = True
+                    sent_any = sent_any or ReplyCountStore.was_send_success(result)
 
             if sent_any:
+                if group_image_reply_context_used and not is_api_error_reply(reply):
+                    self._clear_pending_visual_context(chat.who)
+                if group_api_error_should_mark:
+                    group_user_key = self._get_group_reply_once_key(chat, message)
+                    if group_user_key:
+                        self.reply_count_store.mark_api_err_notified(group_user_key)
+                if group_meta_reply_should_mark:
+                    group_user_key = self._get_group_reply_once_key(chat, message)
+                    if group_user_key:
+                        self.reply_count_store.mark_meta_reply_blocked_notified(group_user_key)
                 self._record_replied_message_success()
             return result
 
@@ -4756,13 +4865,45 @@ class WXBot:
             return True
         return False
 
+    def _reply_once_user_data(self, user_key):
+        limit_hours = getattr(self.config, "text_reply_limit_hours", 24)
+        return self.reply_count_store.get_user(user_key, now=datetime.now(), limit_hours=limit_hours)
+
+    def _meta_reply_blocked_once_state(self, reply, blocked_policy, user_key):
+        blocked = bool(
+            getattr(self.config, 'clean_ai_reply_switch', False)
+            and blocked_policy["fallback_reply"]
+            and not clean_ai_reply_text(reply)
+        )
+        already_notified = bool(
+            blocked
+            and blocked_policy["reply_once"]
+            and user_key
+            and self._reply_once_user_data(user_key).get("meta_reply_blocked_notified")
+        )
+        should_mark = bool(blocked and blocked_policy["reply_once"] and user_key)
+        return blocked, already_notified, should_mark
+
     def _send_private_voice_transcription_fallback(self, chat):
+        user_key = self._get_reply_count_key(chat)
+        if (
+            getattr(self.config, "voice_transcription_fallback_reply_once", False)
+            and user_key
+            and self._reply_once_user_data(user_key).get("voice_transcription_fallback_notified")
+        ):
+            log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，回复循环窗口内已提示过，已跳过兜底提示")
+            return True
         fallback_text = str(
-            getattr(self.config, "voice_transcription_fallback_text", "") or VOICE_TRANSCRIPTION_FALLBACK_TEXT
-        ).strip() or VOICE_TRANSCRIPTION_FALLBACK_TEXT
+            getattr(self.config, "voice_transcription_fallback_text", "")
+        ).strip()
+        if not fallback_text:
+            log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，未配置兜底提示，本次静默")
+            return True
         try:
             result = chat.SendMsg(fallback_text)
             if result is not False:
+                if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
+                    self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
                 log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，已发送兜底提示")
                 return True
             log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，聊天窗口兜底提示发送失败，准备走全局发送兜底")
@@ -4776,10 +4917,47 @@ class WXBot:
             if result is False:
                 log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，全局兜底提示发送失败")
                 return False
+            if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
+                self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
             log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，已通过全局发送兜底提示")
             return True
         except Exception as exc:
             log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，全局兜底提示异常：{exc}")
+            return False
+
+    def _send_group_voice_transcription_fallback(self, chat, message):
+        user_key = self._get_group_reply_once_key(chat, message)
+        if (
+            getattr(self.config, "voice_transcription_fallback_reply_once", False)
+            and user_key
+            and self._reply_once_user_data(user_key).get("voice_transcription_fallback_notified")
+        ):
+            log(level="WARNING", message=f"群聊 {chat.who} {getattr(message, 'sender', '')} 语音转文字失败，回复循环窗口内已提示过，已跳过兜底提示")
+            return True
+        fallback_text = str(
+            getattr(self.config, "voice_transcription_fallback_text", "")
+        ).strip()
+        if not fallback_text:
+            log(level="WARNING", message=f"群聊 {chat.who} 语音转文字失败，未配置兜底提示，本次静默")
+            return True
+        try:
+            if getattr(self.config, "group_reply_quote", True) and getattr(self.config, "group_reply_at_msg", True):
+                result = message.quote(fallback_text, at=message.sender)
+            elif getattr(self.config, "group_reply_quote", True):
+                result = message.quote(fallback_text)
+            elif getattr(self.config, "group_reply_at_msg", True):
+                result = chat.SendMsg(msg=fallback_text, at=message.sender)
+            else:
+                result = chat.SendMsg(msg=fallback_text)
+            if not ReplyCountStore.was_send_success(result):
+                log(level="WARNING", message=f"群聊 {chat.who} 语音转文字失败，兜底提示发送失败")
+                return False
+            if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
+                self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
+            log(level="WARNING", message=f"群聊 {chat.who} 语音转文字失败，已发送兜底提示")
+            return True
+        except Exception as exc:
+            log(level="WARNING", message=f"群聊 {chat.who} 语音转文字失败，兜底提示异常：{exc}")
             return False
 
     def _build_merged_private_message(self, messages):
@@ -5249,6 +5427,18 @@ class WXBot:
             for index, _path in enumerate(image_paths or [])
         ]
 
+    @staticmethod
+    def _text_references_pending_visual_context(text):
+        text = str(text or "")
+        return bool(
+            PENDING_VISUAL_DIRECT_REFERENCE_RE.search(text)
+            or PENDING_VISUAL_STANDALONE_ACTION_RE.search(text)
+            or (
+                PENDING_VISUAL_CONTEXT_REFERENCE_RE.search(text)
+                and PENDING_VISUAL_ACTION_RE.search(text)
+            )
+        )
+
     def _set_pending_visual_context(self, chat_name, image_paths, *, visual_notes=None):
         self._ensure_message_runtime_state()
         normalized_paths = self._normalize_visual_image_paths(image_paths)
@@ -5574,19 +5764,29 @@ class WXBot:
         meta_reply = str(
             getattr(self, 'meta_reply_blocked_reply', getattr(self.config, 'meta_reply_blocked_reply', '')) or ''
         ).strip()
+        meta_reply_once = bool(getattr(self.config, 'meta_reply_blocked_reply_once', False))
         if meta_reply:
             return {
                 "fallback_reply": meta_reply,
                 "blocked_policy": "fallback",
+                "reply_once": meta_reply_once,
             }
         return {
             "fallback_reply": "",
             "blocked_policy": "silent",
+            "reply_once": False,
         }
 
     def _get_reply_count_key(self, chat, message=None):
         """获取回复计数器 key；当前 wxautox4 可用稳定字段有限，先集中使用 chat.who。"""
         return str(getattr(chat, 'who', '') or '').strip()
+
+    def _get_group_reply_once_key(self, chat, message=None):
+        group_name = str(getattr(chat, 'who', '') or '').strip()
+        sender = str(getattr(message, 'sender', '') or '').strip()
+        if not group_name:
+            return ""
+        return f"group:{group_name}:{sender}" if sender else f"group:{group_name}"
 
     def _get_text_reply_limit_count(self, user_name):
         """获取私聊用户的回复轮数上限；当前统一使用全局配置。"""
@@ -5684,7 +5884,7 @@ class WXBot:
                 if is_api_error_reply(reply_text):
                     log(level="WARNING", message="轮数超限结束语生成遇到 API 错误，转入接口报错回复策略")
                     if getattr(self.config, "api_error_reply_once", False):
-                        api_user_data = self.reply_count_store.get_user(user_key)
+                        api_user_data = self._reply_once_user_data(user_key)
                         if api_user_data.get("api_err_notified"):
                             return True, True
                     parts = self._api_error_reply_parts()
