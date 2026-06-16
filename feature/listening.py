@@ -23,8 +23,15 @@ from feature.custom_forward_runtime import handle_custom_forward, handle_custom_
 from feature.material_outreach import iter_material_outreach_listen_sources
 from feature.new_friends import build_new_friend_remark, iter_new_friend_welcome_actions
 from feature.voice_reply import load_voice_reply_state
+from core.message_pipeline import message_unique_id
 
 LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS = 5
+LIGHTWEIGHT_DELAYED_LISTEN_DELAY_SECONDS = 10
+LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS = 60
+LIGHTWEIGHT_DELAYED_LISTEN_REBUILD_COOLDOWN_SECONDS = 600
+LIGHTWEIGHT_DELAYED_LISTEN_VERIFY_INTERVAL_SECONDS = 0.3
+LIGHTWEIGHT_DELAYED_LISTEN_MAX_MESSAGES_PER_CHAT = 20
+_LIGHTWEIGHT_DELAYED_LISTEN_LOCK_BUSY = object()
 LISTENER_RECOVERY_HRESULTS = {
     -2147220991,  # 事件无法调用任何订户
     -2147023174,  # RPC 服务器不可用
@@ -138,6 +145,17 @@ def subwindow_who(chat):
         return ""
 
 
+def is_target_chat(chat, nickname):
+    name = str(nickname or "").strip()
+    return bool(
+        name
+        and chat
+        and not isinstance(chat, dict)
+        and subwindow_who(chat) == name
+        and callable(getattr(chat, "SendMsg", None))
+    )
+
+
 def get_verified_subwindow(bot, nickname):
     try:
         chat = bot.wx.GetSubWindow(nickname=nickname)
@@ -146,6 +164,19 @@ def get_verified_subwindow(bot, nickname):
         return None
     if chat and subwindow_who(chat) == str(nickname).strip():
         return chat
+    return None
+
+
+def get_verified_subwindow_with_retry(bot, nickname, retry_count=3, interval=LIGHTWEIGHT_DELAYED_LISTEN_VERIFY_INTERVAL_SECONDS):
+    attempts = max(1, int(retry_count or 1))
+    for attempt in range(1, attempts + 1):
+        sub_chat = get_verified_subwindow(bot, nickname)
+        if sub_chat:
+            if attempt > 1:
+                _bot_log(bot, message=f"监听管理 {nickname}：第 {attempt} 次验证获取到监听子窗口")
+            return sub_chat
+        if attempt < attempts:
+            _bot_sleep(bot, interval)
     return None
 
 
@@ -253,7 +284,9 @@ def close_dynamic_listener_subwindows(bot, nicknames):
 
 
 def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
-    log_level = "WARNING" if str(label or "").strip() == "动态监听" else "ERROR"
+    quiet_labels = {"动态监听", "轻量延后监听"}
+    label_text = str(label or "").strip()
+    log_level = "WARNING" if label_text in quiet_labels else "ERROR"
 
     def add_action():
         with bot._get_wechat_action_lock():
@@ -275,7 +308,7 @@ def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
         else:
             result = add_action()
     except Exception as exc:
-        if str(label or "").strip() != "动态监听":
+        if label_text not in quiet_labels:
             _bot_log(
                 bot,
                 level=log_level,
@@ -283,7 +316,7 @@ def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
             )
         return None
     if result:
-        if str(label or "").strip() != "动态监听":
+        if label_text not in quiet_labels:
             _bot_log(bot, message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用成功")
     else:
         _bot_log(bot, level=log_level, message=f"监听管理 {nickname}：{listen_add_action_label(label)}失败，详情：{listen_add_error(result)}")
@@ -291,7 +324,218 @@ def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
 
 
 def is_stale_listen_registration_error(result):
-    return not result and "已监听" in listen_add_error(result)
+    return "已监听" in listen_add_error(result)
+
+
+def _set_last_dynamic_add_result(bot, chat_name, result=None, *, stale=False):
+    bot._last_dynamic_add_result = {
+        "chat": str(chat_name or "").strip(),
+        "result": result,
+        "stale": bool(stale),
+        "error": listen_add_error(result),
+        "at": time.time(),
+    }
+
+
+def _consume_last_dynamic_add_result(bot, chat_name):
+    name = str(chat_name or "").strip()
+    info = getattr(bot, "_last_dynamic_add_result", None)
+    if not isinstance(info, dict) or str(info.get("chat") or "").strip() != name:
+        return {}
+    bot._last_dynamic_add_result = None
+    return info
+
+
+def ensure_lightweight_delayed_listen_state(bot):
+    if not hasattr(bot, "_lightweight_delayed_listen_tasks") or bot._lightweight_delayed_listen_tasks is None:
+        bot._lightweight_delayed_listen_tasks = {}
+    if not hasattr(bot, "_lightweight_delayed_listen_last_rebuild_at") or bot._lightweight_delayed_listen_last_rebuild_at is None:
+        bot._lightweight_delayed_listen_last_rebuild_at = {}
+    if not hasattr(bot, "_lightweight_delayed_listen_flushing"):
+        bot._lightweight_delayed_listen_flushing = False
+
+
+def _queue_lightweight_delayed_listen(bot, chat_name, messages, *, reason="", now=None):
+    name = str(chat_name or "").strip()
+    msgs = list(messages or [])
+    if not name or not msgs:
+        return False
+    ensure_lightweight_delayed_listen_state(bot)
+    now_ts = time.time() if now is None else float(now)
+    due_at = now_ts + LIGHTWEIGHT_DELAYED_LISTEN_DELAY_SECONDS
+    tasks = bot._lightweight_delayed_listen_tasks
+    task = tasks.get(name)
+    if not isinstance(task, dict):
+        task = {
+            "chat": name,
+            "messages": [],
+            "message_keys": set(),
+            "created_at": now_ts,
+            "due_at": due_at,
+            "reason": str(reason or "").strip(),
+            "message_sequence": _get_bot_private_message_sequence(bot, name),
+        }
+        tasks[name] = task
+    task["due_at"] = min(float(task.get("due_at") or due_at), due_at)
+    task["reason"] = str(reason or task.get("reason") or "").strip()
+    keys = task.get("message_keys")
+    if not isinstance(keys, set):
+        keys = set(keys or [])
+        task["message_keys"] = keys
+    queued = 0
+    for msg in msgs:
+        key = message_unique_id(name, msg)
+        if key in keys:
+            continue
+        if len(task["messages"]) >= LIGHTWEIGHT_DELAYED_LISTEN_MAX_MESSAGES_PER_CHAT:
+            break
+        keys.add(key)
+        task["messages"].append(msg)
+        queued += 1
+    if queued <= 0:
+        return False
+    _bot_log(
+        bot,
+        level="WARNING",
+        message=(
+            f"全局监听 {name}：已创建轻量延后监听任务，"
+            f"{LIGHTWEIGHT_DELAYED_LISTEN_DELAY_SECONDS}s 后尝试一次，暂存 {len(task['messages'])} 条"
+        ),
+    )
+    return True
+
+
+def _get_bot_private_message_sequence(bot, chat_name):
+    getter = getattr(bot, "_get_private_message_sequence", None)
+    if callable(getter):
+        try:
+            return int(getter(chat_name) or 0)
+        except Exception:
+            return 0
+    return 0
+
+
+def _is_bot_stop_requested(bot):
+    stop_fn = getattr(bot, "is_stop_requested", None)
+    if callable(stop_fn):
+        try:
+            return bool(stop_fn())
+        except Exception:
+            return False
+    return False
+
+
+def get_runtime_cached_subwindow(bot, nickname):
+    name = str(nickname or "").strip()
+    if not name:
+        return None
+    cached = runtime_chat_state.get_listen_chat(bot, name)
+    if is_target_chat(cached, name):
+        return cached
+    if cached:
+        runtime_chat_state.remove_listen_chat(bot, name)
+    return None
+
+
+def _rebuild_lightweight_delayed_listener(bot, chat_name):
+    name = str(chat_name or "").strip()
+    if not name:
+        return None
+    ensure_lightweight_delayed_listen_state(bot)
+    now_ts = time.time()
+    last_at = float(bot._lightweight_delayed_listen_last_rebuild_at.get(name, 0.0) or 0.0)
+    if last_at and now_ts - last_at < LIGHTWEIGHT_DELAYED_LISTEN_REBUILD_COOLDOWN_SECONDS:
+        _bot_log(
+            bot,
+            level="WARNING",
+            message=f"全局监听 {name}：轻量延后监听命中 {LIGHTWEIGHT_DELAYED_LISTEN_REBUILD_COOLDOWN_SECONDS}s 冷却，本次不关闭重建",
+        )
+        return None
+    existing = get_cached_or_verified_subwindow(bot, name)
+    if existing:
+        return existing
+    _remove_listen_chat_verified_locked(bot, name, log_success=False)
+    bot._lightweight_delayed_listen_last_rebuild_at[name] = time.time()
+    try:
+        with warn_slow_wechat_ui_action(f"AddListenChat({name})"):
+            result = bot.wx.AddListenChat(nickname=name, callback=bot.message_handle_callback)
+    except Exception as exc:
+        _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听重建异常，任务已放弃，详情：{exc}")
+        return None
+    if is_target_chat(result, name):
+        runtime_chat_state.remember_listen_chat(bot, name, result)
+        touch_dynamic_listener_entry(bot, name)
+        _bot_log(bot, message=f"全局监听 {name}：轻量延后监听重建成功，已使用 AddListenChat 返回的子窗口")
+        return result
+    sub_chat = get_verified_subwindow_with_retry(bot, name, retry_count=3)
+    if sub_chat:
+        runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
+        touch_dynamic_listener_entry(bot, name)
+        _bot_log(bot, message=f"全局监听 {name}：轻量延后监听重建成功，已恢复子窗口")
+        return sub_chat
+    _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听重建失败，任务已放弃，详情：{listen_add_error(result)}")
+    return None
+
+
+def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
+    ensure_lightweight_delayed_listen_state(bot)
+    if getattr(bot, "_lightweight_delayed_listen_flushing", False):
+        return False
+    if _is_bot_stop_requested(bot):
+        bot._lightweight_delayed_listen_tasks.clear()
+        return False
+    now_ts = time.time()
+    due_items = [
+        (name, task)
+        for name, task in list(bot._lightweight_delayed_listen_tasks.items())
+        if float((task or {}).get("due_at") or 0.0) <= now_ts
+    ]
+    if not due_items:
+        return False
+    bot._lightweight_delayed_listen_flushing = True
+    handled = False
+    try:
+        for name, task in due_items[: max(1, int(limit or 1))]:
+            sub_chat = get_runtime_cached_subwindow(bot, name)
+            current = bot._lightweight_delayed_listen_tasks.pop(name, None)
+            if not current:
+                continue
+            created_at = float(current.get("created_at") or now_ts)
+            if now_ts - created_at > LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS:
+                _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听任务已过期，已放弃旧批次")
+                handled = True
+                continue
+            if _get_bot_private_message_sequence(bot, name) != int(current.get("message_sequence") or 0):
+                _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听期间已有新消息处理，已放弃旧批次")
+                handled = True
+                continue
+            if not sub_chat:
+                lock_getter = getattr(bot, "_get_wechat_action_lock", None)
+                lock = lock_getter() if callable(lock_getter) else None
+                acquired = True
+                if lock is not None:
+                    acquired = lock.acquire(blocking=False)
+                if not acquired:
+                    bot._lightweight_delayed_listen_tasks[name] = current
+                    continue
+                try:
+                    sub_chat = get_cached_or_verified_subwindow(bot, name)
+                    if not sub_chat:
+                        sub_chat = _rebuild_lightweight_delayed_listener(bot, name)
+                finally:
+                    if lock is not None:
+                        lock.release()
+            if not sub_chat:
+                handled = True
+                continue
+            messages = list(current.get("messages") or [])
+            _bot_log(bot, message=f"全局监听 {name}：轻量延后监听恢复成功，开始处理 {len(messages)} 条暂存消息")
+            for msg in messages:
+                bot.process_message(sub_chat, msg)
+            handled = True
+        return handled
+    finally:
+        bot._lightweight_delayed_listen_flushing = False
 
 
 def get_cached_or_verified_subwindow(bot, nickname):
@@ -314,16 +558,24 @@ def add_and_verify_subwindow(bot, nickname, retry_count=3):
     name = str(nickname or "").strip()
     if not name:
         return None
+    _set_last_dynamic_add_result(bot, name, None, stale=False)
     sub_chat = get_cached_or_verified_subwindow(bot, name)
     if sub_chat:
         return sub_chat
     result = add_listen_chat_once(bot, name, "动态监听")
-    sub_chat = get_verified_subwindow(bot, name)
+    if is_target_chat(result, name):
+        runtime_chat_state.remember_listen_chat(bot, name, result)
+        _bot_log(bot, message=f"监听管理 {name}：AddListenChat 返回可用子窗口，已直接接管")
+        return result
+    sub_chat = get_verified_subwindow_with_retry(bot, name, retry_count=retry_count)
     if sub_chat:
         runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
         return sub_chat
     if is_stale_listen_registration_error(result):
         _bot_log(bot, level="WARNING", message=f"{name} 已存在监听登记但未获取到可用子窗口，本次不删除重建")
+        _set_last_dynamic_add_result(bot, name, result, stale=True)
+    else:
+        _set_last_dynamic_add_result(bot, name, result, stale=False)
     return None
 
 
@@ -456,7 +708,7 @@ def rebuild_listener_runtime(
         _bot_sleep(bot, 0.5)
         result = add_listen_chat_once(bot, name, label, allow_rebind=True)
         expected_listeners.append(name)
-        if result:
+        if is_target_chat(result, name):
             runtime_chat_state.remember_listen_chat(bot, name, result)
             if cache_material:
                 bot._material_source_chats[name] = result
@@ -859,6 +1111,8 @@ def is_chat_listened(bot, chat):
 
 
 def alllisten_mode(bot, last_time, timeout=10):
+    flush_lightweight_delayed_listen_tasks(bot)
+
     def remove_timeout_listen(chat_time_out=600):
         for listen_chat in bot.all_Mode_listen_list[:]:
             if time.time() - listen_chat[1] >= chat_time_out:
@@ -990,6 +1244,14 @@ def alllisten_mode(bot, last_time, timeout=10):
                 if not sub_chat:
                     _forget_runtime_listener_caches(bot, chat)
                     remove_dynamic_listener_entries(bot, chat)
+                    add_result = _consume_last_dynamic_add_result(bot, chat)
+                    if add_result.get("stale"):
+                        _queue_lightweight_delayed_listen(
+                            bot,
+                            chat,
+                            processed_msgs,
+                            reason=add_result.get("error", ""),
+                        )
                     _bot_log(bot, level="WARNING", message=f"全局监听 {chat}：临时接管窗口不可用，已清理运行状态并等待后续重试")
                     return
                 for msg in processed_msgs:

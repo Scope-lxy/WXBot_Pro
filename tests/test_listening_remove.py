@@ -379,6 +379,329 @@ class RemoveListenChatTests(unittest.TestCase):
         matching = [item for item in logs if "临时接管窗口不可用" in item]
         self.assertEqual(matching, ["全局监听 张三：临时接管窗口不可用，已清理运行状态并等待后续重试"])
 
+    def test_add_and_verify_uses_add_listen_returned_chat_directly(self):
+        calls = []
+        sub_chat = SimpleNamespace(who="张三", SendMsg=lambda _msg: True)
+
+        class NoopLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeWeChat:
+            def AddListenChat(self, nickname=None, callback=None):
+                calls.append(("AddListenChat", nickname, callback))
+                return sub_chat
+
+            def GetSubWindow(self, nickname=None):
+                calls.append(("GetSubWindow", nickname))
+                return None
+
+        bot = SimpleNamespace(wx=FakeWeChat(), message_handle_callback=object(), _listen_chats={})
+        bot._get_wechat_action_lock = lambda: NoopLock()
+
+        result = listening.add_and_verify_subwindow(bot, "张三")
+
+        self.assertIs(result, sub_chat)
+        self.assertEqual(
+            calls,
+            [("GetSubWindow", "张三"), ("AddListenChat", "张三", bot.message_handle_callback)],
+        )
+        self.assertIs(bot._listen_chats["张三"], sub_chat)
+
+    def test_stale_listen_registration_queues_lightweight_delayed_listen(self):
+        msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
+
+        class NoopLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        class FakeWeChat:
+            chat_type = "private"
+
+            def GetNextNewMessage(self, **_kwargs):
+                return {"chat_name": "张三", "chat_type": "private", "msg": [msg]}
+
+            def AddListenChat(self, nickname=None, callback=None):
+                return {"status": "失败", "message": "已监听"}
+
+            def GetSubWindow(self, nickname=None):
+                return None
+
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[],
+            _listen_chats={},
+            _lightweight_delayed_listen_tasks={},
+            _lightweight_delayed_listen_last_rebuild_at={},
+            config=SimpleNamespace(
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=False,
+                memory_switch=False,
+                custom_forward_switch=False,
+            ),
+            wx=FakeWeChat(),
+            memory_manager=None,
+            message_handle_callback=object(),
+            is_chat_listened=lambda _chat: False,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            process_message=lambda _chat, _message: self.fail("不应立即处理消息"),
+        )
+        bot._get_wechat_action_lock = lambda: NoopLock()
+
+        with mock.patch.object(listening.time, "time", return_value=100.0), mock.patch.object(listening, "_bot_sleep"):
+            listening.alllisten_mode(bot, last_time=9999999999)
+
+        task = bot._lightweight_delayed_listen_tasks["张三"]
+        self.assertEqual(task["due_at"], 110.0)
+        self.assertEqual(task["messages"], [msg])
+
+    def test_flush_lightweight_delayed_listen_prefers_existing_subwindow(self):
+        processed = []
+        sub_chat = SimpleNamespace(who="张三", SendMsg=lambda _msg: True)
+        msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
+        bot = SimpleNamespace(
+            _listen_chats={"张三": sub_chat},
+            _lightweight_delayed_listen_tasks={
+                "张三": {
+                    "chat": "张三",
+                    "messages": [msg],
+                    "message_keys": {"id:张三:1"},
+                    "created_at": 90.0,
+                    "due_at": 100.0,
+                    "message_sequence": 0,
+                }
+            },
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            process_message=lambda chat, message: processed.append((chat, message)),
+        )
+        bot._get_private_message_sequence = lambda _chat: 0
+        bot._get_wechat_action_lock = lambda: self.fail("已有子窗口时不应触发微信操作锁")
+
+        with mock.patch.object(listening.time, "time", return_value=101.0):
+            flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
+
+        self.assertTrue(flushed)
+        self.assertEqual(processed, [(sub_chat, msg)])
+        self.assertEqual(bot._lightweight_delayed_listen_tasks, {})
+
+    def test_flush_lightweight_delayed_listen_rebuilds_once_when_due(self):
+        calls = []
+        processed = []
+        rebuilt_chat = SimpleNamespace(who="张三", SendMsg=lambda _msg: True)
+        msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
+
+        class TryLock:
+            def __init__(self):
+                self.locked = False
+
+            def acquire(self, blocking=True):
+                calls.append(("lock", blocking))
+                self.locked = True
+                return True
+
+            def release(self):
+                calls.append(("unlock",))
+                self.locked = False
+
+        class FakeWeChat:
+            def GetSubWindow(self, nickname=None):
+                calls.append(("GetSubWindow", nickname))
+                return None
+
+            def RemoveListenChat(self, nickname, close_window=True):
+                calls.append(("RemoveListenChat", nickname, close_window))
+                return {"status": "成功"}
+
+            def AddListenChat(self, nickname=None, callback=None):
+                calls.append(("AddListenChat", nickname, callback))
+                return rebuilt_chat
+
+        lock = TryLock()
+        bot = SimpleNamespace(
+            wx=FakeWeChat(),
+            message_handle_callback=object(),
+            all_Mode_listen_list=[],
+            _listen_chats={},
+            _lightweight_delayed_listen_tasks={
+                "张三": {
+                    "chat": "张三",
+                    "messages": [msg],
+                    "message_keys": {"id:张三:1"},
+                    "created_at": 90.0,
+                    "due_at": 100.0,
+                    "message_sequence": 0,
+                }
+            },
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            process_message=lambda chat, message: processed.append((chat, message)),
+        )
+        bot._get_private_message_sequence = lambda _chat: 0
+        bot._get_wechat_action_lock = lambda: lock
+
+        with mock.patch.object(listening.time, "time", return_value=101.0):
+            flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
+
+        self.assertTrue(flushed)
+        self.assertEqual(processed, [(rebuilt_chat, msg)])
+        self.assertEqual(
+            [call for call in calls if call[0] in {"RemoveListenChat", "AddListenChat"}],
+            [("RemoveListenChat", "张三", True), ("AddListenChat", "张三", bot.message_handle_callback)],
+        )
+
+    def test_lightweight_delayed_listen_rebuild_cooldown_skips_remove_add(self):
+        calls = []
+        msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
+
+        class TryLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        class FakeWeChat:
+            def GetSubWindow(self, nickname=None):
+                calls.append(("GetSubWindow", nickname))
+                return None
+
+            def RemoveListenChat(self, nickname, close_window=True):
+                calls.append(("RemoveListenChat", nickname, close_window))
+                return {"status": "成功"}
+
+            def AddListenChat(self, nickname=None, callback=None):
+                calls.append(("AddListenChat", nickname))
+                return None
+
+        bot = SimpleNamespace(
+            wx=FakeWeChat(),
+            _listen_chats={},
+            _lightweight_delayed_listen_tasks={
+                "张三": {
+                    "chat": "张三",
+                    "messages": [msg],
+                    "message_keys": {"id:张三:1"},
+                    "created_at": 90.0,
+                    "due_at": 100.0,
+                    "message_sequence": 0,
+                }
+            },
+            _lightweight_delayed_listen_last_rebuild_at={"张三": 80.0},
+            _lightweight_delayed_listen_flushing=False,
+            process_message=lambda _chat, _message: self.fail("冷却期不应处理消息"),
+        )
+        bot._get_private_message_sequence = lambda _chat: 0
+        bot._get_wechat_action_lock = lambda: TryLock()
+
+        with mock.patch.object(listening.time, "time", return_value=101.0):
+            listening.flush_lightweight_delayed_listen_tasks(bot)
+
+        self.assertNotIn(("RemoveListenChat", "张三", True), calls)
+        self.assertFalse(any(call[0] == "AddListenChat" for call in calls))
+
+    def test_lightweight_delayed_listen_keeps_task_when_lock_busy(self):
+        releases = []
+        msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
+
+        class BusyLock:
+            def acquire(self, blocking=True):
+                return False
+
+            def release(self):
+                releases.append("release")
+
+        bot = SimpleNamespace(
+            _listen_chats={},
+            _lightweight_delayed_listen_tasks={
+                "张三": {
+                    "chat": "张三",
+                    "messages": [msg],
+                    "message_keys": {"id:张三:1"},
+                    "created_at": 90.0,
+                    "due_at": 100.0,
+                    "message_sequence": 0,
+                }
+            },
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            process_message=lambda _chat, _message: self.fail("锁忙时不应处理消息"),
+        )
+        bot._get_private_message_sequence = lambda _chat: 0
+        bot._get_wechat_action_lock = lambda: BusyLock()
+
+        with mock.patch.object(listening.time, "time", return_value=101.0):
+            flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
+
+        self.assertFalse(flushed)
+        self.assertIn("张三", bot._lightweight_delayed_listen_tasks)
+        self.assertEqual(releases, [])
+
+    def test_lightweight_delayed_listen_drops_expired_task(self):
+        processed = []
+        msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
+        bot = SimpleNamespace(
+            _listen_chats={},
+            _lightweight_delayed_listen_tasks={
+                "张三": {
+                    "chat": "张三",
+                    "messages": [msg],
+                    "message_keys": {"id:张三:1"},
+                    "created_at": 10.0,
+                    "due_at": 20.0,
+                    "message_sequence": 0,
+                }
+            },
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            process_message=lambda chat, message: processed.append((chat, message)),
+        )
+        bot._get_private_message_sequence = lambda _chat: 0
+        bot._get_wechat_action_lock = lambda: self.fail("过期任务不应触发微信 UI")
+
+        with mock.patch.object(listening.time, "time", return_value=100.0):
+            flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
+
+        self.assertTrue(flushed)
+        self.assertEqual(processed, [])
+        self.assertEqual(bot._lightweight_delayed_listen_tasks, {})
+
+    def test_lightweight_delayed_listen_drops_when_message_sequence_changed(self):
+        processed = []
+        msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
+        bot = SimpleNamespace(
+            _listen_chats={},
+            _lightweight_delayed_listen_tasks={
+                "张三": {
+                    "chat": "张三",
+                    "messages": [msg],
+                    "message_keys": {"id:张三:1"},
+                    "created_at": 90.0,
+                    "due_at": 100.0,
+                    "message_sequence": 1,
+                }
+            },
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            process_message=lambda chat, message: processed.append((chat, message)),
+        )
+        bot._get_private_message_sequence = lambda _chat: 2
+        bot._get_wechat_action_lock = lambda: self.fail("消息序号变化丢弃时不应触发微信 UI")
+
+        with mock.patch.object(listening.time, "time", return_value=101.0):
+            flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
+
+        self.assertTrue(flushed)
+        self.assertEqual(processed, [])
+        self.assertEqual(bot._lightweight_delayed_listen_tasks, {})
+
     def test_add_listen_chat_once_returns_wechat_result(self):
         calls = []
         logs = []

@@ -24,6 +24,7 @@ import threading
 from contextlib import nullcontext
 import traceback
 import uuid
+from collections import deque
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -167,6 +168,7 @@ from feature import admin_forward_flow, admin_moments_flow
 PENDING_VISUAL_CONTEXT_TTL_SECONDS = 300
 PRIVATE_REPLY_ECHO_DEDUPE_SECONDS = 60
 CONVERSATION_MEMORY_BACKGROUND_INTERVAL_SECONDS = 30
+PRIVATE_MESSAGE_PIPELINE_MAX_QUEUED_BATCHES = 1
 from feature import runtime_task_runner
 from feature.admin_commands import dispatch_admin_command
 from feature.keyword_reply import (
@@ -478,12 +480,11 @@ class WXBot:
         self._incoming_seen_fingerprints = {}
         self._wechat_action_lock = threading.RLock()
         self._chat_merge_lock = threading.Lock()
-        self._chat_merge_buffers = {}
-        self._chat_merge_timers = {}
         self._chat_send_locks = {}
         self._material_source_read_locks = {}
         self._material_source_read_locks_guard = threading.Lock()
-        self._chat_reply_versions = {}
+        self._private_message_pipelines = {}
+        self._private_message_sequence_by_chat = {}
         self._recent_private_image_hashes = {}
         self._lightweight_send_queue_lock = threading.RLock()
         self._lightweight_send_queue = {}
@@ -514,11 +515,19 @@ class WXBot:
     def _cancel_pending_private_message_timers(self):
         self._ensure_message_runtime_state()
         with self._chat_merge_lock:
-            timers = list(self._chat_merge_timers.values())
-            self._chat_merge_timers.clear()
-            self._chat_merge_buffers.clear()
-            for chat_name in list(self._chat_reply_versions):
-                self._chat_reply_versions[chat_name] = self._chat_reply_versions.get(chat_name, 0) + 1
+            timers = []
+            for pipeline in self._private_message_pipelines.values():
+                if not isinstance(pipeline, dict):
+                    continue
+                for key in ("idle_timer", "max_timer"):
+                    timer = pipeline.get(key)
+                    if timer:
+                        timers.append(timer)
+                pipeline["open_messages"] = []
+                pipeline["queued_batches"] = deque()
+                pipeline["idle_timer"] = None
+                pipeline["max_timer"] = None
+                pipeline["worker_running"] = False
         for timer in timers:
             try:
                 timer.cancel()
@@ -3546,17 +3555,31 @@ class WXBot:
             return True
         return False
 
-    def wx_send_ai(self, chat, message, expected_version=None):
-        """私聊 AI 自动回复。支持最新回复失效检查与同窗口串行发送。"""
+    def _private_reply_can_continue(self, chat, *, log_prefix="私聊"):
+        target = str(getattr(chat, "who", "") or "").strip()
         if self.is_stop_requested():
-            return True
-        if self._pause_chat_reply or runtime_chat_state.is_single_chat_reply_paused(self, chat.who):
+            if target:
+                log(message=f"{log_prefix} {target}：机器人正在停止，已停止 AI 回复")
+            return False
+        if self._pause_chat_reply:
+            if target:
+                log(message=f"{log_prefix} {target}：私聊自动回复已暂停，已停止 AI 回复")
+            return False
+        if target and runtime_chat_state.is_single_chat_reply_paused(self, target):
+            log(message=f"{log_prefix} {target}：当前好友已接管或暂停，已停止 AI 回复")
+            return False
+        if getattr(self.config, "chat_listen_only", False):
+            if target:
+                log(message=f"{log_prefix} {target} 已启用只监听不AI回复，跳过 AI 调用")
+            return False
+        return True
+
+    def wx_send_ai(self, chat, message):
+        """私聊 AI 自动回复。连续消息按好友串行处理，安全状态变化会停止发送。"""
+        if not self._private_reply_can_continue(chat):
             return True
         result = True
         user_key = self._get_reply_count_key(chat, message)
-        if getattr(self.config, "chat_listen_only", False):
-            log(message=f"私聊 {chat.who} 已启用只监听不AI回复，跳过 AI 调用")
-            return True
         limit_handled, limit_result = self._check_text_reply_limit_runtime(chat, user_key, message=message)
         if limit_handled:
             return limit_result
@@ -3582,7 +3605,6 @@ class WXBot:
                 send_success, result = self._send_keyword_reply_actions(
                     chat,
                     normalize_keyword_reply_actions(keyword_plan["reply"]),
-                    expected_version=expected_version,
                 )
                 if send_success and self.config.text_reply_limit_switch and user_key:
                     self.reply_count_store.increment_ai_count(user_key)
@@ -3723,21 +3745,7 @@ class WXBot:
                 on_clean_empty=self._log_empty_cleaned_reply,
             )
 
-        if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
-            skipped = 0
-            skipped_by_chat = getattr(self, "_model_context_skipped_by_chat", None)
-            if isinstance(skipped_by_chat, dict):
-                try:
-                    skipped = int(skipped_by_chat.pop(chat.who, 0) or 0)
-                except (TypeError, ValueError):
-                    skipped = 0
-            if skipped > 0:
-                log(message=f"私聊 {chat.who}：旧 AI 回复过期，已跳过回复 {skipped} 条")
-            else:
-                log(message=f"私聊 {chat.who}：旧 AI 回复过期，已跳过发送")
-            return True
-        if self.is_stop_requested():
-            log(message=f"私聊 {chat.who}：机器人正在停止，已跳过 AI 回复发送")
+        if not self._private_reply_can_continue(chat):
             return True
 
         if voice_candidate and not api_error_reply:
@@ -3758,7 +3766,6 @@ class WXBot:
                     cooldown_minutes=getattr(self.config, 'chat_voice_reply_cooldown_minutes', 10) if start_voice_session else 0,
                     limit_count=getattr(self.config, 'chat_voice_reply_limit_count', 50),
                     limit_hours=getattr(self.config, 'chat_voice_reply_limit_hours', 24),
-                    expected_version=expected_version,
                     context_text=context_text,
                     section_id=section_id,
                 ):
@@ -3786,7 +3793,6 @@ class WXBot:
         send_success, result = self._send_private_ai_reply_parts(
             chat,
             parts,
-            expected_version=expected_version,
         )
 
         if image_reply_context_used and send_success and not api_error_reply:
@@ -4634,14 +4640,12 @@ class WXBot:
             self._incoming_seen_fingerprints = {}
         if not hasattr(self, '_chat_merge_lock'):
             self._chat_merge_lock = threading.Lock()
-        if not hasattr(self, '_chat_merge_buffers'):
-            self._chat_merge_buffers = {}
-        if not hasattr(self, '_chat_merge_timers'):
-            self._chat_merge_timers = {}
         if not hasattr(self, '_chat_send_locks'):
             self._chat_send_locks = {}
-        if not hasattr(self, '_chat_reply_versions'):
-            self._chat_reply_versions = {}
+        if not hasattr(self, '_private_message_pipelines'):
+            self._private_message_pipelines = {}
+        if not hasattr(self, '_private_message_sequence_by_chat'):
+            self._private_message_sequence_by_chat = {}
         if not hasattr(self, '_recent_private_image_hashes'):
             self._recent_private_image_hashes = {}
         if not hasattr(self, '_private_reply_runtime_turns'):
@@ -4651,17 +4655,23 @@ class WXBot:
         if not hasattr(self, '_pending_visual_contexts'):
             self._pending_visual_contexts = {}
 
-    def _bump_chat_reply_version(self, chat_name):
+    def _next_private_message_sequence(self, chat_name):
         self._ensure_message_runtime_state()
+        name = str(chat_name or "").strip()
+        if not name:
+            return 0
         with self._chat_merge_lock:
-            version = self._chat_reply_versions.get(chat_name, 0) + 1
-            self._chat_reply_versions[chat_name] = version
-            return version
+            sequence = self._private_message_sequence_by_chat.get(name, 0) + 1
+            self._private_message_sequence_by_chat[name] = sequence
+            return sequence
 
-    def _get_chat_reply_version(self, chat_name):
+    def _get_private_message_sequence(self, chat_name):
         self._ensure_message_runtime_state()
+        name = str(chat_name or "").strip()
+        if not name:
+            return 0
         with self._chat_merge_lock:
-            return self._chat_reply_versions.get(chat_name, 0)
+            return self._private_message_sequence_by_chat.get(name, 0)
 
     def _mark_message_seen(self, chat_name, message):
         self._ensure_message_runtime_state()
@@ -4781,6 +4791,179 @@ class WXBot:
             ),
         )
 
+    def _private_message_merge_delay(self):
+        return coerce_float_range(
+            getattr(self.config, 'chat_message_merge_delay', 3.0), 3.0, 3.0, 10.0
+        )
+
+    @staticmethod
+    def _private_message_max_wait(delay):
+        return max(9.0, min(30.0, float(delay or 3.0) * 3.0))
+
+    def _private_message_pipeline(self, chat_name):
+        self._ensure_message_runtime_state()
+        name = str(chat_name or "").strip()
+        if not name:
+            return None
+        pipeline = self._private_message_pipelines.get(name)
+        if not isinstance(pipeline, dict):
+            pipeline = {
+                "open_messages": [],
+                "open_started_at": 0.0,
+                "idle_timer": None,
+                "max_timer": None,
+                "queued_batches": deque(),
+                "worker_running": False,
+            }
+            self._private_message_pipelines[name] = pipeline
+        if not isinstance(pipeline.get("queued_batches"), deque):
+            pipeline["queued_batches"] = deque(pipeline.get("queued_batches") or [])
+        if not isinstance(pipeline.get("open_messages"), list):
+            pipeline["open_messages"] = []
+        return pipeline
+
+    @staticmethod
+    def _cancel_timer(timer):
+        if not timer:
+            return
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+    def _schedule_private_message_timer(self, seconds, callback, chat):
+        timer = threading.Timer(max(0.0, float(seconds or 0.0)), callback, args=(chat,))
+        timer.daemon = True
+        timer.start()
+        return timer
+
+    def _schedule_private_message_pipeline_locked(self, chat, pipeline, delay):
+        self._cancel_timer(pipeline.get("idle_timer"))
+        pipeline["idle_timer"] = self._schedule_private_message_timer(
+            delay,
+            self._close_private_message_batch_by_idle,
+            chat,
+        )
+        if not pipeline.get("max_timer"):
+            elapsed = max(0.0, time.time() - float(pipeline.get("open_started_at") or time.time()))
+            max_wait = self._private_message_max_wait(delay)
+            pipeline["max_timer"] = self._schedule_private_message_timer(
+                max(0.0, max_wait - elapsed),
+                self._close_private_message_batch_by_max_wait,
+                chat,
+            )
+
+    def _enqueue_private_message_batch_locked(self, pipeline, messages):
+        msgs = list(messages or [])
+        if not msgs:
+            return False
+        batches = pipeline["queued_batches"]
+        if len(batches) >= PRIVATE_MESSAGE_PIPELINE_MAX_QUEUED_BATCHES:
+            batches[-1].extend(msgs)
+            return True
+        batches.append(msgs)
+        return True
+
+    def _close_private_message_batch_locked(self, chat, reason="idle"):
+        name = str(getattr(chat, "who", "") or "").strip()
+        pipeline = self._private_message_pipeline(name)
+        if not pipeline:
+            return False
+        messages = list(pipeline.get("open_messages") or [])
+        if not messages:
+            pipeline["open_started_at"] = 0.0
+            self._cancel_timer(pipeline.get("idle_timer"))
+            self._cancel_timer(pipeline.get("max_timer"))
+            pipeline["idle_timer"] = None
+            pipeline["max_timer"] = None
+            return False
+        pipeline["open_messages"] = []
+        pipeline["open_started_at"] = 0.0
+        self._cancel_timer(pipeline.get("idle_timer"))
+        self._cancel_timer(pipeline.get("max_timer"))
+        pipeline["idle_timer"] = None
+        pipeline["max_timer"] = None
+        self._enqueue_private_message_batch_locked(pipeline, messages)
+        self._start_private_message_worker_locked(chat, pipeline)
+        if reason == "max_wait":
+            log(message=f"私聊 {name}：连续消息达到最大等待，已先处理当前批次")
+        return True
+
+    def _start_private_message_worker_locked(self, chat, pipeline):
+        if pipeline.get("worker_running"):
+            return False
+        if not pipeline.get("queued_batches"):
+            return False
+        pipeline["worker_running"] = True
+        worker = threading.Thread(target=self._run_private_message_pipeline_worker, args=(chat,))
+        worker.daemon = True
+        worker.start()
+        return True
+
+    def _close_private_message_batch_by_idle(self, chat):
+        if self.is_stop_requested():
+            self._clear_private_message_pipeline(getattr(chat, "who", ""))
+            return True
+        with self._chat_merge_lock:
+            return self._close_private_message_batch_locked(chat, reason="idle")
+
+    def _close_private_message_batch_by_max_wait(self, chat):
+        if self.is_stop_requested():
+            self._clear_private_message_pipeline(getattr(chat, "who", ""))
+            return True
+        with self._chat_merge_lock:
+            return self._close_private_message_batch_locked(chat, reason="max_wait")
+
+    def _clear_private_message_pipeline(self, chat_name):
+        self._ensure_message_runtime_state()
+        name = str(chat_name or "").strip()
+        if not name:
+            return
+        with self._chat_merge_lock:
+            pipeline = self._private_message_pipelines.pop(name, None)
+        if not isinstance(pipeline, dict):
+            return
+        self._cancel_timer(pipeline.get("idle_timer"))
+        self._cancel_timer(pipeline.get("max_timer"))
+
+    def _run_private_message_pipeline_worker(self, chat):
+        name = str(getattr(chat, "who", "") or "").strip()
+        if not name:
+            return True
+        com_ready = False
+        pythoncom_module = globals().get("pythoncom", None)
+        if pythoncom_module is not None:
+            try:
+                pythoncom_module.CoInitialize()
+                com_ready = True
+            except Exception as exc:
+                log(level="WARNING", message=f"私聊连续消息线程初始化 COM 失败：{exc}")
+        try:
+            while not self.is_stop_requested():
+                with self._chat_merge_lock:
+                    pipeline = self._private_message_pipeline(name)
+                    if not pipeline or not pipeline.get("queued_batches"):
+                        if pipeline:
+                            pipeline["worker_running"] = False
+                        return True
+                    messages = list(pipeline["queued_batches"].popleft())
+                if not messages:
+                    continue
+                merged = self._build_merged_private_message(messages)
+                if not str(getattr(merged, 'content', '') or '').strip():
+                    continue
+                if len(messages) > 1:
+                    self._increment_daily_runtime_stat("private_merged_messages")
+                self.wx_send_ai(chat, merged)
+            self._clear_private_message_pipeline(name)
+            return True
+        finally:
+            if com_ready:
+                try:
+                    pythoncom_module.CoUninitialize()
+                except Exception:
+                    pass
+
     def _enqueue_private_message_for_ai(self, chat, message):
         self._ensure_message_runtime_state()
         if self.is_stop_requested():
@@ -4805,84 +4988,17 @@ class WXBot:
             log(message=f"私聊 {chat.who}：短时间重复图片已忽略")
             return True
 
-        expected_version = self._bump_chat_reply_version(chat.who)
-        delay = coerce_float_range(
-            getattr(self.config, 'chat_message_merge_delay', 3.0), 3.0, 0.0, 10.0
-        )
-        if delay <= 0:
-            worker = threading.Thread(
-                target=self._run_private_ai_message_worker,
-                args=(chat, message, expected_version),
-            )
-            worker.daemon = True
-            worker.start()
-            return True
-
+        self._next_private_message_sequence(chat.who)
+        delay = self._private_message_merge_delay()
         with self._chat_merge_lock:
-            self._chat_merge_buffers.setdefault(chat.who, []).append(message)
-            old_timer = self._chat_merge_timers.get(chat.who)
-            if old_timer:
-                old_timer.cancel()
-            timer = threading.Timer(delay, self._flush_private_message_buffer, args=(chat,))
-            timer.daemon = True
-            self._chat_merge_timers[chat.who] = timer
-            timer.start()
+            pipeline = self._private_message_pipeline(chat.who)
+            if not pipeline:
+                return True
+            if not pipeline["open_messages"]:
+                pipeline["open_started_at"] = time.time()
+            pipeline["open_messages"].append(message)
+            self._schedule_private_message_pipeline_locked(chat, pipeline, delay)
         return True
-
-    def _run_private_ai_message_worker(self, chat, message, expected_version):
-        if self.is_stop_requested():
-            return True
-        com_ready = False
-        pythoncom_module = globals().get("pythoncom", None)
-        if pythoncom_module is not None:
-            try:
-                pythoncom_module.CoInitialize()
-                com_ready = True
-            except Exception as exc:
-                log(level="WARNING", message=f"私聊即时回复线程初始化 COM 失败：{exc}")
-        try:
-            return self.wx_send_ai(chat, message, expected_version=expected_version)
-        finally:
-            if com_ready:
-                try:
-                    pythoncom_module.CoUninitialize()
-                except Exception:
-                    pass
-
-    def _flush_private_message_buffer(self, chat):
-        if self.is_stop_requested():
-            self._ensure_message_runtime_state()
-            with self._chat_merge_lock:
-                self._chat_merge_buffers.pop(chat.who, None)
-                self._chat_merge_timers.pop(chat.who, None)
-            return True
-        com_ready = False
-        pythoncom_module = globals().get("pythoncom", None)
-        if pythoncom_module is not None:
-            try:
-                pythoncom_module.CoInitialize()
-                com_ready = True
-            except Exception as exc:
-                log(level="WARNING", message=f"私聊消息合并线程初始化 COM 失败：{exc}")
-        try:
-            with self._chat_merge_lock:
-                messages = self._chat_merge_buffers.pop(chat.who, [])
-                self._chat_merge_timers.pop(chat.who, None)
-                version = self._chat_reply_versions.get(chat.who, 0)
-            if not messages:
-                return True
-            merged = self._build_merged_private_message(messages)
-            if not str(getattr(merged, 'content', '') or '').strip():
-                return True
-            if len(messages) > 1:
-                self._increment_daily_runtime_stat("private_merged_messages")
-            return self.wx_send_ai(chat, merged, expected_version=version)
-        finally:
-            if com_ready:
-                try:
-                    pythoncom_module.CoUninitialize()
-                except Exception:
-                    pass
 
     @staticmethod
     def _split_reply_text_length(part_text):
@@ -5276,17 +5392,13 @@ class WXBot:
         cooldown_minutes,
         limit_count,
         limit_hours,
-        expected_version=None,
         context_text="",
         section_id="",
     ):
         tts_text = normalize_text_for_tts(clean_reply)
         if not is_text_suitable_for_voice(tts_text, max_chars=100):
             return False
-        if (
-            expected_version is not None
-            and expected_version != self._get_chat_reply_version(getattr(chat, "who", ""))
-        ):
+        if str(state_key or "").startswith("private:") and not self._private_reply_can_continue(chat):
             return False
         now = datetime.now()
         limiter = VoiceReplyLimiter(getattr(self, "_voice_reply_state", None) or load_voice_reply_state(self._voice_reply_state_path()))
@@ -5317,10 +5429,7 @@ class WXBot:
                 synth_cfg["section_id"] = str(section_id or "").strip()
             self._record_other_api_request()
             create_tts_client(synth_cfg).synthesize(tts_text, audio_path)
-            if (
-                expected_version is not None
-                and expected_version != self._get_chat_reply_version(getattr(chat, "who", ""))
-            ):
+            if str(state_key or "").startswith("private:") and not self._private_reply_can_continue(chat):
                 return False
             send_audio = getattr(chat, 'SendAudio', None)
             if not callable(send_audio):
@@ -5344,9 +5453,11 @@ class WXBot:
             self._remove_temp_audio_file(audio_path)
         return False
 
-    def _send_private_ai_reply_parts(self, chat, parts, *, expected_version=None):
+    def _send_private_ai_reply_parts(self, chat, parts):
         send_success = False
         result = True
+        if not self._private_reply_can_continue(chat):
+            return False, True
         target = str(getattr(chat, "who", "") or "").strip()
         send_chat = self._verified_send_chat(target, chat)
         if send_chat is None and target:
@@ -5361,30 +5472,20 @@ class WXBot:
             with self._get_chat_send_lock(chat.who):
                 last_index = max(0, len(parts) - 1)
                 for idx, part in enumerate(parts):
-                    if self.is_stop_requested():
-                        log(message=f"私聊 {chat.who}：机器人正在停止，已停止发送剩余回复")
-                        break
-                    if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
-                        log(message=f"私聊 {chat.who} 新消息已到达，停止发送旧回复剩余内容")
+                    if not self._private_reply_can_continue(chat):
                         break
                     self._human_delay_for_reply_part(
                         part_text=part,
                         split_continuation=(idx > 0),
                         is_last=(idx == last_index),
                     )
-                    if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
-                        log(message=f"私聊 {chat.who} 新消息已到达，停止发送旧回复剩余内容")
-                        break
-                    if self.is_stop_requested():
-                        log(message=f"私聊 {chat.who}：机器人正在停止，已停止发送剩余回复")
+                    if not self._private_reply_can_continue(chat):
                         break
                     if len(part) >= LONG_REPLY_SEGMENT_CHARS:
                         segments = list(self.config.split_long_text(part))
                         last_segment_index = max(0, len(segments) - 1)
                         for segment_index, segment in enumerate(segments):
-                            if self.is_stop_requested():
-                                break
-                            if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
+                            if not self._private_reply_can_continue(chat):
                                 break
                             if segment_index > 0:
                                 self._human_delay_for_reply_part(
@@ -5392,9 +5493,9 @@ class WXBot:
                                     split_continuation=True,
                                     is_last=(segment_index == last_segment_index),
                                 )
-                                if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
+                                if not self._private_reply_can_continue(chat):
                                     break
-                            if self.is_stop_requested():
+                            if not self._private_reply_can_continue(chat):
                                 break
                             if chat.who == getattr(self.config, "cmd", ""):
                                 takeover_runtime.remember_admin_echo_message(self, segment)
@@ -5417,14 +5518,18 @@ class WXBot:
             self._finish_private_reply_runtime_turn(chat.who, runtime_turn)
         return send_success, result
 
-    def _send_keyword_reply_actions(self, chat, actions, *, at=None, expected_version=None):
+    def _send_keyword_reply_actions(self, chat, actions, *, at=None):
         send_success = False
         result = True
         actions = list(actions or [])
         if not actions:
             log(level="ERROR", message=f"关键词回复命中但没有可发送内容，已停止处理：{chat.who}")
             return False, False
-        if getattr(chat, "chat_type", "") != "group" and chat.who != getattr(self.config, "cmd", ""):
+        is_group_chat = getattr(chat, "chat_type", "") == "group" or chat.who in getattr(self.config, "group", [])
+        private_chat = not is_group_chat and chat.who != getattr(self.config, "cmd", "")
+        if private_chat and not self._private_reply_can_continue(chat):
+            return False, True
+        if private_chat:
             send_chat = self._verified_send_chat(chat.who, chat) or self._ensure_target_listen_chat_for_send(chat.who)
             if send_chat is None:
                 queued = self._queue_keyword_reply_until_target_verified(chat.who, actions)
@@ -5436,13 +5541,14 @@ class WXBot:
                 if self.is_stop_requested():
                     log(message=f"{chat.who} 机器人正在停止，停止发送关键词回复剩余内容")
                     break
-                if expected_version is not None and expected_version != self._get_chat_reply_version(chat.who):
-                    log(message=f"{chat.who} 新消息已到达，停止发送旧关键词回复剩余内容")
+                if private_chat and not self._private_reply_can_continue(chat):
                     break
                 action_type = str(action.get("type") or "").strip().lower()
                 self._human_delay_or_stop()
                 if self.is_stop_requested():
                     log(message=f"{chat.who} 机器人正在停止，停止发送关键词回复剩余内容")
+                    break
+                if private_chat and not self._private_reply_can_continue(chat):
                     break
                 if action_type == "text":
                     content = str(action.get("content") or "").strip()

@@ -1,5 +1,6 @@
 import unittest
 import threading
+from collections import deque
 from types import SimpleNamespace
 from unittest import mock
 
@@ -329,7 +330,7 @@ class MessageBehaviorTests(unittest.TestCase):
         finally:
             WxParam.DEFAULT_SAVE_PATH = original
 
-    def test_stop_wxbot_cancels_pending_private_merge_timer(self):
+    def test_stop_wxbot_cancels_pending_private_message_pipeline_timers(self):
         class FakeTimer:
             def __init__(self):
                 self.cancelled = False
@@ -349,9 +350,17 @@ class MessageBehaviorTests(unittest.TestCase):
         bot.run_flag = True
         bot.wx = FakeListener()
         bot._chat_merge_lock = threading.Lock()
-        bot._chat_merge_timers = {"张三": timer}
-        bot._chat_merge_buffers = {"张三": [SimpleNamespace(content="你好")]}
-        bot._chat_reply_versions = {"张三": 1}
+        bot._private_message_pipelines = {
+            "张三": {
+                "open_messages": [SimpleNamespace(content="你好")],
+                "open_started_at": 1.0,
+                "idle_timer": timer,
+                "max_timer": timer,
+                "queued_batches": deque([[SimpleNamespace(content="下一批")]]),
+                "worker_running": True,
+            }
+        }
+        bot._private_message_sequence_by_chat = {"张三": 1}
         bot._incoming_seen_lock = threading.Lock()
         bot._incoming_seen_ids = {}
         bot._incoming_seen_fingerprints = {}
@@ -369,9 +378,107 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertFalse(bot.run_flag)
         self.assertTrue(bot.is_stop_requested())
         self.assertTrue(timer.cancelled)
-        self.assertEqual(bot._chat_merge_timers, {})
-        self.assertEqual(bot._chat_merge_buffers, {})
+        pipeline = bot._private_message_pipelines["张三"]
+        self.assertEqual(pipeline["open_messages"], [])
+        self.assertEqual(list(pipeline["queued_batches"]), [])
+        self.assertFalse(pipeline["worker_running"])
         self.assertTrue(bot.wx.stopped)
+
+    def test_private_message_pipeline_uses_idle_and_max_wait_timers(self):
+        class FakeTimer:
+            def __init__(self, seconds, callback, args):
+                self.seconds = seconds
+                self.callback = callback
+                self.args = args
+                self.cancelled = False
+                self.daemon = False
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        timers = []
+
+        def fake_timer(seconds, callback, args=()):
+            timer = FakeTimer(seconds, callback, args)
+            timers.append(timer)
+            return timer
+
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_message_merge_delay=4,
+            chat_voice_recognition_switch=False,
+            chat_image_recognition_switch=False,
+        )
+        bot.is_stop_requested = lambda: False
+        chat = SimpleNamespace(who="张三")
+        first = SimpleNamespace(type="text", attr="friend", sender="张三", content="第一条", id="1")
+        second = SimpleNamespace(type="text", attr="friend", sender="张三", content="第二条", id="2")
+
+        with mock.patch("wxbot_core.threading.Timer", side_effect=fake_timer):
+            self.assertTrue(bot._enqueue_private_message_for_ai(chat, first))
+            self.assertEqual(timers[0].seconds, 4)
+            self.assertAlmostEqual(timers[1].seconds, 12, places=2)
+            self.assertTrue(bot._enqueue_private_message_for_ai(chat, second))
+
+        self.assertEqual(len(timers), 3)
+        self.assertEqual(timers[2].seconds, 4)
+        self.assertTrue(timers[0].cancelled)
+        pipeline = bot._private_message_pipelines["张三"]
+        self.assertEqual([msg.content for msg in pipeline["open_messages"]], ["第一条", "第二条"])
+        self.assertEqual(bot._get_private_message_sequence("张三"), 2)
+
+    def test_private_message_pipeline_merges_batch_without_version_cancelling_reply(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(chat_message_merge_delay=3)
+        bot.is_stop_requested = lambda: False
+        bot._increment_daily_runtime_stat = lambda *_args, **_kwargs: None
+        sent_to_ai = []
+        bot.wx_send_ai = lambda _chat, message: sent_to_ai.append(message.content) or True
+        chat = SimpleNamespace(who="张三")
+        first_batch = [
+            SimpleNamespace(type="text", attr="friend", sender="张三", content="在吗", id="1"),
+            SimpleNamespace(type="text", attr="friend", sender="张三", content="我想你", id="2"),
+        ]
+        second_batch = [
+            SimpleNamespace(type="text", attr="friend", sender="张三", content="刚才忘了说", id="3")
+        ]
+
+        bot._ensure_message_runtime_state()
+        with bot._chat_merge_lock:
+            pipeline = bot._private_message_pipeline("张三")
+            pipeline["queued_batches"].append(first_batch)
+            pipeline["queued_batches"].append(second_batch)
+            pipeline["worker_running"] = True
+
+        self.assertTrue(bot._run_private_message_pipeline_worker(chat))
+
+        self.assertEqual(sent_to_ai, ["在吗\n我想你", "刚才忘了说"])
+        self.assertFalse(bot._private_message_pipelines["张三"]["worker_running"])
+
+    def test_private_reply_stops_after_pause_even_when_reply_already_generated(self):
+        class FakeChat:
+            who = "张三"
+            chat_type = "private"
+
+            def __init__(self):
+                self.sent = []
+
+            def SendMsg(self, msg=None, message=None, **_kwargs):
+                self.sent.append(msg if msg is not None else message)
+                return True
+
+        bot = WXBot.__new__(WXBot)
+        chat = FakeChat()
+        bot.config = SimpleNamespace(cmd="管理员", chat_listen_only=False)
+        bot.is_stop_requested = lambda: False
+        bot._pause_chat_reply = False
+        bot._pause_chat_reply_users = {"张三"}
+
+        self.assertEqual(bot._send_private_ai_reply_parts(chat, ["已经生成的回复"]), (False, True))
+        self.assertEqual(chat.sent, [])
 
     def test_reset_stop_request_allows_next_start(self):
         bot = WXBot.__new__(WXBot)
