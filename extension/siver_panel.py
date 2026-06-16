@@ -934,7 +934,7 @@ class SiverPanelManager:
 
     def _load_config(self) -> dict[str, Any]:
         try:
-            with open(self.config_path, "r", encoding="utf-8") as file:
+            with open(self.config_path, "r", encoding="utf-8-sig") as file:
                 payload = json.load(file)
             return payload if isinstance(payload, dict) else {}
         except Exception:
