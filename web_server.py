@@ -263,6 +263,7 @@ DEFAULT_EMAIL_CONFIG = {
     "user": "",
     "pass": "",
 }
+DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
 
 
 def normalize_voice_reply_config(config):
@@ -282,6 +283,8 @@ def normalize_voice_reply_config(config):
     config['chat_voice_reply_trigger_modes'] = trigger_modes
     if 'incoming_voice' in trigger_modes:
         config['chat_voice_recognition_switch'] = True
+    fallback_text = str(config.get('voice_transcription_fallback_text') or '').strip()
+    config['voice_transcription_fallback_text'] = fallback_text or DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT
     config['chat_voice_reply_request_keywords'] = _split_inline_keyword_list(
         config.get('chat_voice_reply_request_keywords', DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
     ) or list(DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
@@ -7066,6 +7069,7 @@ def main():
                 "clean_ai_reply_switch": True,
                 "chat_image_recognition_switch": False,
                 "chat_voice_recognition_switch": False,
+                "voice_transcription_fallback_text": DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT,
                 "chat_message_merge_delay": 3.0,
                 "chat_image_recognition_api": 0,
                 "group_image_recognition_switch": False,

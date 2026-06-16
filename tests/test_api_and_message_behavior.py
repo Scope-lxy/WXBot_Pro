@@ -104,6 +104,28 @@ class ApiBehaviorTests(unittest.TestCase):
             any("API返回成功" in call.kwargs.get("message", "") for call in fake_log.call_args_list)
         )
 
+    def test_openai_chat_nonstandard_list_response_becomes_api_error(self):
+        api = OpenAIAPI.__new__(OpenAIAPI)
+        api.config = build_api_config_snapshot(
+            {"sdk": "OpenAI", "model": "configured-model", "api_protocol": "chat_completions"},
+            prompt="系统提示",
+            max_retries=0,
+            interface_index=3,
+        )
+        api.DS_NOW_MOD = api.config.model
+        api.last_protocol_status = {"status": "unknown"}
+        create = mock.Mock(return_value=[{"message": {"content": "unexpected"}}])
+        api.client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with mock.patch("core.api.log") as fake_log:
+            result = api.chat("你好")
+
+        self.assertEqual(result, API_ERROR_REPLY_TEXT)
+        self.assertEqual(api.last_protocol_status, {"status": "failed"})
+        messages = [call.kwargs.get("message", "") for call in fake_log.call_args_list]
+        self.assertTrue(any("Chat Completions 响应中没有 choices" in message for message in messages))
+        self.assertFalse(any("'list' object has no attribute 'choices'" in message for message in messages))
+
     def test_dusapi_gpt_nonstream_still_returns_text_and_sends_reasoning(self):
         api = DusAPI(
             build_api_config_snapshot(

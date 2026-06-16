@@ -314,6 +314,7 @@ class WXBotConfig:
                     "clean_ai_reply_switch": True,
                     "chat_image_recognition_switch": False,
                     "chat_voice_recognition_switch": False,
+                    "voice_transcription_fallback_text": "刚才那条语音，我有点没听清",
                     "chat_message_merge_delay": 3.0,
                     "chat_image_recognition_api": 0,
                     "group_image_recognition_switch": False,
@@ -1033,6 +1034,9 @@ class WXBotConfig:
         # 图片识别配置
         self.chat_image_recognition_switch  = bool(self.config.get('chat_image_recognition_switch', False))
         self.chat_voice_recognition_switch  = bool(self.config.get('chat_voice_recognition_switch', False))
+        self.voice_transcription_fallback_text = str(
+            self.config.get('voice_transcription_fallback_text', '刚才那条语音，我有点没听清') or ''
+        ).strip() or '刚才那条语音，我有点没听清'
         self.chat_message_merge_delay = coerce_float_range(
             self.config.get('chat_message_merge_delay', 3.0), 3.0, 0.0, 10.0
         )

@@ -45,6 +45,11 @@ def ensure_admin_workspace_echo_messages(bot):
     return cache
 
 
+def _normalize_admin_echo_content(content):
+    text = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+    return "\n".join(line.strip() for line in text.split("\n")).strip()
+
+
 def ensure_pending_takeover_messages(bot):
     cache = getattr(bot, "_admin_workspace_pending_takeover", None)
     if not isinstance(cache, dict):
@@ -104,7 +109,7 @@ def list_paused_friends(bot):
 
 
 def remember_admin_echo_message(bot, content):
-    content = str(content or "").strip()
+    content = _normalize_admin_echo_content(content)
     if not content:
         return
     cache = ensure_admin_workspace_echo_messages(bot)
@@ -112,7 +117,7 @@ def remember_admin_echo_message(bot, content):
 
 
 def consume_admin_echo_message(bot, content):
-    content = str(content or "").strip()
+    content = _normalize_admin_echo_content(content)
     if not content:
         return False
     cache = ensure_admin_workspace_echo_messages(bot)
@@ -124,6 +129,14 @@ def consume_admin_echo_message(bot, content):
     else:
         cache[content] = count - 1
     return True
+
+
+def consume_admin_chat_echo_message(bot, chat, message):
+    admin_chat = str(getattr(getattr(bot, "config", None), "cmd", "") or "").strip()
+    chat_name = str(getattr(chat, "who", "") or "").strip()
+    if not admin_chat or chat_name != admin_chat:
+        return False
+    return consume_admin_echo_message(bot, getattr(message, "content", ""))
 
 
 def _extract_send_message_text(args, kwargs):
@@ -148,10 +161,12 @@ def capture_admin_chat_replies(bot, chat):
         return
 
     def wrapped_send_msg(*args, **kwargs):
-        result = send_msg(*args, **kwargs)
         payload = _extract_send_message_text(args, kwargs)
-        if result is not False and payload:
+        if payload:
             remember_admin_echo_message(bot, payload)
+        result = send_msg(*args, **kwargs)
+        if result is False and payload:
+            consume_admin_echo_message(bot, payload)
         return result
 
     chat.SendMsg = wrapped_send_msg

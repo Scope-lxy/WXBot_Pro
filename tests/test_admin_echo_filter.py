@@ -55,6 +55,18 @@ class FakeBot:
     def _result_error_text(self, result):
         return str(result)
 
+    def _consume_private_reply_runtime_echo(self, *_args, **_kwargs):
+        self.consumed_runtime_echo = True
+
+    def message_handle_callback(self, msg, chat):
+        if takeover_runtime.consume_admin_chat_echo_message(self, chat, msg):
+            self._mark_message_skip_memory(msg)
+            self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
+            return True
+        if msg.attr == "friend":
+            return message_routing.handle_friend_message_callback(self, msg, chat, text="")
+        return self.process_message(chat, msg)
+
 
 class AdminEchoFilterTests(unittest.TestCase):
     def test_admin_idle_prompt_sent_from_friend_branch_is_recorded_as_echo(self):
@@ -70,6 +82,36 @@ class AdminEchoFilterTests(unittest.TestCase):
         self.assertIn("当前无活动会话", chat.sent[0])
         self.assertTrue(takeover_runtime.consume_admin_echo_message(bot, chat.sent[0]))
         self.assertFalse(takeover_runtime.consume_admin_echo_message(bot, chat.sent[0]))
+
+    def test_admin_echo_match_normalizes_newlines_and_spaces(self):
+        bot = FakeBot()
+
+        takeover_runtime.remember_admin_echo_message(bot, "看了下后台，运行挺正常的\r\n不过最近忙得有点顾不上你了")
+
+        self.assertTrue(
+            takeover_runtime.consume_admin_echo_message(
+                bot,
+                "  看了下后台，运行挺正常的\n 不过最近忙得有点顾不上你了  ",
+            )
+        )
+        self.assertFalse(
+            takeover_runtime.consume_admin_echo_message(
+                bot,
+                "看了下后台，运行挺正常的\n不过最近忙得有点顾不上你了",
+            )
+        )
+
+    def test_admin_echo_marked_as_friend_is_consumed_before_admin_routing(self):
+        bot = FakeBot()
+        chat = FakeAdminChat()
+        takeover_runtime.remember_admin_echo_message(bot, "机器人状态\n运行时间：1分钟")
+
+        msg = SimpleNamespace(type="text", attr="friend", sender="LXYou", content="机器人状态\n运行时间：1分钟")
+
+        self.assertTrue(bot.message_handle_callback(msg, chat))
+        self.assertEqual(chat.sent, [])
+        self.assertTrue(getattr(msg, "_skip_memory", False))
+        self.assertTrue(getattr(bot, "consumed_runtime_echo", False))
 
 
 if __name__ == "__main__":

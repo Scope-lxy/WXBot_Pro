@@ -1043,8 +1043,8 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div class="chat-ability-block chat-ability-block--voice">
           <div class="ui-head ui-head--item">
             <div class="ui-head__main">
-              <h5>语音转文字</h5>
-              <span class="desc">调用微信自带的语音转文字能力，识别内容以微信为准</span>
+              <h5>语音识别</h5>
+              <span class="desc">建议在微信开启「语音消息自动转文字」功能</span>
             </div>
             <div class="ui-head__actions">
               <label class="ui-switch ui-switch--l3 ui-head-switch" for="chat_voice_recognition_switch">
@@ -1055,7 +1055,11 @@ html.icons-pref-local [class*=" bi-"]::before {
               </label>
             </div>
           </div>
-          <div class="chat-ability-note">若语音转文字失败，请在微信设置中开启<strong>语音消息自动转文字</strong>功能。</div>
+          <div class="chat-ability-settings">
+            <label class="cfg-label" for="voice_transcription_fallback_text">语音识别失败回复</label>
+            <input type="text" class="form-control voice-transcription-fallback-input" id="voice_transcription_fallback_text" value="{{ config.get('voice_transcription_fallback_text', '刚才那条语音，我有点没听清') }}" placeholder="刚才那条语音，我有点没听清">
+            <div class="cfg-hint">语音转文字失败时的兜底回复</div>
+          </div>
         </div>
       </div>
     </div>
@@ -1353,8 +1357,8 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div class="chat-ability-block chat-ability-block--voice">
           <div class="ui-head ui-head--item">
             <div class="ui-head__main">
-              <h5>语音转文字</h5>
-              <span class="desc">调用微信自带的语音转文字，识别内容以微信为准</span>
+              <h5>语音识别</h5>
+              <span class="desc">建议在微信开启「语音消息自动转文字」功能</span>
             </div>
             <div class="ui-head__actions">
               <label class="ui-switch ui-switch--l3 ui-head-switch" for="group_voice_recognition_switch">
@@ -1365,7 +1369,11 @@ html.icons-pref-local [class*=" bi-"]::before {
               </label>
             </div>
           </div>
-          <div class="chat-ability-note">若转文字失败，请在微信设置中开启「语音消息自动转成文字」。</div>
+          <div class="chat-ability-settings">
+            <label class="cfg-label" for="group_voice_transcription_fallback_text">语音识别失败回复</label>
+            <input type="text" class="form-control voice-transcription-fallback-input" id="group_voice_transcription_fallback_text" value="{{ config.get('voice_transcription_fallback_text', '刚才那条语音，我有点没听清') }}" placeholder="刚才那条语音，我有点没听清">
+            <div class="cfg-hint">语音转文字失败时的兜底回复</div>
+          </div>
         </div>
       </div>
     </div>
@@ -2630,8 +2638,8 @@ html.icons-pref-local [class*=" bi-"]::before {
             <div class="material-source-panel">
               <div class="switch-row">
                 <input class="form-check-input" type="checkbox" id="material_source_silent" name="material_source_silent" {% if config.material_source_silent %}checked{% endif %}>
-                <label for="material_source_silent">不回复素材来源的普通消息</label>
-                <span class="cfg-hint">不影响管理员指令</span>
+                <label for="material_source_silent">素材来源静默</label>
+                <span class="cfg-hint">素材来源只收集素材，不触发 AI 回复；管理员指令不受影响。</span>
               </div>
               <div class="material-source-head">
                 <label class="cfg-label">素材来源</label>
@@ -4240,6 +4248,10 @@ $(function(){
   });
   $(document).on('change', '#chat_voice_recognition_switch', function(){
     syncChatVoiceReplyRecognitionDependency();
+  });
+  $(document).on('input', '.voice-transcription-fallback-input', function(){
+    var value = $(this).val();
+    $('.voice-transcription-fallback-input').not(this).val(value);
   });
   $(document).on('click', '.compact-multiselect-clear', function(e){
     e.preventDefault();
@@ -11509,6 +11521,17 @@ $(function(){
         .map(function(s){ return s.trim(); })
         .filter(Boolean);
     }
+    function voiceTranscriptionFallbackText(){
+      var text = '';
+      $('.voice-transcription-fallback-input').each(function(){
+        var candidate = String($(this).val() || '').trim();
+        if(candidate){
+          text = candidate;
+          return false;
+        }
+      });
+      return text || '刚才那条语音，我有点没听清';
+    }
     // 收集接口配置列表
     var api_configs=[];
     var api_index=0;
@@ -11638,6 +11661,7 @@ $(function(){
       reply_delay_split_speed_mode:$('#reply_delay_split_speed_mode').val()||'fast',
       chat_image_recognition_switch:$('#chat_image_recognition_switch').is(':checked'),
       chat_voice_recognition_switch:$('#chat_voice_recognition_switch').is(':checked'),
+      voice_transcription_fallback_text:voiceTranscriptionFallbackText(),
       chat_voice_reply_switch:$('#chat_voice_reply_switch').is(':checked'),
       chat_voice_reply_trigger_modes:selectedCompactMultiSelectValues($('#chat_voice_reply_trigger_modes_wrap')),
       chat_voice_reply_request_keywords:splitInlineList('#chat_voice_reply_request_keywords'),

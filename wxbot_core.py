@@ -372,7 +372,7 @@ MOMENTS_CAPTION_PROMPT_FILE = "moments_caption.md"
 MATERIAL_OUTREACH_DECISION_PROMPT_FILE = "material_decision.md"
 MATERIAL_OUTREACH_PREFACE_PROMPT_FILE = "material_preface.md"
 PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS = 30 * 60
-VOICE_TRANSCRIPTION_FALLBACK_TEXT = "这条语音我没转出来，你再发一次语音或直接发文字都可以。"
+VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
 
 
 class _ChatAPIFailoverProxy:
@@ -3428,6 +3428,10 @@ class WXBot:
             return True
         try:
             setattr(msg, "_wxbot_ingress_source", "subwindow")
+            if takeover_runtime.consume_admin_chat_echo_message(self, chat, msg):
+                self._mark_message_skip_memory(msg)
+                self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
+                return True
             msg_type_label = {
                 "text": "文本",
                 "voice": "语音",
@@ -3465,9 +3469,6 @@ class WXBot:
                     self._record_received_message()
                     self.last_msg_time   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     self.last_msg_sender = msg.sender
-                    if takeover_runtime.consume_admin_echo_message(self, getattr(msg, "content", "")):
-                        self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
-                        return True
                     with takeover_runtime.capture_admin_chat_replies(self, chat):
                         if self._handle_admin_forward_input(chat, msg):
                             return True
@@ -4746,8 +4747,11 @@ class WXBot:
         return False
 
     def _send_private_voice_transcription_fallback(self, chat):
+        fallback_text = str(
+            getattr(self.config, "voice_transcription_fallback_text", "") or VOICE_TRANSCRIPTION_FALLBACK_TEXT
+        ).strip() or VOICE_TRANSCRIPTION_FALLBACK_TEXT
         try:
-            result = chat.SendMsg(VOICE_TRANSCRIPTION_FALLBACK_TEXT)
+            result = chat.SendMsg(fallback_text)
             if result is not False:
                 log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，已发送兜底提示")
                 return True
@@ -4758,7 +4762,7 @@ class WXBot:
         if wx_client is None:
             return False
         try:
-            result = wx_client.SendMsg(who=chat.who, msg=VOICE_TRANSCRIPTION_FALLBACK_TEXT)
+            result = wx_client.SendMsg(who=chat.who, msg=fallback_text)
             if result is False:
                 log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，全局兜底提示发送失败")
                 return False

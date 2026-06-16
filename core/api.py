@@ -92,6 +92,12 @@ def _format_api_debug_payload(value, limit=12000):
     return _truncate_log_text(text, limit)
 
 
+def _get_response_field(value, name, default=None):
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
 def _summarize_response_data(data):
     if not isinstance(data, dict):
         return _truncate_log_text(data)
@@ -348,28 +354,34 @@ class OpenAIAPI:
             chunk_count = 0
             for chunk in response:
                 chunk_count += 1
-                if not chunk.choices:
+                choices = _get_response_field(chunk, "choices")
+                if not choices:
                     continue
-                choice = chunk.choices[0]
-                if not hasattr(choice, "delta"):
+                choice = choices[0]
+                delta = _get_response_field(choice, "delta")
+                if not delta:
                     continue
-                delta = choice.delta
-                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                    reasoning_content += delta.reasoning_content
-                if hasattr(delta, "content") and delta.content:
-                    content += delta.content
+                reasoning_delta = _get_response_field(delta, "reasoning_content", "")
+                content_delta = _get_response_field(delta, "content", "")
+                if reasoning_delta:
+                    reasoning_content += reasoning_delta
+                if content_delta:
+                    content += content_delta
             result = content.strip() if content.strip() else reasoning_content.strip()
             if result:
                 return result
             raise ValueError(f"Chat Completions 流式响应为空（收到 {chunk_count} 个块）")
 
-        if response.choices and len(response.choices) > 0:
-            message_obj = response.choices[0].message
-            if hasattr(message_obj, "content") and message_obj.content:
-                output = message_obj.content
+        choices = _get_response_field(response, "choices")
+        if choices and len(choices) > 0:
+            message_obj = _get_response_field(choices[0], "message")
+            content = _get_response_field(message_obj, "content", "")
+            reasoning_content = _get_response_field(message_obj, "reasoning_content", "")
+            if content:
+                output = content
                 return output
-            if hasattr(message_obj, "reasoning_content") and message_obj.reasoning_content:
-                output = message_obj.reasoning_content
+            if reasoning_content:
+                output = reasoning_content
                 return output
             log(
                 level="ERROR",
