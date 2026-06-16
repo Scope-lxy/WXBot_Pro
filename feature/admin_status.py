@@ -4,7 +4,6 @@ from core.api import format_api_display_name
 from core import runtime_chat_state
 from feature.ai_material_outreach import AI_AUTO_OUTREACH_TASK_ID
 from feature.material_outreach import build_ai_candidate_material_cards
-from feature import takeover_runtime
 
 
 def format_name_list(items):
@@ -142,34 +141,21 @@ def build_status_message(bot):
     ai_available_material_count = _ai_available_material_count(bot)
     paused = sorted(runtime_chat_state.ensure_pause_chat_reply_users(bot))
     paused_text = "、".join(paused) if paused else "无"
-    private_mode = "全部监听" if bool(getattr(config, "AllListen_switch", False)) else "名单监听"
-    group_mode = "开启" if bool(getattr(config, "group_switch", False)) else "关闭"
     lines = [
         "机器人状态",
         "",
         f"运行时间：{config.get_run_time(bot.start_time)}",
-        f"工作模式：{takeover_runtime.describe_workspace(bot)}",
         f"当前接口：{_current_interface_name(bot)}",
         f"当前人设：{getattr(config, 'default_prompt', '默认')}",
-        f"私聊监听模式：{private_mode}",
-        f"群聊监听模式：{group_mode}",
-        "",
-        "数据统计：",
+        "---",
+        f"API请求：{daily_stats['chat_api_requests'] + daily_stats['other_api_requests']} 次",
         f"已收消息：{daily_stats['received_messages']} 条",
         f"已回复消息：{daily_stats['replied_messages']} 次",
-        f"API请求数：{daily_stats['chat_api_requests'] + daily_stats['other_api_requests']} 次",
-        f"聊天请求：{daily_stats['chat_api_requests']} 次",
-        f"其他请求：{daily_stats['other_api_requests']} 次",
-        f"定时消息：{daily_stats['scheduled_messages_sent']} 次",
-        f"素材转发：{daily_stats['material_forwards_sent']} 次",
-        f"AI转发次数：{daily_stats['ai_material_forwards_sent']} 次",
-        f"发朋友圈：{daily_stats['moments_published']} 次",
-        "",
-        f"人工接管好友：{len(paused)} 个（{paused_text}）",
-        "",
-        "关键功能：",
-        f"定时消息：{'开启' if scheduled_task_count else '关闭'}（任务数量：{scheduled_task_count}）",
-        f"素材转发：{'开启' if material_task_count else '关闭'}（任务数量：{material_task_count}）",
-        f"AI自动转发：{'开启' if bool(getattr(config, 'ai_material_outreach_switch', False)) else '关闭'}（可用素材：{ai_available_material_count}）",
+        f"人工接管对话：{len(paused)} 个（{paused_text}）",
+        "---",
+        f"发朋友圈：{daily_stats['moments_published']}次",
+        f"定时消息：{daily_stats['scheduled_messages_sent']} 次（任务规则：{scheduled_task_count}）",
+        f"素材转发：{daily_stats['material_forwards_sent']} 次（任务规则：{material_task_count}）",
+        f"自动转发：{daily_stats['ai_material_forwards_sent']} 次（可用素材：{ai_available_material_count}）",
     ]
     return "\n".join(lines)

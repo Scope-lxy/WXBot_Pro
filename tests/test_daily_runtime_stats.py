@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from core.daily_runtime_stats import DailyRuntimeStatsStore
+from feature.admin_status import build_status_message
 from wxbot_core import WXBot
 
 
@@ -74,6 +75,52 @@ class ApiRequestCounterTests(unittest.TestCase):
 
 
 class StatusSnapshotTests(unittest.TestCase):
+    def test_admin_status_message_uses_operational_summary_template(self):
+        bot = SimpleNamespace(
+            start_time=__import__("datetime").datetime.now(),
+            msg_received_count=0,
+            msg_replied_count=0,
+            _pause_chat_reply_users=set(),
+            _ai_outreach_available_material_count=5,
+        )
+        bot.config = SimpleNamespace(
+            get_run_time=lambda _start_time: "0天0时30分23秒",
+            default_prompt="瑞东-知己-暧昧型",
+            scheduled_message_task_list=[],
+            material_outreach_list=[],
+        )
+        bot.get_daily_runtime_stats = lambda: {
+            "received_messages": 1258,
+            "replied_messages": 1215,
+            "chat_api_requests": 1500,
+            "other_api_requests": 67,
+            "scheduled_messages_sent": 0,
+            "material_forwards_sent": 0,
+            "ai_material_forwards_sent": 0,
+            "moments_published": 0,
+        }
+        bot._get_current_chat_api_display_name = lambda: "接口 4（mimo-v2.5）"
+
+        message = build_status_message(bot)
+
+        self.assertEqual(message, "\n".join([
+            "机器人状态",
+            "",
+            "运行时间：0天0时30分23秒",
+            "当前接口：接口 4（mimo-v2.5）",
+            "当前人设：瑞东-知己-暧昧型",
+            "---",
+            "API请求：1567 次",
+            "已收消息：1258 条",
+            "已回复消息：1215 次",
+            "人工接管对话：0 个（无）",
+            "---",
+            "发朋友圈：0次",
+            "定时消息：0 次（任务规则：0）",
+            "素材转发：0 次（任务规则：0）",
+            "自动转发：0 次（可用素材：5）",
+        ]))
+
     def test_runtime_status_uses_daily_message_counts(self):
         bot = WXBot.__new__(WXBot)
         bot.run_flag = True
