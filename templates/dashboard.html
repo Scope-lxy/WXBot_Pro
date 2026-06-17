@@ -5103,9 +5103,9 @@ $(function(){
     var html = matches.map(function(candidate){
       var name = String(candidate.name || '').trim();
       var activeClass = name === selected ? ' selected' : '';
-      return '<button type="button" class="memory-list-item manual-identity-candidate'+activeClass+'" data-manual-identity-name="'+escapeHtml(name)+'">'+
-        '<span class="item-name" title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</span>'+
-        '<span class="item-meta">'+escapeHtml(manualIdentityCandidateMeta(candidate))+'</span>'+
+      return '<button type="button" class="manual-identity-candidate'+activeClass+'" data-manual-identity-name="'+escapeHtml(name)+'">'+
+        '<span class="manual-identity-candidate__name" title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</span>'+
+        '<span class="manual-identity-candidate__meta">'+escapeHtml(manualIdentityCandidateMeta(candidate))+'</span>'+
       '</button>';
     }).join('');
     $('#manual-identity-candidate-list').html(html);
@@ -5114,11 +5114,11 @@ $(function(){
     _manualIdentityCalibrationState.candidates = Array.isArray(candidates) ? candidates : [];
     _manualIdentityCalibrationState.selectedOldName = '';
     return ''+
-      '<div style="font-size:13px;color:var(--muted);margin-bottom:14px;">选择本地旧名字，再输入你刚改好的新备注/昵称。系统只合并本地资料，不读取微信通讯录。</div>'+
-      '<div class="ui-modal-form" style="gap:12px;">'+
+      '<div class="manual-identity-modal">'+
+        '<div class="manual-identity-modal__hint">选择本地旧名字，再输入你刚改好的新备注/昵称。系统只合并本地资料，不读取微信通讯录。</div>'+
         '<label class="cfg-label" for="manual-identity-search">旧名字</label>'+
         '<input type="text" class="form-control" id="manual-identity-search" placeholder="搜索旧备注/昵称">'+
-        '<div id="manual-identity-candidate-list" class="ui-workbench-scroll-body" style="height:220px;border:1px solid var(--border);border-radius:8px;padding:8px;background:#fff;"></div>'+
+        '<div id="manual-identity-candidate-list" class="manual-identity-candidate-list ui-workbench-scroll-body"></div>'+
         '<label class="cfg-label" for="manual-identity-new-name">新备注/昵称</label>'+
         '<input type="text" class="form-control" id="manual-identity-new-name" placeholder="输入新备注或昵称">'+
         '<div id="manual-identity-msg" class="cfg-feedback" style="display:none;"></div>'+
