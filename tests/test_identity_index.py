@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.account_storage import account_area_dir
 from core.contact_profiles import merge_directory
@@ -17,6 +18,7 @@ from core.identity_index import (
     update_index_from_directory,
 )
 from core.memory import resolve_memory_storage_name
+import web_server
 
 
 def snapshot(**kwargs):
@@ -246,6 +248,73 @@ class IdentityIndexTests(unittest.TestCase):
             self.assertEqual([path.name for path in new_memory_dir.glob("*_memory.json")], [canonical_file.name])
             messages = json.loads(canonical_file.read_text(encoding="utf-8"))
             self.assertEqual([item["content"] for item in messages], ["旧"])
+
+    def test_manual_identity_calibration_candidates_include_memory_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            wx_id = "wxid_test"
+            old_name = "旧备注"
+            old_memory_dir = account_area_dir(base, wx_id, "memory", create=True) / resolve_memory_storage_name(old_name)
+            old_memory_dir.mkdir(parents=True, exist_ok=True)
+            (old_memory_dir / "name.json").write_text(
+                json.dumps({"name": old_name}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            (old_memory_dir / f"{old_memory_dir.name}_memory.json").write_text(
+                json.dumps([{"content": "旧消息"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            with patch.object(web_server, "DATA_DIR", str(base)):
+                app = web_server.app
+                app.config["TESTING"] = True
+                with app.test_client() as client:
+                    with client.session_transaction() as session:
+                        session["logged_in"] = True
+                    response = client.get(
+                        "/contact_profiles/manual_identity_calibration/candidates",
+                        query_string={"wx_id": wx_id},
+                    )
+
+            payload = response.get_json()
+            self.assertEqual(payload["status"], "success")
+            self.assertIn(old_name, [item["name"] for item in payload["candidates"]])
+
+    def test_manual_identity_calibration_merges_local_storage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            wx_id = "wxid_test"
+            old_name = "旧备注"
+            new_name = "新备注"
+            old_memory_dir = account_area_dir(base, wx_id, "memory", create=True) / resolve_memory_storage_name(old_name)
+            old_memory_dir.mkdir(parents=True, exist_ok=True)
+            (old_memory_dir / "name.json").write_text(
+                json.dumps({"name": old_name}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            (old_memory_dir / f"{old_memory_dir.name}_memory.json").write_text(
+                json.dumps([{"content": "旧消息"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            with patch.object(web_server, "DATA_DIR", str(base)):
+                app = web_server.app
+                app.config["TESTING"] = True
+                with app.test_client() as client:
+                    with client.session_transaction() as session:
+                        session["logged_in"] = True
+                    response = client.post(
+                        "/contact_profiles/manual_identity_calibration",
+                        json={"wx_id": wx_id, "old_name": old_name, "new_name": new_name},
+                    )
+
+            payload = response.get_json()
+            self.assertEqual(payload["status"], "success")
+            new_memory_dir = account_area_dir(base, wx_id, "memory") / resolve_memory_storage_name(new_name)
+            self.assertTrue(new_memory_dir.exists())
+            self.assertFalse(old_memory_dir.exists())
+            merged = json.loads((new_memory_dir / f"{new_memory_dir.name}_memory.json").read_text(encoding="utf-8"))
+            self.assertEqual([item["content"] for item in merged], ["旧消息"])
 
     def test_conversation_memory_merge_keeps_legacy_profile_items(self):
         with tempfile.TemporaryDirectory() as tmp:

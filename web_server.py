@@ -62,6 +62,8 @@ from core.memory import read_memory_original_name, resolve_memory_storage_name
 from core.chat_history_format import format_memory_record_for_display
 from core.identity_index import (
     dismiss_pending as dismiss_identity_pending,
+    list_conversation_memory_names,
+    list_memory_chat_names,
     load_index as load_identity_index,
     reconcile_storage_names as reconcile_identity_storage_names,
     save_index as save_identity_index,
@@ -5554,6 +5556,93 @@ def _contact_profiles_browser_contacts(directory):
     return contacts
 
 
+def _manual_identity_calibration_candidates(wx_id):
+    wx_id = str(wx_id or '').strip()
+    names = {}
+
+    def add_name(value, source):
+        name = str(value or '').strip()
+        if not name:
+            return
+        item = names.setdefault(name, {'name': name, 'sources': []})
+        if source and source not in item['sources']:
+            item['sources'].append(source)
+
+    directory = _load_contact_profiles_directory(wx_id)
+    for subject in directory.get('subjects', []) or []:
+        if not isinstance(subject, dict) or subject.get('subject_type', 'friend') != 'friend':
+            continue
+        if subject.get('status', 'active') != 'active':
+            continue
+        for key in ('remark', 'nickname', 'display_name', 'send_name', 'wechat_id'):
+            add_name(subject.get(key), '通讯录')
+
+    index = _identity_index_for_wx_id(wx_id)
+    for identity in index.get('identities') or []:
+        if not isinstance(identity, dict):
+            continue
+        for key in ('current_chat_name', 'remark', 'nickname', 'display_name', 'send_name', 'wechat_id'):
+            add_name(identity.get(key), '身份索引')
+
+    for name in list_memory_chat_names(DATA_DIR, wx_id):
+        add_name(name, '聊天记录')
+    for name in list_conversation_memory_names(DATA_DIR, wx_id):
+        add_name(name, '会话记忆')
+
+    return sorted(names.values(), key=lambda item: _wechat_name_sort_key(item.get('name')))
+
+
+def _manual_identity_calibration_wx_ids():
+    wx_ids = set(_contact_profiles_wx_ids())
+    wx_ids.update(discover_populated_account_ids(MEMORY_BASE))
+    wx_ids.update(discover_populated_account_ids(CONVERSATION_MEMORY_BASE))
+    wx_ids.update(discover_populated_account_ids(DATA_DIR))
+    return sorted(wx_ids)
+
+
+def _validate_manual_identity_calibration_wx_id(candidate):
+    candidate = str(candidate or '').strip()
+    wx_ids = _manual_identity_calibration_wx_ids()
+    if candidate:
+        if candidate in wx_ids or is_known_account_id(
+            candidate,
+            running_wx_id=_running_wx_id(),
+            last_wx_id=_read_last_wx_id(),
+            existing_ids=wx_ids,
+        ):
+            return candidate
+        raise ValueError('所选微信号不存在或已失效，请重新选择')
+    preferred = _preferred_account_wx_id(DATA_DIR)
+    if preferred:
+        return preferred
+    return wx_ids[0] if wx_ids else DEFAULT_ACCOUNT_ID
+
+
+def _manual_identity_calibration_wx_id_from_request():
+    if request.method == 'GET':
+        candidate = request.args.get('wx_id', '')
+    elif request.is_json:
+        payload = request.get_json(silent=True) or {}
+        candidate = payload.get('wx_id', '')
+    else:
+        candidate = request.form.get('wx_id', '')
+    return _validate_manual_identity_calibration_wx_id(candidate)
+
+
+def _refresh_runtime_identity_after_manual_calibration():
+    if bot_thread and bot_thread.is_alive() and bot:
+        load_identity_cache = getattr(bot, '_load_identity_index_cache', None)
+        if callable(load_identity_cache):
+            load_identity_cache()
+        refresh_config = getattr(getattr(bot, 'config', None), 'refresh_config', None)
+        if callable(refresh_config):
+            refresh_config()
+        reply_count_store = getattr(bot, 'reply_count_store', None)
+        reload_store = getattr(reply_count_store, '_load', None)
+        if callable(reload_store):
+            reply_count_store.data = reload_store()
+
+
 def _contact_profiles_browser_tag_items(directory):
     contacts = _contact_profiles_browser_contacts(directory)
     tag_counts = defaultdict(int)
@@ -5855,6 +5944,69 @@ def contact_profiles_identity_calibration():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/contact_profiles/manual_identity_calibration/candidates')
+@login_required
+def contact_profiles_manual_identity_calibration_candidates():
+    """返回手动校准旧名字候选。"""
+    try:
+        wx_id = _manual_identity_calibration_wx_id_from_request()
+        candidates = _manual_identity_calibration_candidates(wx_id)
+        return jsonify({
+            'status': 'success',
+            'wx_id': wx_id,
+            'candidates': candidates,
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/contact_profiles/manual_identity_calibration', methods=['POST'])
+@login_required
+def contact_profiles_manual_identity_calibration():
+    """手动确认旧名字和新备注/昵称是同一人，并立即合并本地资料。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        wx_id = str(data.get('wx_id') or '').strip()
+        if wx_id:
+            wx_id = _validate_manual_identity_calibration_wx_id(wx_id)
+        else:
+            wx_id = _manual_identity_calibration_wx_id_from_request()
+        old_name = str(data.get('old_name') or '').strip()
+        new_name = str(data.get('new_name') or '').strip()
+        if not old_name:
+            return jsonify({'status': 'error', 'message': '请选择旧名字'}), 400
+        if not new_name:
+            return jsonify({'status': 'error', 'message': '请输入新备注/昵称'}), 400
+        if old_name == new_name:
+            return jsonify({'status': 'error', 'message': '旧名字和新备注/昵称不能相同'}), 400
+
+        known_names = {item['name'] for item in _manual_identity_calibration_candidates(wx_id)}
+        if old_name not in known_names:
+            return jsonify({'status': 'error', 'message': f'未找到旧名字「{old_name}」，请刷新候选后重试'}), 404
+
+        manifest = reconcile_identity_storage_names(
+            DATA_DIR,
+            wx_id,
+            old_name,
+            new_name,
+            reason='manual_direct_identity_calibration',
+        )
+        _refresh_runtime_identity_after_manual_calibration()
+        log('SUCCESS', f'[身份校准] 手动校准已合并：{old_name} -> {new_name}')
+        return jsonify({
+            'status': 'success',
+            'wx_id': wx_id,
+            'message': f'已合并：{old_name} -> {new_name}',
+            'manifest': manifest,
+            'browser': _contact_profiles_browser_payload(wx_id),
+            'candidates': _manual_identity_calibration_candidates(wx_id),
+        })
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/contact_profiles/identity_calibration/<fingerprint>/dismiss', methods=['POST'])
 @login_required
 def contact_profiles_identity_calibration_dismiss(fingerprint):
@@ -5940,17 +6092,7 @@ def contact_profiles_identity_calibration_merge(fingerprint):
             )
         ]
         index = _save_identity_index_for_wx_id(wx_id, index)
-        if bot_thread and bot_thread.is_alive() and bot:
-            load_identity_cache = getattr(bot, '_load_identity_index_cache', None)
-            if callable(load_identity_cache):
-                load_identity_cache()
-            refresh_config = getattr(getattr(bot, 'config', None), 'refresh_config', None)
-            if callable(refresh_config):
-                refresh_config()
-            reply_count_store = getattr(bot, 'reply_count_store', None)
-            reload_store = getattr(reply_count_store, '_load', None)
-            if callable(reload_store):
-                reply_count_store.data = reload_store()
+        _refresh_runtime_identity_after_manual_calibration()
         log('SUCCESS', f'[身份校准] 已确认同一人并合并：{old_name} -> {new_name}')
         return jsonify({
             'status': 'success',

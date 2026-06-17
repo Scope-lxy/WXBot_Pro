@@ -1880,6 +1880,9 @@ html.icons-pref-local [class*=" bi-"]::before {
               <button type="button" id="btn-contact-repair-remarks" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2">
                 <i class="bi bi-pencil-square"></i> 备注修复
               </button>
+              <button type="button" id="btn-contact-manual-calibration" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2">
+                <i class="bi bi-person-check"></i> 手动校准
+              </button>
             </div>
             <div class="cfg-hint contact-maintenance-note">标准模式默认读取 50 个联系人；暴力模式会一次性读完，但更容易触发微信风控</div>
             <div class="page-inline-notice page-inline-notice--danger">
@@ -3752,7 +3755,14 @@ var svModal = (function(){
     var $btns = $('#sv-modal-btns').empty();
     (opts.buttons || []).forEach(function(btn){
       var $b = $('<button type="button">').attr('class', buttonClass(btn)).text(btn.text);
-      $b.on('click', function(){ _close(); if(btn.action) btn.action(); });
+      $b.on('click', function(){
+        if(btn.keepOpen){
+          if(btn.action) btn.action();
+          return;
+        }
+        _close();
+        if(btn.action) btn.action();
+      });
       $btns.append($b);
     });
     $overlay.css('display','flex');
@@ -5069,6 +5079,140 @@ $(function(){
       });
     }, '身份校准确认', okText, '取消');
   }
+  var _manualIdentityCalibrationState = {
+    wxId: '',
+    candidates: [],
+    selectedOldName: ''
+  };
+  function manualIdentityCandidateMeta(candidate){
+    var sources = Array.isArray(candidate && candidate.sources) ? candidate.sources : [];
+    return sources.length ? sources.join(' / ') : '本地资料';
+  }
+  function renderManualIdentityCandidateItems(){
+    var keyword = String($('#manual-identity-search').val() || '').trim().toLowerCase();
+    var selected = String(_manualIdentityCalibrationState.selectedOldName || '').trim();
+    var matches = (_manualIdentityCalibrationState.candidates || []).filter(function(candidate){
+      var name = String((candidate && candidate.name) || '').trim();
+      var haystack = (name + ' ' + manualIdentityCandidateMeta(candidate)).toLowerCase();
+      return !keyword || haystack.indexOf(keyword) >= 0;
+    }).slice(0, 80);
+    if(!matches.length){
+      $('#manual-identity-candidate-list').html('<div class="relationship-scan-empty">没有匹配的旧名字</div>');
+      return;
+    }
+    var html = matches.map(function(candidate){
+      var name = String(candidate.name || '').trim();
+      var activeClass = name === selected ? ' selected' : '';
+      return '<button type="button" class="memory-list-item manual-identity-candidate'+activeClass+'" data-manual-identity-name="'+escapeHtml(name)+'">'+
+        '<span class="item-name" title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</span>'+
+        '<span class="item-meta">'+escapeHtml(manualIdentityCandidateMeta(candidate))+'</span>'+
+      '</button>';
+    }).join('');
+    $('#manual-identity-candidate-list').html(html);
+  }
+  function renderManualIdentityCalibrationBody(candidates){
+    _manualIdentityCalibrationState.candidates = Array.isArray(candidates) ? candidates : [];
+    _manualIdentityCalibrationState.selectedOldName = '';
+    return ''+
+      '<div style="font-size:13px;color:var(--muted);margin-bottom:14px;">选择本地旧名字，再输入你刚改好的新备注/昵称。系统只合并本地资料，不读取微信通讯录。</div>'+
+      '<div class="ui-modal-form" style="gap:12px;">'+
+        '<label class="cfg-label" for="manual-identity-search">旧名字</label>'+
+        '<input type="text" class="form-control" id="manual-identity-search" placeholder="搜索旧备注/昵称">'+
+        '<div id="manual-identity-candidate-list" class="ui-workbench-scroll-body" style="height:220px;border:1px solid var(--border);border-radius:8px;padding:8px;background:#fff;"></div>'+
+        '<label class="cfg-label" for="manual-identity-new-name">新备注/昵称</label>'+
+        '<input type="text" class="form-control" id="manual-identity-new-name" placeholder="输入新备注或昵称">'+
+        '<div id="manual-identity-msg" class="cfg-feedback" style="display:none;"></div>'+
+      '</div>';
+  }
+  function setManualIdentityMsg(message, ok){
+    var $msg = $('#manual-identity-msg');
+    if(!$msg.length) return;
+    if(!message){
+      $msg.hide().text('').removeClass('cfg-feedback-success cfg-feedback-error cfg-feedback-info');
+      return;
+    }
+    $msg
+      .text(message)
+      .removeClass('cfg-feedback-success cfg-feedback-error cfg-feedback-info')
+      .addClass('cfg-feedback ' + feedbackClass(ok))
+      .show();
+  }
+  function showManualIdentityCalibrationDialog(){
+    var wxId = String(_contactDirectoryBrowserState.wxId || '').trim();
+    $.getJSON('/contact_profiles/manual_identity_calibration/candidates', {wx_id: wxId}).done(function(res){
+      if(res.status !== 'success'){
+        showMsg('contact-directory-msg', res.message || '手动校准加载失败', false);
+        return;
+      }
+      _manualIdentityCalibrationState.wxId = String(res.wx_id || wxId || '').trim();
+      svModal.custom({
+        icon: '<i class="bi bi-person-check" style="color:#07C160;font-size:36px;"></i>',
+        title: '手动校准',
+        body: renderManualIdentityCalibrationBody(res.candidates || []),
+        boxClass: 'ui-modal-box--lg',
+        bodyClass: 'ui-modal-body--left',
+        buttons: [
+          {text:'取消', variant:'secondary'},
+          {text:'确认合并', variant:'primary', keepOpen:true, action:function(){ runManualIdentityCalibration(); }}
+        ]
+      });
+      renderManualIdentityCandidateItems();
+      setTimeout(function(){ $('#manual-identity-search').focus(); }, 0);
+    }).fail(function(xhr){
+      showMsg('contact-directory-msg', '手动校准加载失败：' + (xhr.responseText || xhr.status), false);
+    });
+  }
+  function runManualIdentityCalibration(){
+    var oldName = String(_manualIdentityCalibrationState.selectedOldName || '').trim();
+    var newName = String($('#manual-identity-new-name').val() || '').trim();
+    if(!oldName){
+      setManualIdentityMsg('请先选择旧名字', false);
+      return;
+    }
+    if(!newName){
+      setManualIdentityMsg('请输入新备注/昵称', false);
+      return;
+    }
+    setManualIdentityMsg('正在合并本地资料...', 'info');
+    $.ajax({
+      url:'/contact_profiles/manual_identity_calibration',
+      type:'POST',
+      contentType:'application/json',
+      data: JSON.stringify({
+        wx_id: String(_manualIdentityCalibrationState.wxId || _contactDirectoryBrowserState.wxId || '').trim(),
+        old_name: oldName,
+        new_name: newName
+      })
+    }).done(function(res){
+      if(res.status === 'success'){
+        svModal.close();
+        showMsg('contact-directory-msg', res.message || '手动校准已完成', true);
+        if(res.browser){
+          renderContactDirectoryBrowser(res.browser);
+          _contactDirectoryBrowserState.loaded = true;
+        } else {
+          loadContactDirectoryBrowser(res.wx_id || _contactDirectoryBrowserState.wxId);
+        }
+        loadIdentityCalibration(res.wx_id || _contactDirectoryBrowserState.wxId, {silent:true});
+        loadRelationshipScanStatus(res.wx_id || _contactDirectoryBrowserState.wxId, {silent:true});
+      } else {
+        setManualIdentityMsg(res.message || '手动校准失败', false);
+      }
+    }).fail(function(xhr){
+      setManualIdentityMsg('手动校准失败：' + (xhr.responseText || xhr.status), false);
+    });
+  }
+  $(document).on('input', '#manual-identity-search', function(){
+    renderManualIdentityCandidateItems();
+  });
+  $(document).on('click', '.manual-identity-candidate', function(){
+    _manualIdentityCalibrationState.selectedOldName = String($(this).data('manual-identity-name') || '').trim();
+    renderManualIdentityCandidateItems();
+    setManualIdentityMsg('已选择：' + _manualIdentityCalibrationState.selectedOldName, true);
+    if(!String($('#manual-identity-new-name').val() || '').trim()){
+      $('#manual-identity-new-name').focus();
+    }
+  });
   function relationshipScanStatusInfo(status){
     status = String(status || '').trim();
     if(status === 'blocked') return {text:'拉黑', cls:'is-blocked'};
@@ -8737,6 +8881,9 @@ $(function(){
   }
   $('#btn-contact-repair-remarks').click(function(){
     showRemarkRepairPreview();
+  });
+  $('#btn-contact-manual-calibration').click(function(){
+    showManualIdentityCalibrationDialog();
   });
   $('#btn-relationship-scan-now').click(function(){
     runRelationshipScanAction('/relationship_scan/scan', 'btn-relationship-scan-now', '扫描中...', '关系扫描完成');
