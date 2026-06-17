@@ -22,6 +22,7 @@ import logging
 from functools import wraps
 import threading
 from pathlib import Path
+from functools import lru_cache
 from core.api import (
     APIConfigSnapshot,
     DusAPI,
@@ -264,6 +265,60 @@ DEFAULT_EMAIL_CONFIG = {
     "pass": "",
 }
 DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "这条语音有点听不清"
+
+
+def _clean_sort_text(value):
+    return str(value or '').strip()
+
+
+@lru_cache(maxsize=4096)
+def _windows_zh_sort_key(text):
+    text = _clean_sort_text(text)
+    if os.name != 'nt' or not text:
+        return text.casefold()
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        lcmapsortkey = 0x00000400
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        lc_map_string_ex = kernel32.LCMapStringEx
+        lc_map_string_ex.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.LPCWSTR,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        lc_map_string_ex.restype = ctypes.c_int
+        needed = lc_map_string_ex('zh-CN', lcmapsortkey, text, len(text), None, 0, None, None, None)
+        if needed <= 0:
+            return text.casefold()
+        buffer = (ctypes.c_ubyte * needed)()
+        written = lc_map_string_ex('zh-CN', lcmapsortkey, text, len(text), ctypes.byref(buffer), needed, None, None, None)
+        if written <= 0:
+            return text.casefold()
+        return bytes(buffer)
+    except Exception:
+        return text.casefold()
+
+
+def _wechat_name_sort_key(value):
+    text = _clean_sort_text(value)
+    first = text[:1]
+    if first.isascii() and first.isdigit():
+        group = 0
+    elif first.isascii() and first.isalpha():
+        group = 1
+    elif '\u4e00' <= first <= '\u9fff':
+        group = 2
+    else:
+        group = 3
+    return (group, _windows_zh_sort_key(text), text.casefold(), text)
 
 
 def normalize_voice_reply_config(config):
@@ -5340,19 +5395,21 @@ def _conversation_memory_messages_for_user(wx_id, chat_name):
         return []
 
 
-def _conversation_memory_chat_names_from_records(wx_id):
-    wx_id = str(wx_id or '').strip()
-    if not wx_id:
-        return []
-    base = _account_memory_dir(wx_id)
-    if not os.path.isdir(base):
-        return []
-    names = []
-    for name in os.listdir(base):
-        path = os.path.join(base, name)
-        if os.path.isdir(path):
-            names.append(read_memory_original_name(path, name))
-    return sorted(set(names))
+def _memory_chat_dir_has_messages(chat_path):
+    try:
+        mem_files = [f for f in os.listdir(chat_path) if f.endswith('_memory.json')]
+    except OSError:
+        return False
+    for filename in mem_files:
+        path = os.path.join(chat_path, filename)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                messages = json.load(f)
+            if isinstance(messages, list) and len(messages) > 0:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _conversation_memory_wx_ids():
@@ -5487,7 +5544,7 @@ def _contact_profiles_browser_contacts(directory):
             'tags': list(subject.get('tags', []) or []),
         })
     contacts.sort(key=lambda item: (
-        str(item.get('remark') or item.get('nickname') or item.get('wechat_id') or ''),
+        _wechat_name_sort_key(item.get('nickname') or item.get('wechat_id')),
         str(item.get('contact_key') or ''),
     ))
     return contacts
@@ -6419,18 +6476,8 @@ def _current_prompt_name(config, chat_name):
 
 
 def _conversation_memory_user_sort_key(item):
-    source = str((item or {}).get('source', '') or '').strip()
-    has_saved_memory_rank = 0 if source == 'conversation_memory' else 1
     chat_name = str((item or {}).get('chat_name', '') or '').strip()
-    normalized_parts = []
-    for part in re.split(r'(\d+)', chat_name.upper()):
-        if not part:
-            continue
-        if part.isdigit():
-            normalized_parts.append((0, int(part)))
-        else:
-            normalized_parts.append((1, part))
-    return (has_saved_memory_rank, normalized_parts, chat_name.upper())
+    return _wechat_name_sort_key(chat_name)
 
 
 @app.route('/conversation_memory/users')
@@ -6453,16 +6500,6 @@ def conversation_memory_users():
                     'updated_at': state.get('updated_at', ''),
                     'source': 'conversation_memory',
                 }
-        for chat_name in _conversation_memory_chat_names_from_records(wx_id):
-            if chat_name in by_name:
-                continue
-            by_name[chat_name] = {
-                'chat_name': chat_name,
-                'wx_id': wx_id,
-                'current_prompt_name': _current_prompt_name(config, chat_name),
-                'updated_at': '',
-                'source': 'chat_records',
-            }
         users = sorted(by_name.values(), key=_conversation_memory_user_sort_key)
         return jsonify({'status': 'success', 'wx_id': wx_id, 'users': users})
     except Exception as e:
@@ -6803,7 +6840,13 @@ def memory_chats(wx_id):
             if not _safe_is_dir(wx_abs, d):
                 continue
             chat_path = os.path.join(wx_path, d)
+            if not _memory_chat_dir_has_messages(chat_path):
+                continue
             chats.append({'name': read_memory_original_name(chat_path, d), 'storage_name': d})
+        chats.sort(key=lambda item: (
+            _wechat_name_sort_key(item.get('name')),
+            str(item.get('storage_name') or ''),
+        ))
         return jsonify({'status': 'success', 'chats': chats})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})

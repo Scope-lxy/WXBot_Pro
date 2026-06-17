@@ -881,6 +881,10 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="memory-layout memory-layout-two-pane conversation-memory-layout">
         <div class="memory-list-panel" id="conversation-memory-user-panel" style="display:none">
           <div class="panel-title">对话窗口</div>
+          <div class="memory-list-search">
+            <i class="bi bi-search"></i>
+            <input type="search" class="form-control" id="conversation-memory-user-search" placeholder="搜索">
+          </div>
           <div class="memory-list-inner" id="conversation-memory-user-list"></div>
         </div>
         <div class="conversation-memory-editor-area" id="conversation-memory-editor-area" style="display:none">
@@ -3624,6 +3628,10 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="memory-layout memory-layout-two-pane">
         <div class="memory-list-panel" id="memory-chat-panel" style="display:none">
           <div class="panel-title">对话窗口</div>
+          <div class="memory-list-search">
+            <i class="bi bi-search"></i>
+            <input type="search" class="form-control" id="memory-chat-search" placeholder="搜索">
+          </div>
           <div class="memory-list-inner" id="memory-chat-list"></div>
         </div>
         <!-- 右栏：消息记录 -->
@@ -8088,6 +8096,7 @@ $(function(){
 
   var _conversationMemoryWxId = '', _conversationMemoryChatName = '';
   var _conversationMemoryEditorState = null, _conversationMemoryOriginalState = null;
+  var _conversationMemoryUsers = [];
 
   function getConversationMemoryWxId(){
     return (_conversationMemoryWxId || '').trim();
@@ -8427,6 +8436,63 @@ $(function(){
     return $item;
   }
 
+  function memoryListSearchText(selector){
+    return String($(selector).val() || '').trim().toLowerCase();
+  }
+
+  function itemNameMatchesSearch(name, query){
+    name = String(name || '').toLowerCase();
+    return !query || name.indexOf(query) >= 0;
+  }
+
+  function renderConversationMemoryUsers(users, selectName){
+    var wxId = getConversationMemoryWxId();
+    var $list = $('#conversation-memory-user-list').empty();
+    users = Array.isArray(users) ? users : [];
+    var query = memoryListSearchText('#conversation-memory-user-search');
+    var filtered = users.filter(function(u){ return itemNameMatchesSearch(u && u.chat_name, query); });
+    if(!filtered.length){
+      $list.html('<div style="padding:12px;font-size:12.5px;color:var(--muted);">' + (query ? '没有匹配的对话窗口' : '暂无会话记忆') + '</div>');
+      return;
+    }
+    var names = users.map(function(u){ return u.chat_name || ''; }).filter(Boolean);
+    var selected = selectName && names.indexOf(selectName) !== -1 ? selectName : '';
+    if(!selected || !filtered.some(function(u){ return u.chat_name === selected; })){
+      selected = filtered[0].chat_name || '';
+    }
+    filtered.forEach(function(u){
+      var name = u.chat_name || '';
+      if(!name) return;
+      $list.append(renderConversationMemoryListItem(name, name === selected, function(){
+        $('.memory-list-item','#conversation-memory-user-list').removeClass('selected');
+        $('#conversation-memory-user-list .memory-list-item').filter(function(){
+          return $(this).find('.item-name').text() === name;
+        }).addClass('selected');
+        loadConversationMemoryState(name);
+      }, function(){
+        confirmConversationMemoryNavigation(function(){
+          svModal.confirm('确定删除「'+name+'」的会话记忆？', function(){
+            $.ajax({url:'/conversation_memory/state/'+encodeURIComponent(name)+'?wx_id='+encodeURIComponent(wxId), type:'DELETE'})
+              .done(function(delRes){
+                if(delRes.status==='success'){
+                  showMsg('conversation-memory-msg', '已删除', true);
+                  loadConversationMemoryUsers(name === _conversationMemoryChatName ? '' : _conversationMemoryChatName);
+                } else {
+                  showMsg('conversation-memory-msg', delRes.message || '删除失败', false);
+                }
+              })
+              .fail(function(xhr){
+                showMsg('conversation-memory-msg', '删除失败：' + xhr.status, false);
+              });
+          }, '删除确认', '确定删除', '取消');
+        });
+      }));
+    });
+    if(selected && selected !== getConversationMemoryChatName()){
+      loadConversationMemoryState(selected);
+    }
+  }
+
   function loadConversationMemoryWxIds(selectWxId, selectName){
     $.getJSON('/conversation_memory/wx_ids')
       .done(function(res){
@@ -8464,6 +8530,7 @@ $(function(){
     var $list = $('#conversation-memory-user-list').empty();
     if(!wxId){
       $list.html('<div style="padding:12px;font-size:12.5px;color:var(--muted);">暂无会话记忆</div>');
+      _conversationMemoryUsers = [];
       resetConversationMemoryEditor();
       return;
     }
@@ -8472,41 +8539,12 @@ $(function(){
         $('#conversation-memory-msg').hide();
         if(res.status !== 'success' || !res.users || !res.users.length){
           $list.html('<div style="padding:12px;font-size:12.5px;color:var(--muted);">暂无会话记忆</div>');
+          _conversationMemoryUsers = [];
           resetConversationMemoryEditor();
           return;
         }
-        var names = (res.users || []).map(function(u){ return u.chat_name || ''; }).filter(Boolean);
-        var selected = selectName && names.indexOf(selectName) !== -1 ? selectName : names[0];
-        res.users.forEach(function(u){
-          var name = u.chat_name || '';
-          if(!name) return;
-          var hasSavedState = u.source !== 'chat_records';
-          $list.append(renderConversationMemoryListItem(name, name === selected, function(){
-            $('.memory-list-item','#conversation-memory-user-list').removeClass('selected');
-            $('#conversation-memory-user-list .memory-list-item').filter(function(){
-              return $(this).find('.item-name').text() === name;
-            }).addClass('selected');
-            loadConversationMemoryState(name);
-          }, function(){
-            confirmConversationMemoryNavigation(function(){
-              svModal.confirm('确定删除「'+name+'」的会话记忆？', function(){
-                $.ajax({url:'/conversation_memory/state/'+encodeURIComponent(name)+'?wx_id='+encodeURIComponent(wxId), type:'DELETE'})
-                  .done(function(delRes){
-                    if(delRes.status==='success'){
-                      showMsg('conversation-memory-msg', '已删除', true);
-                      loadConversationMemoryUsers(name === _conversationMemoryChatName ? '' : _conversationMemoryChatName);
-                    } else {
-                      showMsg('conversation-memory-msg', delRes.message || '删除失败', false);
-                    }
-                  })
-                  .fail(function(xhr){
-                    showMsg('conversation-memory-msg', '删除失败：' + xhr.status, false);
-                  });
-              }, '删除确认', '确定删除', '取消');
-            });
-          }, hasSavedState));
-        });
-        loadConversationMemoryState(selected);
+        _conversationMemoryUsers = res.users || [];
+        renderConversationMemoryUsers(_conversationMemoryUsers, selectName);
       })
       .fail(function(){
         $list.html('<div style="padding:12px;font-size:12.5px;color:var(--danger);">加载失败，请稍后重试</div>');
@@ -8573,6 +8611,7 @@ $(function(){
     var applyWxIdChange = function(){
       _conversationMemoryWxId = nextWxId;
       _conversationMemoryChatName = '';
+      _conversationMemoryUsers = [];
       $select.data('currentWxId', _conversationMemoryWxId);
       $('#conversation-memory-user-panel').toggle(!!_conversationMemoryWxId);
       $('#conversation-memory-user-list').empty();
@@ -8599,6 +8638,9 @@ $(function(){
     confirmConversationMemoryNavigation(function(){
       loadConversationMemoryWxIds(getConversationMemoryWxId(), getConversationMemoryChatName());
     });
+  });
+  $('#conversation-memory-user-search').on('input', function(){
+    renderConversationMemoryUsers(_conversationMemoryUsers, getConversationMemoryChatName());
   });
   $('#btn-add-conversation-memory-item').click(function(){
     if(!getConversationMemoryChatName()){ showMsg('conversation-memory-msg', '请先选择对话窗口', false); return; }
@@ -12980,6 +13022,7 @@ $(function(){
 
   // ===== Memory Panel =====
   var _memWxId = null, _memChatName = null;
+  var _memoryChats = [];
 
   // 渲染一条消息气泡
   function _renderMemoryMsg(m){
@@ -13032,59 +13075,75 @@ $(function(){
   }
 
   // 加载窗口列表；若 autoSelect 有值则自动选中对应窗口并加载消息
+  function memoryChatName(chatItem){
+    return (typeof chatItem === 'string') ? chatItem : (chatItem && chatItem.name ? chatItem.name : '');
+  }
+
+  function renderMemoryChatList(chats, autoSelect){
+    var wxid = _memWxId;
+    var $list = $('#memory-chat-list').empty();
+    chats = Array.isArray(chats) ? chats : [];
+    var query = memoryListSearchText('#memory-chat-search');
+    var filtered = chats.filter(function(chatItem){ return itemNameMatchesSearch(memoryChatName(chatItem), query); });
+    if(!filtered.length){
+      $list.html('<div style="padding:12px;font-size:12.5px;color:var(--muted);">' + (query ? '没有匹配的对话窗口' : '暂无对话窗口') + '</div>');
+      return;
+    }
+    filtered.forEach(function(chatItem){
+      var chat = memoryChatName(chatItem);
+      if(!chat) return;
+      var safeChat = $('<span>').text(chat).html();
+      var $item = $('<div class="memory-list-item">' +
+        '<span class="item-name" title="'+safeChat+'">'+safeChat+'</span>' +
+        '<button type="button" class="btn-del-mem" title="删除"><i class="bi bi-trash"></i></button>' +
+        '</div>');
+      if(chat === autoSelect) $item.addClass('selected');
+      $item.on('click', function(e){
+        if($(e.target).closest('.btn-del-mem').length) return;
+        $('.memory-list-item','#memory-chat-list').removeClass('selected');
+        $item.addClass('selected');
+        _memChatName = chat;
+        $('#memory-msg-area').show().css('display','flex');
+        loadMemoryMessages(wxid, chat);
+      });
+      $item.find('.btn-del-mem').on('click', function(){
+        svModal.confirm('确定删除窗口「'+chat+'」的聊天记录？', function(){
+          $.ajax({ url:'/memory/delete_chat/'+encodeURIComponent(wxid)+'/'+encodeURIComponent(chat), type:'DELETE' })
+            .done(function(r){
+              if(r.status==='success'){
+                $('#memory-browser-msg').hide();
+                if(_memChatName===chat){ _memChatName=null; $('#memory-msg-area').hide(); $('#memory-msg-container').empty(); }
+                loadMemoryChatList(wxid);
+              } else {
+                showMsg('memory-browser-msg', r.message || '删除失败', false);
+              }
+            })
+            .fail(function(xhr){
+              showMsg('memory-browser-msg', '删除失败：' + xhr.status, false);
+            });
+        }, '删除确认');
+      });
+      $list.append($item);
+    });
+    var chatNames = chats.map(memoryChatName);
+    if(autoSelect && chatNames.indexOf(autoSelect) !== -1 && filtered.some(function(item){ return memoryChatName(item) === autoSelect; })){
+      $('#memory-msg-area').show().css('display','flex');
+      loadMemoryMessages(wxid, autoSelect);
+    }
+  }
+
   function loadMemoryChatList(wxid, autoSelect){
     $.getJSON('/memory/chats/'+encodeURIComponent(wxid))
       .done(function(res){
         $('#memory-browser-msg').hide();
         var $list = $('#memory-chat-list').empty();
         if(res.status !== 'success' || !res.chats.length){
+          _memoryChats = [];
           $list.html('<div style="padding:12px;font-size:12.5px;color:var(--muted);">暂无对话窗口</div>');
           return;
         }
-        res.chats.forEach(function(chatItem){
-          var chat = (typeof chatItem === 'string') ? chatItem : (chatItem && chatItem.name ? chatItem.name : '');
-          if(!chat) return;
-          var $item = $('<div class="memory-list-item">' +
-            '<span class="item-name" title="'+$('<span>').text(chat).html()+'">'+$('<span>').text(chat).html()+'</span>' +
-            '<button type="button" class="btn-del-mem" title="删除"><i class="bi bi-trash"></i></button>' +
-            '</div>');
-          // 如果是自动恢复选中的那一项，立即标记 selected
-          if(chat === autoSelect) $item.addClass('selected');
-          $item.on('click', function(e){
-            if($(e.target).closest('.btn-del-mem').length) return;
-            $('.memory-list-item','#memory-chat-list').removeClass('selected');
-            $item.addClass('selected');
-            _memChatName = chat;
-            $('#memory-msg-area').show().css('display','flex');
-            loadMemoryMessages(wxid, chat);
-          });
-          $item.find('.btn-del-mem').on('click', function(){
-            svModal.confirm('确定删除窗口「'+chat+'」的聊天记录？', function(){
-              $.ajax({ url:'/memory/delete_chat/'+encodeURIComponent(wxid)+'/'+encodeURIComponent(chat), type:'DELETE' })
-                .done(function(r){
-                  if(r.status==='success'){
-                    $('#memory-browser-msg').hide();
-                    if(_memChatName===chat){ _memChatName=null; $('#memory-msg-area').hide(); $('#memory-msg-container').empty(); }
-                    loadMemoryChatList(wxid);
-                  } else {
-                    showMsg('memory-browser-msg', r.message || '删除失败', false);
-                  }
-                })
-                .fail(function(xhr){
-                  showMsg('memory-browser-msg', '删除失败：' + xhr.status, false);
-                });
-            }, '删除确认');
-          });
-          $list.append($item);
-        });
-        // 自动恢复：若之前有选中的窗口，立即加载其消息
-        var chatNames = res.chats.map(function(chatItem){
-          return (typeof chatItem === 'string') ? chatItem : (chatItem && chatItem.name ? chatItem.name : '');
-        });
-        if(autoSelect && chatNames.indexOf(autoSelect) !== -1){
-          $('#memory-msg-area').show().css('display','flex');
-          loadMemoryMessages(wxid, autoSelect);
-        }
+        _memoryChats = res.chats || [];
+        renderMemoryChatList(_memoryChats, autoSelect);
       })
       .fail(function(xhr){
         $('#memory-chat-list').html('<div style="padding:12px;font-size:12.5px;color:var(--danger);">加载失败: '+xhr.status+'</div>');
@@ -13101,6 +13160,7 @@ $(function(){
           renderWxIdSelect($('#memory-wx-select'), [], '微信号：暂无微信号', '', '微信号');
           _memWxId = null;
           _memChatName = null;
+          _memoryChats = [];
           $('#memory-chat-panel').hide();
           $('#memory-msg-area').hide();
           $('#memory-chat-list, #memory-msg-container').empty();
@@ -13126,6 +13186,7 @@ $(function(){
         }
       })
       .fail(function(xhr){
+        _memoryChats = [];
         renderWxIdSelect($('#memory-wx-select'), [], '微信号：暂无微信号', '', '微信号');
         $('#memory-chat-panel').hide();
         $('#memory-msg-area').hide();
@@ -13142,6 +13203,7 @@ $(function(){
   $('#memory-wx-select').on('change', function(){
     _memWxId = ($(this).val() || '').trim() || null;
     _memChatName = null;
+    _memoryChats = [];
     $('#memory-msg-area').hide();
     $('#memory-chat-list, #memory-msg-container').empty();
     $('#memory-msg-title, #memory-msg-count').text('');
@@ -13155,6 +13217,9 @@ $(function(){
   // 刷新按钮：保留当前选中的微信号和窗口，刷新后自动恢复并更新消息
   $(document).on('click', '#btn-refresh-memory', function(){
     loadMemoryWxList(_memWxId||undefined, _memChatName||undefined);
+  });
+  $('#memory-chat-search').on('input', function(){
+    renderMemoryChatList(_memoryChats, _memChatName);
   });
 
   // ===== Log Polling =====

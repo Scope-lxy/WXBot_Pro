@@ -1,5 +1,8 @@
 import unittest
+import json
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
 
 from feature.contacts import check_contact_directory_auto_maintenance
@@ -12,7 +15,109 @@ from feature.contacts import refresh_batch_settings
 from feature.contacts import refresh_contact_profiles_batch
 from feature.contacts import refresh_contact_profiles_single_batch
 from feature.contacts import set_contact_profiles_paused
+from web_server import (
+    _contact_profiles_browser_contacts,
+    _conversation_memory_user_sort_key,
+    _wechat_name_sort_key,
+    app,
+    memory_chats,
+)
 from web_server import _contact_profiles_summary
+
+
+class WeChatNameSortTests(unittest.TestCase):
+    def test_wechat_name_sort_order_groups_digits_letters_then_chinese(self):
+        names = ["阿风", "B-吴岳英", "112", "A0-努力", "9号", "王玉芹"]
+
+        self.assertEqual(
+            sorted(names, key=_wechat_name_sort_key),
+            ["112", "9号", "A0-努力", "B-吴岳英", "阿风", "王玉芹"],
+        )
+
+    def test_conversation_memory_sort_uses_chat_name_without_source_priority(self):
+        users = [
+            {"chat_name": "B-吴岳英", "source": "conversation_memory"},
+            {"chat_name": "112", "source": "conversation_memory"},
+            {"chat_name": "A0-努力", "source": "conversation_memory"},
+        ]
+
+        ordered = sorted(users, key=_conversation_memory_user_sort_key)
+
+        self.assertEqual([item["chat_name"] for item in ordered], ["112", "A0-努力", "B-吴岳英"])
+
+    def test_contact_browser_contacts_sort_by_nickname_not_remark(self):
+        contacts = _contact_profiles_browser_contacts({
+            "subjects": [
+                {
+                    "subject_type": "friend",
+                    "status": "active",
+                    "contact_key": "1",
+                    "nickname": "王玉芹",
+                    "remark": "A0-72王玉芹",
+                    "wechat_id": "w1",
+                },
+                {
+                    "subject_type": "friend",
+                    "status": "active",
+                    "contact_key": "2",
+                    "nickname": "阿风",
+                    "remark": "A0-阿风",
+                    "wechat_id": "w2",
+                },
+            ],
+        })
+
+        self.assertEqual([item["nickname"] for item in contacts], ["阿风", "王玉芹"])
+
+    def test_memory_chats_endpoint_sorts_by_display_name(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir) / "accounts" / "wx_test" / "memory"
+            for storage_name, display_name in [
+                ("b", "B-吴岳英"),
+                ("n", "112"),
+                ("a", "A0-努力"),
+            ]:
+                chat_dir = base / storage_name
+                chat_dir.mkdir(parents=True)
+                (chat_dir / "name.json").write_text(
+                    json.dumps({"name": display_name}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                (chat_dir / f"{storage_name}_memory.json").write_text(
+                    json.dumps([{"content": "hello"}], ensure_ascii=False),
+                    encoding="utf-8",
+                )
+
+            with patch("web_server._account_memory_dir", return_value=str(base)):
+                with app.test_request_context("/memory/chats/wx_test"):
+                    response = memory_chats.__wrapped__("wx_test")
+
+            payload = response.get_json()
+
+        self.assertEqual([item["name"] for item in payload["chats"]], ["112", "A0-努力", "B-吴岳英"])
+
+    def test_memory_chats_endpoint_hides_empty_record_dirs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir) / "accounts" / "wx_test" / "memory"
+            empty_dir = base / "empty"
+            full_dir = base / "full"
+            empty_dir.mkdir(parents=True)
+            full_dir.mkdir(parents=True)
+            (empty_dir / "name.json").write_text(json.dumps({"name": "空记录"}, ensure_ascii=False), encoding="utf-8")
+            (empty_dir / "empty_memory.json").write_text("[]", encoding="utf-8")
+            (full_dir / "name.json").write_text(json.dumps({"name": "112"}, ensure_ascii=False), encoding="utf-8")
+            (full_dir / "full_memory.json").write_text(
+                json.dumps([{"content": "hello"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            with patch("web_server._account_memory_dir", return_value=str(base)):
+                with app.test_request_context("/memory/chats/wx_test"):
+                    response = memory_chats.__wrapped__("wx_test")
+
+            payload = response.get_json()
+
+        self.assertEqual([item["name"] for item in payload["chats"]], ["112"])
 
 
 class ContactMaintenancePrepareTests(unittest.TestCase):

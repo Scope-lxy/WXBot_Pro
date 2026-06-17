@@ -1569,6 +1569,9 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .memory-list-panel .panel-title { padding: 10px 14px; font-size: 12.5px; font-weight: 700; color: var(--muted); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
 .memory-list-panel .panel-title button { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; padding: 0 2px; }
 .memory-list-panel .panel-title button:hover { color: var(--primary); }
+.memory-list-search { position: relative; padding: 7px 10px; border-bottom: 1px solid var(--border); background: var(--muted-bg); }
+.memory-list-search i { position: absolute; left: 20px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 12px; pointer-events: none; }
+.memory-list-search .form-control { height: 28px; min-height: 28px; padding: 4px 10px 4px 28px; font-size: 12.5px; border-radius: 6px; background: #fff; }
 .memory-list-inner { flex: 1; overflow-y: auto; }
 .memory-list-empty { padding: 12px; font-size: 12.5px; color: var(--muted); }
 .memory-list-empty.error { color: var(--danger); }
