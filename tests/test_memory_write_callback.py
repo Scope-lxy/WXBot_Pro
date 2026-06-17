@@ -109,9 +109,9 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         msg = SimpleNamespace(
             attr="group",
             sender="B",
-            content="",
+            content='语音2"秒B 的语音内容',
             type="voice",
-            to_text=lambda: "B 的语音内容",
+            to_text=lambda: self.fail("不应主动调用微信右键语音转文字"),
         )
         chat = SimpleNamespace(who="测试群", chat_type="group")
 
@@ -120,7 +120,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(len(bot.memory_manager.calls), 1)
         self.assertEqual(bot.memory_manager.calls[0]["chat_name"], "测试群")
         self.assertEqual(bot.memory_manager.calls[0]["sender"], "B")
-        self.assertEqual(bot.memory_manager.calls[0]["content"], "B 的语音内容")
+        self.assertEqual(bot.memory_manager.calls[0]["content"], '语音2"秒B 的语音内容')
         self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "voice")
 
     def test_group_image_without_at_is_saved_but_not_replied(self):

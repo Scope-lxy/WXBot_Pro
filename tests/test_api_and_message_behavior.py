@@ -475,6 +475,79 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
             self.assertEqual(sent, [])
 
+    def test_prepare_voice_uses_wechat_auto_text_without_to_text(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AllListen_switch=False,
+            listen_list=["张三"],
+            group=[],
+            chat_image_recognition_switch=False,
+            chat_voice_recognition_switch=True,
+        )
+        msg = SimpleNamespace(
+            attr="friend",
+            sender="张三",
+            type="voice",
+            content='语音2"秒你好',
+            to_text=lambda: self.fail("不应主动调用微信右键语音转文字"),
+        )
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        message_routing.prepare_message_media(bot, msg, chat)
+
+        self.assertFalse(getattr(msg, "_skip_ai_reply", False))
+        self.assertFalse(getattr(msg, "_voice_transcription_failed", False))
+        self.assertEqual(msg.content, '语音2"秒你好')
+
+    def test_prepare_pending_private_voice_queues_delayed_reread(self):
+        queued = []
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AllListen_switch=False,
+            listen_list=["张三"],
+            group=[],
+            chat_image_recognition_switch=False,
+            chat_voice_recognition_switch=True,
+        )
+        bot._queue_pending_private_voice_transcription = lambda chat, msg: queued.append((chat.who, msg.content)) or True
+        msg = SimpleNamespace(attr="friend", sender="张三", type="voice", content='语音2"秒', id="v1")
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        message_routing.prepare_message_media(bot, msg, chat)
+
+        self.assertTrue(getattr(msg, "_skip_ai_reply", False))
+        self.assertTrue(getattr(msg, "_skip_memory", False))
+        self.assertEqual(queued, [("张三", '语音2"秒')])
+
+    def test_pending_private_voice_reread_enqueues_resolved_text(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(memory_switch=False)
+        bot._chat_merge_lock = threading.Lock()
+        bot._pending_private_voice_transcription = {}
+        bot.is_stop_requested = lambda: False
+
+        class TryLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        bot._get_wechat_action_lock = lambda: TryLock()
+        enqueued = []
+        bot._enqueue_private_message_for_ai = lambda chat, msg: enqueued.append((chat.who, msg.content)) or True
+        timer_calls = []
+        bot._schedule_private_message_timer = lambda seconds, callback, chat: timer_calls.append((seconds, callback, chat)) or SimpleNamespace(cancel=lambda: None)
+        original = SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音2"秒')
+        resolved = SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音2"秒你好')
+        chat = SimpleNamespace(who="张三", GetAllMessage=lambda: [resolved])
+
+        self.assertTrue(bot._queue_pending_private_voice_transcription(chat, original))
+        bot._flush_pending_private_voice_transcription(chat)
+
+        self.assertEqual(timer_calls[0][0], 5)
+        self.assertEqual(enqueued, [("张三", '语音2"秒你好')])
+
     def test_meta_reply_blocked_reply_once_resets_with_reply_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)

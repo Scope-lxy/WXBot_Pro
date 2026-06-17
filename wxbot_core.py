@@ -516,6 +516,7 @@ class WXBot:
         self._material_source_read_locks_guard = threading.Lock()
         self._private_message_pipelines = {}
         self._private_message_sequence_by_chat = {}
+        self._pending_private_voice_transcription = {}
         self._recent_private_image_hashes = {}
         self._lightweight_send_queue_lock = threading.RLock()
         self._lightweight_send_queue = {}
@@ -558,6 +559,15 @@ class WXBot:
                 pipeline["queued_batches"] = deque()
                 pipeline["idle_timer"] = None
                 pipeline["max_timer"] = None
+            pending_voice = getattr(self, "_pending_private_voice_transcription", None)
+            if isinstance(pending_voice, dict):
+                for task in pending_voice.values():
+                    if isinstance(task, dict) and task.get("timer"):
+                        timers.append(task.get("timer"))
+                pending_voice.clear()
+            for pipeline in self._private_message_pipelines.values():
+                if not isinstance(pipeline, dict):
+                    continue
                 pipeline["worker_running"] = False
         for timer in timers:
             try:
@@ -4958,6 +4968,148 @@ class WXBot:
             return True
         except Exception as exc:
             log(level="WARNING", message=f"群聊 {chat.who} 语音转文字失败，兜底提示异常：{exc}")
+            return False
+
+    @staticmethod
+    def _voice_duration_seconds(message):
+        match = re.search(r'语音\s*(\d+)\s*["”]?\s*秒', str(getattr(message, "content", "") or ""))
+        if not match:
+            return ""
+        return match.group(1)
+
+    def _ensure_pending_private_voice_transcription_state(self):
+        if not hasattr(self, "_pending_private_voice_transcription") or self._pending_private_voice_transcription is None:
+            self._pending_private_voice_transcription = {}
+
+    def _queue_pending_private_voice_transcription(self, chat, message):
+        name = str(getattr(chat, "who", "") or "").strip()
+        if not name:
+            return False
+        self._ensure_pending_private_voice_transcription_state()
+        key = message_unique_id(name, message)
+        item = {
+            "key": key,
+            "id": getattr(message, "id", None),
+            "sender": getattr(message, "sender", ""),
+            "duration": self._voice_duration_seconds(message),
+            "message": message,
+        }
+        created_task = False
+        with self._chat_merge_lock:
+            task = self._pending_private_voice_transcription.get(name)
+            if not isinstance(task, dict):
+                task = {"chat": chat, "items": {}, "timer": None}
+                self._pending_private_voice_transcription[name] = task
+            task["chat"] = chat
+            task["items"][key] = item
+            if not task.get("timer"):
+                task["timer"] = self._schedule_private_message_timer(
+                    5,
+                    self._flush_pending_private_voice_transcription,
+                    chat,
+                )
+                created_task = True
+        if created_task:
+            log(message=f"私聊 {name}：语音识别结果暂未就绪，5s 后重读一次")
+        return True
+
+    def _visible_messages_for_pending_voice(self, chat):
+        getter = getattr(chat, "GetAllMessage", None)
+        if not callable(getter):
+            return []
+        with warn_slow_wechat_ui_action(f"GetAllMessage({getattr(chat, 'who', '')})"):
+            messages = getter()
+        return list(messages or [])
+
+    def _match_pending_voice_message(self, visible_messages, item):
+        msg_id = item.get("id")
+        if msg_id:
+            for candidate in visible_messages:
+                if getattr(candidate, "id", None) == msg_id:
+                    return candidate
+        duration = str(item.get("duration") or "")
+        sender = str(item.get("sender") or "")
+        matches = []
+        for candidate in visible_messages:
+            if getattr(candidate, "type", "") != "voice":
+                continue
+            if sender and str(getattr(candidate, "sender", "") or "") != sender:
+                continue
+            if duration and self._voice_duration_seconds(candidate) != duration:
+                continue
+            matches.append(candidate)
+        return matches[0] if len(matches) == 1 else None
+
+    def _flush_pending_private_voice_transcription(self, chat):
+        name = str(getattr(chat, "who", "") or "").strip()
+        if not name:
+            return True
+        self._ensure_pending_private_voice_transcription_state()
+        with self._chat_merge_lock:
+            task = self._pending_private_voice_transcription.pop(name, None)
+            if isinstance(task, dict):
+                task["timer"] = None
+        if not isinstance(task, dict):
+            return True
+        items = list((task.get("items") or {}).values())
+        if not items or self.is_stop_requested():
+            return True
+        lock = self._get_wechat_action_lock()
+        if not lock.acquire(blocking=False):
+            log(level="WARNING", message=f"私聊 {name}：语音识别延后重读时微信操作锁忙，已走兜底回复")
+            return self._send_private_voice_transcription_fallback(chat)
+        try:
+            visible_messages = self._visible_messages_for_pending_voice(chat)
+        except Exception as exc:
+            log(level="WARNING", message=f"私聊 {name}：语音识别延后重读失败，已走兜底回复，详情：{exc}")
+            return self._send_private_voice_transcription_fallback(chat)
+        finally:
+            lock.release()
+        handled_any = False
+        for item in items:
+            resolved = self._match_pending_voice_message(visible_messages, item)
+            if not resolved:
+                continue
+            state = message_routing.voice_content_state(getattr(resolved, "content", ""))
+            if state == "valid":
+                setattr(resolved, "_wxbot_media_prepared", True)
+                self._save_private_incoming_memory_message(chat, resolved)
+                self._enqueue_private_message_for_ai(chat, resolved)
+                handled_any = True
+            elif state == "failed":
+                setattr(resolved, "_voice_transcription_failed", True)
+                self._enqueue_private_message_for_ai(chat, resolved)
+                handled_any = True
+        if handled_any:
+            log(message=f"私聊 {name}：语音识别延后重读已恢复 {len(items)} 条待处理语音")
+            return True
+        log(level="WARNING", message=f"私聊 {name}：语音识别延后重读仍未拿到文本，已走兜底回复（{len(items)} 条）")
+        return self._send_private_voice_transcription_fallback(chat)
+
+    def _save_private_incoming_memory_message(self, chat, message):
+        if not getattr(getattr(self, "config", None), "memory_switch", False):
+            return False
+        memory_manager = getattr(self, "memory_manager", None)
+        save_message = getattr(memory_manager, "save_message", None)
+        if not callable(save_message):
+            return False
+        try:
+            memory_chat_name = self._resolve_identity_chat_name(chat.who)
+            save_message(
+                chat_name=memory_chat_name,
+                sender=getattr(message, "sender", ""),
+                content=getattr(message, "content", ""),
+                msg_type=getattr(message, "type", "text"),
+                msg_attr=getattr(message, "attr", "friend"),
+                max_count=getattr(self.config, "memory_max_count", 1000),
+            )
+            self._mark_conversation_memory_dirty(
+                SimpleNamespace(who=memory_chat_name, chat_type="private"),
+                message,
+            )
+            return True
+        except Exception as exc:
+            log(level="WARNING", message=f"写入延后语音记忆失败: {exc}")
             return False
 
     def _build_merged_private_message(self, messages):

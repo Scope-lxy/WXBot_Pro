@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import re
 import time
 from contextlib import nullcontext
 from datetime import datetime
@@ -52,6 +53,22 @@ def _recognition_switches_for_chat(bot, chat):
     return False, False
 
 
+_VOICE_DURATION_RE = re.compile(r'语音\s*(\d+)\s*["”]?\s*秒')
+
+
+def voice_content_state(content):
+    text = str(content or "").strip()
+    if not text:
+        return "pending"
+    if "语音未能转换" in text:
+        return "failed"
+    match = _VOICE_DURATION_RE.search(text)
+    if not match:
+        return "valid"
+    tail = text[match.end():].strip()
+    return "pending" if not tail else "valid"
+
+
 def _update_alllisten_timestamp(bot, chat_name: str) -> None:
     if not getattr(bot.config, "AllListen_switch", False):
         return
@@ -92,15 +109,20 @@ def prepare_message_media(bot, msg, chat) -> None:
     if not voice_enabled:
         msg._skip_ai_reply = True
         return
-    try:
-        voice_content = msg.to_text()
-        if voice_content:
-            msg.content = str(voice_content)
-            return
-    except Exception:
-        pass
-    msg._voice_transcription_failed = True
-    _bot_log(bot, "WARNING", "消息自动语音转文字失败")
+    state = voice_content_state(getattr(msg, "content", ""))
+    if state == "valid":
+        return
+    if state == "failed":
+        msg._voice_transcription_failed = True
+        _bot_log(bot, "WARNING", "语音识别失败，已进入兜底回复流程")
+        return
+    queue_pending = getattr(bot, "_queue_pending_private_voice_transcription", None)
+    if callable(queue_pending) and getattr(msg, "attr", "") == "friend":
+        queue_pending(chat, msg)
+        mark_skip_memory = getattr(bot, "_mark_message_skip_memory", None)
+        if callable(mark_skip_memory):
+            mark_skip_memory(msg)
+    msg._skip_ai_reply = True
 
 
 def handle_friend_message_callback(bot, msg, chat, *, text: str):
