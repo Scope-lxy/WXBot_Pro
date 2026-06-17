@@ -264,18 +264,22 @@ DEFAULT_EMAIL_CONFIG = {
     "user": "",
     "pass": "",
 }
-DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "这条语音有点听不清"
+DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
 
 
 def _clean_sort_text(value):
     return str(value or '').strip()
 
 
+def _fallback_sort_bytes(text):
+    return _clean_sort_text(text).casefold().encode('utf-8', errors='ignore')
+
+
 @lru_cache(maxsize=4096)
 def _windows_zh_sort_key(text):
     text = _clean_sort_text(text)
     if os.name != 'nt' or not text:
-        return text.casefold()
+        return _fallback_sort_bytes(text)
     try:
         import ctypes
         from ctypes import wintypes
@@ -297,14 +301,14 @@ def _windows_zh_sort_key(text):
         lc_map_string_ex.restype = ctypes.c_int
         needed = lc_map_string_ex('zh-CN', lcmapsortkey, text, len(text), None, 0, None, None, None)
         if needed <= 0:
-            return text.casefold()
+            return _fallback_sort_bytes(text)
         buffer = (ctypes.c_ubyte * needed)()
         written = lc_map_string_ex('zh-CN', lcmapsortkey, text, len(text), ctypes.byref(buffer), needed, None, None, None)
         if written <= 0:
-            return text.casefold()
+            return _fallback_sort_bytes(text)
         return bytes(buffer)
     except Exception:
-        return text.casefold()
+        return _fallback_sort_bytes(text)
 
 
 def _wechat_name_sort_key(value):

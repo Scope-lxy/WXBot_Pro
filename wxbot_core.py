@@ -405,7 +405,7 @@ MOMENTS_CAPTION_PROMPT_FILE = "moments_caption.md"
 MATERIAL_OUTREACH_DECISION_PROMPT_FILE = "material_decision.md"
 MATERIAL_OUTREACH_PREFACE_PROMPT_FILE = "material_preface.md"
 PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS = 30 * 60
-VOICE_TRANSCRIPTION_FALLBACK_TEXT = "这条语音有点听不清"
+VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
 
 
 class _ChatAPIFailoverProxy:
@@ -3903,7 +3903,7 @@ class WXBot:
                 ),
             )
             if updated:
-                log(level="SUCCESS", message=f"会话记忆已更新：{chat.who}")
+                log(level="INFO", message=f"会话记忆已更新：{chat.who}")
             return updated
         except Exception as e:
             log(level="WARNING", message=f"会话记忆自动维护失败：{e}")
@@ -4901,20 +4901,20 @@ class WXBot:
             and user_key
             and self._reply_once_user_data(user_key).get("voice_transcription_fallback_notified")
         ):
-            log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，回复循环窗口内已提示过，已跳过兜底提示")
+            log(level="INFO", message=f"私聊 {chat.who} 语音转文字失败，回复循环窗口内已提示过，已跳过兜底提示")
             return True
         fallback_text = str(
             getattr(self.config, "voice_transcription_fallback_text", "")
         ).strip()
         if not fallback_text:
-            log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，未配置兜底提示，本次静默")
+            log(level="INFO", message=f"私聊 {chat.who} 语音转文字失败，未配置兜底提示，本次静默")
             return True
         try:
             result = chat.SendMsg(fallback_text)
             if result is not False:
                 if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
                     self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
-                log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，已发送兜底提示")
+                log(level="INFO", message=f"私聊 {chat.who} 语音转文字失败，已发送兜底提示")
                 return True
             log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，聊天窗口兜底提示发送失败，准备走全局发送兜底")
         except Exception as exc:
@@ -4929,7 +4929,7 @@ class WXBot:
                 return False
             if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
                 self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
-            log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，已通过全局发送兜底提示")
+            log(level="INFO", message=f"私聊 {chat.who} 语音转文字失败，已通过全局发送兜底提示")
             return True
         except Exception as exc:
             log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，全局兜底提示异常：{exc}")
@@ -4942,13 +4942,13 @@ class WXBot:
             and user_key
             and self._reply_once_user_data(user_key).get("voice_transcription_fallback_notified")
         ):
-            log(level="WARNING", message=f"群聊 {chat.who} {getattr(message, 'sender', '')} 语音转文字失败，回复循环窗口内已提示过，已跳过兜底提示")
+            log(level="INFO", message=f"群聊 {chat.who} {getattr(message, 'sender', '')} 语音转文字失败，回复循环窗口内已提示过，已跳过兜底提示")
             return True
         fallback_text = str(
             getattr(self.config, "voice_transcription_fallback_text", "")
         ).strip()
         if not fallback_text:
-            log(level="WARNING", message=f"群聊 {chat.who} 语音转文字失败，未配置兜底提示，本次静默")
+            log(level="INFO", message=f"群聊 {chat.who} 语音转文字失败，未配置兜底提示，本次静默")
             return True
         try:
             if getattr(self.config, "group_reply_quote", True) and getattr(self.config, "group_reply_at_msg", True):
@@ -4964,7 +4964,7 @@ class WXBot:
                 return False
             if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
                 self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
-            log(level="WARNING", message=f"群聊 {chat.who} 语音转文字失败，已发送兜底提示")
+            log(level="INFO", message=f"群聊 {chat.who} 语音转文字失败，已发送兜底提示")
             return True
         except Exception as exc:
             log(level="WARNING", message=f"群聊 {chat.who} 语音转文字失败，兜底提示异常：{exc}")
@@ -5752,6 +5752,15 @@ class WXBot:
             limit_count=limit_count,
             limit_hours=limit_hours,
         ):
+            if not limiter._passes_cooldown(state_key, now=now, cooldown_minutes=cooldown_minutes):
+                return False
+            log(
+                level="WARNING",
+                message=(
+                    f"{getattr(chat, 'who', '')} 语音回复触发上限，"
+                    f"当前 {limit_hours} 小时最多 {limit_count} 条，已降级文字回复"
+                ),
+            )
             return False
         audio_path = ""
         try:
@@ -6028,6 +6037,10 @@ class WXBot:
         user_data = self.reply_count_store.get_user(user_key, limit_hours=limit_hours)
         if self.config.text_reply_limit_reply_once and user_data.get("limit_notified"):
             return True, True
+        log(
+            level="WARNING",
+            message=f"私聊 {chat.who} 触发回复上限：{limit_hours} 小时最多 {max_round} 轮",
+        )
         reply_text = ""
         if getattr(self.config, 'text_reply_limit_ai_reply', False):
             try:

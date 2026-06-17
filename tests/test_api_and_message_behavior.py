@@ -437,7 +437,7 @@ class MessageBehaviorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
-                voice_transcription_fallback_text="这条语音有点听不清",
+                voice_transcription_fallback_text="刚才那条语音，我有点没听清",
                 voice_transcription_fallback_reply_once=True,
                 text_reply_limit_hours=24,
             )
@@ -446,17 +446,22 @@ class MessageBehaviorTests(unittest.TestCase):
             bot.is_stop_requested = lambda: False
 
             sent = []
+            logs = []
             chat = SimpleNamespace(who="张三", SendMsg=lambda text: sent.append(text) or True)
 
-            self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
-            self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
-            self.assertEqual(sent, ["这条语音有点听不清"])
+            with mock.patch("wxbot_core.log", side_effect=lambda *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):
+                self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
+                self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
+            self.assertEqual(sent, ["刚才那条语音，我有点没听清"])
+            self.assertTrue(any(level == "INFO" and "已发送兜底提示" in message for level, message in logs))
+            self.assertTrue(any(level == "INFO" and "已跳过兜底提示" in message for level, message in logs))
+            self.assertFalse(any(level == "WARNING" and "已发送兜底提示" in message for level, message in logs))
 
             started_at = datetime.now() - timedelta(hours=25)
             bot.reply_count_store.data["users"]["张三"]["window_started_at"] = started_at.isoformat(timespec="seconds")
 
             self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
-            self.assertEqual(sent, ["这条语音有点听不清", "这条语音有点听不清"])
+            self.assertEqual(sent, ["刚才那条语音，我有点没听清", "刚才那条语音，我有点没听清"])
 
     def test_empty_voice_transcription_fallback_is_silent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -470,10 +475,73 @@ class MessageBehaviorTests(unittest.TestCase):
             bot.wx = None
 
             sent = []
+            logs = []
             chat = SimpleNamespace(who="张三", SendMsg=lambda text: sent.append(text) or True)
 
-            self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
+            with mock.patch("wxbot_core.log", side_effect=lambda *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):
+                self.assertTrue(bot._send_private_voice_transcription_fallback(chat))
             self.assertEqual(sent, [])
+            self.assertTrue(any(level == "INFO" and "未配置兜底提示" in message for level, message in logs))
+            self.assertFalse(any(level == "WARNING" and "未配置兜底提示" in message for level, message in logs))
+
+    def test_text_reply_limit_logs_warning_when_capacity_is_hit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                text_reply_limit_switch=True,
+                text_reply_limit_count=1,
+                text_reply_limit_hours=24,
+                text_reply_limit_reply_once=True,
+                text_reply_limit_ai_reply=False,
+                text_reply_limit_reply="先休息一下",
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot.reply_count_store.increment_ai_count("张三", limit_hours=24)
+            bot._record_replied_message_success = lambda: None
+            sent = []
+            bot._send_private_ai_reply_parts = lambda _chat, parts: sent.extend(parts) or (True, True)
+            chat = SimpleNamespace(who="张三")
+            logs = []
+
+            with mock.patch("wxbot_core.log", side_effect=lambda *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):
+                handled, result = bot._check_text_reply_limit(chat, "张三")
+
+            self.assertTrue(handled)
+            self.assertTrue(result)
+            self.assertEqual(sent, ["先休息一下"])
+            self.assertTrue(any(level == "WARNING" and "触发回复上限" in message for level, message in logs))
+
+    def test_voice_reply_limit_logs_warning_and_falls_back_to_text(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
+        state = {
+            "limits": {
+                "private:张三": {
+                    "count": 1,
+                    "window_started_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            },
+            "private_sessions": {},
+        }
+        from feature.voice_reply import VoiceReplyState
+
+        bot._voice_reply_state = VoiceReplyState(limits=state["limits"], private_sessions={})
+        bot._private_reply_can_continue = lambda _chat: True
+        logs = []
+        chat = SimpleNamespace(who="张三")
+
+        with mock.patch("wxbot_core.log", side_effect=lambda *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):
+            result = bot._try_send_voice_reply(
+                chat,
+                "你好",
+                state_key="private:张三",
+                cooldown_minutes=0,
+                limit_count=1,
+                limit_hours=24,
+            )
+
+        self.assertFalse(result)
+        self.assertTrue(any(level == "WARNING" and "语音回复触发上限" in message for level, message in logs))
 
     def test_prepare_voice_uses_wechat_auto_text_without_to_text(self):
         bot = WXBot.__new__(WXBot)
@@ -814,7 +882,7 @@ class MessageBehaviorTests(unittest.TestCase):
                 group_voice_recognition_switch=True,
                 group_reply_at_msg=True,
                 group_reply_quote=True,
-                voice_transcription_fallback_text="这条语音有点听不清",
+                voice_transcription_fallback_text="刚才那条语音，我有点没听清",
                 voice_transcription_fallback_reply_once=True,
                 text_reply_limit_hours=24,
             )
@@ -839,14 +907,14 @@ class MessageBehaviorTests(unittest.TestCase):
 
             self.assertTrue(bot.process_message(chat, message))
             self.assertTrue(bot.process_message(chat, message))
-            self.assertEqual(sent, [("这条语音有点听不清", "张三")])
+            self.assertEqual(sent, [("刚才那条语音，我有点没听清", "张三")])
 
             key = "group:测试群:张三"
             started_at = datetime.now() - timedelta(hours=25)
             bot.reply_count_store.data["users"][key]["window_started_at"] = started_at.isoformat(timespec="seconds")
 
             self.assertTrue(bot.process_message(chat, message))
-            self.assertEqual(sent, [("这条语音有点听不清", "张三"), ("这条语音有点听不清", "张三")])
+            self.assertEqual(sent, [("刚才那条语音，我有点没听清", "张三"), ("刚才那条语音，我有点没听清", "张三")])
 
     def test_group_voice_transcription_fallback_respects_at_only_groups(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -868,7 +936,7 @@ class MessageBehaviorTests(unittest.TestCase):
                 group_voice_recognition_switch=True,
                 group_reply_at_msg=True,
                 group_reply_quote=True,
-                voice_transcription_fallback_text="这条语音有点听不清",
+                voice_transcription_fallback_text="刚才那条语音，我有点没听清",
                 voice_transcription_fallback_reply_once=True,
                 text_reply_limit_hours=24,
             )

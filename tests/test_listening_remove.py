@@ -412,6 +412,7 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertIs(bot._listen_chats["张三"], sub_chat)
 
     def test_stale_listen_registration_queues_lightweight_delayed_listen(self):
+        logs = []
         msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
 
         class NoopLock:
@@ -455,15 +456,22 @@ class RemoveListenChatTests(unittest.TestCase):
         )
         bot._get_wechat_action_lock = lambda: NoopLock()
 
-        with mock.patch.object(listening.time, "time", return_value=100.0), mock.patch.object(listening, "_bot_sleep"):
+        with mock.patch.object(listening.time, "time", return_value=100.0), mock.patch.object(listening, "_bot_sleep"), mock.patch.object(
+            listening,
+            "_bot_log",
+            side_effect=lambda _bot, *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message") or (args[0] if args else ""))),
+        ):
             listening.alllisten_mode(bot, last_time=9999999999)
 
         task = bot._lightweight_delayed_listen_tasks["张三"]
         self.assertEqual(task["due_at"], 130.0)
         self.assertTrue(task["allow_rebuild"])
         self.assertEqual(task["messages"], [msg])
+        self.assertTrue(any(level == "INFO" and "临时接管窗口不可用" in message and "已暂存 1 条并延后 30s 重试" in message for level, message in logs))
+        self.assertFalse(any(level == "WARNING" and "临时接管窗口不可用" in message and "已暂存 1 条并延后 30s 重试" in message for level, message in logs))
 
     def test_ordinary_dynamic_add_failure_queues_lightweight_delayed_listen_without_rebuild(self):
+        logs = []
         msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
 
         class NoopLock:
@@ -507,13 +515,19 @@ class RemoveListenChatTests(unittest.TestCase):
         )
         bot._get_wechat_action_lock = lambda: NoopLock()
 
-        with mock.patch.object(listening.time, "time", return_value=100.0), mock.patch.object(listening, "_bot_sleep"):
+        with mock.patch.object(listening.time, "time", return_value=100.0), mock.patch.object(listening, "_bot_sleep"), mock.patch.object(
+            listening,
+            "_bot_log",
+            side_effect=lambda _bot, *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message") or (args[0] if args else ""))),
+        ):
             listening.alllisten_mode(bot, last_time=9999999999)
 
         task = bot._lightweight_delayed_listen_tasks["张三"]
         self.assertEqual(task["due_at"], 130.0)
         self.assertFalse(task["allow_rebuild"])
         self.assertEqual(task["messages"], [msg])
+        self.assertTrue(any(level == "INFO" and "临时接管窗口不可用" in message and "已暂存 1 条并延后 30s 重试" in message for level, message in logs))
+        self.assertFalse(any(level == "WARNING" and "临时接管窗口不可用" in message and "已暂存 1 条并延后 30s 重试" in message for level, message in logs))
 
     def test_flush_lightweight_delayed_listen_prefers_existing_subwindow(self):
         processed = []
@@ -667,6 +681,7 @@ class RemoveListenChatTests(unittest.TestCase):
 
     def test_ordinary_lightweight_delayed_listen_adds_without_remove_and_reschedules(self):
         calls = []
+        logs = []
         msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
 
         class TryLock:
@@ -713,7 +728,11 @@ class RemoveListenChatTests(unittest.TestCase):
         bot._get_wechat_action_lock = lambda: TryLock()
         bot._add_and_verify_subwindow = lambda _chat: calls.append(("AddListenChat", _chat, bot.message_handle_callback)) or None
 
-        with mock.patch.object(listening.time, "time", return_value=131.0), mock.patch.object(listening, "_bot_sleep"):
+        with mock.patch.object(listening.time, "time", return_value=131.0), mock.patch.object(listening, "_bot_sleep"), mock.patch.object(
+            listening,
+            "_bot_log",
+            side_effect=lambda _bot, *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message") or (args[0] if args else ""))),
+        ):
             flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
 
         self.assertTrue(flushed)
@@ -722,6 +741,56 @@ class RemoveListenChatTests(unittest.TestCase):
         task = bot._lightweight_delayed_listen_tasks["张三"]
         self.assertEqual(task["attempt_index"], 1)
         self.assertEqual(task["due_at"], 160.0)
+        self.assertTrue(any(level == "INFO" and "轻量延后监听第 1 次未恢复" in message for level, message in logs))
+        self.assertFalse(any(level == "WARNING" and "轻量延后监听第 1 次未恢复" in message for level, message in logs))
+
+    def test_lightweight_delayed_listen_final_failure_stays_warning(self):
+        calls = []
+        logs = []
+        msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
+
+        class TryLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        bot = SimpleNamespace(
+            message_handle_callback=object(),
+            all_Mode_listen_list=[],
+            _listen_chats={},
+            _lightweight_delayed_listen_tasks={
+                "张三": {
+                    "chat": "张三",
+                    "messages": [msg],
+                    "message_keys": {"id:张三:1"},
+                    "created_at": 100.0,
+                    "due_at": 160.0,
+                    "attempt_index": 1,
+                    "allow_rebuild": False,
+                    "message_sequence": 0,
+                }
+            },
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            process_message=lambda _chat, _message: self.fail("未恢复子窗口时不应处理消息"),
+        )
+        bot._get_private_message_sequence = lambda _chat: 0
+        bot._get_wechat_action_lock = lambda: TryLock()
+        bot._add_and_verify_subwindow = lambda _chat: calls.append(("AddListenChat", _chat, bot.message_handle_callback)) or None
+
+        with mock.patch.object(listening.time, "time", return_value=161.0), mock.patch.object(listening, "_bot_sleep"), mock.patch.object(
+            listening,
+            "_bot_log",
+            side_effect=lambda _bot, *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message") or (args[0] if args else ""))),
+        ):
+            flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
+
+        self.assertTrue(flushed)
+        self.assertEqual(bot._lightweight_delayed_listen_tasks, {})
+        self.assertIn(("AddListenChat", "张三", bot.message_handle_callback), calls)
+        self.assertTrue(any(level == "WARNING" and "轻量延后监听两次恢复失败" in message for level, message in logs))
 
     def test_lightweight_delayed_listen_keeps_task_when_lock_busy(self):
         releases = []
@@ -792,6 +861,7 @@ class RemoveListenChatTests(unittest.TestCase):
 
     def test_lightweight_delayed_listen_drops_when_message_sequence_changed(self):
         processed = []
+        logs = []
         msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
         bot = SimpleNamespace(
             _listen_chats={},
@@ -812,12 +882,18 @@ class RemoveListenChatTests(unittest.TestCase):
         bot._get_private_message_sequence = lambda _chat: 2
         bot._get_wechat_action_lock = lambda: self.fail("消息序号变化丢弃时不应触发微信 UI")
 
-        with mock.patch.object(listening.time, "time", return_value=101.0):
+        with mock.patch.object(listening.time, "time", return_value=101.0), mock.patch.object(
+            listening,
+            "_bot_log",
+            side_effect=lambda _bot, *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message") or (args[0] if args else ""))),
+        ):
             flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
 
         self.assertTrue(flushed)
         self.assertEqual(processed, [])
         self.assertEqual(bot._lightweight_delayed_listen_tasks, {})
+        self.assertTrue(any(level == "INFO" and "轻量延后监听期间已有新消息处理" in message for level, message in logs))
+        self.assertFalse(any(level == "WARNING" and "轻量延后监听期间已有新消息处理" in message for level, message in logs))
 
     def test_add_listen_chat_once_returns_wechat_result(self):
         calls = []

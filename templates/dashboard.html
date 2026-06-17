@@ -1062,7 +1062,7 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="chat-ability-settings">
             <label class="cfg-label" for="voice_transcription_fallback_text">语音识别失败回复</label>
             <div class="inline-check-field">
-              <input type="text" class="form-control voice-transcription-fallback-input" id="voice_transcription_fallback_text" value="{{ config.get('voice_transcription_fallback_text', '这条语音有点听不清') }}" placeholder="不填写则静默不回复">
+              <input type="text" class="form-control voice-transcription-fallback-input" id="voice_transcription_fallback_text" value="{{ config.get('voice_transcription_fallback_text', '刚才那条语音，我有点没听清') }}" placeholder="不填写则静默不回复">
               <label class="inline-check-suffix" for="voice_transcription_fallback_reply_once">
                 <input class="form-check-input" type="checkbox" id="voice_transcription_fallback_reply_once" {% if config.get('voice_transcription_fallback_reply_once', False) %}checked{% endif %}>
                 只回复一次
@@ -1381,7 +1381,7 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
           <div class="chat-ability-settings">
             <label class="cfg-label" for="group_voice_transcription_fallback_text">语音识别失败回复</label>
-            <input type="text" class="form-control voice-transcription-fallback-input" id="group_voice_transcription_fallback_text" value="{{ config.get('voice_transcription_fallback_text', '这条语音有点听不清') }}" placeholder="不填写则静默不回复">
+            <input type="text" class="form-control voice-transcription-fallback-input" id="group_voice_transcription_fallback_text" value="{{ config.get('voice_transcription_fallback_text', '刚才那条语音，我有点没听清') }}" placeholder="不填写则静默不回复">
             <div class="cfg-hint">与私聊共用文案；不填写则静默不回复；勾选后同一发言人在回复循环窗口内只提醒一次</div>
           </div>
         </div>

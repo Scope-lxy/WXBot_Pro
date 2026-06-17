@@ -43,7 +43,7 @@ from feature.task_workbench_storage import TaskWorkbenchStorage
 from feature.voice_reply import DEFAULT_CHAT_VOICE_REPLY_KEYWORDS, DEFAULT_GROUP_VOICE_REPLY_KEYWORDS
 
 LONG_REPLY_SEGMENT_CHARS = 1000
-DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "这条语音有点听不清"
+DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
 
 
 class WXBotConfig:

@@ -69,6 +69,30 @@ class WeChatNameSortTests(unittest.TestCase):
 
         self.assertEqual([item["nickname"] for item in contacts], ["阿风", "王玉芹"])
 
+    def test_contact_browser_contacts_handles_blank_sort_name(self):
+        contacts = _contact_profiles_browser_contacts({
+            "subjects": [
+                {
+                    "subject_type": "friend",
+                    "status": "active",
+                    "contact_key": "blank",
+                    "nickname": "",
+                    "remark": "",
+                    "wechat_id": "",
+                },
+                {
+                    "subject_type": "friend",
+                    "status": "active",
+                    "contact_key": "named",
+                    "nickname": "阿风",
+                    "remark": "A0-阿风",
+                    "wechat_id": "w2",
+                },
+            ],
+        })
+
+        self.assertEqual([item["contact_key"] for item in contacts], ["named", "blank"])
+
     def test_memory_chats_endpoint_sorts_by_display_name(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir) / "accounts" / "wx_test" / "memory"

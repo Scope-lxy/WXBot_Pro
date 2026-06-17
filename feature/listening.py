@@ -486,7 +486,7 @@ def _reschedule_lightweight_delayed_listen(bot, name, task, now_ts):
     bot._lightweight_delayed_listen_tasks[name] = task
     _bot_log(
         bot,
-        level="WARNING",
+        level="INFO",
         message=(
             f"全局监听 {name}：轻量延后监听第 {attempt_index + 1} 次未恢复，"
             f"将在 {LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS[next_index]}s 后再试一次"
@@ -524,7 +524,7 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
                 handled = True
                 continue
             if _get_bot_private_message_sequence(bot, name) != int(current.get("message_sequence") or 0):
-                _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听期间已有新消息处理，已放弃旧批次")
+                _bot_log(bot, level="INFO", message=f"全局监听 {name}：轻量延后监听期间已有新消息处理，已放弃旧批次")
                 handled = True
                 continue
             if not sub_chat:
@@ -1265,7 +1265,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                     if delayed_queued:
                         _bot_log(
                             bot,
-                            level="WARNING",
+                            level="INFO",
                             message=(
                                 f"全局监听 {chat}：临时接管窗口不可用，"
                                 f"已暂存 {len(processed_msgs)} 条并延后 {LIGHTWEIGHT_DELAYED_LISTEN_DELAY_SECONDS}s 重试"

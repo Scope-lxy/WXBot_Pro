@@ -226,12 +226,12 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot._get_chat_api_index = lambda *_args, **_kwargs: 0
 
         logs = []
-        with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append(kwargs.get("message", ""))):
+        with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):
             result = bot._maybe_update_conversation_memory(SimpleNamespace(who="B-岁月静好3", chat_type="private"), SimpleNamespace(attr="friend"))
 
         self.assertTrue(result)
-        self.assertTrue(any("会话记忆已更新：B-岁月静好3" == item for item in logs))
-        self.assertFalse(any("API返回成功" in item for item in logs))
+        self.assertTrue(any(level == "INFO" and "会话记忆已更新：B-岁月静好3" == message for level, message in logs))
+        self.assertFalse(any("API返回成功" in message for _level, message in logs))
 
 
 if __name__ == "__main__":
