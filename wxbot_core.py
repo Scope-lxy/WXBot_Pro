@@ -348,7 +348,8 @@ set_chat_api_app_version(version)
 # ============================================================
 WxParam.MESSAGE_HASH = True         # 启用消息哈希，辅助消息去重判断
 WxParam.FORCE_MESSAGE_XBIAS = True  # 每次启动强制重新获取 X 偏移量
-WxParam.DEFAULT_MESSAGE_YBIAS = 40
+WxParam.DEFAULT_MESSAGE_XBIAS = 50
+WxParam.DEFAULT_MESSAGE_YBIAS = 30
 WXAUTO_SAVE_DIR_NAME = "wxauto_save"
 
 
