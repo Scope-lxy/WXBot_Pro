@@ -1383,7 +1383,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .relationship-scan-row:last-child { border-bottom: 0; }
 .relationship-scan-row--head { min-height: 34px; background: var(--surface-l2); color: var(--muted); font-size: 12px; font-weight: 700; }
 .relationship-scan-record-list { min-height: 78px; background: var(--surface-l3); }
-.relationship-scan-record-list.is-empty { padding: 12px; overflow: hidden; }
+.relationship-scan-record-list.is-empty { min-height: 0; padding: 12px; overflow: hidden; }
 .relationship-scan-empty { display: flex; align-items: center; width: 100%; min-height: var(--ui-empty-state-min-height); padding: var(--ui-empty-state-padding); border: 1px dashed var(--layer-border-subtle); border-radius: var(--radius); background: var(--surface-l4); color: var(--muted); font-size: 13px; line-height: 1.45; text-align: left; }
 .relationship-scan-row span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .relationship-scan-state,
