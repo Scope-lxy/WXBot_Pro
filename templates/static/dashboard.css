@@ -1619,7 +1619,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .chat-memory-memory-type { min-width: 0; min-height: var(--ui-control-height); height: var(--ui-control-height); }
 .chat-memory-profile-content { min-width: 0; min-height: var(--ui-control-height); height: var(--ui-control-height); padding-right: 50px; }
 .chat-memory-memory-card:hover { box-shadow: none; }
-.chat-memory-memory-content { min-height: var(--ui-control-height); height: var(--ui-control-height); resize: none; padding: calc((var(--ui-control-height) - 1.45em - 2px) / 2 + 2px) 12px calc((var(--ui-control-height) - 1.45em - 2px) / 2 - 2px); line-height: 1.45; overflow-x: hidden; overflow-y: hidden; }
+.chat-memory-memory-content { min-height: var(--ui-control-height); height: var(--ui-control-height); resize: none; padding: 0 12px; line-height: calc(var(--ui-control-height) - 2px); overflow-x: hidden; overflow-y: hidden; }
 .chat-memory-memory-content.is-multiline { padding-top: 6px; padding-bottom: 6px; line-height: 1.45; overflow-y: hidden; }
 .chat-memory-importance-group { display: inline-flex; width: 108px; min-height: var(--ui-control-height); height: var(--ui-control-height); align-items: center; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: #fff; }
 .chat-memory-importance-chip { min-width: 34px; width: 34px; height: calc(var(--ui-control-height) - 2px); border: 0; border-right: 1px solid var(--border); background: transparent; color: var(--muted); font-size: 13px; font-weight: 700; cursor: pointer; transition: background .12s, color .12s; padding: 0; }
@@ -1652,7 +1652,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .chat-memory-profile-content { grid-area: content; padding-right: 12px; }
   .chat-memory-memory-type { grid-area: type; }
   .chat-memory-importance-group { grid-area: importance; width: 100%; }
-  .chat-memory-memory-content { grid-area: content; min-height: var(--ui-control-height); height: var(--ui-control-height); padding: calc((var(--ui-control-height) - 1.45em - 2px) / 2 + 2px) 12px calc((var(--ui-control-height) - 1.45em - 2px) / 2 - 2px); line-height: 1.45; overflow-y: hidden; }
+  .chat-memory-memory-content { grid-area: content; min-height: var(--ui-control-height); height: var(--ui-control-height); padding: 0 12px; line-height: calc(var(--ui-control-height) - 2px); overflow-y: hidden; }
   .chat-memory-profile-actions,
   .chat-memory-memory-actions { position: static; opacity: 1; pointer-events: auto; justify-content: flex-end; transform: none; }
   .chat-memory-profile-actions { grid-area: actions; }
