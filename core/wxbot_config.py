@@ -13,7 +13,7 @@ from core.account_storage import DEFAULT_ACCOUNT_ID, account_module_file, ensure
 from core.api import APIConfigSnapshot, build_api_config_snapshot, default_tts_config, normalize_tts_settings
 from core.config import coerce_float_range, coerce_int_range
 from core.logger import log
-from core.prompt_system import CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT
+from core.prompt_system import CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT
 from feature.ai_material_outreach import normalize_ai_material_outreach_config
 from feature.contacts import (
     coerce_auto_maintenance_full_scan_interval_days,
@@ -117,11 +117,11 @@ class WXBotConfig:
         self.group_prompt_map = {}          # 群组名称 -> prompt 名称
 
         # ---------- 会话记忆配置 ----------
-        self.conversation_memory_switch = True
-        self.conversation_memory_exclude_list = []
-        self.conversation_memory_message_threshold = 100
-        self.conversation_memory_interval_hours = 12
-        self.conversation_memory_protected_recent_count = CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT
+        self.chat_memory_switch = True
+        self.chat_memory_exclude_list = []
+        self.chat_memory_message_threshold = 100
+        self.chat_memory_interval_hours = 12
+        self.chat_memory_protected_recent_count = CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT
 
         # ---------- 定时消息配置 ----------
         self.scheduled_message_task_list = []  # 统一定时消息任务列表
@@ -277,11 +277,11 @@ class WXBotConfig:
                     "chat_api_map": {},
                     "chat_tts_map": {},
                     "group_prompt_map": {},
-                    "conversation_memory_switch": True,
-                    "conversation_memory_exclude_list": [],
-                    "conversation_memory_message_threshold": 100,
-                    "conversation_memory_interval_hours": 12,
-                    "conversation_memory_protected_recent_count": CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
+                    "chat_memory_switch": True,
+                    "chat_memory_exclude_list": [],
+                    "chat_memory_message_threshold": 100,
+                    "chat_memory_interval_hours": 12,
+                    "chat_memory_protected_recent_count": CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
                     "scheduled_message_task_list": [],
                     "contact_directory_auto_maintenance_switch": False,
                     "contact_directory_auto_maintenance_batch_size": 10,
@@ -1067,32 +1067,32 @@ class WXBotConfig:
         self.init_prompt_dir()
 
         # 会话记忆配置
-        _conversation_memory_defaults = {
-            'conversation_memory_switch': True,
-            'conversation_memory_exclude_list': [],
-            'conversation_memory_message_threshold': 100,
-            'conversation_memory_interval_hours': 12,
-            'conversation_memory_protected_recent_count': CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
+        _chat_memory_defaults = {
+            'chat_memory_switch': True,
+            'chat_memory_exclude_list': [],
+            'chat_memory_message_threshold': 100,
+            'chat_memory_interval_hours': 12,
+            'chat_memory_protected_recent_count': CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
         }
-        _conversation_memory_needs_save = any(k not in self.config for k in _conversation_memory_defaults)
-        for k, v in _conversation_memory_defaults.items():
+        _chat_memory_needs_save = any(k not in self.config for k in _chat_memory_defaults)
+        for k, v in _chat_memory_defaults.items():
             self.config.setdefault(k, v)
-        if _conversation_memory_needs_save:
+        if _chat_memory_needs_save:
             self.save_config()
             log(message="已自动补充会话记忆配置默认值并写回配置文件")
-        self.conversation_memory_switch = bool(self.config.get('conversation_memory_switch', True))
-        self.conversation_memory_exclude_list = self.config.get('conversation_memory_exclude_list', [])
-        if not isinstance(self.conversation_memory_exclude_list, list):
-            self.conversation_memory_exclude_list = []
-        self.conversation_memory_message_threshold = self._coerce_int_range(
-            self.config.get('conversation_memory_message_threshold', 100), 100, 10, 200
+        self.chat_memory_switch = bool(self.config.get('chat_memory_switch', True))
+        self.chat_memory_exclude_list = self.config.get('chat_memory_exclude_list', [])
+        if not isinstance(self.chat_memory_exclude_list, list):
+            self.chat_memory_exclude_list = []
+        self.chat_memory_message_threshold = self._coerce_int_range(
+            self.config.get('chat_memory_message_threshold', 100), 100, 10, 200
         )
-        self.conversation_memory_interval_hours = self._coerce_int_range(
-            self.config.get('conversation_memory_interval_hours', 12), 12, 1, 72
+        self.chat_memory_interval_hours = self._coerce_int_range(
+            self.config.get('chat_memory_interval_hours', 12), 12, 1, 72
         )
-        self.conversation_memory_protected_recent_count = self._coerce_int_range(
-            self.config.get('conversation_memory_protected_recent_count', CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT),
-            CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
+        self.chat_memory_protected_recent_count = self._coerce_int_range(
+            self.config.get('chat_memory_protected_recent_count', CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT),
+            CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
             0,
             200,
         )

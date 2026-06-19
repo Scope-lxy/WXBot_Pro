@@ -107,7 +107,7 @@ html.icons-pref-local [class*=" bi-"]::before {
   <div class="nav-item"><a class="nav-link" data-tab="tab-api"><i class="bi bi-cloud"></i> 接口配置</a></div>
   <div class="nav-divider"></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-prompt"><i class="bi bi-chat-square-text"></i> 人设系统</a></div>
-  <div class="nav-item"><a class="nav-link" data-tab="tab-conversation-memory"><i class="bi bi-person-lines-fill"></i> 会话记忆</a></div>
+  <div class="nav-item"><a class="nav-link" data-tab="tab-chat-memory"><i class="bi bi-person-lines-fill"></i> 会话记忆</a></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-memory"><i class="bi bi-journal-text"></i> 聊天记录</a></div>
   <div class="nav-divider"></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-listen"><i class="bi bi-ear"></i> 私聊监听</a></div>
@@ -819,48 +819,48 @@ html.icons-pref-local [class*=" bi-"]::before {
     </div>
   </div>
 
-  <!-- ===== Tab: Conversation Memory ===== -->
-  <div class="config-panel" id="tab-conversation-memory">
+  <!-- ===== Tab: Chat Memory ===== -->
+  <div class="config-panel" id="tab-chat-memory">
     <div class="cfg-card">
       <div class="ui-head ui-head--page">
         <i class="bi bi-database-check"></i>
         <h5>会话记忆配置</h5>
         <span class="desc">控制会话记忆读取、维护和排除名单</span>
         <div class="ui-head__actions">
-          <label class="ui-switch ui-switch--l1 ui-head-switch" for="conversation_memory_switch">
-            <span id="conversation_memory_switch_label">{% if config.get('conversation_memory_switch', True) %}已启用{% else %}已停用{% endif %}</span>
-            <input class="form-check-input" type="checkbox" id="conversation_memory_switch" {% if config.get('conversation_memory_switch', True) %}checked{% endif %}>
+          <label class="ui-switch ui-switch--l1 ui-head-switch" for="chat_memory_switch">
+            <span id="chat_memory_switch_label">{% if config.get('chat_memory_switch', True) %}已启用{% else %}已停用{% endif %}</span>
+            <input class="form-check-input" type="checkbox" id="chat_memory_switch" {% if config.get('chat_memory_switch', True) %}checked{% endif %}>
             <span class="ui-switch-knob"></span>
           </label>
         </div>
       </div>
       <div class="row g-3">
         <div class="col-12 col-md-4">
-          <label class="cfg-label" for="conversation_memory_interval_hours">最短整理间隔（小时）</label>
-          <input type="number" class="form-control" id="conversation_memory_interval_hours" min="1" max="72" value="{{ config.get('conversation_memory_interval_hours', 12) }}">
+          <label class="cfg-label" for="chat_memory_interval_hours">最短整理间隔（小时）</label>
+          <input type="number" class="form-control" id="chat_memory_interval_hours" min="1" max="72" value="{{ config.get('chat_memory_interval_hours', 12) }}">
           <div class="cfg-hint">避免频繁调用 AI 整理记忆，即使消息数达标，也会等间隔满足后再整理</div>
         </div>
         <div class="col-12 col-md-4">
-          <label class="cfg-label" for="conversation_memory_message_threshold">触发整理消息数</label>
-          <input type="number" class="form-control" id="conversation_memory_message_threshold" min="10" max="200" value="{{ config.get('conversation_memory_message_threshold', 100) }}">
+          <label class="cfg-label" for="chat_memory_message_threshold">触发整理消息数</label>
+          <input type="number" class="form-control" id="chat_memory_message_threshold" min="10" max="200" value="{{ config.get('chat_memory_message_threshold', 100) }}">
           <div class="cfg-hint">待整理消息达到该数量后，尝试整理会话记忆</div>
         </div>
         <div class="col-12 col-md-4">
-          <label class="cfg-label" for="conversation_memory_protected_recent_count">排除整理消息数</label>
-          <input type="number" class="form-control" id="conversation_memory_protected_recent_count" min="0" max="200" value="{{ config.get('conversation_memory_protected_recent_count', 20) }}">
+          <label class="cfg-label" for="chat_memory_protected_recent_count">排除整理消息数</label>
+          <input type="number" class="form-control" id="chat_memory_protected_recent_count" min="0" max="200" value="{{ config.get('chat_memory_protected_recent_count', 20) }}">
           <div class="cfg-hint">整理时会先跳过最近 N 条消息，避免把刚发生的对话过早写进会话记忆</div>
         </div>
       </div>
     </div>
     <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-person-dash"></i><h5>会话记忆黑名单</h5><span class="desc">这些好友不会读取或自动维护会话记忆</span><div class="ui-head__actions"><button type="button" class="ui-btn ui-btn--add ui-btn--l1" id="btn-add-conversation-memory-exclude"><i class="bi bi-plus-circle"></i> 添加黑名单</button></div></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-person-dash"></i><h5>会话记忆黑名单</h5><span class="desc">这些好友不会读取或自动维护会话记忆</span><div class="ui-head__actions"><button type="button" class="ui-btn ui-btn--add ui-btn--l1" id="btn-add-chat-memory-exclude"><i class="bi bi-plus-circle"></i> 添加黑名单</button></div></div>
       <div class="mb-2">
         <div class="cfg-hint">黑名单的好友将按人设设定正常回复，但不会自动创建、维护、读取会话记忆</div>
       </div>
-      <div id="conversation_memory_exclude_container">
-        {% for uname in config.get('conversation_memory_exclude_list', []) %}
-        <div class="list-item conversation-memory-exclude-item">
-          <input type="text" class="form-control conversation-memory-exclude-user" value="{{ uname }}" placeholder="好友昵称">
+      <div id="chat_memory_exclude_container">
+        {% for uname in config.get('chat_memory_exclude_list', []) %}
+        <div class="list-item chat-memory-exclude-item">
+          <input type="text" class="form-control chat-memory-exclude-user" value="{{ uname }}" placeholder="好友昵称">
           <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
         </div>
         {% endfor %}
@@ -872,42 +872,42 @@ html.icons-pref-local [class*=" bi-"]::before {
         <h5>会话记忆</h5>
         <span class="desc">查看和修正单个对话窗口的会话记忆信息</span>
         <div class="ui-head__actions">
-          <select class="form-select cfg-inline-control" id="conversation-memory-wx-select" style="width:auto;min-width:220px;">
+          <select class="form-select cfg-inline-control" id="chat-memory-wx-select" style="width:auto;min-width:220px;">
             <option value="">微信号：暂无微信号</option>
           </select>
-          <button type="button" id="btn-refresh-conversation-memory-users" class="ui-btn ui-btn--secondary ui-btn--l2">刷新</button>
+          <button type="button" id="btn-refresh-chat-memory-users" class="ui-btn ui-btn--secondary ui-btn--l2">刷新</button>
         </div>
       </div>
-      <div class="memory-layout memory-layout-two-pane conversation-memory-layout">
-        <div class="memory-list-panel" id="conversation-memory-user-panel" style="display:none">
+      <div class="memory-layout memory-layout-two-pane chat-memory-layout">
+        <div class="memory-list-panel" id="chat-memory-user-panel" style="display:none">
           <div class="panel-title">对话窗口</div>
           <div class="memory-list-search">
             <i class="bi bi-search"></i>
-            <input type="search" class="form-control" id="conversation-memory-user-search" placeholder="搜索">
+            <input type="search" class="form-control" id="chat-memory-user-search" placeholder="搜索">
           </div>
-          <div class="memory-list-inner" id="conversation-memory-user-list"></div>
+          <div class="memory-list-inner" id="chat-memory-user-list"></div>
         </div>
-        <div class="conversation-memory-editor-area" id="conversation-memory-editor-area" style="display:none">
-          <div class="conversation-memory-editor-header">
-            <span class="title" id="conversation-memory-editor-title">会话记忆</span>
-            <span class="meta" id="conversation-memory-editor-meta">结构化编辑</span>
+        <div class="chat-memory-editor-area" id="chat-memory-editor-area" style="display:none">
+          <div class="chat-memory-editor-header">
+            <span class="title" id="chat-memory-editor-title">会话记忆</span>
+            <span class="meta" id="chat-memory-editor-meta">结构化编辑</span>
           </div>
-          <div class="conversation-memory-editor-body">
-            <div class="conversation-memory-editor-summary">
-              <div class="conversation-memory-editor-summary-copy">
-                <div class="conversation-memory-section-title">记忆条目<span class="conversation-memory-section-count" id="conversation-memory-memory-count">（0条）</span></div>
+          <div class="chat-memory-editor-body">
+            <div class="chat-memory-editor-summary">
+              <div class="chat-memory-editor-summary-copy">
+                <div class="chat-memory-section-title">记忆条目<span class="chat-memory-section-count" id="chat-memory-memory-count">（0条）</span></div>
               </div>
             </div>
-            <div id="conversation-memory-memory-list" class="conversation-memory-entry-list"></div>
+            <div id="chat-memory-memory-list" class="chat-memory-entry-list"></div>
           </div>
-          <div class="conversation-memory-action-row">
-            <div id="conversation-memory-msg" class="cfg-feedback"></div>
-            <div class="cfg-action-row conversation-memory-footer-actions" style="margin-top:0;">
-              <button type="button" id="btn-conversation-memory-save" class="ui-btn ui-btn--primary ui-btn--l2">
+          <div class="chat-memory-action-row">
+            <div id="chat-memory-msg" class="cfg-feedback"></div>
+            <div class="cfg-action-row chat-memory-footer-actions" style="margin-top:0;">
+              <button type="button" id="btn-chat-memory-save" class="ui-btn ui-btn--primary ui-btn--l2">
                 <i class="bi bi-save"></i> 保存记忆
               </button>
-              <button type="button" id="btn-add-conversation-memory-item" class="ui-btn ui-btn--secondary ui-btn--l2"><i class="bi bi-plus-circle"></i> 新增记忆</button>
-              <button type="button" id="btn-extract-conversation-memory" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2 ui-btn--nowrap">
+              <button type="button" id="btn-add-chat-memory-item" class="ui-btn ui-btn--secondary ui-btn--l2"><i class="bi bi-plus-circle"></i> 新增记忆</button>
+              <button type="button" id="btn-extract-chat-memory" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2 ui-btn--nowrap">
                 <i class="bi bi-arrow-down-circle"></i> 提取记忆
               </button>
             </div>
@@ -8191,19 +8191,19 @@ $(function(){
   syncGroupListenOnlyControls();
   refreshGroupSummary();
 
-  $('#btn-add-conversation-memory-exclude').click(function(){
-    insertListItemAtTop($('#conversation_memory_exclude_container'),
-      '<div class="list-item conversation-memory-exclude-item">'+
-      '<input type="text" class="form-control conversation-memory-exclude-user" placeholder="好友昵称">'+
+  $('#btn-add-chat-memory-exclude').click(function(){
+    insertListItemAtTop($('#chat_memory_exclude_container'),
+      '<div class="list-item chat-memory-exclude-item">'+
+      '<input type="text" class="form-control chat-memory-exclude-user" placeholder="好友昵称">'+
       '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
       '</div>'
     );
   });
 
-  function collectConversationMemoryExcludeFromUI(){
+  function collectChatMemoryExcludeFromUI(){
     var users = [];
-    $('.conversation-memory-exclude-item').each(function(){
-      var uname = $(this).find('.conversation-memory-exclude-user').val().trim();
+    $('.chat-memory-exclude-item').each(function(){
+      var uname = $(this).find('.chat-memory-exclude-user').val().trim();
       if (uname) users.push(uname);
     });
     return users;
@@ -8238,16 +8238,16 @@ $(function(){
     return names;
   }
 
-  var _conversationMemoryWxId = '', _conversationMemoryChatName = '';
-  var _conversationMemoryEditorState = null, _conversationMemoryOriginalState = null;
-  var _conversationMemoryUsers = [];
+  var _chatMemoryWxId = '', _chatMemoryChatName = '';
+  var _chatMemoryEditorState = null, _chatMemoryOriginalState = null;
+  var _chatMemoryUsers = [];
 
-  function getConversationMemoryWxId(){
-    return (_conversationMemoryWxId || '').trim();
+  function getChatMemoryWxId(){
+    return (_chatMemoryWxId || '').trim();
   }
 
-  function getConversationMemoryChatName(){
-    return (_conversationMemoryChatName || '').trim();
+  function getChatMemoryChatName(){
+    return (_chatMemoryChatName || '').trim();
   }
 
   function getPromptPreviewWxId(){
@@ -8347,7 +8347,7 @@ $(function(){
   }
 
   function loadPromptPreviewWxIds(selectWxId){
-    $.getJSON('/conversation_memory/wx_ids').done(function(res){
+    $.getJSON('/chat_memory/wx_ids').done(function(res){
       if(res.status !== 'success'){
         renderWxIdSelect($('#prompt-preview-wx-id'), [], '暂无微信号', '');
         return;
@@ -8360,7 +8360,7 @@ $(function(){
     });
   }
 
-  function blankConversationMemoryState(chatName, wxId){
+  function blankChatMemoryState(chatName, wxId){
     return {
       schema_version: 2,
       wx_id: (wxId || '').trim(),
@@ -8377,12 +8377,12 @@ $(function(){
     };
   }
 
-  function cloneConversationMemoryState(state){
+  function cloneChatMemoryState(state){
     return JSON.parse(JSON.stringify(state || {}));
   }
 
-  function normalizeConversationMemoryState(state, chatName, wxId){
-    var base = blankConversationMemoryState(chatName, wxId);
+  function normalizeChatMemoryState(state, chatName, wxId){
+    var base = blankChatMemoryState(chatName, wxId);
     if(!state || typeof state !== 'object') return base;
     base.schema_version = Number(state.schema_version || 2) || 2;
     base.chat_name = (chatName || state.chat_name || '').trim();
@@ -8407,76 +8407,76 @@ $(function(){
     return base;
   }
 
-  function resetConversationMemoryEditor(){
-    _conversationMemoryChatName = '';
-    _conversationMemoryEditorState = null;
-    _conversationMemoryOriginalState = null;
-    $('#conversation-memory-editor-area').hide();
-    $('#conversation-memory-memory-list').empty();
-    $('#conversation-memory-editor-title').text('会话记忆');
-    $('#conversation-memory-editor-meta').text('结构化编辑');
-    $('#conversation-memory-memory-count').text('（0条）');
-    $('#conversation-memory-msg').hide();
+  function resetChatMemoryEditor(){
+    _chatMemoryChatName = '';
+    _chatMemoryEditorState = null;
+    _chatMemoryOriginalState = null;
+    $('#chat-memory-editor-area').hide();
+    $('#chat-memory-memory-list').empty();
+    $('#chat-memory-editor-title').text('会话记忆');
+    $('#chat-memory-editor-meta').text('结构化编辑');
+    $('#chat-memory-memory-count').text('（0条）');
+    $('#chat-memory-msg').hide();
   }
 
-  function updateConversationMemorySectionCounts(state){
-    var normalized = normalizeConversationMemoryState(state, getConversationMemoryChatName(), getConversationMemoryWxId());
+  function updateChatMemorySectionCounts(state){
+    var normalized = normalizeChatMemoryState(state, getChatMemoryChatName(), getChatMemoryWxId());
     var memoryCount = (normalized.memories || []).length;
-    $('#conversation-memory-memory-count').text('（' + memoryCount + '条）');
+    $('#chat-memory-memory-count').text('（' + memoryCount + '条）');
   }
 
-  function setConversationMemoryEditorState(state, options){
+  function setChatMemoryEditorState(state, options){
     options = options || {};
-    var chatName = options.chatName || getConversationMemoryChatName();
-    var wxId = options.wxId || getConversationMemoryWxId();
-    var normalized = normalizeConversationMemoryState(state, chatName, wxId);
-    _conversationMemoryChatName = normalized.chat_name;
-    _conversationMemoryEditorState = normalized;
-    _conversationMemoryOriginalState = cloneConversationMemoryState(normalized);
-    renderConversationMemoryEditor(options.meta || '结构化编辑');
+    var chatName = options.chatName || getChatMemoryChatName();
+    var wxId = options.wxId || getChatMemoryWxId();
+    var normalized = normalizeChatMemoryState(state, chatName, wxId);
+    _chatMemoryChatName = normalized.chat_name;
+    _chatMemoryEditorState = normalized;
+    _chatMemoryOriginalState = cloneChatMemoryState(normalized);
+    renderChatMemoryEditor(options.meta || '结构化编辑');
     $('#prompt-preview-output').hide().text('');
   }
 
-  function showConversationMemoryMissingState(chatName, hasChatRecord){
+  function showChatMemoryMissingState(chatName, hasChatRecord){
     var name=(chatName||'').trim();
-    if(!name){ resetConversationMemoryEditor(); return; }
-    setConversationMemoryEditorState(blankConversationMemoryState(name, getConversationMemoryWxId()), {
+    if(!name){ resetChatMemoryEditor(); return; }
+    setChatMemoryEditorState(blankChatMemoryState(name, getChatMemoryWxId()), {
       chatName: name,
-      wxId: getConversationMemoryWxId(),
+      wxId: getChatMemoryWxId(),
       meta: hasChatRecord ? '暂无会话记忆，可直接新增或提取记忆' : '暂无会话记忆，可直接新增'
     });
   }
 
-  function renderConversationMemoryMemoryCards(items){
-    var $list = $('#conversation-memory-memory-list').empty();
+  function renderChatMemoryMemoryCards(items){
+    var $list = $('#chat-memory-memory-list').empty();
     items = Array.isArray(items) ? items : [];
     if(!items.length){
-      $list.html('<div class="conversation-memory-entry-empty">暂无记忆条目，可以先手动新增，或者直接点“提取记忆”。</div>');
+      $list.html('<div class="chat-memory-entry-empty">暂无记忆条目，可以先手动新增，或者直接点“提取记忆”。</div>');
       return;
     }
     items.forEach(function(item, index){
       var importance = ['高','中','低'].indexOf(item.importance) >= 0 ? item.importance : '中';
-      var $card = $('<div class="conversation-memory-memory-card" data-index="'+index+'">'+
-        '<div class="conversation-memory-importance-group">'+
-          '<button type="button" class="conversation-memory-importance-chip" data-value="高">高</button>'+
-          '<button type="button" class="conversation-memory-importance-chip" data-value="中">中</button>'+
-          '<button type="button" class="conversation-memory-importance-chip" data-value="低">低</button>'+
+      var $card = $('<div class="chat-memory-memory-card" data-index="'+index+'">'+
+        '<div class="chat-memory-importance-group">'+
+          '<button type="button" class="chat-memory-importance-chip" data-value="高">高</button>'+
+          '<button type="button" class="chat-memory-importance-chip" data-value="中">中</button>'+
+          '<button type="button" class="chat-memory-importance-chip" data-value="低">低</button>'+
         '</div>'+
-        '<input type="text" class="form-control conversation-memory-memory-type" maxlength="20" placeholder="标签" value="'+escapeHtml(item.type || item.category || '')+'">'+
-        '<textarea class="form-control conversation-memory-memory-content" rows="1" maxlength="180" placeholder="内容">'+escapeHtml(item.content || '')+'</textarea>'+
-        '<div class="conversation-memory-memory-actions">'+
-          '<button type="button" class="conversation-memory-card-btn is-danger conversation-memory-remove-memory" title="删除"><i class="bi bi-trash"></i></button>'+
+        '<input type="text" class="form-control chat-memory-memory-type" maxlength="20" placeholder="标签" value="'+escapeHtml(item.type || item.category || '')+'">'+
+        '<textarea class="form-control chat-memory-memory-content" rows="1" maxlength="180" placeholder="内容">'+escapeHtml(item.content || '')+'</textarea>'+
+        '<div class="chat-memory-memory-actions">'+
+          '<button type="button" class="chat-memory-card-btn is-danger chat-memory-remove-memory" title="删除"><i class="bi bi-trash"></i></button>'+
         '</div>'+
       '</div>');
-      $card.find('.conversation-memory-importance-chip').each(function(){
+      $card.find('.chat-memory-importance-chip').each(function(){
         $(this).toggleClass('is-active', $(this).data('value') === importance);
       });
       $list.append($card);
     });
-    refreshConversationMemoryContentLayout($list.find('.conversation-memory-memory-content'));
+    refreshChatMemoryContentLayout($list.find('.chat-memory-memory-content'));
   }
 
-  function refreshConversationMemoryContentLayout($targets){
+  function refreshChatMemoryContentLayout($targets){
     ($targets || $()).each(function(){
       var el = this;
       var $el = $(el);
@@ -8495,27 +8495,27 @@ $(function(){
     });
   }
 
-  function renderConversationMemoryEditor(metaText){
-    var state = normalizeConversationMemoryState(_conversationMemoryEditorState, getConversationMemoryChatName(), getConversationMemoryWxId());
-    _conversationMemoryEditorState = state;
-    $('#conversation-memory-editor-area').show().css('display','flex');
-    $('#conversation-memory-editor-title').text((state.chat_name || '会话记忆') + ' · 会话记忆');
-    $('#conversation-memory-editor-meta').text(metaText || '结构化编辑');
-    updateConversationMemorySectionCounts(state);
-    renderConversationMemoryMemoryCards(state.memories || []);
+  function renderChatMemoryEditor(metaText){
+    var state = normalizeChatMemoryState(_chatMemoryEditorState, getChatMemoryChatName(), getChatMemoryWxId());
+    _chatMemoryEditorState = state;
+    $('#chat-memory-editor-area').show().css('display','flex');
+    $('#chat-memory-editor-title').text((state.chat_name || '会话记忆') + ' · 会话记忆');
+    $('#chat-memory-editor-meta').text(metaText || '结构化编辑');
+    updateChatMemorySectionCounts(state);
+    renderChatMemoryMemoryCards(state.memories || []);
   }
 
-  function collectConversationMemoryEditorStateFromDom(){
-    var chatName = getConversationMemoryChatName();
-    var wxId = getConversationMemoryWxId();
-    var base = normalizeConversationMemoryState(_conversationMemoryEditorState || _conversationMemoryOriginalState || blankConversationMemoryState(chatName, wxId), chatName, wxId);
+  function collectChatMemoryEditorStateFromDom(){
+    var chatName = getChatMemoryChatName();
+    var wxId = getChatMemoryWxId();
+    var base = normalizeChatMemoryState(_chatMemoryEditorState || _chatMemoryOriginalState || blankChatMemoryState(chatName, wxId), chatName, wxId);
     var memories = [];
-    $('#conversation-memory-memory-list .conversation-memory-memory-card').each(function(index){
+    $('#chat-memory-memory-list .chat-memory-memory-card').each(function(index){
       var existing = ((base.memories || [])[index] || {});
-      var importance = String($(this).find('.conversation-memory-importance-chip.is-active').data('value') || '中').trim();
+      var importance = String($(this).find('.chat-memory-importance-chip.is-active').data('value') || '中').trim();
       if(['高','中','低'].indexOf(importance) < 0) importance = '中';
-      var type = ($(this).find('.conversation-memory-memory-type').val() || '').trim();
-      var content = ($(this).find('.conversation-memory-memory-content').val() || '').trim();
+      var type = ($(this).find('.chat-memory-memory-type').val() || '').trim();
+      var content = ($(this).find('.chat-memory-memory-content').val() || '').trim();
       if(!type && !content && !existing.__draft) return;
       memories.push({
         id: existing.id || '',
@@ -8530,26 +8530,26 @@ $(function(){
     return base;
   }
 
-  function syncConversationMemoryEditorStateFromDom(){
-    _conversationMemoryEditorState = collectConversationMemoryEditorStateFromDom();
-    return _conversationMemoryEditorState;
+  function syncChatMemoryEditorStateFromDom(){
+    _chatMemoryEditorState = collectChatMemoryEditorStateFromDom();
+    return _chatMemoryEditorState;
   }
 
-  function hasConversationMemoryDirtyState(){
-    if(!_conversationMemoryOriginalState || !getConversationMemoryChatName()){
+  function hasChatMemoryDirtyState(){
+    if(!_chatMemoryOriginalState || !getChatMemoryChatName()){
       return false;
     }
-    var currentState = collectConversationMemoryEditorStateFromDom();
-    var originalState = normalizeConversationMemoryState(
-      _conversationMemoryOriginalState,
-      getConversationMemoryChatName(),
-      getConversationMemoryWxId()
+    var currentState = collectChatMemoryEditorStateFromDom();
+    var originalState = normalizeChatMemoryState(
+      _chatMemoryOriginalState,
+      getChatMemoryChatName(),
+      getChatMemoryWxId()
     );
     return JSON.stringify(currentState) !== JSON.stringify(originalState);
   }
 
-  function confirmConversationMemoryNavigation(onContinue){
-    if(!hasConversationMemoryDirtyState()){
+  function confirmChatMemoryNavigation(onContinue){
+    if(!hasChatMemoryDirtyState()){
       if(typeof onContinue === 'function') onContinue();
       return;
     }
@@ -8564,7 +8564,7 @@ $(function(){
     );
   }
 
-  function renderConversationMemoryListItem(name, selected, onClick, onDelete, canDelete){
+  function renderChatMemoryListItem(name, selected, onClick, onDelete, canDelete){
     var safeName = $('<span>').text(name).html();
     var deleteHtml = canDelete === false ? '' : '<button type="button" class="btn-del-mem" title="删除"><i class="bi bi-trash"></i></button>';
     var $item = $('<div class="memory-list-item">' +
@@ -8574,7 +8574,7 @@ $(function(){
     if(selected) $item.addClass('selected');
     $item.on('click', function(e){
       if($(e.target).closest('.btn-del-mem').length) return;
-      confirmConversationMemoryNavigation(onClick);
+      confirmChatMemoryNavigation(onClick);
     });
     $item.find('.btn-del-mem').on('click', function(){ onDelete(); });
     return $item;
@@ -8589,11 +8589,11 @@ $(function(){
     return !query || name.indexOf(query) >= 0;
   }
 
-  function renderConversationMemoryUsers(users, selectName){
-    var wxId = getConversationMemoryWxId();
-    var $list = $('#conversation-memory-user-list').empty();
+  function renderChatMemoryUsers(users, selectName){
+    var wxId = getChatMemoryWxId();
+    var $list = $('#chat-memory-user-list').empty();
     users = Array.isArray(users) ? users : [];
-    var query = memoryListSearchText('#conversation-memory-user-search');
+    var query = memoryListSearchText('#chat-memory-user-search');
     var filtered = users.filter(function(u){ return itemNameMatchesSearch(u && u.chat_name, query); });
     if(!filtered.length){
       $list.html('<div style="padding:12px;font-size:12.5px;color:var(--muted);">' + (query ? '没有匹配的对话窗口' : '暂无会话记忆') + '</div>');
@@ -8607,125 +8607,125 @@ $(function(){
     filtered.forEach(function(u){
       var name = u.chat_name || '';
       if(!name) return;
-      $list.append(renderConversationMemoryListItem(name, name === selected, function(){
-        $('.memory-list-item','#conversation-memory-user-list').removeClass('selected');
-        $('#conversation-memory-user-list .memory-list-item').filter(function(){
+      $list.append(renderChatMemoryListItem(name, name === selected, function(){
+        $('.memory-list-item','#chat-memory-user-list').removeClass('selected');
+        $('#chat-memory-user-list .memory-list-item').filter(function(){
           return $(this).find('.item-name').text() === name;
         }).addClass('selected');
-        loadConversationMemoryState(name);
+        loadChatMemoryState(name);
       }, function(){
-        confirmConversationMemoryNavigation(function(){
+        confirmChatMemoryNavigation(function(){
           svModal.confirm('确定删除「'+name+'」的会话记忆？', function(){
-            $.ajax({url:'/conversation_memory/state/'+encodeURIComponent(name)+'?wx_id='+encodeURIComponent(wxId), type:'DELETE'})
+            $.ajax({url:'/chat_memory/state/'+encodeURIComponent(name)+'?wx_id='+encodeURIComponent(wxId), type:'DELETE'})
               .done(function(delRes){
                 if(delRes.status==='success'){
-                  showMsg('conversation-memory-msg', '已删除', true);
-                  loadConversationMemoryUsers(name === _conversationMemoryChatName ? '' : _conversationMemoryChatName);
+                  showMsg('chat-memory-msg', '已删除', true);
+                  loadChatMemoryUsers(name === _chatMemoryChatName ? '' : _chatMemoryChatName);
                 } else {
-                  showMsg('conversation-memory-msg', delRes.message || '删除失败', false);
+                  showMsg('chat-memory-msg', delRes.message || '删除失败', false);
                 }
               })
               .fail(function(xhr){
-                showMsg('conversation-memory-msg', '删除失败：' + xhr.status, false);
+                showMsg('chat-memory-msg', '删除失败：' + xhr.status, false);
               });
           }, '删除确认', '确定删除', '取消');
         });
       }));
     });
-    if(selected && selected !== getConversationMemoryChatName()){
-      loadConversationMemoryState(selected);
+    if(selected && selected !== getChatMemoryChatName()){
+      loadChatMemoryState(selected);
     }
   }
 
-  function loadConversationMemoryWxIds(selectWxId, selectName){
-    $.getJSON('/conversation_memory/wx_ids')
+  function loadChatMemoryWxIds(selectWxId, selectName){
+    $.getJSON('/chat_memory/wx_ids')
       .done(function(res){
-        $('#conversation-memory-msg').hide();
+        $('#chat-memory-msg').hide();
         if(res.status !== 'success' || !res.wx_ids || !res.wx_ids.length){
-          _conversationMemoryWxId = '';
-          renderWxIdSelect($('#conversation-memory-wx-select'), [], '微信号：暂无微信号', '', '微信号');
-          $('#conversation-memory-user-panel').hide();
-          $('#conversation-memory-user-list').empty();
-          resetConversationMemoryEditor();
+          _chatMemoryWxId = '';
+          renderWxIdSelect($('#chat-memory-wx-select'), [], '微信号：暂无微信号', '', '微信号');
+          $('#chat-memory-user-panel').hide();
+          $('#chat-memory-user-list').empty();
+          resetChatMemoryEditor();
           return;
         }
         var wxIds = res.wx_ids || [];
         var selected = selectWxId && wxIds.indexOf(selectWxId) !== -1
           ? selectWxId
           : (String(res.wx_id || '').trim() || wxIds[0] || '');
-        _conversationMemoryWxId = selected || '';
-        renderWxIdSelect($('#conversation-memory-wx-select'), wxIds, '微信号：暂无微信号', selected, '微信号');
-        $('#conversation-memory-wx-select').data('currentWxId', _conversationMemoryWxId);
-        $('#conversation-memory-user-panel').show();
-        loadConversationMemoryUsers(selectName);
+        _chatMemoryWxId = selected || '';
+        renderWxIdSelect($('#chat-memory-wx-select'), wxIds, '微信号：暂无微信号', selected, '微信号');
+        $('#chat-memory-wx-select').data('currentWxId', _chatMemoryWxId);
+        $('#chat-memory-user-panel').show();
+        loadChatMemoryUsers(selectName);
       })
       .fail(function(){
-        _conversationMemoryWxId = '';
-        renderWxIdSelect($('#conversation-memory-wx-select'), [], '微信号：暂无微信号', '', '微信号');
-        $('#conversation-memory-user-panel').hide();
-        $('#conversation-memory-user-list').empty();
-        resetConversationMemoryEditor();
-        showMsg('conversation-memory-msg', '加载微信号失败，请稍后重试', false);
+        _chatMemoryWxId = '';
+        renderWxIdSelect($('#chat-memory-wx-select'), [], '微信号：暂无微信号', '', '微信号');
+        $('#chat-memory-user-panel').hide();
+        $('#chat-memory-user-list').empty();
+        resetChatMemoryEditor();
+        showMsg('chat-memory-msg', '加载微信号失败，请稍后重试', false);
       });
   }
 
-  function loadConversationMemoryUsers(selectName){
-    var wxId = getConversationMemoryWxId();
-    var $list = $('#conversation-memory-user-list').empty();
+  function loadChatMemoryUsers(selectName){
+    var wxId = getChatMemoryWxId();
+    var $list = $('#chat-memory-user-list').empty();
     if(!wxId){
       $list.html('<div style="padding:12px;font-size:12.5px;color:var(--muted);">暂无会话记忆</div>');
-      _conversationMemoryUsers = [];
-      resetConversationMemoryEditor();
+      _chatMemoryUsers = [];
+      resetChatMemoryEditor();
       return;
     }
-    $.getJSON('/conversation_memory/users', {wx_id: wxId})
+    $.getJSON('/chat_memory/users', {wx_id: wxId})
       .done(function(res){
-        $('#conversation-memory-msg').hide();
+        $('#chat-memory-msg').hide();
         if(res.status !== 'success' || !res.users || !res.users.length){
           $list.html('<div style="padding:12px;font-size:12.5px;color:var(--muted);">暂无会话记忆</div>');
-          _conversationMemoryUsers = [];
-          resetConversationMemoryEditor();
+          _chatMemoryUsers = [];
+          resetChatMemoryEditor();
           return;
         }
-        _conversationMemoryUsers = res.users || [];
-        renderConversationMemoryUsers(_conversationMemoryUsers, selectName);
+        _chatMemoryUsers = res.users || [];
+        renderChatMemoryUsers(_chatMemoryUsers, selectName);
       })
       .fail(function(){
         $list.html('<div style="padding:12px;font-size:12.5px;color:var(--danger);">加载失败，请稍后重试</div>');
-        resetConversationMemoryEditor();
-        showMsg('conversation-memory-msg', '加载对话窗口失败，请稍后重试', false);
+        resetChatMemoryEditor();
+        showMsg('chat-memory-msg', '加载对话窗口失败，请稍后重试', false);
       });
   }
 
-  function loadConversationMemoryState(chatName){
-    if(!chatName){ resetConversationMemoryEditor(); return; }
-    var wxId = getConversationMemoryWxId();
+  function loadChatMemoryState(chatName){
+    if(!chatName){ resetChatMemoryEditor(); return; }
+    var wxId = getChatMemoryWxId();
     if(!wxId){ svModal.error('请先选择微信号'); return; }
-    _conversationMemoryChatName = chatName;
-    $.getJSON('/conversation_memory/state/'+encodeURIComponent(chatName), {wx_id: wxId})
+    _chatMemoryChatName = chatName;
+    $.getJSON('/chat_memory/state/'+encodeURIComponent(chatName), {wx_id: wxId})
       .done(function(res){
-        $('#conversation-memory-msg').hide();
+        $('#chat-memory-msg').hide();
         if(res.status === 'success'){
           if(res.exists === false){
-            showConversationMemoryMissingState(chatName, !!res.has_chat_record);
+            showChatMemoryMissingState(chatName, !!res.has_chat_record);
             return;
           }
-          setConversationMemoryEditorState(res.state || blankConversationMemoryState(chatName, wxId), {
+          setChatMemoryEditorState(res.state || blankChatMemoryState(chatName, wxId), {
             chatName: chatName,
             wxId: wxId,
             meta: '结构化编辑'
           });
         } else {
-          showMsg('conversation-memory-msg', res.message || '加载会话记忆失败', false);
+          showMsg('chat-memory-msg', res.message || '加载会话记忆失败', false);
         }
       })
       .fail(function(xhr){
-        showMsg('conversation-memory-msg', '加载会话记忆失败：' + xhr.status, false);
+        showMsg('chat-memory-msg', '加载会话记忆失败：' + xhr.status, false);
       });
   }
 
-  $(document).on('click', '[data-tab="tab-conversation-memory"]', function(){
-    loadConversationMemoryWxIds();
+  $(document).on('click', '[data-tab="tab-chat-memory"]', function(){
+    loadChatMemoryWxIds();
   });
   $(document).on('click', '[data-tab="tab-contact-directory"]', function(){
     loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
@@ -8746,31 +8746,31 @@ $(function(){
     loadFriendRequestStatus(wxId, {silent:true});
   });
   $(document).on('click', '[data-tab="tab-prompt"]', function(){
-    loadPromptPreviewWxIds(getPromptPreviewWxId() || getConversationMemoryWxId());
+    loadPromptPreviewWxIds(getPromptPreviewWxId() || getChatMemoryWxId());
   });
-  $('#conversation-memory-wx-select').on('change', function(){
+  $('#chat-memory-wx-select').on('change', function(){
     var $select = $(this);
     var nextWxId = ($select.val() || '').trim();
-    var previousWxId = String($select.data('currentWxId') || _conversationMemoryWxId || '').trim();
+    var previousWxId = String($select.data('currentWxId') || _chatMemoryWxId || '').trim();
     var applyWxIdChange = function(){
-      _conversationMemoryWxId = nextWxId;
-      _conversationMemoryChatName = '';
-      _conversationMemoryUsers = [];
-      $select.data('currentWxId', _conversationMemoryWxId);
-      $('#conversation-memory-user-panel').toggle(!!_conversationMemoryWxId);
-      $('#conversation-memory-user-list').empty();
-      resetConversationMemoryEditor();
-      if(_conversationMemoryWxId){
-        loadConversationMemoryUsers();
+      _chatMemoryWxId = nextWxId;
+      _chatMemoryChatName = '';
+      _chatMemoryUsers = [];
+      $select.data('currentWxId', _chatMemoryWxId);
+      $('#chat-memory-user-panel').toggle(!!_chatMemoryWxId);
+      $('#chat-memory-user-list').empty();
+      resetChatMemoryEditor();
+      if(_chatMemoryWxId){
+        loadChatMemoryUsers();
       }
     };
     if(nextWxId === previousWxId){
       applyWxIdChange();
       return;
     }
-    if(hasConversationMemoryDirtyState()){
+    if(hasChatMemoryDirtyState()){
       $select.val(previousWxId);
-      confirmConversationMemoryNavigation(function(){
+      confirmChatMemoryNavigation(function(){
         $select.val(nextWxId);
         applyWxIdChange();
       });
@@ -8778,34 +8778,34 @@ $(function(){
     }
     applyWxIdChange();
   });
-  $('#btn-refresh-conversation-memory-users').click(function(){
-    confirmConversationMemoryNavigation(function(){
-      loadConversationMemoryWxIds(getConversationMemoryWxId(), getConversationMemoryChatName());
+  $('#btn-refresh-chat-memory-users').click(function(){
+    confirmChatMemoryNavigation(function(){
+      loadChatMemoryWxIds(getChatMemoryWxId(), getChatMemoryChatName());
     });
   });
-  $('#conversation-memory-user-search').on('input', function(){
-    renderConversationMemoryUsers(_conversationMemoryUsers, getConversationMemoryChatName());
+  $('#chat-memory-user-search').on('input', function(){
+    renderChatMemoryUsers(_chatMemoryUsers, getChatMemoryChatName());
   });
-  $('#btn-add-conversation-memory-item').click(function(){
-    if(!getConversationMemoryChatName()){ showMsg('conversation-memory-msg', '请先选择对话窗口', false); return; }
-    syncConversationMemoryEditorStateFromDom();
-    _conversationMemoryEditorState.memories.unshift({id:'', __draft:true, importance:'中', type:'', category:'', content:''});
-    renderConversationMemoryEditor('结构化编辑');
-    scrollListContainerToTop($('#conversation-memory-memory-list'));
+  $('#btn-add-chat-memory-item').click(function(){
+    if(!getChatMemoryChatName()){ showMsg('chat-memory-msg', '请先选择对话窗口', false); return; }
+    syncChatMemoryEditorStateFromDom();
+    _chatMemoryEditorState.memories.unshift({id:'', __draft:true, importance:'中', type:'', category:'', content:''});
+    renderChatMemoryEditor('结构化编辑');
+    scrollListContainerToTop($('#chat-memory-memory-list'));
   });
-  $(document).on('click', '.conversation-memory-remove-memory', function(){
-    syncConversationMemoryEditorStateFromDom();
-    var index = Number($(this).closest('.conversation-memory-memory-card').data('index'));
-    if(index >= 0) _conversationMemoryEditorState.memories.splice(index, 1);
-    renderConversationMemoryEditor('结构化编辑');
+  $(document).on('click', '.chat-memory-remove-memory', function(){
+    syncChatMemoryEditorStateFromDom();
+    var index = Number($(this).closest('.chat-memory-memory-card').data('index'));
+    if(index >= 0) _chatMemoryEditorState.memories.splice(index, 1);
+    renderChatMemoryEditor('结构化编辑');
   });
-  $(document).on('click', '.conversation-memory-importance-chip', function(){
-    var $group = $(this).closest('.conversation-memory-importance-group');
-    $group.find('.conversation-memory-importance-chip').removeClass('is-active');
+  $(document).on('click', '.chat-memory-importance-chip', function(){
+    var $group = $(this).closest('.chat-memory-importance-group');
+    $group.find('.chat-memory-importance-chip').removeClass('is-active');
     $(this).addClass('is-active');
   });
-  $(document).on('input', '.conversation-memory-memory-content', function(){
-    refreshConversationMemoryContentLayout($(this));
+  $(document).on('input', '.chat-memory-memory-content', function(){
+    refreshChatMemoryContentLayout($(this));
   });
   $('#btn-refresh-contact-directory-browser').click(function(){
     loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
@@ -8939,7 +8939,7 @@ $(function(){
     saveFriendRequestSettings({silent:true});
   });
 
-  function renderConversationMemoryExtractSummaryCard(label, value){
+  function renderChatMemoryExtractSummaryCard(label, value){
     return ''+
       '<div style="padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:#fff;">'+
         '<div style="font-size:12px;color:var(--muted);margin-bottom:4px;">'+escapeHtml(label)+'</div>'+
@@ -8947,7 +8947,7 @@ $(function(){
       '</div>';
   }
 
-  function renderConversationMemoryExtractList(title, items, mode){
+  function renderChatMemoryExtractList(title, items, mode){
     items = Array.isArray(items) ? items : [];
     if(!items.length) return '';
     var rows = items.map(function(item){
@@ -8969,7 +8969,7 @@ $(function(){
       '</div>';
   }
 
-  function renderConversationMemoryExtractPreviewBody(preview){
+  function renderChatMemoryExtractPreviewBody(preview){
     preview = preview || {};
     var summary = preview.summary || {};
     var proposal = preview.proposal || {};
@@ -8984,17 +8984,17 @@ $(function(){
       '<div style="display:grid;gap:14px;text-align:left;">'+
         (changeHint ? '<div style="font-size:13px;line-height:1.8;color:var(--muted);">'+escapeHtml(changeHint)+'</div>' : '')+
         '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;">'+
-          renderConversationMemoryExtractSummaryCard('本次提取聊天记录', (summary.processed_count || 0) + ' 条')+
-          renderConversationMemoryExtractSummaryCard('记忆条目', (summary.memories_before || 0) + ' → ' + (summary.memories_after || 0))+
-          renderConversationMemoryExtractSummaryCard('变更统计', '新增 ' + (summary.add_count || 0) + ' / 修改 ' + (summary.update_count || 0) + ' / 删除 ' + (summary.delete_count || 0))+
+          renderChatMemoryExtractSummaryCard('本次提取聊天记录', (summary.processed_count || 0) + ' 条')+
+          renderChatMemoryExtractSummaryCard('记忆条目', (summary.memories_before || 0) + ' → ' + (summary.memories_after || 0))+
+          renderChatMemoryExtractSummaryCard('变更统计', '新增 ' + (summary.add_count || 0) + ' / 修改 ' + (summary.update_count || 0) + ' / 删除 ' + (summary.delete_count || 0))+
         '</div>'+
-        renderConversationMemoryExtractList('新增记忆条目', addItems, 'add')+
-        renderConversationMemoryExtractList('修改记忆条目', updateItems, 'update')+
-        renderConversationMemoryExtractList('删除记忆条目', deleteItems, 'delete')+
+        renderChatMemoryExtractList('新增记忆条目', addItems, 'add')+
+        renderChatMemoryExtractList('修改记忆条目', updateItems, 'update')+
+        renderChatMemoryExtractList('删除记忆条目', deleteItems, 'delete')+
       '</div>';
   }
 
-  function showConversationMemoryExtractError(res){
+  function showChatMemoryExtractError(res){
     res = res || {};
     var detail = String(res.reply || '').trim();
     if(!detail){
@@ -9017,11 +9017,11 @@ $(function(){
     });
   }
 
-  function confirmConversationMemoryExtract(chatName, wxId, preview, $btn){
+  function confirmChatMemoryExtract(chatName, wxId, preview, $btn){
     var oldHtml = $btn.html();
     $btn.prop('disabled', true).html('<i class="bi bi-save2"></i> 更新中...');
     $.ajax({
-      url:'/conversation_memory/extract/'+encodeURIComponent(chatName)+'?wx_id='+encodeURIComponent(wxId),
+      url:'/chat_memory/extract/'+encodeURIComponent(chatName)+'?wx_id='+encodeURIComponent(wxId),
       type:'POST',
       contentType:'application/json',
       data:JSON.stringify({
@@ -9034,36 +9034,36 @@ $(function(){
       })
     }).done(function(res){
       if(res.status === 'success'){
-        showMsg('conversation-memory-msg', res.message || '会话记忆已更新', true);
-        setConversationMemoryEditorState(res.state || blankConversationMemoryState(chatName, wxId), {
+        showMsg('chat-memory-msg', res.message || '会话记忆已更新', true);
+        setChatMemoryEditorState(res.state || blankChatMemoryState(chatName, wxId), {
           chatName: chatName,
           wxId: wxId,
           meta: '结构化编辑'
         });
-        loadConversationMemoryUsers(chatName);
+        loadChatMemoryUsers(chatName);
       } else {
-        showConversationMemoryExtractError(res);
-        showMsg('conversation-memory-msg', res.message || '提取失败', false);
+        showChatMemoryExtractError(res);
+        showMsg('chat-memory-msg', res.message || '提取失败', false);
       }
     }).fail(function(xhr){
       var text = xhr.responseText || xhr.status || '请求失败';
       svModal.error('请求失败：' + text, '提取失败');
-      showMsg('conversation-memory-msg', '请求失败：' + text, false);
+      showMsg('chat-memory-msg', '请求失败：' + text, false);
     }).always(function(){
       $btn.prop('disabled', false).html(oldHtml);
     });
   }
 
-  function startConversationMemoryExtract($sourceButton){
-    var chatName = getConversationMemoryChatName();
-    if(!chatName){ showMsg('conversation-memory-msg', '请先选择对话窗口', false); return; }
-    var wxId = getConversationMemoryWxId();
-    if(!wxId){ showMsg('conversation-memory-msg', '请先选择微信号', false); return; }
-    var $btn = ($sourceButton && $sourceButton.length) ? $sourceButton : $('#btn-extract-conversation-memory');
+  function startChatMemoryExtract($sourceButton){
+    var chatName = getChatMemoryChatName();
+    if(!chatName){ showMsg('chat-memory-msg', '请先选择对话窗口', false); return; }
+    var wxId = getChatMemoryWxId();
+    if(!wxId){ showMsg('chat-memory-msg', '请先选择微信号', false); return; }
+    var $btn = ($sourceButton && $sourceButton.length) ? $sourceButton : $('#btn-extract-chat-memory');
     var oldHtml = $btn.html();
     $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 提取中...');
     $.ajax({
-      url:'/conversation_memory/extract/'+encodeURIComponent(chatName)+'?wx_id='+encodeURIComponent(wxId),
+      url:'/chat_memory/extract/'+encodeURIComponent(chatName)+'?wx_id='+encodeURIComponent(wxId),
       type:'POST',
       contentType:'application/json',
       data:JSON.stringify({wx_id:wxId, preview_only:true})
@@ -9072,65 +9072,65 @@ $(function(){
         svModal.custom({
           icon: '<i class="bi bi-arrow-down-circle-fill" style="color:#07C160;font-size:36px;"></i>',
           title: '提取结果预览',
-          body: renderConversationMemoryExtractPreviewBody(res),
+          body: renderChatMemoryExtractPreviewBody(res),
           boxClass: 'ui-modal-box--xxl',
           bodyClass: 'ui-modal-body--left',
           buttons: [
             {text:'取消', variant:'secondary'},
             {text:'确认更新', variant:'primary', action: function(){
-              confirmConversationMemoryExtract(chatName, wxId, res, $btn);
+              confirmChatMemoryExtract(chatName, wxId, res, $btn);
             }}
           ]
         });
       } else {
-        showConversationMemoryExtractError(res);
-        showMsg('conversation-memory-msg', res.message || '提取失败', false);
+        showChatMemoryExtractError(res);
+        showMsg('chat-memory-msg', res.message || '提取失败', false);
       }
     }).fail(function(xhr){
       var text = xhr.responseText || xhr.status || '请求失败';
       svModal.error('请求失败：' + text, '提取失败');
-      showMsg('conversation-memory-msg', '请求失败：' + text, false);
+      showMsg('chat-memory-msg', '请求失败：' + text, false);
     }).always(function(){
       $btn.prop('disabled', false).html(oldHtml);
     });
   }
 
-  $('#btn-extract-conversation-memory').click(function(){
+  $('#btn-extract-chat-memory').click(function(){
     var $btn = $(this);
-    confirmConversationMemoryNavigation(function(){
-      startConversationMemoryExtract($btn);
+    confirmChatMemoryNavigation(function(){
+      startChatMemoryExtract($btn);
     });
   });
 
-  $('#btn-conversation-memory-save').click(function(){
-    var chatName = getConversationMemoryChatName();
-    if(!chatName){ showMsg('conversation-memory-msg', '请先选择对话窗口', false); return; }
-    var wxId = getConversationMemoryWxId();
-    if(!wxId){ showMsg('conversation-memory-msg', '请先选择微信号', false); return; }
-    var state = collectConversationMemoryEditorStateFromDom();
+  $('#btn-chat-memory-save').click(function(){
+    var chatName = getChatMemoryChatName();
+    if(!chatName){ showMsg('chat-memory-msg', '请先选择对话窗口', false); return; }
+    var wxId = getChatMemoryWxId();
+    if(!wxId){ showMsg('chat-memory-msg', '请先选择微信号', false); return; }
+    var state = collectChatMemoryEditorStateFromDom();
     var invalidMemory = (state.memories || []).some(function(item){
       return !item.type || !item.content;
     });
     if(invalidMemory){
-      showMsg('conversation-memory-msg', '记忆条目的重要度、类型和内容都要填写完整', false);
+      showMsg('chat-memory-msg', '记忆条目的重要度、类型和内容都要填写完整', false);
       return;
     }
     $.ajax({
-      url:'/conversation_memory/state/'+encodeURIComponent(chatName)+'?wx_id='+encodeURIComponent(wxId),
+      url:'/chat_memory/state/'+encodeURIComponent(chatName)+'?wx_id='+encodeURIComponent(wxId),
       type:'POST',
       contentType:'application/json',
       data:JSON.stringify($.extend({}, state, {wx_id: wxId})),
       success:function(res){
         if(res.status==='success'){
-          showMsg('conversation-memory-msg', '会话记忆已保存', true);
-          setConversationMemoryEditorState(res.state || state, {
+          showMsg('chat-memory-msg', '会话记忆已保存', true);
+          setChatMemoryEditorState(res.state || state, {
             chatName: chatName,
             wxId: wxId,
             meta: '结构化编辑'
           });
-          loadConversationMemoryUsers(chatName);
+          loadChatMemoryUsers(chatName);
         }
-        else { showMsg('conversation-memory-msg', res.message || '保存失败', false); }
+        else { showMsg('chat-memory-msg', res.message || '保存失败', false); }
       }
     });
   });
@@ -9151,11 +9151,11 @@ $(function(){
           chat_prompt_map:collectChatPromptBindingsFromUI(),
           listen_list:collectListenNamesFromUI(),
           AllListen_switch:$('#AllListen_switch').is(':checked'),
-          conversation_memory_switch:$('#conversation_memory_switch').is(':checked'),
-          conversation_memory_message_threshold:parseInt($('#conversation_memory_message_threshold').val())||100,
-          conversation_memory_interval_hours:parseInt($('#conversation_memory_interval_hours').val())||12,
-          conversation_memory_protected_recent_count:Math.max(0, Math.min(200, parseInt($('#conversation_memory_protected_recent_count').val())||20)),
-          conversation_memory_exclude_list:collectConversationMemoryExcludeFromUI()
+          chat_memory_switch:$('#chat_memory_switch').is(':checked'),
+          chat_memory_message_threshold:parseInt($('#chat_memory_message_threshold').val())||100,
+          chat_memory_interval_hours:parseInt($('#chat_memory_interval_hours').val())||12,
+          chat_memory_protected_recent_count:Math.max(0, Math.min(200, parseInt($('#chat_memory_protected_recent_count').val())||20)),
+          chat_memory_exclude_list:collectChatMemoryExcludeFromUI()
         }
       }),
       success:function(res){
@@ -9168,10 +9168,10 @@ $(function(){
     });
   });
 
-  $(document).on('click', '.btn-open-conversation-memory', function(){
+  $(document).on('click', '.btn-open-chat-memory', function(){
     var uname = $(this).closest('.listen-item').find('input[name="listen_list"]').val().trim();
-    activateTab('tab-conversation-memory');
-    loadConversationMemoryWxIds(null, uname);
+    activateTab('tab-chat-memory');
+    loadChatMemoryWxIds(null, uname);
   });
 
   // ===== Add Keyword =====
@@ -10749,11 +10749,11 @@ $(function(){
   }
   $('#moments_like_switch').on('change',syncMomentsLikeSwitchLabel);
   syncMomentsLikeSwitchLabel();
-  function syncConversationMemorySwitchLabel(){
-    $('#conversation_memory_switch_label').text($('#conversation_memory_switch').is(':checked') ? '已启用' : '已停用');
+  function syncChatMemorySwitchLabel(){
+    $('#chat_memory_switch_label').text($('#chat_memory_switch').is(':checked') ? '已启用' : '已停用');
   }
-  $('#conversation_memory_switch').on('change',syncConversationMemorySwitchLabel);
-  syncConversationMemorySwitchLabel();
+  $('#chat_memory_switch').on('change',syncChatMemorySwitchLabel);
+  syncChatMemorySwitchLabel();
   $('#btn-confirm-moments-task-modal').click(function(){
     submitMomentsTaskModal();
   });
@@ -11804,11 +11804,11 @@ $(function(){
       default_prompt:$('#default_prompt_select').val()||'默认',
       listen_list:[], global_blacklist:[], group:[], group_api_map:{}, group_prompt_map:{}, new_friend_msg:{text:'', files:[]},
       chat_prompt_map:{}, chat_api_map:{}, chat_tts_map:{},
-      conversation_memory_switch:$('#conversation_memory_switch').is(':checked'),
-      conversation_memory_message_threshold:parseInt($('#conversation_memory_message_threshold').val())||100,
-      conversation_memory_interval_hours:parseInt($('#conversation_memory_interval_hours').val())||12,
-      conversation_memory_protected_recent_count:Math.max(0, Math.min(200, parseInt($('#conversation_memory_protected_recent_count').val())||20)),
-      conversation_memory_exclude_list:[],
+      chat_memory_switch:$('#chat_memory_switch').is(':checked'),
+      chat_memory_message_threshold:parseInt($('#chat_memory_message_threshold').val())||100,
+      chat_memory_interval_hours:parseInt($('#chat_memory_interval_hours').val())||12,
+      chat_memory_protected_recent_count:Math.max(0, Math.min(200, parseInt($('#chat_memory_protected_recent_count').val())||20)),
+      chat_memory_exclude_list:[],
       group_welcome_random:parseFloat($('#group_welcome_random').val()),
       keyword_dict:{},
       scheduled_message_task_list:[],
@@ -11911,9 +11911,9 @@ $(function(){
       if (!isNaN(tv) && tv >= 0) configData.chat_tts_map[uname] = tv;
     });
     configData.chat_prompt_map = collectChatPromptBindingsFromUI();
-    $('.conversation-memory-exclude-item').each(function(){
-      var uname = $(this).find('.conversation-memory-exclude-user').val().trim();
-      if (uname) configData.conversation_memory_exclude_list.push(uname);
+    $('.chat-memory-exclude-item').each(function(){
+      var uname = $(this).find('.chat-memory-exclude-user').val().trim();
+      if (uname) configData.chat_memory_exclude_list.push(uname);
     });
     // 群组：收集名称列表 + 专属接口映射 + 专属 prompt 映射
     $('#group_container .list-item').each(function(){

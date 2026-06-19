@@ -18,7 +18,7 @@ from core.account_storage import account_area_dir
 from core.contact_profiles import directory_path as contact_directory_path, load_directory
 from core.identity_index import (
     default_index,
-    list_conversation_memory_names,
+    list_chat_memory_names,
     list_memory_chat_names,
     reconcile_storage_names,
     save_index,
@@ -52,13 +52,13 @@ def build_report(data_dir: Path, wx_id: str) -> dict:
     directory = load_directory(contact_file, wx_id=wx_id)
     index, actions = update_index_from_directory(default_index(wx_id), directory, wx_id=wx_id)
     memory_names = list_memory_chat_names(data_dir, wx_id)
-    conversation_names = list_conversation_memory_names(data_dir, wx_id)
+    chat_memory_names = list_chat_memory_names(data_dir, wx_id)
     current_names = {
         str(item.get("current_chat_name") or "").strip()
         for item in index.get("identities", [])
         if str(item.get("current_chat_name") or "").strip()
     }
-    known_names = set(memory_names) | set(conversation_names)
+    known_names = set(memory_names) | set(chat_memory_names)
     matched = sorted(name for name in known_names if name in current_names)
     unmatched = sorted(name for name in known_names if name not in current_names)
     return {
@@ -66,7 +66,7 @@ def build_report(data_dir: Path, wx_id: str) -> dict:
         "contact_file": str(contact_file),
         "identity_count": len(index.get("identities") or []),
         "memory_count": len(memory_names),
-        "conversation_memory_count": len(conversation_names),
+        "chat_memory_count": len(chat_memory_names),
         "matched_names": matched,
         "unmatched_names": unmatched,
         "actions": actions,
@@ -79,7 +79,7 @@ def apply_migration(data_dir: Path, wx_id: str, report: dict, *, backup: bool = 
     copied = {}
     if backup:
         copied["memory"] = _copy_if_exists(account_area_dir(data_dir, wx_id, "memory"), backup_dir / "memory")
-        copied["conversation_memory"] = _copy_if_exists(account_area_dir(data_dir, wx_id, "conversation_memory"), backup_dir / "conversation_memory")
+        copied["chat_memory"] = _copy_if_exists(account_area_dir(data_dir, wx_id, "chat_memory"), backup_dir / "chat_memory")
         copied["contact_profiles"] = _copy_if_exists(account_area_dir(data_dir, wx_id, "contact_profiles"), backup_dir / "contact_profiles")
         config_dir = data_dir / "config"
         copied["config"] = _copy_if_exists(config_dir, backup_dir / "config")
@@ -131,7 +131,7 @@ def main() -> int:
         "wx_id": report["wx_id"],
         "identity_count": report["identity_count"],
         "memory_count": report["memory_count"],
-        "conversation_memory_count": report["conversation_memory_count"],
+        "chat_memory_count": report["chat_memory_count"],
         "matched_count": len(report["matched_names"]),
         "unmatched_count": len(report["unmatched_names"]),
         "rename_actions": len(report["actions"]),

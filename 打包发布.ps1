@@ -98,7 +98,7 @@ Write-Host $zipPath
 Write-Host ""
 Write-Host "Self-use package only includes runtime files required to start the bot."
 Write-Host "Included: core\, feature\, extension\, templates\, data\system_prompts\, $($launchScript.Name), web_server.py, wxbot_core.py, README.md, LICENSE, and LOGO.ico."
-Write-Host "data\config\, data\prompt\, data\memory\, data\conversation_memory\, data\contact_profiles\ and account-scoped material outreach data are excluded from the package."
+Write-Host "data\config\, data\prompt\, data\memory\, data\chat_memory\, data\contact_profiles\ and account-scoped material outreach data are excluded from the package."
 Write-Host "wxbot_logs\, backups\, dist\, tests\, docs\, venv\, and git metadata are also not included."
 Write-Host "打开软件.bat will recreate venv\ and data\config\ automatically on the target machine."
 Write-Host "Python 3.12 runtime is included, so the work computer does not need py or uv."

@@ -1,4 +1,4 @@
-"""Conversation memory persistence helpers."""
+"""Chat memory persistence helpers."""
 
 import json
 import hashlib

@@ -40,7 +40,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(bot.memory_manager.calls[0]["chat_name"], "chat-a")
         self.assertNotIn("message_time", bot.memory_manager.calls[0])
 
-    def test_friend_message_callback_marks_conversation_memory_dirty_without_sync_update(self):
+    def test_friend_message_callback_marks_chat_memory_dirty_without_sync_update(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             memory_switch=True,
@@ -62,8 +62,8 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
 
         dirty_calls = []
-        bot._mark_conversation_memory_dirty = lambda chat, msg: dirty_calls.append((chat.who, msg.content)) or True
-        bot._maybe_update_conversation_memory = lambda _chat, _msg: self.fail("不应在消息回调里同步维护会话记忆")
+        bot._mark_chat_memory_dirty = lambda chat, msg: dirty_calls.append((chat.who, msg.content)) or True
+        bot._maybe_update_chat_memory = lambda _chat, _msg: self.fail("不应在消息回调里同步维护会话记忆")
 
         msg = SimpleNamespace(attr="friend", sender="friend-a", content="hello", type="text")
         chat = SimpleNamespace(who="chat-a", chat_type="private")
@@ -172,20 +172,20 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(bot.memory_manager.calls[0]["content"], r"C:\tmp\group-image.png")
         self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "image")
 
-    def test_conversation_memory_background_worker_uses_existing_update_logic(self):
+    def test_chat_memory_background_worker_uses_existing_update_logic(self):
         bot = WXBot.__new__(WXBot)
         bot.run_flag = True
-        bot._conversation_memory_dirty_lock = mock.MagicMock()
-        bot._conversation_memory_dirty_chats = {"张三": 1.0}
-        bot._conversation_memory_worker_running = True
+        bot._chat_memory_dirty_lock = mock.MagicMock()
+        bot._chat_memory_dirty_chats = {"张三": 1.0}
+        bot._chat_memory_worker_running = True
         calls = []
-        bot._maybe_update_conversation_memory = lambda chat, msg: calls.append((chat.who, msg.attr)) or None
+        bot._maybe_update_chat_memory = lambda chat, msg: calls.append((chat.who, msg.attr)) or None
 
         with mock.patch("wxbot_core.time.sleep", return_value=None):
-            bot._conversation_memory_background_worker()
+            bot._chat_memory_background_worker()
 
         self.assertEqual(calls, [("张三", "friend")])
-        self.assertFalse(bot._conversation_memory_worker_running)
+        self.assertFalse(bot._chat_memory_worker_running)
 
     def test_memory_manager_lists_existing_chat_record_names(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -199,10 +199,10 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.config = SimpleNamespace(memory_switch=True, group=["群聊"])
         bot.memory_manager = SimpleNamespace(list_chat_names=lambda: ["张三", "群聊", ""])
         marked = []
-        bot._mark_conversation_memory_dirty = lambda chat, msg: marked.append((chat.who, msg.attr)) or True
+        bot._mark_chat_memory_dirty = lambda chat, msg: marked.append((chat.who, msg.attr)) or True
 
         with mock.patch("wxbot_core.log") as fake_log:
-            count = bot._enqueue_existing_conversation_memory_checks()
+            count = bot._enqueue_existing_chat_memory_checks()
 
         self.assertEqual(count, 1)
         self.assertEqual(marked, [("张三", "friend")])
@@ -227,7 +227,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
 
         logs = []
         with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):
-            result = bot._maybe_update_conversation_memory(SimpleNamespace(who="B-岁月静好3", chat_type="private"), SimpleNamespace(attr="friend"))
+            result = bot._maybe_update_chat_memory(SimpleNamespace(who="B-岁月静好3", chat_type="private"), SimpleNamespace(attr="friend"))
 
         self.assertTrue(result)
         self.assertTrue(any(level == "INFO" and "会话记忆已更新：B-岁月静好3" == message for level, message in logs))

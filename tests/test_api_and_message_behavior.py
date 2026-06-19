@@ -371,9 +371,9 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._private_reply_runtime_turns = {}
         bot._private_reply_persisted_echoes = {}
         bot._pending_visual_contexts = {}
-        bot._conversation_memory_dirty_lock = threading.Lock()
-        bot._conversation_memory_dirty_chats = {}
-        bot._conversation_memory_worker_running = False
+        bot._chat_memory_dirty_lock = threading.Lock()
+        bot._chat_memory_dirty_chats = {}
+        bot._chat_memory_worker_running = False
         bot.is_err = lambda *_args, **_kwargs: self.fail("停止不应报错")
 
         self.assertTrue(WXBot.stop_wxbot(bot))

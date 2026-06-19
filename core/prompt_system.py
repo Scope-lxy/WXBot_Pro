@@ -14,13 +14,13 @@ from core.sending import sanitize_ai_output_text
 INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 MD_FENCE_RE = re.compile(r"```(?:markdown|md)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 UNKNOWN_PLACEHOLDER_RE = re.compile(r"{{\s*[a-zA-Z_][a-zA-Z0-9_]*\s*}}")
-CONVERSATION_MEMORY_ANALYSIS_LIMIT = 200
-CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT = 20
-CONVERSATION_MEMORY_SCHEMA_VERSION = 1
-CONVERSATION_MEMORY_MAX_PROFILE_ITEMS = 5
-CONVERSATION_MEMORY_MAX_MEMORIES = 50
-CONVERSATION_MEMORY_MAX_LINE_LENGTH = 180
-CONVERSATION_MEMORY_USAGE_GUIDANCE = (
+CHAT_MEMORY_ANALYSIS_LIMIT = 200
+CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT = 20
+CHAT_MEMORY_SCHEMA_VERSION = 1
+CHAT_MEMORY_MAX_PROFILE_ITEMS = 5
+CHAT_MEMORY_MAX_MEMORIES = 50
+CHAT_MEMORY_MAX_LINE_LENGTH = 180
+CHAT_MEMORY_USAGE_GUIDANCE = (
     "这些记忆用于理解对方近期状态、判断切入点和可延展话题。",
     "合适时可以自然带入，但不要逐条复述，也不要生硬拼接。",
     "如果与当前最新对话不一致，以当前对话为准。",
@@ -100,8 +100,8 @@ class SystemPromptStore:
         return rendered
 
 
-class ConversationMemoryStore:
-    """Persist conversation memory as JSON while keeping Markdown parse/render helpers."""
+class ChatMemoryStore:
+    """Persist chat memory as JSON while keeping Markdown parse/render helpers."""
 
     def __init__(self, base_path):
         self.base_path = base_path
@@ -243,13 +243,13 @@ class ConversationMemoryStore:
         normalized_memories = self._normalize_structured_items(
             self._memory_items_from_any_state(state),
             kind="memory",
-            limit=CONVERSATION_MEMORY_MAX_MEMORIES,
+            limit=CHAT_MEMORY_MAX_MEMORIES,
             default_timestamp=current_time,
         )
         normalized_profile_items = self._normalize_structured_items(
             self._profile_items_from_any_state(state),
             kind="profile",
-            limit=CONVERSATION_MEMORY_MAX_PROFILE_ITEMS,
+            limit=CHAT_MEMORY_MAX_PROFILE_ITEMS,
             default_timestamp=current_time,
         )
         unified_memories = [
@@ -276,8 +276,8 @@ class ConversationMemoryStore:
     def validate_state(self, state):
         state = self.normalize_state(state, chat_name=state.get("chat_name", "") if isinstance(state, dict) else "", wx_id=state.get("wx_id", "") if isinstance(state, dict) else "", keep_updated_at=True)
         memories = list(state.get("memories", [])) if isinstance(state.get("memories"), list) else []
-        if len(memories) > CONVERSATION_MEMORY_MAX_MEMORIES:
-            return False, f"会话记忆最多保留 {CONVERSATION_MEMORY_MAX_MEMORIES} 条"
+        if len(memories) > CHAT_MEMORY_MAX_MEMORIES:
+            return False, f"会话记忆最多保留 {CHAT_MEMORY_MAX_MEMORIES} 条"
         ids = []
         for item in memories:
             item_id = str(item.get("id", "") or "").strip()
@@ -571,7 +571,7 @@ class ConversationMemoryStore:
         body = self._normalize_body(state)
         return (
             "---\n"
-            f"schema_version: {CONVERSATION_MEMORY_SCHEMA_VERSION}\n"
+            f"schema_version: {CHAT_MEMORY_SCHEMA_VERSION}\n"
             f"chat_name: {chat_name or state.get('chat_name', '')}\n"
             f"updated_at: {now}\n"
             f"last_processed_message_key: {state['maintenance'].get('last_processed_message_key', '')}\n"
@@ -603,10 +603,10 @@ class ConversationMemoryStore:
         if invalid_lines:
             return False, "会话记忆 MD 存在不符合格式的条目"
         state = self.parse_document(document)
-        if len(state["profile"].get("items", [])) > CONVERSATION_MEMORY_MAX_PROFILE_ITEMS:
-            return False, f"基础信息最多保留 {CONVERSATION_MEMORY_MAX_PROFILE_ITEMS} 条"
-        if len(state["memories"]) > CONVERSATION_MEMORY_MAX_MEMORIES:
-            return False, f"会话记忆最多保留 {CONVERSATION_MEMORY_MAX_MEMORIES} 条"
+        if len(state["profile"].get("items", [])) > CHAT_MEMORY_MAX_PROFILE_ITEMS:
+            return False, f"基础信息最多保留 {CHAT_MEMORY_MAX_PROFILE_ITEMS} 条"
+        if len(state["memories"]) > CHAT_MEMORY_MAX_MEMORIES:
+            return False, f"会话记忆最多保留 {CHAT_MEMORY_MAX_MEMORIES} 条"
         ids = [
             item["id"]
             for item in [*state["profile"].get("items", []), *state["memories"]]
@@ -643,8 +643,8 @@ class ConversationMemoryStore:
         return str(path or "").strip() in {"基础信息", "记忆条目"}
 
     def _normalize_body(self, state):
-        profile_lines = self._normalize_items(self._profile_items_from_any_state(state), "profile", CONVERSATION_MEMORY_MAX_PROFILE_ITEMS)
-        memories = self._normalize_items(self._memory_items_from_any_state(state), "memory", CONVERSATION_MEMORY_MAX_MEMORIES)
+        profile_lines = self._normalize_items(self._profile_items_from_any_state(state), "profile", CHAT_MEMORY_MAX_PROFILE_ITEMS)
+        memories = self._normalize_items(self._memory_items_from_any_state(state), "memory", CHAT_MEMORY_MAX_MEMORIES)
         return "\n".join([
             "# 会话记忆",
             "",
@@ -868,7 +868,7 @@ class ConversationMemoryStore:
 
     def _clean_line_text(self, text):
         text = re.sub(r"\s+", " ", str(text or "")).strip()
-        return text[:CONVERSATION_MEMORY_MAX_LINE_LENGTH].rstrip()
+        return text[:CHAT_MEMORY_MAX_LINE_LENGTH].rstrip()
 
     def _is_placeholder_line(self, text):
         normalized = re.sub(r"[\s。.!！?？,，、；;：:]+", "", str(text or "")).strip()
@@ -900,7 +900,7 @@ class ConversationMemoryStore:
 
 
 class PromptBuilder:
-    """Compose the final system prompt from the prompt template and conversation memory."""
+    """Compose the final system prompt from the prompt template and chat memory."""
 
     FINAL_PROMPT_FILE = "final_reply.md"
 
@@ -918,34 +918,34 @@ class PromptBuilder:
         persona_status_block="",
     ):
         now = now or datetime.now().strftime("%Y-%m-%d %H:%M")
-        conversation_memory_section = self.build_conversation_memory_section(state)
+        chat_memory_section = self.build_chat_memory_section(state)
         return self.prompt_store.render(
             self.FINAL_PROMPT_FILE,
             {
                 "base_prompt": str(base_prompt or "").strip(),
                 "now": now,
                 "chat_name": chat_name,
-                "conversation_memory_section": conversation_memory_section,
+                "chat_memory_section": chat_memory_section,
                 "persona_status_block": str(persona_status_block or "").strip(),
                 "image_parse_block": str(image_parse_block or "").strip(),
             },
             required_placeholders=(
                 "{{base_prompt}}",
                 "{{now}}",
-                "{{conversation_memory_section}}",
+                "{{chat_memory_section}}",
                 "{{persona_status_block}}",
                 "{{image_parse_block}}",
             ),
         ).strip()
 
-    def build_conversation_memory_section(self, state):
+    def build_chat_memory_section(self, state):
         summary_lines = self.state_summary(state)
         if not summary_lines:
             return ""
         lines = [
             "# 会话记忆",
             "",
-            *CONVERSATION_MEMORY_USAGE_GUIDANCE,
+            *CHAT_MEMORY_USAGE_GUIDANCE,
             "",
             *summary_lines,
         ]
@@ -957,15 +957,15 @@ class PromptBuilder:
         raw_memories = state.get("memories")
         raw_memories = raw_memories if isinstance(raw_memories, list) else []
         has_flattened_profile = any(
-            ConversationMemoryStore._is_profile_memory_item(item)
+            ChatMemoryStore._is_profile_memory_item(item)
             for item in raw_memories
             if isinstance(item, dict)
         )
-        if has_flattened_profile or not ConversationMemoryStore._profile_items_from_any_state(state):
+        if has_flattened_profile or not ChatMemoryStore._profile_items_from_any_state(state):
             source_items = list(raw_memories)
         else:
             source_items = []
-            for item in ConversationMemoryStore._profile_items_from_any_state(state)[:CONVERSATION_MEMORY_MAX_PROFILE_ITEMS]:
+            for item in ChatMemoryStore._profile_items_from_any_state(state)[:CHAT_MEMORY_MAX_PROFILE_ITEMS]:
                 if isinstance(item, dict):
                     source_items.append({
                         "id": str(item.get("id", "") or "").strip(),
@@ -975,7 +975,7 @@ class PromptBuilder:
                         "content": str(item.get("content", "") or "").strip(),
                     })
             source_items.extend(
-                item for item in ConversationMemoryStore._memory_items_from_any_state(state)[:CONVERSATION_MEMORY_MAX_MEMORIES]
+                item for item in ChatMemoryStore._memory_items_from_any_state(state)[:CHAT_MEMORY_MAX_MEMORIES]
                 if isinstance(item, dict)
             )
         summary_lines = []
@@ -993,11 +993,11 @@ class PromptBuilder:
         return text if text[-1:] in "。！？!?" else text + "。"
 
 
-class ConversationMemoryExtractor:
-    """Decide when to maintain conversation memory and ask the AI for a structured proposal JSON."""
+class ChatMemoryExtractor:
+    """Decide when to maintain chat memory and ask the AI for a structured proposal JSON."""
 
-    EXTRACT_PROMPT_FILE = "conversation_memory_extract.md"
-    REPAIR_PROMPT_FILE = "conversation_memory_repair.md"
+    EXTRACT_PROMPT_FILE = "chat_memory_extract.md"
+    REPAIR_PROMPT_FILE = "chat_memory_repair.md"
     EXTRACTION_TASK_MESSAGE = "请根据以上聊天记录和当前记忆，输出提案 JSON。"
 
     def __init__(
@@ -1005,7 +1005,7 @@ class ConversationMemoryExtractor:
         message_threshold=100,
         interval_hours=12,
         protected_recent_count=0,
-        analysis_limit=CONVERSATION_MEMORY_ANALYSIS_LIMIT,
+        analysis_limit=CHAT_MEMORY_ANALYSIS_LIMIT,
         prompt_store=None,
     ):
         self.message_threshold = max(1, int(message_threshold))
@@ -1048,15 +1048,15 @@ class ConversationMemoryExtractor:
         state = state if isinstance(state, dict) else {}
         raw_memories = state.get("memories", []) if isinstance(state.get("memories"), list) else []
         has_flattened_profile = any(
-            ConversationMemoryStore._is_profile_memory_item(item)
+            ChatMemoryStore._is_profile_memory_item(item)
             for item in raw_memories
             if isinstance(item, dict)
         )
-        if has_flattened_profile or not ConversationMemoryStore._profile_items_from_any_state(state):
+        if has_flattened_profile or not ChatMemoryStore._profile_items_from_any_state(state):
             source_memories = list(raw_memories)
         else:
             source_memories = []
-            for item in ConversationMemoryStore._profile_items_from_any_state(state):
+            for item in ChatMemoryStore._profile_items_from_any_state(state):
                 if not isinstance(item, dict):
                     continue
                 source_memories.append({
@@ -1069,7 +1069,7 @@ class ConversationMemoryExtractor:
                     "updated_at": str(item.get("updated_at", "") or "").strip(),
                 })
             source_memories.extend(
-                item for item in ConversationMemoryStore._memory_items_from_any_state(state)
+                item for item in ChatMemoryStore._memory_items_from_any_state(state)
                 if isinstance(item, dict)
             )
             source_memories.sort(key=self._proposal_memory_sort_key)
@@ -1170,7 +1170,7 @@ class ConversationMemoryExtractor:
                 return False, f"delete 条目的 id 不存在：{item_id}"
             if not reason:
                 return False, "delete 条目必须包含 reason"
-        current_memory_count = len(ConversationMemoryStore._memory_items_from_any_state(state)) if has_state else 0
+        current_memory_count = len(ChatMemoryStore._memory_items_from_any_state(state)) if has_state else 0
         if current_memory_count < 5 and (proposal.get("delete") or []):
             return False, "当前记忆条目少于 5 条时，不允许 delete"
         return True, ""
@@ -1306,7 +1306,7 @@ class PromptSystem:
 
     def __init__(self, config, state_dir, state_store=None, prompt_builder=None, memory_extractor=None, prompt_dir=None, chat_name_resolver=None):
         self.config = config or {}
-        self.state_store = state_store or ConversationMemoryStore(state_dir)
+        self.state_store = state_store or ChatMemoryStore(state_dir)
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.memory_extractor = memory_extractor or self._build_memory_extractor()
         self.prompt_dir = prompt_dir or os.path.join(app_base_dir(), "data", "prompt")
@@ -1329,16 +1329,16 @@ class PromptSystem:
         return str(chat_name or "").strip()
 
     def _build_memory_extractor(self):
-        return ConversationMemoryExtractor(
+        return ChatMemoryExtractor(
             message_threshold=self._coerce_config_int(
-                self._get("conversation_memory_message_threshold", 100), 100, 10, 200
+                self._get("chat_memory_message_threshold", 100), 100, 10, 200
             ),
             interval_hours=self._coerce_config_int(
-                self._get("conversation_memory_interval_hours", 12), 12, 1, 72
+                self._get("chat_memory_interval_hours", 12), 12, 1, 72
             ),
             protected_recent_count=self._coerce_config_int(
-                self._get("conversation_memory_protected_recent_count", CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT),
-                CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
+                self._get("chat_memory_protected_recent_count", CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT),
+                CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
                 0,
                 200,
             ),
@@ -1397,20 +1397,20 @@ class PromptSystem:
             resolved_base_prompt = "（未提供）"
 
         persona_status_block = self.load_persona_status(prompt_name) if prompt_name else ""
-        conversation_memory_section = ""
+        chat_memory_section = ""
         if self.enabled_for(display_chat_name, chat_type=chat_type):
             if self.memory_enabled_for(display_chat_name, chat_type=chat_type):
                 state = self.state_store.load_state(storage_chat_name, prompt_name, strict=True)
             else:
                 state = self.state_store.default_state(display_chat_name, prompt_name)
-            conversation_memory_section = str(
-                self.prompt_builder.build_conversation_memory_section(state) or ""
+            chat_memory_section = str(
+                self.prompt_builder.build_chat_memory_section(state) or ""
             ).strip()
 
         return {
             "base_prompt": resolved_base_prompt,
             "persona_status_block": str(persona_status_block or "").strip(),
-            "conversation_memory_section": conversation_memory_section,
+            "chat_memory_section": chat_memory_section,
             "now": now or datetime.now().strftime("%Y-%m-%d %H:%M"),
             "chat_name": display_chat_name,
         }
@@ -1436,7 +1436,7 @@ class PromptSystem:
         required = (
             "{{base_prompt}}",
             "{{persona_status_block}}",
-            "{{conversation_memory_section}}",
+            "{{chat_memory_section}}",
             *tuple(required_placeholders or ()),
         )
         return self.prompt_builder.prompt_store.render(
@@ -1475,9 +1475,9 @@ class PromptSystem:
     def memory_enabled_for(self, chat_name, chat_type="private"):
         if not self.enabled_for(chat_name, chat_type=chat_type):
             return False
-        if not bool(self._get("conversation_memory_switch", True)):
+        if not bool(self._get("chat_memory_switch", True)):
             return False
-        excluded = self._get("conversation_memory_exclude_list", []) or []
+        excluded = self._get("chat_memory_exclude_list", []) or []
         return str(chat_name) not in {str(item) for item in excluded}
 
     def build_prompt(

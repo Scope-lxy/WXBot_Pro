@@ -70,8 +70,8 @@ from core.api import (
 from core.logger import install_thread_exception_logger, log
 from core.wechat_observability import warn_slow_wechat_ui_action
 from core.prompt_system import (
-    CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
-    ConversationMemoryStore,
+    CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
+    ChatMemoryStore,
     PromptSystem,
     SystemPromptStore,
 )
@@ -198,7 +198,7 @@ PENDING_VISUAL_STANDALONE_ACTION_RE = re.compile(
     re.IGNORECASE,
 )
 PRIVATE_REPLY_ECHO_DEDUPE_SECONDS = 60
-CONVERSATION_MEMORY_BACKGROUND_INTERVAL_SECONDS = 30
+CHAT_MEMORY_BACKGROUND_INTERVAL_SECONDS = 30
 PRIVATE_MESSAGE_PIPELINE_MAX_QUEUED_BATCHES = 1
 from feature import runtime_task_runner
 from feature.admin_commands import dispatch_admin_command
@@ -522,9 +522,9 @@ class WXBot:
         self._lightweight_send_queue_lock = threading.RLock()
         self._lightweight_send_queue = {}
         self._lightweight_send_queue_flushing = False
-        self._conversation_memory_dirty_lock = threading.Lock()
-        self._conversation_memory_dirty_chats = {}
-        self._conversation_memory_worker_running = False
+        self._chat_memory_dirty_lock = threading.Lock()
+        self._chat_memory_dirty_chats = {}
+        self._chat_memory_worker_running = False
 
     def _ensure_stop_requested_event(self):
         event = getattr(self, "_stop_requested", None)
@@ -1034,7 +1034,7 @@ class WXBot:
                 account_area_dir(
                     os.path.join(_base, 'data'),
                     wx_id,
-                    'conversation_memory',
+                    'chat_memory',
                     create=True,
                     fallback_default=True,
                 )
@@ -3559,7 +3559,7 @@ class WXBot:
                         and getattr(chat, "chat_type", "private") != "group"
                     ):
                         self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
-                    self._mark_conversation_memory_dirty(
+                    self._mark_chat_memory_dirty(
                         SimpleNamespace(who=memory_chat_name, chat_type=getattr(chat, "chat_type", "private")),
                         msg,
                     )
@@ -3872,7 +3872,7 @@ class WXBot:
     # 消息分发与处理
     # ----------------------------------------------------------
 
-    def _maybe_update_conversation_memory(self, chat, message):
+    def _maybe_update_chat_memory(self, chat, message):
         """低频增量维护会话记忆。"""
         if not getattr(self.config, 'memory_switch', True) or not self.memory_manager:
             return None
@@ -3899,8 +3899,8 @@ class WXBot:
                 chat_type='private',
                 protected_count=getattr(
                     self.config,
-                    'conversation_memory_protected_recent_count',
-                    CONVERSATION_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
+                    'chat_memory_protected_recent_count',
+                    CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
                 ),
             )
             if updated:
@@ -3910,15 +3910,15 @@ class WXBot:
             log(level="WARNING", message=f"会话记忆自动维护失败：{e}")
             return None
 
-    def _ensure_conversation_memory_background_state(self):
-        if not hasattr(self, '_conversation_memory_dirty_lock'):
-            self._conversation_memory_dirty_lock = threading.Lock()
-        if not hasattr(self, '_conversation_memory_dirty_chats'):
-            self._conversation_memory_dirty_chats = {}
-        if not hasattr(self, '_conversation_memory_worker_running'):
-            self._conversation_memory_worker_running = False
+    def _ensure_chat_memory_background_state(self):
+        if not hasattr(self, '_chat_memory_dirty_lock'):
+            self._chat_memory_dirty_lock = threading.Lock()
+        if not hasattr(self, '_chat_memory_dirty_chats'):
+            self._chat_memory_dirty_chats = {}
+        if not hasattr(self, '_chat_memory_worker_running'):
+            self._chat_memory_worker_running = False
 
-    def _mark_conversation_memory_dirty(self, chat, message):
+    def _mark_chat_memory_dirty(self, chat, message):
         """记录某个私聊会话需要后台尝试维护记忆。"""
         if not getattr(self.config, 'memory_switch', True) or not self.memory_manager:
             return False
@@ -3930,18 +3930,18 @@ class WXBot:
         chat_type = getattr(chat, 'chat_type', 'private')
         if chat_type == 'group' or chat_name in getattr(self.config, 'group', []):
             return False
-        self._ensure_conversation_memory_background_state()
-        with self._conversation_memory_dirty_lock:
-            self._conversation_memory_dirty_chats[chat_name] = time.time()
-            if self._conversation_memory_worker_running:
+        self._ensure_chat_memory_background_state()
+        with self._chat_memory_dirty_lock:
+            self._chat_memory_dirty_chats[chat_name] = time.time()
+            if self._chat_memory_worker_running:
                 return True
-            self._conversation_memory_worker_running = True
-        worker = threading.Thread(target=self._conversation_memory_background_worker)
+            self._chat_memory_worker_running = True
+        worker = threading.Thread(target=self._chat_memory_background_worker)
         worker.daemon = True
         worker.start()
         return True
 
-    def _enqueue_existing_conversation_memory_checks(self):
+    def _enqueue_existing_chat_memory_checks(self):
         """启动后补偿检查已有聊天记录，避免关闭前未扫到的记忆维护漏跑。"""
         if not getattr(self.config, 'memory_switch', True) or not self.memory_manager:
             return 0
@@ -3962,44 +3962,44 @@ class WXBot:
                 continue
             message = SimpleNamespace(attr='friend')
             chat = SimpleNamespace(who=chat_name, chat_type='private')
-            if self._mark_conversation_memory_dirty(chat, message):
+            if self._mark_chat_memory_dirty(chat, message):
                 count += 1
         return count
 
-    def _pop_conversation_memory_dirty_chat(self):
-        self._ensure_conversation_memory_background_state()
-        with self._conversation_memory_dirty_lock:
-            if not self._conversation_memory_dirty_chats:
-                self._conversation_memory_worker_running = False
+    def _pop_chat_memory_dirty_chat(self):
+        self._ensure_chat_memory_background_state()
+        with self._chat_memory_dirty_lock:
+            if not self._chat_memory_dirty_chats:
+                self._chat_memory_worker_running = False
                 return None
             chat_name = max(
-                self._conversation_memory_dirty_chats,
-                key=self._conversation_memory_dirty_chats.get,
+                self._chat_memory_dirty_chats,
+                key=self._chat_memory_dirty_chats.get,
             )
-            self._conversation_memory_dirty_chats.pop(chat_name, None)
+            self._chat_memory_dirty_chats.pop(chat_name, None)
             return chat_name
 
-    def _conversation_memory_background_worker(self):
+    def _chat_memory_background_worker(self):
         while getattr(self, 'run_flag', True):
-            time.sleep(CONVERSATION_MEMORY_BACKGROUND_INTERVAL_SECONDS)
+            time.sleep(CHAT_MEMORY_BACKGROUND_INTERVAL_SECONDS)
             if not getattr(self, 'run_flag', True):
                 break
-            chat_name = self._pop_conversation_memory_dirty_chat()
+            chat_name = self._pop_chat_memory_dirty_chat()
             if not chat_name:
                 return
             chat = SimpleNamespace(who=chat_name, chat_type='private')
             message = SimpleNamespace(attr='friend')
-            self._maybe_update_conversation_memory(chat, message)
-        self._ensure_conversation_memory_background_state()
-        with self._conversation_memory_dirty_lock:
-            self._conversation_memory_dirty_chats.clear()
-            self._conversation_memory_worker_running = False
+            self._maybe_update_chat_memory(chat, message)
+        self._ensure_chat_memory_background_state()
+        with self._chat_memory_dirty_lock:
+            self._chat_memory_dirty_chats.clear()
+            self._chat_memory_worker_running = False
 
-    def _clear_conversation_memory_background_state(self):
-        self._ensure_conversation_memory_background_state()
-        with self._conversation_memory_dirty_lock:
-            self._conversation_memory_dirty_chats.clear()
-            self._conversation_memory_worker_running = False
+    def _clear_chat_memory_background_state(self):
+        self._ensure_chat_memory_background_state()
+        with self._chat_memory_dirty_lock:
+            self._chat_memory_dirty_chats.clear()
+            self._chat_memory_worker_running = False
 
     def process_message(self, chat, message):
         """
@@ -5104,7 +5104,7 @@ class WXBot:
                 msg_attr=getattr(message, "attr", "friend"),
                 max_count=getattr(self.config, "memory_max_count", 1000),
             )
-            self._mark_conversation_memory_dirty(
+            self._mark_chat_memory_dirty(
                 SimpleNamespace(who=memory_chat_name, chat_type="private"),
                 message,
             )
@@ -7403,7 +7403,7 @@ class WXBot:
             self._ensure_stop_requested_event().set()
             self.run_flag = False
             self._cancel_pending_private_message_timers()
-            self._clear_conversation_memory_background_state()
+            self._clear_chat_memory_background_state()
             listener = getattr(self, "wx", None)
             if listener and hasattr(listener, "StopListening"):
                 listener.StopListening()

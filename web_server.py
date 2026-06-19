@@ -41,7 +41,7 @@ from core.api import (
 from wxbot_core import WXBot, version as BOT_VERSION
 from core.logger import log
 import core.logger as logger
-from core.prompt_system import ConversationMemoryExtractor, ConversationMemoryStore, PromptSystem, PERSONA_STATUS_SUFFIX, SystemPromptStore
+from core.prompt_system import ChatMemoryExtractor, ChatMemoryStore, PromptSystem, PERSONA_STATUS_SUFFIX, SystemPromptStore
 from core.account_storage import (
     DEFAULT_ACCOUNT_ID,
     account_area_dir,
@@ -62,7 +62,7 @@ from core.memory import read_memory_original_name, resolve_memory_storage_name
 from core.chat_history_format import format_memory_record_for_display
 from core.identity_index import (
     dismiss_pending as dismiss_identity_pending,
-    list_conversation_memory_names,
+    list_chat_memory_names,
     list_memory_chat_names,
     load_index as load_identity_index,
     reconcile_storage_names as reconcile_identity_storage_names,
@@ -223,7 +223,7 @@ EMAIL_FILE  = os.path.join(CONFIG_DIR, 'email.json')
 WEBHOOK_FILE = os.path.join(CONFIG_DIR, 'webhook.json')
 PROMPT_DIR  = os.path.join(DATA_DIR, 'prompt')
 MEMORY_BASE = DATA_DIR
-CONVERSATION_MEMORY_BASE = DATA_DIR
+CHAT_MEMORY_BASE = DATA_DIR
 BACKUP_BASE = os.path.join(base_dir(), 'backups')
 PANEL_LOG_DIR = os.path.join(base_dir(), 'wxbot_logs')
 APP_SECRET_FILE = os.path.join(CONFIG_DIR, 'panel_secret.key')
@@ -405,8 +405,8 @@ def _account_memory_dir(wx_id, *, create=False):
     return _account_area_dir(wx_id, 'memory', create=create, base_dir=MEMORY_BASE)
 
 
-def _account_conversation_memory_dir(wx_id, *, create=False):
-    return _account_area_dir(wx_id, 'conversation_memory', create=create, base_dir=CONVERSATION_MEMORY_BASE)
+def _account_chat_memory_dir(wx_id, *, create=False):
+    return _account_area_dir(wx_id, 'chat_memory', create=create, base_dir=CHAT_MEMORY_BASE)
 
 
 def _account_contact_profiles_dir(wx_id, *, create=False):
@@ -454,7 +454,7 @@ def _account_scope_context(base_dir=None):
     include_current_accounts = root_abs in {
         os.path.abspath(str(DATA_DIR)),
         os.path.abspath(str(MEMORY_BASE)),
-        os.path.abspath(str(CONVERSATION_MEMORY_BASE)),
+        os.path.abspath(str(CHAT_MEMORY_BASE)),
         os.path.abspath(str(CONTACT_PROFILES_DIR)),
     }
     existing_ids = discover_populated_account_ids(root)
@@ -2289,11 +2289,11 @@ def dashboard():
     config.setdefault('chat_api_map', {})
     config.setdefault('chat_tts_map', {})
     config.setdefault('group_prompt_map', {})
-    config.setdefault('conversation_memory_switch', True)
-    config.setdefault('conversation_memory_exclude_list', [])
-    config.setdefault('conversation_memory_message_threshold', 100)
-    config.setdefault('conversation_memory_interval_hours', 12)
-    config.setdefault('conversation_memory_protected_recent_count', 20)
+    config.setdefault('chat_memory_switch', True)
+    config.setdefault('chat_memory_exclude_list', [])
+    config.setdefault('chat_memory_message_threshold', 100)
+    config.setdefault('chat_memory_interval_hours', 12)
+    config.setdefault('chat_memory_protected_recent_count', 20)
     config.setdefault('api_error_reply', '')               # 接口调用失败时的固定回复，留空=静默
     config.setdefault('api_error_reply_once', False)       # 接口失败固定回复是否同一用户只发一次
     config.setdefault('meta_reply_blocked_reply', '')      # 命中元话术后的固定回复，留空=静默
@@ -2765,8 +2765,8 @@ def _generate_moments_candidates_for_task(task, cfg=None, wx_id=""):
 def _build_moments_generation_prompt(task, cfg=None, wx_id=""):
     cfg = cfg if isinstance(cfg, dict) else (read_config() or {})
     raw_text = str((task or {}).get('raw_text') or '').strip() or '（未提供）'
-    wx_id = str(wx_id or '').strip() or _preferred_account_wx_id(CONVERSATION_MEMORY_BASE)
-    state_dir = _account_conversation_memory_dir(wx_id, create=True)
+    wx_id = str(wx_id or '').strip() or _preferred_account_wx_id(CHAT_MEMORY_BASE)
+    state_dir = _account_chat_memory_dir(wx_id, create=True)
     system = PromptSystem(cfg, state_dir=state_dir, prompt_dir=PROMPT_DIR)
     prompt_source_name = str(cfg.get('cmd') or cfg.get('default_prompt') or '').strip()
     return system.render_moments_caption_prompt(prompt_source_name, raw_text, chat_type='private')
@@ -3297,7 +3297,7 @@ def _coerce_bool_fields(merged_config):
         'text_reply_limit_switch',          # 单用户文本回复次数限制开关
         'text_reply_limit_ai_reply',        # 超限后AI自动生成结束语
         'text_reply_limit_reply_once',      # 超限后只回复一次
-        'conversation_memory_switch',
+        'chat_memory_switch',
         'ai_material_outreach_preface_enabled',
     ]
     for field in boolean_fields:
@@ -3309,7 +3309,7 @@ def _coerce_bool_fields(merged_config):
                 merged_config[field] = bool(v)
 
 def _coerce_list_fields(merged_config):
-    list_fields = ['listen_list', 'global_blacklist', 'group', 'new_friend_tags', 'scheduled_message_task_list', 'material_source_list', 'material_outreach_list', 'moments_task_list', 'custom_forward_list', 'conversation_memory_exclude_list', 'chat_voice_reply_request_keywords', 'group_voice_reply_request_keywords', 'chat_voice_reply_trigger_modes', 'ai_material_outreach_allowed_sources']
+    list_fields = ['listen_list', 'global_blacklist', 'group', 'new_friend_tags', 'scheduled_message_task_list', 'material_source_list', 'material_outreach_list', 'moments_task_list', 'custom_forward_list', 'chat_memory_exclude_list', 'chat_voice_reply_request_keywords', 'group_voice_reply_request_keywords', 'chat_voice_reply_trigger_modes', 'ai_material_outreach_allowed_sources']
     for field in list_fields:
         if field in merged_config and not isinstance(merged_config[field], list):
             if isinstance(merged_config[field], str):
@@ -3393,9 +3393,9 @@ def _coerce_int_range_fields(merged_config):
         'memory_context_assistant_count': (0, 100, 10),
         'text_reply_limit_count': (0, 99999, 99),
         'text_reply_limit_hours': (0, 720, 24),
-        'conversation_memory_message_threshold': (10, 200, 100),
-        'conversation_memory_interval_hours': (1, 72, 12),
-        'conversation_memory_protected_recent_count': (0, 200, 20),
+        'chat_memory_message_threshold': (10, 200, 100),
+        'chat_memory_interval_hours': (1, 72, 12),
+        'chat_memory_protected_recent_count': (0, 200, 20),
         'contact_directory_auto_maintenance_batch_size': (20, 80, 50),
         'contact_directory_auto_maintenance_interval_minutes': (5, 1440, 20),
         'contact_directory_auto_maintenance_full_scan_interval_days': (1, 30, 7),
@@ -5323,38 +5323,38 @@ def pick_keyword_reply_files():
 
 
 
-def _conversation_memory_wx_id_from_request():
+def _chat_memory_wx_id_from_request():
     wx_id = str(request.args.get('wx_id', '') or '').strip()
     if wx_id:
-        return _validate_known_account_wx_id(wx_id, base_dir=CONVERSATION_MEMORY_BASE)
+        return _validate_known_account_wx_id(wx_id, base_dir=CHAT_MEMORY_BASE)
     try:
         data = request.get_json(silent=True) or {}
         wx_id = str(data.get('wx_id', '') or '').strip()
         if wx_id:
-            return _validate_known_account_wx_id(wx_id, base_dir=CONVERSATION_MEMORY_BASE)
+            return _validate_known_account_wx_id(wx_id, base_dir=CHAT_MEMORY_BASE)
     except Exception:
         pass
-    preferred = _preferred_account_wx_id(CONVERSATION_MEMORY_BASE)
+    preferred = _preferred_account_wx_id(CHAT_MEMORY_BASE)
     if preferred:
         return preferred
-    wx_ids = _conversation_memory_wx_ids()
+    wx_ids = _chat_memory_wx_ids()
     return wx_ids[0] if wx_ids else ''
 
 
-def _conversation_memory_store(wx_id=None):
+def _chat_memory_store(wx_id=None):
     wx_id = str(wx_id or '').strip()
     if not wx_id:
         raise ValueError('wx_id is required')
-    return ConversationMemoryStore(_account_conversation_memory_dir(wx_id, create=True))
+    return ChatMemoryStore(_account_chat_memory_dir(wx_id, create=True))
 
 
-def _conversation_memory_state_has_content(state):
+def _chat_memory_state_has_content(state):
     state = state if isinstance(state, dict) else {}
     memories = state.get('memories') or []
     return bool(memories)
 
 
-def _conversation_memory_merge_incoming_memories(store, chat_name, wx_id, incoming_memories):
+def _chat_memory_merge_incoming_memories(store, chat_name, wx_id, incoming_memories):
     existing_state = store.load_state(chat_name, wx_id=wx_id, strict=True)
     existing_by_id = {
         str(item.get('id', '') or '').strip(): item
@@ -5381,7 +5381,7 @@ def _conversation_memory_merge_incoming_memories(store, chat_name, wx_id, incomi
     return merged_memories
 
 
-def _conversation_memory_messages_for_user(wx_id, chat_name):
+def _chat_memory_messages_for_user(wx_id, chat_name):
     storage_name = resolve_memory_storage_name(chat_name)
     memory_base = _account_memory_dir(wx_id)
     memory_path = os.path.join(memory_base, storage_name, f'{storage_name}_memory.json')
@@ -5418,20 +5418,20 @@ def _memory_chat_dir_has_messages(chat_path):
     return False
 
 
-def _conversation_memory_wx_ids():
-    return _available_account_wx_ids(CONVERSATION_MEMORY_BASE)
+def _chat_memory_wx_ids():
+    return _available_account_wx_ids(CHAT_MEMORY_BASE)
 
 
-def _explicit_or_single_conversation_memory_wx_id(explicit_wx_id=''):
+def _explicit_or_single_chat_memory_wx_id(explicit_wx_id=''):
     wx_id = str(explicit_wx_id or '').strip()
     if wx_id:
-        return _validate_known_account_wx_id(wx_id, base_dir=CONVERSATION_MEMORY_BASE), ''
-    wx_ids = _conversation_memory_wx_ids()
+        return _validate_known_account_wx_id(wx_id, base_dir=CHAT_MEMORY_BASE), ''
+    wx_ids = _chat_memory_wx_ids()
     if len(wx_ids) == 1:
         return wx_ids[0], ''
     if len(wx_ids) > 1:
         return '', '检测到多个微信号，请先选择微信号后再预览 Prompt。'
-    return _preferred_account_wx_id(CONVERSATION_MEMORY_BASE), ''
+    return _preferred_account_wx_id(CHAT_MEMORY_BASE), ''
 
 
 def _contact_profiles_wx_ids():
@@ -5586,7 +5586,7 @@ def _manual_identity_calibration_candidates(wx_id):
 
     for name in list_memory_chat_names(DATA_DIR, wx_id):
         add_name(name, '聊天记录')
-    for name in list_conversation_memory_names(DATA_DIR, wx_id):
+    for name in list_chat_memory_names(DATA_DIR, wx_id):
         add_name(name, '会话记忆')
 
     return sorted(names.values(), key=lambda item: _wechat_name_sort_key(item.get('name')))
@@ -5595,7 +5595,7 @@ def _manual_identity_calibration_candidates(wx_id):
 def _manual_identity_calibration_wx_ids():
     wx_ids = set(_contact_profiles_wx_ids())
     wx_ids.update(discover_populated_account_ids(MEMORY_BASE))
-    wx_ids.update(discover_populated_account_ids(CONVERSATION_MEMORY_BASE))
+    wx_ids.update(discover_populated_account_ids(CHAT_MEMORY_BASE))
     wx_ids.update(discover_populated_account_ids(DATA_DIR))
     return sorted(wx_ids)
 
@@ -6621,57 +6621,57 @@ def _current_prompt_name(config, chat_name):
     return str(config.get('default_prompt', '默认') or '默认').strip()
 
 
-def _conversation_memory_user_sort_key(item):
+def _chat_memory_user_sort_key(item):
     chat_name = str((item or {}).get('chat_name', '') or '').strip()
     return _wechat_name_sort_key(chat_name)
 
 
-@app.route('/conversation_memory/users')
+@app.route('/chat_memory/users')
 @login_required
-def conversation_memory_users():
+def chat_memory_users():
     """返回已有会话记忆列表。"""
     try:
         config = read_config() or {}
-        wx_id = _conversation_memory_wx_id_from_request()
+        wx_id = _chat_memory_wx_id_from_request()
         by_name = {}
         if not wx_id:
             return jsonify({'status': 'success', 'wx_id': '', 'users': []})
-        for state in _conversation_memory_store(wx_id).list_states():
+        for state in _chat_memory_store(wx_id).list_states():
             chat_name = str(state.get('chat_name', '')).strip()
-            if chat_name and _conversation_memory_state_has_content(state):
+            if chat_name and _chat_memory_state_has_content(state):
                 by_name[chat_name] = {
                     'chat_name': chat_name,
                     'wx_id': wx_id,
                     'current_prompt_name': _current_prompt_name(config, chat_name),
                     'updated_at': state.get('updated_at', ''),
-                    'source': 'conversation_memory',
+                    'source': 'chat_memory',
                 }
-        users = sorted(by_name.values(), key=_conversation_memory_user_sort_key)
+        users = sorted(by_name.values(), key=_chat_memory_user_sort_key)
         return jsonify({'status': 'success', 'wx_id': wx_id, 'users': users})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
 
-@app.route('/conversation_memory/wx_ids')
+@app.route('/chat_memory/wx_ids')
 @login_required
-def conversation_memory_wx_ids():
+def chat_memory_wx_ids():
     """返回可管理会话记忆的微信号目录。"""
     try:
-        return jsonify({'status': 'success', **_account_picker_payload(CONVERSATION_MEMORY_BASE)})
+        return jsonify({'status': 'success', **_account_picker_payload(CHAT_MEMORY_BASE)})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
 
-@app.route('/conversation_memory/wx/<wx_id>', methods=['DELETE'])
+@app.route('/chat_memory/wx/<wx_id>', methods=['DELETE'])
 @login_required
-def conversation_memory_wx_delete(wx_id):
-    """Delete all conversation memory documents under one WeChat account namespace."""
+def chat_memory_wx_delete(wx_id):
+    """Delete all chat memory documents under one WeChat account namespace."""
     try:
-        wx_id = _validate_known_account_wx_id(wx_id, base_dir=CONVERSATION_MEMORY_BASE)
+        wx_id = _validate_known_account_wx_id(wx_id, base_dir=CHAT_MEMORY_BASE)
         if not wx_id:
             return jsonify({'status': 'error', 'message': '请先选择微信号'})
-        target = os.path.abspath(_account_conversation_memory_dir(wx_id))
-        base = os.path.abspath(str(account_dir(CONVERSATION_MEMORY_BASE, wx_id).parent))
+        target = os.path.abspath(_account_chat_memory_dir(wx_id))
+        base = os.path.abspath(str(account_dir(CHAT_MEMORY_BASE, wx_id).parent))
         if os.path.commonpath([base, target]) != base:
             return jsonify({'status': 'error', 'message': '微信号路径无效'})
         if os.path.isdir(target):
@@ -6681,15 +6681,15 @@ def conversation_memory_wx_delete(wx_id):
         return jsonify({'status': 'error', 'message': str(e)})
 
 
-@app.route('/conversation_memory/state/<chat_name>', methods=['GET'])
+@app.route('/chat_memory/state/<chat_name>', methods=['GET'])
 @login_required
-def conversation_memory_state_get(chat_name):
+def chat_memory_state_get(chat_name):
     """读取单个用户的会话记忆；不存在时返回默认结构。"""
     try:
-        wx_id = _conversation_memory_wx_id_from_request()
+        wx_id = _chat_memory_wx_id_from_request()
         if not wx_id:
             return jsonify({'status': 'error', 'message': '请先选择微信号'})
-        store = _conversation_memory_store(wx_id)
+        store = _chat_memory_store(wx_id)
         exists = os.path.exists(store.state_path(chat_name))
         state = store.load_state(chat_name, wx_id=wx_id, strict=True)
         has_chat_record = False
@@ -6708,16 +6708,16 @@ def conversation_memory_state_get(chat_name):
         return jsonify({'status': 'error', 'message': str(e)})
 
 
-@app.route('/conversation_memory/state/<chat_name>', methods=['POST'])
+@app.route('/chat_memory/state/<chat_name>', methods=['POST'])
 @login_required
-def conversation_memory_state_save(chat_name):
+def chat_memory_state_save(chat_name):
     """保存单个用户的会话记忆。"""
     try:
         data = request.get_json(silent=True) or {}
-        wx_id = _conversation_memory_wx_id_from_request()
+        wx_id = _chat_memory_wx_id_from_request()
         if not wx_id:
             return jsonify({'status': 'error', 'message': '请先选择微信号'})
-        store = _conversation_memory_store(wx_id)
+        store = _chat_memory_store(wx_id)
         if not isinstance(data, dict):
             return jsonify({'status': 'error', 'message': '请求体必须是结构化对象'})
         if 'state' in data and not any(key in data for key in ('memories', 'maintenance', 'chat_name')):
@@ -6727,7 +6727,7 @@ def conversation_memory_state_save(chat_name):
             'updated_at': data.get('updated_at', ''),
             'chat_name': chat_name,
             'wx_id': wx_id,
-            'memories': _conversation_memory_merge_incoming_memories(
+            'memories': _chat_memory_merge_incoming_memories(
                 store,
                 chat_name,
                 wx_id,
@@ -6746,36 +6746,36 @@ def conversation_memory_state_save(chat_name):
         return jsonify({'status': 'error', 'message': str(e)})
 
 
-@app.route('/conversation_memory/state/<chat_name>', methods=['DELETE'])
+@app.route('/chat_memory/state/<chat_name>', methods=['DELETE'])
 @login_required
-def conversation_memory_state_delete(chat_name):
+def chat_memory_state_delete(chat_name):
     """删除单个用户的会话记忆。"""
     try:
-        wx_id = _conversation_memory_wx_id_from_request()
+        wx_id = _chat_memory_wx_id_from_request()
         if not wx_id:
             return jsonify({'status': 'error', 'message': '请先选择微信号'})
-        _conversation_memory_store(wx_id).delete_state(chat_name)
+        _chat_memory_store(wx_id).delete_state(chat_name)
         return jsonify({'status': 'success', 'wx_id': wx_id, 'message': '已删除'})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
 
 
-@app.route('/conversation_memory/extract/<chat_name>', methods=['POST'])
+@app.route('/chat_memory/extract/<chat_name>', methods=['POST'])
 @login_required
-def conversation_memory_extract_now(chat_name):
+def chat_memory_extract_now(chat_name):
     """手动为选中的用户提取一次会话记忆。"""
     try:
         data = request.get_json(silent=True) or {}
-        wx_id = _conversation_memory_wx_id_from_request()
+        wx_id = _chat_memory_wx_id_from_request()
         if not wx_id:
             return jsonify({'status': 'error', 'message': '请先选择微信号'})
         chat_name = str(chat_name or '').strip()
         if not chat_name:
             return jsonify({'status': 'error', 'message': '请先选择好友'})
         config = read_config() or {}
-        store = _conversation_memory_store(wx_id)
+        store = _chat_memory_store(wx_id)
         prompt_name = _current_prompt_name(config, chat_name)
-        extractor = ConversationMemoryExtractor(message_threshold=1, interval_hours=1)
+        extractor = ChatMemoryExtractor(message_threshold=1, interval_hours=1)
 
         def _summary_payload(before_state, after_state, proposal, processed_count):
             before_memories = len((before_state.get('memories') or []) if isinstance(before_state, dict) else [])
@@ -6791,7 +6791,7 @@ def conversation_memory_extract_now(chat_name):
             }
 
         def _build_preview():
-            messages = _conversation_memory_messages_for_user(wx_id, chat_name)
+            messages = _chat_memory_messages_for_user(wx_id, chat_name)
             if not messages:
                 raise ValueError('没有可提取的聊天记录')
             state = store.load_state(chat_name, prompt_name, wx_id=wx_id, strict=True)
@@ -6909,7 +6909,7 @@ def prompt_preview():
         message = str(data.get('message', '') or '').strip()
         if not chat_name:
             return jsonify({'status': 'error', 'message': 'chat_name 不能为空'})
-        wx_id, wx_error = _explicit_or_single_conversation_memory_wx_id(data.get('wx_id', ''))
+        wx_id, wx_error = _explicit_or_single_chat_memory_wx_id(data.get('wx_id', ''))
         if wx_error:
             return jsonify({'status': 'error', 'message': wx_error})
         config = read_config() or {}
@@ -6920,8 +6920,8 @@ def prompt_preview():
                 'chat_prompt_map',
                 'listen_list',
                 'AllListen_switch',
-                'conversation_memory_switch',
-                'conversation_memory_exclude_list',
+                'chat_memory_switch',
+                'chat_memory_exclude_list',
             ):
                 if key in overrides:
                     config[key] = overrides[key]
@@ -6931,7 +6931,7 @@ def prompt_preview():
         if os.path.exists(path):
             with open(path, 'r', encoding='utf-8') as f:
                 base_prompt = f.read()
-        state_dir = _account_conversation_memory_dir(wx_id, create=True)
+        state_dir = _account_chat_memory_dir(wx_id, create=True)
         system = PromptSystem(config, state_dir=state_dir, prompt_dir=PROMPT_DIR)
         prompt = system.build_prompt(chat_name, [], message, base_prompt=base_prompt)
         return jsonify({'status': 'success', 'prompt': prompt, 'prompt_name': prompt_name, 'wx_id': wx_id})
@@ -7281,10 +7281,10 @@ def main():
                 "chat_api_map": {},
                 "chat_tts_map": {},
                 "group_prompt_map": {},
-                "conversation_memory_switch": True,
-                "conversation_memory_exclude_list": [],
-                "conversation_memory_message_threshold": 100,
-                "conversation_memory_interval_hours": 12,
+                "chat_memory_switch": True,
+                "chat_memory_exclude_list": [],
+                "chat_memory_message_threshold": 100,
+                "chat_memory_interval_hours": 12,
                 "api_error_reply": "",
                 "api_error_reply_once": False,
                 "meta_reply_blocked_reply": "",

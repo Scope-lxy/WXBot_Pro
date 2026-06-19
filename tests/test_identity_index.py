@@ -171,7 +171,7 @@ class IdentityIndexTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            conv_dir = account_area_dir(base, wx_id, "conversation_memory", create=True)
+            conv_dir = account_area_dir(base, wx_id, "chat_memory", create=True)
             (conv_dir / f"{resolve_memory_storage_name(old_name)}.json").write_text(
                 json.dumps({"chat_name": old_name, "memories": [{"type": "状态", "content": "旧记忆", "importance": "中"}]}, ensure_ascii=False),
                 encoding="utf-8",
@@ -186,7 +186,7 @@ class IdentityIndexTests(unittest.TestCase):
             (config_dir / "config.json").write_text(json.dumps({
                 "listen_list": [old_name],
                 "global_blacklist": [old_name],
-                "conversation_memory_exclude_list": [old_name],
+                "chat_memory_exclude_list": [old_name],
                 "chat_prompt_map": {old_name: "人设A"},
                 "chat_api_map": {old_name: 1},
                 "chat_tts_map": {old_name: 2},
@@ -316,13 +316,13 @@ class IdentityIndexTests(unittest.TestCase):
             merged = json.loads((new_memory_dir / f"{new_memory_dir.name}_memory.json").read_text(encoding="utf-8"))
             self.assertEqual([item["content"] for item in merged], ["旧消息"])
 
-    def test_conversation_memory_merge_keeps_legacy_profile_items(self):
+    def test_chat_memory_merge_keeps_legacy_profile_items(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             wx_id = "wxid_test"
             old_name = "旧"
             new_name = "新"
-            conv_dir = account_area_dir(base, wx_id, "conversation_memory", create=True)
+            conv_dir = account_area_dir(base, wx_id, "chat_memory", create=True)
             (conv_dir / f"{resolve_memory_storage_name(old_name)}.json").write_text(
                 json.dumps({
                     "chat_name": old_name,

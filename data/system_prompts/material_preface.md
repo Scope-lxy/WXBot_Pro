@@ -4,7 +4,7 @@
 
 {{persona_status_block}}
 
-{{conversation_memory_section}}
+{{chat_memory_section}}
 
 # 运行信息
 

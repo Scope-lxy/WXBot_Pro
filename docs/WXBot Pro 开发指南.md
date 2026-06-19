@@ -156,7 +156,7 @@
 - `data/prompt/`：人格模板和人格近况文件
 - `data/system_prompts/`：系统 Prompt 片段及其备份
 - `data/accounts/<wx_id>/memory/`：聊天记录
-- `data/accounts/<wx_id>/conversation_memory/`：会话记忆 JSON 真源
+- `data/accounts/<wx_id>/chat_memory/`：会话记忆 JSON 真源
 - `data/accounts/<wx_id>/contact_profiles/contacts.json`：通讯录档案真源
 - `data/accounts/<wx_id>/identity_index/contacts.json`：联系人身份索引和等待校准项
 - `data/accounts/<wx_id>/identity_backups/`：身份合并前的账号级保险备份

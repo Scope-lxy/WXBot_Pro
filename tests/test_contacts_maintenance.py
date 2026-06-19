@@ -17,7 +17,7 @@ from feature.contacts import refresh_contact_profiles_single_batch
 from feature.contacts import set_contact_profiles_paused
 from web_server import (
     _contact_profiles_browser_contacts,
-    _conversation_memory_user_sort_key,
+    _chat_memory_user_sort_key,
     _wechat_name_sort_key,
     app,
     memory_chats,
@@ -34,14 +34,14 @@ class WeChatNameSortTests(unittest.TestCase):
             ["112", "9号", "A0-努力", "B-吴岳英", "阿风", "王玉芹"],
         )
 
-    def test_conversation_memory_sort_uses_chat_name_without_source_priority(self):
+    def test_chat_memory_sort_uses_chat_name_without_source_priority(self):
         users = [
-            {"chat_name": "B-吴岳英", "source": "conversation_memory"},
-            {"chat_name": "112", "source": "conversation_memory"},
-            {"chat_name": "A0-努力", "source": "conversation_memory"},
+            {"chat_name": "B-吴岳英", "source": "chat_memory"},
+            {"chat_name": "112", "source": "chat_memory"},
+            {"chat_name": "A0-努力", "source": "chat_memory"},
         ]
 
-        ordered = sorted(users, key=_conversation_memory_user_sort_key)
+        ordered = sorted(users, key=_chat_memory_user_sort_key)
 
         self.assertEqual([item["chat_name"] for item in ordered], ["112", "A0-努力", "B-吴岳英"])
 

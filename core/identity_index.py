@@ -556,8 +556,8 @@ def _write_memory_dir_payload(chat_dir: Path, chat_name: str, messages: list[Any
     return target_file
 
 
-def conversation_file(base_dir: str | Path, wx_id: str, chat_name: str) -> Path:
-    return account_area_dir(base_dir, wx_id, "conversation_memory") / f"{resolve_memory_storage_name(chat_name)}.json"
+def chat_memory_file(base_dir: str | Path, wx_id: str, chat_name: str) -> Path:
+    return account_area_dir(base_dir, wx_id, "chat_memory") / f"{resolve_memory_storage_name(chat_name)}.json"
 
 
 def _read_json_list(path: Path) -> list[Any]:
@@ -647,10 +647,10 @@ def _importance_rank(value: str) -> int:
     return {"高": 0, "中": 1, "低": 2}.get(_clean(value), 1)
 
 
-def _normalize_conversation_payload(payload: dict[str, Any], chat_name: str, wx_id: str) -> dict[str, Any]:
-    from core.prompt_system import ConversationMemoryStore
+def _normalize_chat_memory_payload(payload: dict[str, Any], chat_name: str, wx_id: str) -> dict[str, Any]:
+    from core.prompt_system import ChatMemoryStore
 
-    store = ConversationMemoryStore(os.path.join(tempfile.gettempdir(), "wxbot_identity_memory_normalize"))
+    store = ChatMemoryStore(os.path.join(tempfile.gettempdir(), "wxbot_identity_memory_normalize"))
     normalized = store.normalize_state(
         payload if isinstance(payload, dict) else {},
         chat_name=chat_name,
@@ -660,9 +660,9 @@ def _normalize_conversation_payload(payload: dict[str, Any], chat_name: str, wx_
     return store._state_to_json_payload(normalized)
 
 
-def merge_conversation_memory_files(base_dir: str | Path, wx_id: str, old_chat_name: str, new_chat_name: str) -> dict[str, Any]:
-    old_file = conversation_file(base_dir, wx_id, old_chat_name)
-    new_file = conversation_file(base_dir, wx_id, new_chat_name)
+def merge_chat_memory_files(base_dir: str | Path, wx_id: str, old_chat_name: str, new_chat_name: str) -> dict[str, Any]:
+    old_file = chat_memory_file(base_dir, wx_id, old_chat_name)
+    new_file = chat_memory_file(base_dir, wx_id, new_chat_name)
     result = {
         "old_chat_name": old_chat_name,
         "new_chat_name": new_chat_name,
@@ -678,7 +678,7 @@ def merge_conversation_memory_files(base_dir: str | Path, wx_id: str, old_chat_n
         return result
     if not new_file.exists():
         new_file.parent.mkdir(parents=True, exist_ok=True)
-        payload = _normalize_conversation_payload(_read_json_object(old_file), new_chat_name, wx_id)
+        payload = _normalize_chat_memory_payload(_read_json_object(old_file), new_chat_name, wx_id)
         new_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         old_file.unlink()
         result["old_count"] = len(payload.get("memories") or [])
@@ -686,8 +686,8 @@ def merge_conversation_memory_files(base_dir: str | Path, wx_id: str, old_chat_n
         result["changed"] = True
         return result
 
-    old_payload = _normalize_conversation_payload(_read_json_object(old_file), old_chat_name, wx_id)
-    new_payload = _normalize_conversation_payload(_read_json_object(new_file), new_chat_name, wx_id)
+    old_payload = _normalize_chat_memory_payload(_read_json_object(old_file), old_chat_name, wx_id)
+    new_payload = _normalize_chat_memory_payload(_read_json_object(new_file), new_chat_name, wx_id)
     old_items = old_payload.get("memories") if isinstance(old_payload.get("memories"), list) else []
     new_items = new_payload.get("memories") if isinstance(new_payload.get("memories"), list) else []
     result["old_count"] = len(old_items)
@@ -734,7 +734,7 @@ def merge_conversation_memory_files(base_dir: str | Path, wx_id: str, old_chat_n
 CONFIG_LIST_FIELDS = (
     "listen_list",
     "global_blacklist",
-    "conversation_memory_exclude_list",
+    "chat_memory_exclude_list",
     "material_source_list",
     "ai_material_outreach_allowed_sources",
 )
@@ -1030,12 +1030,12 @@ def reconcile_storage_names(
     paths = {
         "old_memory": memory_dir(base_dir, wx_id, old_chat_name),
         "new_memory": memory_dir(base_dir, wx_id, new_chat_name),
-        "old_conversation_memory": conversation_file(base_dir, wx_id, old_chat_name),
-        "new_conversation_memory": conversation_file(base_dir, wx_id, new_chat_name),
+        "old_chat_memory": chat_memory_file(base_dir, wx_id, old_chat_name),
+        "new_chat_memory": chat_memory_file(base_dir, wx_id, new_chat_name),
     }
     copied = backup_paths(paths, backup_root)
     memory_result = merge_memory_dirs(base_dir, wx_id, old_chat_name, new_chat_name)
-    conversation_result = merge_conversation_memory_files(base_dir, wx_id, old_chat_name, new_chat_name)
+    chat_memory_result = merge_chat_memory_files(base_dir, wx_id, old_chat_name, new_chat_name)
     config_result = sync_identity_config_names(base_dir, old_chat_name, new_chat_name)
     task_result = sync_identity_task_names(base_dir, wx_id, old_chat_name, new_chat_name)
     relationship_result = sync_relationship_scan_names(base_dir, wx_id, old_chat_name, new_chat_name)
@@ -1047,7 +1047,7 @@ def reconcile_storage_names(
         "new_chat_name": new_chat_name,
         "backup_paths": copied,
         "memory": memory_result,
-        "conversation_memory": conversation_result,
+        "chat_memory": chat_memory_result,
         "config": config_result,
         "tasks": task_result,
         "relationship_scan": relationship_result,
@@ -1068,8 +1068,8 @@ def list_memory_chat_names(base_dir: str | Path, wx_id: str) -> list[str]:
     return sorted(set(name for name in names if _clean(name)))
 
 
-def list_conversation_memory_names(base_dir: str | Path, wx_id: str) -> list[str]:
-    base = account_area_dir(base_dir, wx_id, "conversation_memory")
+def list_chat_memory_names(base_dir: str | Path, wx_id: str) -> list[str]:
+    base = account_area_dir(base_dir, wx_id, "chat_memory")
     if not base.exists():
         return []
     names = []
