@@ -1139,9 +1139,12 @@ def alllisten_mode(bot, last_time, timeout=10):
     flush_lightweight_delayed_listen_tasks(bot)
 
     def remove_timeout_listen(chat_time_out=600):
+        protected_listeners = set(expected_listener_names(bot))
         for listen_chat in bot.all_Mode_listen_list[:]:
             if time.time() - listen_chat[1] >= chat_time_out:
                 listen_name = listen_chat[0]
+                if listen_name in protected_listeners:
+                    continue
                 remove_fn = getattr(bot, "_remove_listen_chat_verified", None)
                 if callable(remove_fn):
                     removed = remove_fn(listen_name, log_success=False)

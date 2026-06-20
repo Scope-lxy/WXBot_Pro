@@ -213,6 +213,48 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(new_last_time, 999.0)
         self.assertEqual(logs, ["全局监听 张三：对话超时，已停止监听"])
 
+    def test_alllisten_timeout_keeps_configured_listeners(self):
+        removed = []
+        logs = []
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[["管理员", 1.0], ["阿英2", 1.0], ["张三", 1.0]],
+            config=SimpleNamespace(
+                cmd="管理员",
+                AllListen_switch=False,
+                listen_list=["阿英2"],
+                group_switch=False,
+                group=[],
+                custom_forward_switch=False,
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=False,
+            ),
+            wx=SimpleNamespace(
+                GetNextNewMessage=lambda **_kwargs: {
+                    "chat_name": None,
+                    "chat_type": None,
+                    "msg": [],
+                },
+            ),
+        )
+
+        def remove_and_clear(name, *, log_success=True):
+            removed.append(name)
+            listening.remove_dynamic_listener_entries(bot, name)
+            return True
+
+        bot._remove_listen_chat_verified = remove_and_clear
+
+        with mock.patch.object(listening.time, "time", return_value=999.0), mock.patch.object(
+            listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))
+        ):
+            listening.alllisten_mode(bot, last_time=1.0, timeout=10)
+
+        self.assertEqual(removed, ["张三"])
+        self.assertEqual(bot.all_Mode_listen_list, [["管理员", 1.0], ["阿英2", 1.0]])
+        self.assertEqual(logs, ["全局监听 张三：对话超时，已停止监听"])
+
     def test_alllisten_dispatches_first_batch_to_real_subwindow_once(self):
         processed = []
         sub_chat = SimpleNamespace(who="张三", chat_type="private")
