@@ -865,6 +865,14 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
     if not getattr(bot, "wx", None):
         return []
 
+    if not force and getattr(getattr(bot, "config", None), "AllListen_switch", False):
+        ensure_lightweight_delayed_listen_state(bot)
+        if (
+            getattr(bot, "_lightweight_delayed_listen_flushing", False)
+            or getattr(bot, "_lightweight_delayed_listen_tasks", {})
+        ):
+            return []
+
     now_ts = time.time()
     interval = max(1, int(getattr(bot, "_listener_reconcile_interval_seconds", 30) or 30))
     last_at = float(getattr(bot, "_listener_reconcile_last_at", 0.0) or 0.0)

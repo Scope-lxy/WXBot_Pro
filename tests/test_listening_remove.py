@@ -937,6 +937,50 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(any(level == "INFO" and "轻量延后监听期间已有新消息处理" in message for level, message in logs))
         self.assertFalse(any(level == "WARNING" and "轻量延后监听期间已有新消息处理" in message for level, message in logs))
 
+    def test_listener_reconcile_skips_when_lightweight_delayed_listen_pending(self):
+        bot = SimpleNamespace(
+            wx=object(),
+            config=SimpleNamespace(AllListen_switch=True),
+            _lightweight_delayed_listen_tasks={"张三": {"chat": "张三"}},
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            _listener_reconcile_interval_seconds=30,
+            _listener_reconcile_last_at=0.0,
+        )
+        bot._get_wechat_action_lock = lambda: self.fail("延后补窗排队时不应触发固定监听巡检")
+
+        reopened = listening.maybe_reconcile_listener_subwindows(bot)
+
+        self.assertEqual(reopened, [])
+
+    def test_listener_reconcile_ignores_stale_delayed_tasks_outside_alllisten_mode(self):
+        calls = []
+
+        class FreeLock:
+            def acquire(self, blocking=True):
+                calls.append(("lock", blocking))
+                return True
+
+            def release(self):
+                calls.append(("unlock",))
+
+        bot = SimpleNamespace(
+            wx=object(),
+            config=SimpleNamespace(AllListen_switch=False),
+            _lightweight_delayed_listen_tasks={"张三": {"chat": "张三"}},
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            _listener_reconcile_interval_seconds=30,
+            _listener_reconcile_last_at=0.0,
+        )
+        bot._get_wechat_action_lock = lambda: FreeLock()
+
+        with mock.patch.object(listening, "reconcile_listener_subwindows", return_value=["管理员"]):
+            reopened = listening.maybe_reconcile_listener_subwindows(bot)
+
+        self.assertEqual(reopened, ["管理员"])
+        self.assertEqual(calls, [("lock", False), ("unlock",)])
+
     def test_add_listen_chat_once_returns_wechat_result(self):
         calls = []
         logs = []

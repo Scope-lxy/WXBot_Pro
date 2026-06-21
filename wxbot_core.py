@@ -7477,6 +7477,13 @@ class WXBot:
                     log(level="ERROR", message="监听器自动恢复失败，主线程即将退出")
                     break
 
+                try:
+                    self._maybe_reconcile_listener_subwindows(retry_count=1)
+                except Exception as e:
+                    if self._arm_listener_auto_recovery(e, source="固定监听巡检"):
+                        continue
+                    log(level="WARNING", message=f"固定监听巡检出错：{e}")
+
                 # ---- 离线检测模块（每 check_interval 次循环执行一次）----
                 if self.is_stop_requested():
                     break
