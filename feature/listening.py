@@ -1057,6 +1057,9 @@ def pass_new_friends(bot):
                     if bot.config.new_friend_tags:
                         accept_kwargs["tags"] = bot.config.new_friend_tags
                 new.accept(**accept_kwargs)
+                record_metric = getattr(bot, "_metric_increment", None)
+                if callable(record_metric):
+                    record_metric("new_friend_accepted_count")
                 _bot_log(bot, message="已通过" + send_name + "的好友请求")
                 bot.wx.SwitchToChat()
                 _bot_sleep(bot, 5)
@@ -1254,6 +1257,21 @@ def alllisten_mode(bot, last_time, timeout=10):
                     if not takeover_handled:
                         processed_msgs.append(msg)
             if processed_msgs:
+                ensure_lightweight_delayed_listen_state(bot)
+                if chat in getattr(bot, "_lightweight_delayed_listen_tasks", {}):
+                    task = bot._lightweight_delayed_listen_tasks.get(chat)
+                    before_count = len((task or {}).get("messages") or []) if isinstance(task, dict) else 0
+                    delayed_queued = _queue_lightweight_delayed_listen(bot, chat, processed_msgs)
+                    if delayed_queued:
+                        task = bot._lightweight_delayed_listen_tasks.get(chat)
+                        after_count = len((task or {}).get("messages") or []) if isinstance(task, dict) else before_count
+                        merged_count = max(0, after_count - before_count)
+                        _bot_log(
+                            bot,
+                            level="INFO",
+                            message=f"全局监听 {chat}：已有延后接管任务，已合并 {merged_count} 条新消息",
+                        )
+                    return
                 add_chat_fn = getattr(bot, "add_chat_to_listen", None)
                 sub_chat = None
                 if chat_type != "group" and callable(is_listened_fn) and is_listened_fn(chat):

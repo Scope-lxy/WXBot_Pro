@@ -150,8 +150,9 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 #tab-friend.config-panel.active { display: flex; flex-direction: column; }
 #infrom-card { order: 1; }
 #status-main-card { order: 2; }
-#activate-card { order: 3; }
-#update-card { order: 4; }
+#runtime-metrics-card { order: 3; }
+#activate-card { order: 4; }
+#update-card { order: 5; }
 .cfg-inline-balance { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cfg-inline-gap); min-width: 0; }
 .cfg-inline-copy { min-width: 0; flex: 1 1 auto; }
 .cfg-inline-control { flex: 0 1 auto; min-width: var(--cfg-inline-control-min-width); width: fit-content; max-width: 100%; min-height: var(--cfg-inline-control-min-height); align-self: center; white-space: normal; line-height: 1.45; overflow-wrap: anywhere; }
@@ -1706,11 +1707,42 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .status-overview-copy #status-text { font-size:15px; font-weight:700; color:var(--card-fg); }
 .status-overview-copy #status-sub { font-size:12px; color:var(--muted); margin-top:2px; }
 .status-overview-meta { margin-left:auto; display:grid; grid-template-columns:repeat(3, minmax(140px, 1fr)); gap:10px; width:min(100%, 560px); }
-.function-status-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:10px; }
+.status-key-stats-grid { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); gap:10px; margin-bottom:20px; }
+.status-key-stats-grid .stat-card { min-height: 70px; padding: 10px 12px; gap: 5px; }
+.status-key-stats-grid .stat-head { min-height: 18px; }
+.status-key-stats-grid .stat-icon { font-size: 15px; }
+.status-key-stats-grid .stat-title { min-height: 16px; font-size: 12px; }
+.status-key-stats-grid .stat-val { min-height: 27px; font-size: 20px; }
+.function-status-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; }
 .status-meta-item { background:#fff; border:1px solid var(--border); border-radius:8px; padding:8px 12px; display:grid; gap:4px; min-height:56px; }
 .status-meta-label { font-size:11.5px; color:var(--muted); font-weight:600; line-height:1.3; }
 .status-meta-value { font-size:13px; color:var(--card-fg); font-weight:700; line-height:1.35; word-break:break-word; }
 .status-section-title { font-size:13px; font-weight:700; color:var(--card-fg); margin:0 0 10px; }
+.status-metrics-card { margin: 0 0 20px; }
+.status-metrics-card .ui-head__actions { margin-left: auto; }
+.runtime-chart-tabs { display: inline-flex; align-items: center; min-height: 34px; padding: 3px; border: 1px solid #D5DCE7; border-radius: 8px; background: #F8FAFC; gap: 3px; }
+.runtime-chart-tab { min-width: 58px; min-height: 28px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: #64748B; font-size: 12px; font-weight: 800; line-height: 28px; cursor: pointer; }
+.runtime-chart-tab.active { background: #07C160; color: #fff; box-shadow: 0 3px 8px rgba(7,193,96,.18); }
+.runtime-metrics-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.runtime-metric-tile { min-width: 0; min-height: 72px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted-bg); display: grid; align-content: center; gap: 6px; text-align: center; }
+.runtime-metric-tile span { color: var(--muted); font-size: 12px; font-weight: 700; line-height: 1.35; }
+.runtime-metric-tile strong { color: var(--card-fg); font-size: 22px; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.runtime-chart-wrap { position: relative; width: 100%; min-height: 300px; border: 1px solid var(--border); border-radius: 8px; background: #fff; overflow: hidden; }
+#runtime-metrics-chart { display: block; width: 100%; height: 300px; }
+.runtime-chart-empty { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; font-weight: 700; background: rgba(255,255,255,.72); }
+.runtime-chart-wrap.is-empty .runtime-chart-empty { display: flex; }
+.runtime-chart-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin: 10px 0 14px; min-height: 24px; }
+.runtime-chart-legend button { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 0; border: 0; background: transparent; color: var(--card-fg); font-size: 12px; font-weight: 700; cursor: pointer; }
+.runtime-chart-legend button.is-muted { opacity: .42; }
+.runtime-chart-legend i { width: 10px; height: 10px; border-radius: 999px; display: inline-block; }
+.runtime-metrics-groups { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.runtime-metrics-group { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted-bg); cursor: pointer; transition: border-color .12s, box-shadow .12s, background .12s; }
+.runtime-metrics-group.active { border-color: rgba(7,193,96,.45); background: #F0FBF5; box-shadow: inset 0 0 0 1px rgba(7,193,96,.18); }
+.runtime-metrics-group-title { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; color: var(--card-fg); font-size: 13px; font-weight: 800; }
+.runtime-metrics-group-title i { color: var(--primary); }
+.runtime-metrics-group-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.runtime-metrics-group-grid span { min-width: 0; min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px; background: #fff; color: var(--muted); font-size: 11.5px; font-weight: 700; line-height: 1.3; }
+.runtime-metrics-group-grid strong { color: var(--card-fg); font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; }
 body.mobile-nav-open { overflow: hidden; }
 
 /* ===== Global Layer Surfaces ===== */
@@ -1977,6 +2009,50 @@ body.mobile-nav-open { overflow: hidden; }
     width: 100%;
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  .status-key-stats-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .runtime-metrics-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .runtime-metric-tile {
+    min-height: 62px;
+    padding: 8px 6px;
+  }
+  .runtime-metric-tile span {
+    font-size: 10.5px;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  .runtime-metric-tile strong {
+    font-size: 18px;
+  }
+  .runtime-metrics-groups {
+    grid-template-columns: 1fr;
+  }
+  .status-metrics-card .ui-head.ui-head--page {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+  }
+  .status-metrics-card .ui-head__actions {
+    grid-column: 3;
+    grid-row: 1;
+    margin-left: 0;
+    width: auto;
+    justify-content: flex-end;
+  }
+  .status-metrics-card .ui-head.ui-head--page .desc {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    width: auto;
+    white-space: normal;
+    overflow-wrap: normal;
+    word-break: normal;
+    line-height: 1.5;
+  }
   .function-status-grid .detail-row {
     padding: 7px 10px;
   }
@@ -1993,19 +2069,14 @@ body.mobile-nav-open { overflow: hidden; }
     background: linear-gradient(180deg, rgba(22,22,22,.98), rgba(12,12,12,.98));
   }
   .log-panel.collapsed {
-    height: 108px;
+    height: 34px;
+    overflow: hidden;
   }
   .log-panel.collapsed .log-body {
     display: none;
   }
   .log-panel.collapsed .mobile-log-preview {
-    display: grid;
-    height: calc(100% - var(--logbar-h));
-    overflow: hidden;
-    padding: 6px 8px 8px;
-    gap: 5px;
-    grid-template-rows: repeat(2, minmax(0, 1fr));
-    align-content: start;
+    display: none;
   }
   .mobile-log-card {
     display: grid;
@@ -2143,6 +2214,17 @@ body.mobile-nav-open { overflow: hidden; }
   .ui-head.ui-head--page .desc {
     width: 100%;
   }
+  .status-metrics-card .ui-head.ui-head--page .desc {
+    width: auto;
+  }
+  .status-metrics-card .runtime-chart-tabs {
+    min-height: 32px;
+  }
+  .status-metrics-card .runtime-chart-tab {
+    min-width: 52px;
+    padding: 0 9px;
+    font-size: 11px;
+  }
   .topbar .brand {
     font-size: 13px;
   }
@@ -2162,7 +2244,7 @@ body.mobile-nav-open { overflow: hidden; }
     width: min(88vw, 280px);
   }
   .log-panel.collapsed {
-    height: 102px;
+    height: 34px;
   }
   .log-toolbar .log-title {
     font-size: 11.5px;

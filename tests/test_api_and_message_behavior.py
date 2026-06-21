@@ -654,7 +654,6 @@ class MessageBehaviorTests(unittest.TestCase):
             bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
             bot._record_replied_message_success = lambda: None
             bot._private_reply_send_allows_memory_save = lambda _result: False
-            bot._increment_daily_runtime_stat = lambda *_args, **_kwargs: None
 
             sent = []
             chat = SimpleNamespace(who="张三", SendMsg=lambda text: sent.append(text) or True)
@@ -1158,7 +1157,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(chat_message_merge_delay=3)
         bot.is_stop_requested = lambda: False
-        bot._increment_daily_runtime_stat = lambda *_args, **_kwargs: None
         sent_to_ai = []
         bot.wx_send_ai = lambda _chat, message: sent_to_ai.append(message.content) or True
         chat = SimpleNamespace(who="张三")

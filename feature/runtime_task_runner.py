@@ -180,7 +180,10 @@ def run_due_scheduled_message_tasks(bot, now=None):
         )
         record_scheduled_sends = getattr(bot, "_record_scheduled_message_send_successes", None)
         if callable(record_scheduled_sends):
-            record_scheduled_sends((result or {}).get("success_count", 0))
+            record_scheduled_sends(
+                (result or {}).get("success_count", 0),
+                trigger_kind=raw_task.get("trigger_kind") or raw_task.get("schedule_mode"),
+            )
         before_definition, _runtime, _history = split_scheduled_message_task_storage(raw_task)
         finished = apply_scheduled_message_run_result(
             raw_task,
@@ -405,10 +408,6 @@ def run_due_moments_task_list(bot, now=None):
                 "tags": list(task.get("tags") or []),
             }
         )
-        if published:
-            record_moments_published = getattr(bot, "_record_moments_published", None)
-            if callable(record_moments_published):
-                record_moments_published()
         before_definition, _runtime, _history = split_moments_task_storage(task)
         task["status"] = STATUS_EXECUTED if published else STATUS_PENDING_CONFIRM
         task["enabled"] = False if published else True

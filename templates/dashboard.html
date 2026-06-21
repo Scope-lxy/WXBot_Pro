@@ -294,71 +294,107 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
       </div>
       <div class="status-section-title">关键统计</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
+      <div class="status-key-stats-grid">
         <div class="stat-card" id="sc-received">
           <div class="stat-head"><div class="stat-icon"><i class="bi bi-inbox"></i></div><div class="stat-title">收到消息</div></div>
           <div class="stat-val" id="sv-received">-</div>
-          <div class="stat-sub">&nbsp;</div>
         </div>
         <div class="stat-card" id="sc-replied">
           <div class="stat-head"><div class="stat-icon"><i class="bi bi-reply"></i></div><div class="stat-title">回复消息</div></div>
           <div class="stat-val" id="sv-replied">-</div>
-          <div class="stat-sub">&nbsp;</div>
         </div>
         <div class="stat-card" id="sc-api-requests">
           <div class="stat-head"><div class="stat-icon"><i class="bi bi-cpu"></i></div><div class="stat-title">API请求数</div></div>
           <div class="stat-val" id="sv-api-requests">-</div>
-          <div class="stat-sub">&nbsp;</div>
         </div>
         <div class="stat-card" id="sc-chat-api-requests">
           <div class="stat-head"><div class="stat-icon"><i class="bi bi-chat-dots"></i></div><div class="stat-title">聊天请求</div></div>
           <div class="stat-val" id="sv-chat-api-requests">-</div>
-          <div class="stat-sub">&nbsp;</div>
-        </div>
-        <div class="stat-card" id="sc-other-api-requests">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-diagram-3"></i></div><div class="stat-title">其他请求</div></div>
-          <div class="stat-val" id="sv-other-api-requests">-</div>
-          <div class="stat-sub">&nbsp;</div>
         </div>
         <div class="stat-card" id="sc-listen-friends">
           <div class="stat-head"><div class="stat-icon"><i class="bi bi-person-check"></i></div><div class="stat-title">监听好友</div></div>
           <div class="stat-val" id="sv-listen-friends">-</div>
-          <div class="stat-sub">&nbsp;</div>
         </div>
         <div class="stat-card" id="sc-group">
           <div class="stat-head"><div class="stat-icon"><i class="bi bi-people"></i></div><div class="stat-title">监听群组</div></div>
           <div class="stat-val" id="sv-group">-</div>
-          <div class="stat-sub">&nbsp;</div>
-        </div>
-        <div class="stat-card" id="sc-schedule">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-alarm"></i></div><div class="stat-title">定时消息</div></div>
-          <div class="stat-val" id="sv-schedule">-</div>
-          <div class="stat-sub">&nbsp;</div>
-        </div>
-        <div class="stat-card" id="sc-outreach-tasks">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-bullseye"></i></div><div class="stat-title">素材转发</div></div>
-          <div class="stat-val" id="sv-outreach-tasks">-</div>
-          <div class="stat-sub">&nbsp;</div>
-        </div>
-        <div class="stat-card" id="sc-outreach-today">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-check2-circle"></i></div><div class="stat-title">今日转发</div></div>
-          <div class="stat-val" id="sv-outreach-today">-</div>
-          <div class="stat-sub">&nbsp;</div>
         </div>
       </div>
       <div class="status-section-title">功能状态</div>
       <div id="function-status-grid" class="function-status-grid">
-        <div class="detail-row"><span class="detail-key">监听模式</span><span class="detail-val" id="sv-listen">-</span></div>
         <div class="detail-row"><span class="detail-key">全局人设</span><span class="detail-val" id="sv-default-prompt">-</span></div>
         <div class="detail-row"><span class="detail-key">回复延迟</span><span class="detail-val" id="sv-delay">-</span></div>
         <div class="detail-row"><span class="detail-key">回复清洗</span><span class="detail-val" id="sv-clean-reply">-</span></div>
+        <div class="detail-row"><span class="detail-key">识别图片内容</span><span class="detail-val" id="sv-image-recognition">-</span></div>
         <div class="detail-row"><span class="detail-key">使用语音回复</span><span class="detail-val" id="sv-voice-reply">-</span></div>
         <div class="detail-row"><span class="detail-key">自动拆分回复</span><span class="detail-val" id="sv-split-reply">-</span></div>
         <div class="detail-row"><span class="detail-key">自动通过新好友</span><span class="detail-val" id="sv-new-friend">-</span></div>
+        <div class="detail-row"><span class="detail-key">自动添加旧好友</span><span class="detail-val" id="sv-friend-request">-</span></div>
         <div class="detail-row"><span class="detail-key">自动维护通讯录</span><span class="detail-val" id="sv-contact-maintenance">-</span></div>
-        <div class="detail-row"><span class="detail-key">最近消息时间</span><span class="detail-val" id="sv-last-message-time">-</span></div>
-        <div class="detail-row"><span class="detail-key">最近发送者</span><span class="detail-val" id="sv-last-sender">-</span></div>
       </div>
+    </div>
+
+    <div class="cfg-card status-metrics-card" id="runtime-metrics-card">
+        <div class="ui-head ui-head--page">
+          <i class="bi bi-graph-up"></i>
+          <h5>数据图表</h5>
+          <span class="desc" id="runtime-metrics-updated">最近30天运营趋势</span>
+          <div class="ui-head__actions">
+            <div class="runtime-chart-tabs" id="runtime-metrics-granularity">
+              <button type="button" class="runtime-chart-tab active" data-runtime-metrics-granularity="daily">按天</button>
+              <button type="button" class="runtime-chart-tab" data-runtime-metrics-granularity="hourly">按小时</button>
+            </div>
+          </div>
+        </div>
+        <div class="runtime-metrics-summary">
+          <div class="runtime-metric-tile"><span>API 调用次数</span><strong id="metric-today-api">0</strong></div>
+          <div class="runtime-metric-tile"><span>回复成功次数</span><strong id="metric-today-reply">0</strong></div>
+          <div class="runtime-metric-tile"><span>私聊活跃人数</span><strong id="metric-today-private">0</strong></div>
+          <div class="runtime-metric-tile"><span>群聊活跃个数</span><strong id="metric-today-group">0</strong></div>
+        </div>
+        <div class="runtime-chart-wrap">
+          <canvas id="runtime-metrics-chart" width="960" height="300"></canvas>
+          <div class="runtime-chart-empty" id="runtime-metrics-empty">暂无趋势数据</div>
+        </div>
+        <div class="runtime-chart-legend" id="runtime-metrics-legend"></div>
+        <div class="runtime-metrics-groups">
+          <div class="runtime-metrics-group" data-runtime-metric-group="keyword">
+            <div class="runtime-metrics-group-title"><i class="bi bi-chat-square-quote"></i> 关键词回复</div>
+            <div class="runtime-metrics-group-grid">
+              <span>回复条数 <strong id="metric-keyword-messages">0</strong></span>
+              <span>触发次数 <strong id="metric-keyword-triggers">0</strong></span>
+              <span>触发好友 <strong id="metric-keyword-private-targets">0</strong></span>
+              <span>触发群聊 <strong id="metric-keyword-group-targets">0</strong></span>
+            </div>
+          </div>
+          <div class="runtime-metrics-group" data-runtime-metric-group="scheduled">
+            <div class="runtime-metrics-group-title"><i class="bi bi-alarm"></i> 定时消息</div>
+            <div class="runtime-metrics-group-grid">
+              <span>执行次数 <strong id="metric-scheduled-fixed-runs">0</strong></span>
+              <span>发送人数 <strong id="metric-scheduled-fixed-targets">0</strong></span>
+              <span>随机次数 <strong id="metric-scheduled-random-runs">0</strong></span>
+              <span>随机人数 <strong id="metric-scheduled-random-targets">0</strong></span>
+            </div>
+          </div>
+          <div class="runtime-metrics-group" data-runtime-metric-group="material">
+            <div class="runtime-metrics-group-title"><i class="bi bi-bullseye"></i> 素材转发</div>
+            <div class="runtime-metrics-group-grid">
+              <span>转发人数 <strong id="metric-material-targets">0</strong></span>
+              <span>转发次数 <strong id="metric-material-count">0</strong></span>
+              <span>AI转发人数 <strong id="metric-ai-material-targets">0</strong></span>
+              <span>AI转发次数 <strong id="metric-ai-material-count">0</strong></span>
+            </div>
+          </div>
+          <div class="runtime-metrics-group" data-runtime-metric-group="relationship">
+            <div class="runtime-metrics-group-title"><i class="bi bi-person-lines-fill"></i> 关系变化</div>
+            <div class="runtime-metrics-group-grid">
+              <span>今天被拉黑 <strong id="metric-relationship-blocked">0</strong></span>
+              <span>今天被删除 <strong id="metric-relationship-deleted">0</strong></span>
+              <span>自动加好友 <strong id="metric-friend-request-sent">0</strong></span>
+              <span>通过新好友 <strong id="metric-new-friend-accepted">0</strong></span>
+            </div>
+          </div>
+        </div>
     </div>
 
   </div>
@@ -1081,11 +1117,6 @@ html.icons-pref-local [class*=" bi-"]::before {
           <span class="desc">配置私聊回复的组织方式与节奏</span>
         </div>
       </div>
-      <div class="reply-behavior-stats" aria-label="私聊今日回复行为统计">
-        <span class="ui-pill reply-behavior-stat">语音回复 <strong id="chat-stat-voice-replies">0</strong> 次</span>
-        <span class="ui-pill reply-behavior-stat">拆分回复 <strong id="chat-stat-split-replies">0</strong> 次</span>
-        <span class="ui-pill reply-behavior-stat">合并消息 <strong id="chat-stat-merged-messages">0</strong> 次</span>
-      </div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--voice-reply">
           <div class="ui-head ui-head--item">
@@ -1393,10 +1424,6 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="ui-head__title-row"><i class="bi bi-reply"></i><h5>回复行为</h5></div>
           <span class="desc">配置群聊回复的组织方式</span>
         </div>
-      </div>
-      <div class="reply-behavior-stats" aria-label="群聊今日回复行为统计">
-        <span class="ui-pill reply-behavior-stat">语音回复 <strong id="group-stat-voice-replies">0</strong> 次</span>
-        <span class="ui-pill reply-behavior-stat">拆分回复 <strong id="group-stat-split-replies">0</strong> 次</span>
       </div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--voice-reply">
@@ -3679,7 +3706,7 @@ html.icons-pref-local [class*=" bi-"]::before {
 <!-- ===== Log Panel ===== -->
 <div class="log-panel expanded" id="logPanel">
   <div class="log-toolbar" id="logToolbar">
-    <div class="log-title"><i class="bi bi-terminal"></i><span class="log-title-main">运行日志</span><span class="log-title-sub">最近两条</span></div>
+    <div class="log-title"><i class="bi bi-terminal"></i><span class="log-title-main">运行日志</span><span class="log-title-sub">已收起</span></div>
     <div class="log-actions">
       <button class="filter-btn active" data-level="ALL">ALL</button>
       <button class="filter-btn" data-level="INFO">INFO</button>
@@ -12390,7 +12417,7 @@ $(function(){
 
   function syncMobileLogTitle(){
     if(!window.matchMedia('(max-width: 900px)').matches) return;
-    $('.log-title-sub').text($logPanel.hasClass('expanded') ? '查看全部' : '最近两条');
+    $('.log-title-sub').text($logPanel.hasClass('expanded') ? '查看全部' : '已收起');
   }
 
   function escapeLogHtml(value){
@@ -12610,6 +12637,253 @@ $(function(){
     var count = parseInt(value, 10);
     return Number.isFinite(count) && count >= 0 ? count : 0;
   }
+  var runtimeMetricsState = {
+    granularity: 'daily',
+    group: 'overview',
+    payload: null,
+    days: 30,
+    loading: false,
+    loaded: false,
+    visible: {}
+  };
+  var runtimeMetricGroups = {
+    overview: {
+      title: '总览',
+      series: [
+        {key:'api_calls', label:'API 调用次数', color:'#2563EB'},
+        {key:'reply_count', label:'回复成功次数', color:'#059669'},
+        {key:'private_active_count', label:'私聊活跃人数', color:'#D97706'},
+        {key:'group_active_count', label:'群聊活跃个数', color:'#0891B2'}
+      ]
+    },
+    keyword: {
+      title: '关键词回复',
+      series: [
+        {key:'keyword_reply_messages', label:'回复条数', color:'#059669'},
+        {key:'keyword_reply_triggers', label:'触发次数', color:'#2563EB'},
+        {key:'keyword_private_target_count', label:'触发好友', color:'#D97706'},
+        {key:'keyword_group_target_count', label:'触发群聊', color:'#0891B2'}
+      ]
+    },
+    scheduled: {
+      title: '定时消息',
+      series: [
+        {key:'scheduled_fixed_runs', label:'执行次数', color:'#2563EB'},
+        {key:'scheduled_fixed_success_targets', label:'发送人数', color:'#059669'},
+        {key:'scheduled_random_runs', label:'随机次数', color:'#D97706'},
+        {key:'scheduled_random_success_targets', label:'随机人数', color:'#0891B2'}
+      ]
+    },
+    material: {
+      title: '素材转发',
+      series: [
+        {key:'material_success_target_count', label:'素材转发人数', color:'#059669'},
+        {key:'material_success_count', label:'素材转发次数', color:'#2563EB'},
+        {key:'ai_material_success_target_count', label:'AI自动转发人数', color:'#D97706'},
+        {key:'ai_material_success_count', label:'AI自动转发次数', color:'#0891B2'}
+      ]
+    },
+    relationship: {
+      title: '关系变化',
+      series: [
+        {key:'relationship_blocked_today', label:'今天被拉黑', color:'#DC2626'},
+        {key:'relationship_deleted_today', label:'今天被删除', color:'#D97706'},
+        {key:'friend_request_sent_count', label:'自动加好友', color:'#2563EB'},
+        {key:'new_friend_accepted_count', label:'通过新好友', color:'#059669'}
+      ]
+    }
+  };
+  function runtimeMetricSeries(){
+    return (runtimeMetricGroups[runtimeMetricsState.group] || runtimeMetricGroups.overview).series;
+  }
+  function ensureRuntimeMetricVisibleDefaults(){
+    runtimeMetricSeries().forEach(function(series){
+      if(runtimeMetricsState.visible[series.key] === undefined){
+        runtimeMetricsState.visible[series.key] = true;
+      }
+    });
+  }
+  function runtimeMetricNumber(value){
+    var number = parseInt(value, 10);
+    return Number.isFinite(number) && number >= 0 ? number : 0;
+  }
+  function runtimeMetricSetText(id, value){
+    $(id).text(runtimeMetricNumber(value));
+  }
+  function runtimeMetricPoints(){
+    var payload = runtimeMetricsState.payload || {};
+    var points = runtimeMetricsState.granularity === 'hourly' ? payload.hourly : payload.daily;
+    return Array.isArray(points) ? points : [];
+  }
+  function runtimeMetricRangeDays(){
+    return runtimeMetricsState.granularity === 'hourly' ? 7 : 30;
+  }
+  function runtimeMetricLabel(point, index, total){
+    var key = String((point && point.key) || '');
+    if(runtimeMetricsState.granularity === 'hourly'){
+      var hour = key.slice(11, 13);
+      if(['00', '04', '08', '12', '16', '20'].indexOf(hour) === -1) return '';
+      return {
+        hour: hour === '00' ? '24' : hour,
+        date: hour === '04' ? key.slice(5, 10) : ''
+      };
+    }
+    if(total > 16 && index !== 0 && index !== total - 1 && index % 5 !== 0) return '';
+    return key.slice(5, 10);
+  }
+  function renderRuntimeMetricSummary(){
+    var payload = runtimeMetricsState.payload || {};
+    var today = payload.today || {};
+    runtimeMetricSetText('#metric-today-api', today.api_calls);
+    runtimeMetricSetText('#metric-today-reply', today.reply_count);
+    runtimeMetricSetText('#metric-today-private', today.private_active_count);
+    runtimeMetricSetText('#metric-today-group', today.group_active_count);
+    runtimeMetricSetText('#metric-keyword-messages', today.keyword_reply_messages);
+    runtimeMetricSetText('#metric-keyword-triggers', today.keyword_reply_triggers);
+    runtimeMetricSetText('#metric-keyword-private-targets', today.keyword_private_target_count);
+    runtimeMetricSetText('#metric-keyword-group-targets', today.keyword_group_target_count);
+    runtimeMetricSetText('#metric-scheduled-fixed-runs', today.scheduled_fixed_runs);
+    runtimeMetricSetText('#metric-scheduled-fixed-targets', today.scheduled_fixed_success_targets);
+    runtimeMetricSetText('#metric-scheduled-random-runs', today.scheduled_random_runs);
+    runtimeMetricSetText('#metric-scheduled-random-targets', today.scheduled_random_success_targets);
+    runtimeMetricSetText('#metric-material-targets', today.material_success_target_count);
+    runtimeMetricSetText('#metric-material-count', today.material_success_count);
+    runtimeMetricSetText('#metric-ai-material-targets', today.ai_material_success_target_count);
+    runtimeMetricSetText('#metric-ai-material-count', today.ai_material_success_count);
+    runtimeMetricSetText('#metric-relationship-blocked', today.relationship_blocked_today);
+    runtimeMetricSetText('#metric-relationship-deleted', today.relationship_deleted_today);
+    runtimeMetricSetText('#metric-friend-request-sent', today.friend_request_sent_count);
+    runtimeMetricSetText('#metric-new-friend-accepted', today.new_friend_accepted_count);
+    var groupTitle = (runtimeMetricGroups[runtimeMetricsState.group] || runtimeMetricGroups.overview).title;
+    var rangeDays = parseInt((runtimeMetricsState.payload || {}).range_days, 10) || runtimeMetricRangeDays();
+    var prefix = runtimeMetricsState.group === 'overview' ? ('最近' + rangeDays + '天运营趋势') : ('最近' + rangeDays + '天' + groupTitle + '趋势');
+    $('#runtime-metrics-updated').text(payload.updated_at ? (prefix + ' · 更新 ' + String(payload.updated_at).replace('T', ' ')) : prefix);
+    $('[data-runtime-metric-group]').removeClass('active');
+    $('[data-runtime-metric-group="' + runtimeMetricsState.group + '"]').addClass('active');
+  }
+  function renderRuntimeMetricLegend(){
+    ensureRuntimeMetricVisibleDefaults();
+    var html = runtimeMetricSeries().map(function(series){
+      var muted = runtimeMetricsState.visible[series.key] === false;
+      return '<button type="button" class="'+(muted ? 'is-muted' : '')+'" data-runtime-metric-toggle="'+series.key+'"><i style="background:'+series.color+'"></i>'+escapeHtml(series.label)+'</button>';
+    }).join('');
+    $('#runtime-metrics-legend').html(html);
+  }
+  function drawRuntimeMetricsChart(){
+    var canvas = document.getElementById('runtime-metrics-chart');
+    if(!canvas || !canvas.getContext) return;
+    var wrap = $('#runtime-metrics-chart').closest('.runtime-chart-wrap');
+    var points = runtimeMetricPoints();
+    ensureRuntimeMetricVisibleDefaults();
+    var activeSeries = runtimeMetricSeries().filter(function(series){ return runtimeMetricsState.visible[series.key] !== false; });
+    var hasData = points.some(function(point){
+      return activeSeries.some(function(series){ return runtimeMetricNumber(point[series.key]) > 0; });
+    });
+    wrap.toggleClass('is-empty', !hasData);
+    var rect = canvas.getBoundingClientRect();
+    var dpr = window.devicePixelRatio || 1;
+    var width = Math.max(320, Math.floor(rect.width || canvas.clientWidth || 960));
+    var height = Math.max(240, Math.floor(rect.height || 300));
+    canvas.width = Math.floor(width * dpr);
+    canvas.height = Math.floor(height * dpr);
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    var isHourly = runtimeMetricsState.granularity === 'hourly';
+    var pad = {left: 48, right: 18, top: 18, bottom: isHourly ? 48 : 42};
+    var plotW = Math.max(1, width - pad.left - pad.right);
+    var plotH = Math.max(1, height - pad.top - pad.bottom);
+    ctx.strokeStyle = '#E5E7EB';
+    ctx.lineWidth = 1;
+    ctx.fillStyle = '#64748B';
+    ctx.font = '12px Arial';
+    var maxValue = 1;
+    points.forEach(function(point){
+      activeSeries.forEach(function(series){
+        maxValue = Math.max(maxValue, runtimeMetricNumber(point[series.key]));
+      });
+    });
+    var ySteps = 4;
+    for(var y=0; y<=ySteps; y++){
+      var ratio = y / ySteps;
+      var yy = pad.top + plotH * ratio;
+      ctx.beginPath();
+      ctx.moveTo(pad.left, yy);
+      ctx.lineTo(width - pad.right, yy);
+      ctx.stroke();
+      var value = Math.round(maxValue * (1 - ratio));
+      ctx.fillText(String(value), 8, yy + 4);
+    }
+    var count = Math.max(1, points.length - 1);
+    points.forEach(function(point, index){
+      var label = runtimeMetricLabel(point, index, points.length);
+      if(!label) return;
+      var xx = pad.left + plotW * (points.length <= 1 ? 0 : index / count);
+      ctx.fillStyle = '#64748B';
+      ctx.save();
+      ctx.translate(xx, height - (isHourly ? 20 : 16));
+      ctx.textAlign = index === 0 ? 'left' : (index === points.length - 1 ? 'right' : 'center');
+      if(typeof label === 'object'){
+        ctx.fillText(label.hour || '', 0, -8);
+        if(label.date){
+          ctx.fillText(label.date, 0, 8);
+        }
+      } else {
+        ctx.fillText(label, 0, 0);
+      }
+      ctx.restore();
+    });
+    activeSeries.forEach(function(series){
+      ctx.strokeStyle = series.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      points.forEach(function(point, index){
+        var xx = pad.left + plotW * (points.length <= 1 ? 0 : index / count);
+        var value = runtimeMetricNumber(point[series.key]);
+        var yy = pad.top + plotH * (1 - (value / maxValue));
+        if(index === 0) ctx.moveTo(xx, yy);
+        else ctx.lineTo(xx, yy);
+      });
+      ctx.stroke();
+      ctx.fillStyle = series.color;
+      points.forEach(function(point, index){
+        var value = runtimeMetricNumber(point[series.key]);
+        if(value <= 0) return;
+        var xx = pad.left + plotW * (points.length <= 1 ? 0 : index / count);
+        var yy = pad.top + plotH * (1 - (value / maxValue));
+        ctx.beginPath();
+        ctx.arc(xx, yy, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    });
+  }
+  function renderRuntimeMetrics(){
+    renderRuntimeMetricSummary();
+    renderRuntimeMetricLegend();
+    drawRuntimeMetricsChart();
+  }
+  function loadRuntimeMetrics(options){
+    options = options || {};
+    if(runtimeMetricsState.loading) return $.Deferred().resolve().promise();
+    runtimeMetricsState.loading = true;
+    var days = runtimeMetricRangeDays();
+    return $.getJSON('/api/runtime-metrics?days=' + encodeURIComponent(days))
+      .done(function(payload){
+        runtimeMetricsState.payload = payload || {};
+        runtimeMetricsState.days = days;
+        runtimeMetricsState.loaded = true;
+        renderRuntimeMetrics();
+      })
+      .fail(function(){
+        runtimeMetricsState.payload = {hourly: [], daily: [], today: {}, range_days: days};
+        runtimeMetricsState.days = days;
+        runtimeMetricsState.loaded = true;
+        renderRuntimeMetrics();
+      })
+      .always(function(){
+        runtimeMetricsState.loading = false;
+      });
+  }
   function refreshStatus(){
     return $.getJSON('/get_status', function(res){
       if(!res || res.status !== 'success') return;
@@ -12641,29 +12915,18 @@ $(function(){
       $('#sv-replied').text(statusValueOrDash(d.msg_replied));
       $('#sv-api-requests').text(statusValueOrDash(d.api_request_count));
       $('#sv-chat-api-requests').text(statusValueOrDash(d.chat_api_requests));
-      $('#sv-other-api-requests').text(statusValueOrDash(d.other_api_requests));
       $('#sv-listen-friends').text(statusValueOrDash(d.listen_count));
       $('#sv-group').text(d.group_switch ? statusValueOrDash(d.group_count) : '0');
-      $('#sv-schedule').text(d.scheduled_switch ? statusValueOrDash(d.scheduled_count) : '0');
-      $('#sv-outreach-tasks').text(statusValueOrDash(d.material_outreach_task_count));
-      $('#sv-outreach-today').text(statusValueOrDash(d.material_today_touched));
 
-      $('#sv-listen').text(d.listen_mode || '-');
       $('#sv-delay').text(statusEnabledText(!!d.reply_delay_switch));
       $('#sv-default-prompt').text(statusValueOrDash(d.default_prompt));
       $('#sv-clean-reply').text(statusEnabledText(!!d.clean_ai_reply_switch));
       $('#sv-voice-reply').text(statusScopeText(!!d.chat_voice_reply_switch, !!d.group_voice_reply_switch));
+      $('#sv-image-recognition').text(statusScopeText(!!d.chat_image_recognition_switch, !!d.group_image_recognition_switch));
       $('#sv-split-reply').text(statusScopeText(!!d.chat_split_reply_switch, !!d.group_split_reply_switch));
-      $('#chat-stat-voice-replies').text(statusCountValue(d.private_voice_replies));
-      $('#chat-stat-split-replies').text(statusCountValue(d.private_split_replies));
-      $('#chat-stat-merged-messages').text(statusCountValue(d.private_merged_messages));
-      $('#group-stat-voice-replies').text(statusCountValue(d.group_voice_replies));
-      $('#group-stat-split-replies').text(statusCountValue(d.group_split_replies));
       $('#sv-new-friend').text(statusEnabledText(!!d.new_friend_switch));
+      $('#sv-friend-request').text(statusEnabledText(!!d.friend_request_enabled));
       $('#sv-contact-maintenance').text(statusEnabledText(!!d.contact_directory_auto_maintenance_switch));
-
-      $('#sv-last-message-time').text(d.last_msg_time || '暂无');
-      $('#sv-last-sender').text(d.last_msg_sender || '暂无');
     });
   }
   var STATUS_POLL_VISIBLE_MS = 5500;
@@ -12771,10 +13034,53 @@ $(function(){
   function syncStatusPolling(immediate){
     if(immediate && isStatusTabActive()){
       triggerStatusPolling(true);
+      if(!runtimeMetricsState.loaded && !runtimeMetricsState.loading){
+        loadRuntimeMetrics({silent:true});
+      }
       return;
     }
     scheduleStatusPolling(getStatusPollDelay());
   }
+
+  $(document).on('click', '[data-runtime-metrics-granularity]', function(){
+    var value = String($(this).data('runtime-metrics-granularity') || '').trim();
+    if(value !== 'daily' && value !== 'hourly') return;
+    var previousDays = runtimeMetricRangeDays();
+    runtimeMetricsState.granularity = value;
+    $('#runtime-metrics-granularity .runtime-chart-tab').removeClass('active');
+    $(this).addClass('active');
+    if(previousDays !== runtimeMetricRangeDays()){
+      loadRuntimeMetrics({silent:true});
+    } else {
+      drawRuntimeMetricsChart();
+    }
+  });
+
+  $(document).on('click', '[data-runtime-metric-toggle]', function(){
+    var key = String($(this).data('runtime-metric-toggle') || '').trim();
+    if(!key) return;
+    runtimeMetricsState.visible[key] = runtimeMetricsState.visible[key] === false;
+    renderRuntimeMetricLegend();
+    drawRuntimeMetricsChart();
+  });
+
+  $(document).on('click', '[data-runtime-metric-group]', function(){
+    var group = String($(this).data('runtime-metric-group') || '').trim();
+    if(!runtimeMetricGroups[group]) return;
+    runtimeMetricsState.group = group;
+    renderRuntimeMetrics();
+  });
+
+  $(document).on('click', '.runtime-metric-tile', function(){
+    runtimeMetricsState.group = 'overview';
+    renderRuntimeMetrics();
+  });
+
+  $(window).on('resize', function(){
+    if(runtimeMetricsState.loaded && isStatusTabActive()){
+      drawRuntimeMetricsChart();
+    }
+  });
 
   function scheduleSiverPanelPolling(delay){
     clearTimeout(siverPanelPollTimer);

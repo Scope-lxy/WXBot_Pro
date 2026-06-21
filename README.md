@@ -71,7 +71,7 @@
 
 ## 重要目录
 
-- `data/config/`：主配置、面板账号、邮箱、Webhook、回复轮数统计、当天运行统计等运行配置。
+- `data/config/`：主配置、面板账号、邮箱、Webhook、回复轮数统计、小时级运行统计等运行配置。
 - `data/prompt/`：基础人设和人设近况文件。
 - `data/system_prompts/`：系统级 Prompt 片段及其备份。
 - `data/accounts/<wx_id>/`：聊天记录、会话记忆、通讯录、身份索引、任务、发圈草稿等账号级数据。

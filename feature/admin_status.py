@@ -65,18 +65,21 @@ def _material_outreach_counts(bot):
 
 
 def _runtime_daily_stats(bot):
-    getter = getattr(bot, "get_daily_runtime_stats", None)
+    getter = getattr(bot, "runtime_metrics_today", None)
     stats = getter() if callable(getter) else {}
     material_count, ai_count = _material_outreach_counts(bot)
     return {
-        "received_messages": int((stats or {}).get("received_messages", getattr(bot, "msg_received_count", 0)) or 0),
-        "replied_messages": int((stats or {}).get("replied_messages", getattr(bot, "msg_replied_count", 0)) or 0),
-        "scheduled_messages_sent": int((stats or {}).get("scheduled_messages_sent", 0) or 0),
-        "material_forwards_sent": int((stats or {}).get("material_forwards_sent", material_count) or 0),
-        "ai_material_forwards_sent": int((stats or {}).get("ai_material_forwards_sent", ai_count) or 0),
-        "moments_published": int((stats or {}).get("moments_published", 0) or 0),
-        "chat_api_requests": int((stats or {}).get("chat_api_requests", 0) or 0),
-        "other_api_requests": int((stats or {}).get("other_api_requests", 0) or 0),
+        "received_messages": int((stats or {}).get("received_messages", 0) or 0),
+        "replied_messages": int((stats or {}).get("reply_count", 0) or 0),
+        "scheduled_messages_sent": int((stats or {}).get("scheduled_fixed_success_targets", 0) or 0)
+        + int((stats or {}).get("scheduled_random_success_targets", 0) or 0),
+        "material_forwards_sent": int((stats or {}).get("material_success_count", material_count) or 0),
+        "ai_material_forwards_sent": int((stats or {}).get("ai_material_success_count", ai_count) or 0),
+        "chat_api_requests": int((stats or {}).get("chat_api_calls", 0) or 0),
+        "other_api_requests": max(
+            0,
+            int((stats or {}).get("api_calls", 0) or 0) - int((stats or {}).get("chat_api_calls", 0) or 0),
+        ),
     }
 
 
@@ -153,7 +156,6 @@ def build_status_message(bot):
         f"已回复消息：{daily_stats['replied_messages']} 次",
         f"人工接管对话：{len(paused)} 个（{paused_text}）",
         "---",
-        f"发朋友圈：{daily_stats['moments_published']}次",
         f"定时消息：{daily_stats['scheduled_messages_sent']} 次（任务规则：{scheduled_task_count}）",
         f"素材转发：{daily_stats['material_forwards_sent']} 次（任务规则：{material_task_count}）",
         f"自动转发：{daily_stats['ai_material_forwards_sent']} 次（可用素材：{ai_available_material_count}）",

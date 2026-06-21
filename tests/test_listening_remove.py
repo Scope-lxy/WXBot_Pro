@@ -571,6 +571,63 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(any(level == "INFO" and "临时接管窗口不可用" in message and "已暂存 1 条并延后 30s 重试" in message for level, message in logs))
         self.assertFalse(any(level == "WARNING" and "临时接管窗口不可用" in message and "已暂存 1 条并延后 30s 重试" in message for level, message in logs))
 
+    def test_alllisten_merges_into_existing_delayed_task_without_takeover_retry(self):
+        logs = []
+        existing_msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="旧消息")
+        new_msg = SimpleNamespace(id="2", attr="friend", type="text", sender="张三", content="新消息")
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[],
+            _listen_chats={},
+            _lightweight_delayed_listen_tasks={
+                "张三": {
+                    "chat": "张三",
+                    "messages": [existing_msg],
+                    "message_keys": {"id:张三:1"},
+                    "created_at": 100.0,
+                    "due_at": 130.0,
+                    "allow_rebuild": False,
+                    "attempt_index": 0,
+                    "message_sequence": 0,
+                }
+            },
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            config=SimpleNamespace(
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=False,
+                memory_switch=False,
+                custom_forward_switch=False,
+            ),
+            wx=SimpleNamespace(
+                chat_type="private",
+                GetNextNewMessage=lambda **_kwargs: {
+                    "chat_name": "张三",
+                    "chat_type": "private",
+                    "msg": [new_msg],
+                },
+            ),
+            memory_manager=None,
+            is_chat_listened=lambda _chat: False,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            add_chat_to_listen=lambda _chat: self.fail("已有延后任务时不应重试接管窗口"),
+            process_message=lambda _chat, _message: self.fail("已有延后任务时不应立即处理消息"),
+        )
+        bot._get_private_message_sequence = lambda _chat: 0
+
+        with mock.patch.object(listening.time, "time", return_value=110.0), mock.patch.object(
+            listening,
+            "_bot_log",
+            side_effect=lambda _bot, *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message") or (args[0] if args else ""))),
+        ):
+            listening.alllisten_mode(bot, last_time=9999999999)
+
+        task = bot._lightweight_delayed_listen_tasks["张三"]
+        self.assertEqual(task["messages"], [existing_msg, new_msg])
+        self.assertEqual(task["due_at"], 130.0)
+        self.assertTrue(any(level == "INFO" and "已有延后接管任务，已合并 1 条新消息" in message for level, message in logs))
+
     def test_flush_lightweight_delayed_listen_prefers_existing_subwindow(self):
         processed = []
         sub_chat = SimpleNamespace(who="张三", SendMsg=lambda _msg: True)

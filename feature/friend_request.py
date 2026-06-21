@@ -521,6 +521,13 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
         lock.release()
     state = record_execution(state, candidate, result, addmsg=addmsg, now=now)
     state = save_execution_state(bot.config.DATA_DIR, state)
+    try:
+        if _clean_text(result.get("status")) == "sent":
+            record_metric = getattr(bot, "_metric_increment", None)
+            if callable(record_metric):
+                record_metric("friend_request_sent_count")
+    except Exception:
+        pass
     return {"status": result.get("status", "failed"), "message": result.get("message", ""), "payload": friend_request_payload(state), "result": result}
 
 

@@ -94,7 +94,7 @@ from core.chat_history_format import (
 )
 from core.reply_count_store import ReplyCountStore
 from core.wechat_window import run_with_wechat_rebind_retry
-from core.daily_runtime_stats import DailyRuntimeStatsStore, build_empty_daily_runtime_stats
+from core.runtime_metrics import RuntimeMetricsStore
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.prompting import (
     IMAGE_DESCRIPTION_SYSTEM_PROMPT,
@@ -501,8 +501,8 @@ class WXBot:
         _base = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath(".")
         _data = os.path.join(_base, 'data')
         self.reply_count_store = ReplyCountStore(os.path.join(_data, 'config', 'reply_count.json'))
-        self._daily_runtime_stats_store_instance = DailyRuntimeStatsStore(
-            os.path.join(_data, 'config', 'daily_runtime_stats.json')
+        self._runtime_metrics_store_instance = RuntimeMetricsStore(
+            os.path.join(_data, 'config', 'runtime_metrics_v1.json')
         )
         self._identity_index_lock = threading.RLock()
         self._identity_index_cache = None
@@ -576,74 +576,133 @@ class WXBot:
             except Exception:
                 pass
 
-    def _daily_runtime_stats_path(self):
+    def _runtime_metrics_path(self):
         data_dir = str(getattr(getattr(self, "config", None), "DATA_DIR", getattr(self, "DATA_DIR", "")) or "").strip()
         if not data_dir:
             _base = os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath(".")
             data_dir = os.path.join(_base, 'data')
-        return os.path.join(data_dir, 'config', 'daily_runtime_stats.json')
+        return os.path.join(data_dir, 'config', 'runtime_metrics_v1.json')
 
-    def _daily_runtime_stats_store(self):
-        store = getattr(self, "_daily_runtime_stats_store_instance", None)
-        path = self._daily_runtime_stats_path()
-        if isinstance(store, DailyRuntimeStatsStore) and str(getattr(store, "path", "")) == str(path):
+    def _runtime_metrics_store(self):
+        store = getattr(self, "_runtime_metrics_store_instance", None)
+        path = self._runtime_metrics_path()
+        if isinstance(store, RuntimeMetricsStore) and str(getattr(store, "path", "")) == str(path):
             return store
-        store = DailyRuntimeStatsStore(path)
-        self._daily_runtime_stats_store_instance = store
+        store = RuntimeMetricsStore(path)
+        self._runtime_metrics_store_instance = store
         return store
 
-    def get_daily_runtime_stats(self, now=None):
+    def get_runtime_metrics_series(self, now=None, days=7):
         try:
-            return self._daily_runtime_stats_store().load(now=now)
+            return self._runtime_metrics_store().series_payload(now=now, days=days)
         except Exception:
-            current = now if isinstance(now, datetime) else datetime.now()
-            return build_empty_daily_runtime_stats(current.date().isoformat())
+            return {"status": "success", "updated_at": "", "range_days": days, "hourly": [], "daily": [], "today": {}}
 
-    def _increment_daily_runtime_stat(self, key, amount=1, now=None):
+    def _metric_increment(self, key, amount=1, now=None):
         try:
-            return self._daily_runtime_stats_store().increment(key, amount=amount, now=now)
+            self._runtime_metrics_store().increment(key, amount=amount, now=now)
         except Exception:
-            return self.get_daily_runtime_stats(now=now)
+            pass
+
+    def _metric_add_unique(self, key, identity, now=None):
+        try:
+            self._runtime_metrics_store().add_unique(key, identity, now=now)
+        except Exception:
+            pass
+
+    def _metric_record_active_chat(self, chat_name, *, chat_type="private", now=None):
+        key = "active_group_chats" if str(chat_type or "").strip() == "group" else "active_private_chats"
+        self._metric_add_unique(key, chat_name, now=now)
+
+    def _metric_set_today_relationship_counts(self, *, blocked=0, deleted=0, now=None):
+        try:
+            self._runtime_metrics_store().set_today_counts(
+                {
+                    "relationship_blocked_today": blocked,
+                    "relationship_deleted_today": deleted,
+                },
+                now=now,
+            )
+        except Exception:
+            pass
+
+    def runtime_metrics_today(self, now=None):
+        try:
+            return (self._runtime_metrics_store().series_payload(now=now, days=1).get("today") or {})
+        except Exception:
+            return {}
 
     def _record_received_message(self):
         self.msg_received_count = int(getattr(self, "msg_received_count", 0) or 0) + 1
-        self._increment_daily_runtime_stat("received_messages")
+        self._metric_increment("received_messages")
 
-    def _record_replied_message_success(self):
+    def _record_replied_message_success(self, chat_name="", chat_type="private"):
         self.msg_replied_count = int(getattr(self, "msg_replied_count", 0) or 0) + 1
-        self._increment_daily_runtime_stat("replied_messages")
+        self._metric_increment("reply_count")
+        if chat_name:
+            self._metric_record_active_chat(chat_name, chat_type=chat_type)
 
-    def _record_scheduled_message_send_successes(self, count):
+    def _record_reply_metric_success(self, chat_name="", chat_type="private"):
+        try:
+            self._record_replied_message_success(chat_name, chat_type=chat_type)
+        except TypeError:
+            self._record_replied_message_success()
+
+    def _record_keyword_reply_success(self, chat_name="", chat_type="private", action_count=1):
+        try:
+            count = int(action_count or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count <= 0:
+            count = 1
+        self._metric_increment("keyword_reply_triggers")
+        self._metric_increment("keyword_reply_messages", amount=count)
+        if chat_name:
+            set_key = "keyword_group_targets" if str(chat_type or "").strip() == "group" else "keyword_private_targets"
+            self._metric_add_unique(set_key, chat_name)
+
+    def _record_scheduled_message_send_successes(self, count, *, trigger_kind="fixed"):
         try:
             count = int(count or 0)
         except (TypeError, ValueError):
             count = 0
+        kind_text = str(trigger_kind or "").strip()
+        kind = "random" if "random" in kind_text else "fixed"
+        self._metric_increment(f"scheduled_{kind}_runs")
         if count > 0:
-            self._increment_daily_runtime_stat("scheduled_messages_sent", amount=count)
+            self._metric_increment(f"scheduled_{kind}_success_targets", amount=count)
 
-    def _record_material_outreach_send_success(self, task_id):
-        self._increment_daily_runtime_stat("material_forwards_sent")
+    def _record_material_outreach_send_success(self, task_id, target=""):
         if str(task_id or "").strip() == AI_AUTO_OUTREACH_TASK_ID:
-            self._increment_daily_runtime_stat("ai_material_forwards_sent")
-
-    def _record_moments_published(self):
-        self._increment_daily_runtime_stat("moments_published")
-
-    def _daily_reply_behavior_counts(self, daily_stats=None):
-        stats = daily_stats if isinstance(daily_stats, dict) else self.get_daily_runtime_stats()
-        return {
-            "private_voice_replies": int((stats or {}).get("private_voice_replies", 0) or 0),
-            "group_voice_replies": int((stats or {}).get("group_voice_replies", 0) or 0),
-            "private_split_replies": int((stats or {}).get("private_split_replies", 0) or 0),
-            "group_split_replies": int((stats or {}).get("group_split_replies", 0) or 0),
-            "private_merged_messages": int((stats or {}).get("private_merged_messages", 0) or 0),
-        }
+            self._metric_increment("ai_material_success_count")
+            if target:
+                self._metric_add_unique("ai_material_success_targets", target)
+        else:
+            self._metric_increment("material_success_count")
+            if target:
+                self._metric_add_unique("material_success_targets", target)
 
     def _record_chat_api_request(self):
-        self._increment_daily_runtime_stat("chat_api_requests")
+        self._metric_increment("api_calls")
+        self._metric_increment("chat_api_calls")
+
+    def _record_image_api_request(self):
+        self._metric_increment("image_api_calls")
+
+    def _record_material_preface_api_request(self):
+        self._metric_increment("material_preface_api_calls")
+
+    def _record_ai_outreach_decision_api_request(self):
+        self._metric_increment("ai_outreach_decision_api_calls")
+
+    def _record_ai_outreach_preface_api_request(self):
+        self._metric_increment("ai_outreach_preface_api_calls")
+
+    def _record_tts_api_request(self):
+        self._metric_increment("api_calls")
 
     def _record_other_api_request(self):
-        self._increment_daily_runtime_stat("other_api_requests")
+        self._metric_increment("api_calls")
 
     def _wrap_api_request_counter(self, api, request_type):
         stat_key = str(request_type or "").strip()
@@ -704,7 +763,7 @@ class WXBot:
     def _append_material_send_record(self, record, *, limit=1000):
         records = self._material_outreach_store().append_send_record(record, limit=limit)
         if isinstance(record, dict) and record.get("success"):
-            self._record_material_outreach_send_success(record.get("task_id"))
+            self._record_material_outreach_send_success(record.get("task_id"), record.get("target"))
         return records
 
     def _load_material_skip_records(self):
@@ -2284,16 +2343,22 @@ class WXBot:
         return relationship_scan.relationship_scan_payload(state)
 
     def scan_relationship_sessions(self):
-        return relationship_scan.scan_current_sessions(self, mode="manual")
+        result = relationship_scan.scan_current_sessions(self, mode="manual")
+        self._sync_relationship_metrics()
+        return result
 
     def full_scan_relationship_sessions(self, *, allow_running=False):
-        return relationship_scan.scan_full_sessions(self, allow_running=allow_running)
+        result = relationship_scan.scan_full_sessions(self, allow_running=allow_running)
+        self._sync_relationship_metrics()
+        return result
 
     def stop_relationship_full_scan(self):
         return relationship_scan.request_stop_full_scan(self)
 
     def _check_relationship_auto_scan(self, now=None):
-        return relationship_scan.check_auto_scan(self, now=now)
+        result = relationship_scan.check_auto_scan(self, now=now)
+        self._sync_relationship_metrics(now=now)
+        return result
 
     def _process_relationship_tag_sync(self):
         return relationship_scan.process_pending_wechat_tag_sync(self)
@@ -2307,6 +2372,21 @@ class WXBot:
 
     def _check_friend_request_auto_run(self, now=None):
         return friend_request.check_auto_run(self, now=now)
+
+    def _sync_relationship_metrics(self, now=None):
+        try:
+            state = relationship_scan.load_state(
+                self.config.DATA_DIR,
+                str(getattr(self, "wx_id", "") or "default"),
+            )
+            summary = relationship_scan.relationship_scan_summary(state, now=now)
+            self._metric_set_today_relationship_counts(
+                blocked=summary.get("today_blocked", 0),
+                deleted=summary.get("today_deleted", 0),
+                now=now,
+            )
+        except Exception:
+            pass
 
     def set_contact_profiles_paused(self, paused=True):
         return contacts.set_contact_profiles_paused(self, paused=paused)
@@ -3647,14 +3727,16 @@ class WXBot:
             )
             if keyword_plan:
                 log(message=f"私聊 {chat.who} 关键字消息：" + message.content)
+                reply_actions = normalize_keyword_reply_actions(keyword_plan["reply"])
                 send_success, result = self._send_keyword_reply_actions(
                     chat,
-                    normalize_keyword_reply_actions(keyword_plan["reply"]),
+                    reply_actions,
                 )
                 if send_success and self.config.text_reply_limit_switch and user_key:
                     self.reply_count_store.increment_ai_count(user_key)
                 if send_success:
-                    self._record_replied_message_success()
+                    self._record_reply_metric_success(chat.who, chat_type="private")
+                    self._record_keyword_reply_success(chat.who, chat_type="private", action_count=len(reply_actions))
                 return result
             else:
                 history = []
@@ -3781,8 +3863,6 @@ class WXBot:
                 split_source=split_source,
                 split_count=split_source_count,
             )
-            if len(parts or []) > 1:
-                self._increment_daily_runtime_stat("private_split_replies")
         else:
             blocked_policy = self._meta_reply_policy_kwargs()
             meta_reply_blocked, meta_reply_already_notified, meta_reply_should_mark = (
@@ -3826,7 +3906,6 @@ class WXBot:
                     context_text=context_text,
                     section_id=section_id,
                 ):
-                    self._increment_daily_runtime_stat("private_voice_replies")
                     if image_reply_context_used:
                         self._clear_pending_visual_context(chat.who)
                     if start_voice_session:
@@ -3844,7 +3923,7 @@ class WXBot:
                     self._save_voice_reply_state()
                     if self.config.text_reply_limit_switch and user_key:
                         self.reply_count_store.increment_ai_count(user_key)
-                    self._record_replied_message_success()
+                    self._record_reply_metric_success(chat.who, chat_type="private")
                     return True
 
         send_success, result = self._send_private_ai_reply_parts(
@@ -3865,7 +3944,7 @@ class WXBot:
             self.reply_count_store.increment_ai_count(user_key)
 
         if send_success:
-            self._record_replied_message_success()
+            self._record_reply_metric_success(chat.who, chat_type="private")
         return result
 
     # ----------------------------------------------------------
@@ -4023,12 +4102,14 @@ class WXBot:
             return takeover_runtime.mirror_takeover_message_to_admin(self, chat, message)
         if action == "group_keyword_reply":
             log(message=f"群组 {chat.who}：命中关键词回复，内容：{message.content}")
+            reply_actions = route.get("reply_actions", [])
             send_success, result = self._send_keyword_reply_actions(
                 chat,
-                route.get("reply_actions", []),
+                reply_actions,
             )
             if send_success:
-                self._record_replied_message_success()
+                self._record_reply_metric_success(chat.who, chat_type="group")
+                self._record_keyword_reply_success(chat.who, chat_type="group", action_count=len(reply_actions))
             time.sleep(1)
             return result
         if action == "group_ai":
@@ -4131,8 +4212,6 @@ class WXBot:
                     split_source=split_source,
                     split_count=split_source_count,
                 )
-                if len(parts or []) > 1:
-                    self._increment_daily_runtime_stat("group_split_replies")
             else:
                 group_api_error_should_mark = False
                 blocked_policy = self._meta_reply_policy_kwargs()
@@ -4170,9 +4249,8 @@ class WXBot:
                         limit_hours=getattr(self.config, 'group_voice_reply_limit_hours', 24),
                         context_text=group_context_text,
                     ):
-                        self._increment_daily_runtime_stat("group_voice_replies")
                         self._save_voice_reply_state()
-                        self._record_replied_message_success()
+                        self._record_reply_metric_success(chat.who, chat_type="group")
                         return True
 
             _at_msg = self.config.group_reply_at_msg
@@ -4213,7 +4291,7 @@ class WXBot:
                     group_user_key = self._get_group_reply_once_key(chat, message)
                     if group_user_key:
                         self.reply_count_store.mark_meta_reply_blocked_notified(group_user_key)
-                self._record_replied_message_success()
+                self._record_reply_metric_success(chat.who, chat_type="group")
             return result
 
         if action == "admin_command":
@@ -4680,6 +4758,7 @@ class WXBot:
         sender="",
         visual_notes=None,
     ):
+        self._record_image_api_request()
         return self._get_image_reply_pipeline().reply(ImageReplyRequest(
             chat_name=chat_name,
             chat_type=chat_type,
@@ -4689,7 +4768,12 @@ class WXBot:
             final_api=final_api,
             recognition_api=(
                 None if final_api_supports_vision
-                else self._get_other_api(recognition_api_index)
+                else self._wrap_chat_api_for_failover(
+                    self._get_api_instance_by_index(recognition_api_index),
+                    index=recognition_api_index,
+                    tracked_default=recognition_api_index == self._get_primary_chat_api_index(),
+                    request_type="chat",
+                )
             ),
             final_api_supports_vision=final_api_supports_vision,
             image_path=image_path,
@@ -4915,6 +4999,7 @@ class WXBot:
             if result is not False:
                 if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
                     self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
+                self._record_reply_metric_success(chat.who, chat_type="private")
                 log(level="INFO", message=f"私聊 {chat.who} 语音转文字失败，已发送兜底提示")
                 return True
             log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，聊天窗口兜底提示发送失败，准备走全局发送兜底")
@@ -4930,6 +5015,7 @@ class WXBot:
                 return False
             if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
                 self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
+            self._record_reply_metric_success(chat.who, chat_type="private")
             log(level="INFO", message=f"私聊 {chat.who} 语音转文字失败，已通过全局发送兜底提示")
             return True
         except Exception as exc:
@@ -4965,6 +5051,7 @@ class WXBot:
                 return False
             if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
                 self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
+            self._record_reply_metric_success(chat.who, chat_type="group")
             log(level="INFO", message=f"群聊 {chat.who} 语音转文字失败，已发送兜底提示")
             return True
         except Exception as exc:
@@ -5283,8 +5370,6 @@ class WXBot:
                 merged = self._build_merged_private_message(messages)
                 if not str(getattr(merged, 'content', '') or '').strip():
                     continue
-                if len(messages) > 1:
-                    self._increment_daily_runtime_stat("private_merged_messages")
                 self.wx_send_ai(chat, merged)
             self._clear_private_message_pipeline(name)
             return True
@@ -5779,7 +5864,7 @@ class WXBot:
                 synth_cfg["context_text"] = str(context_text or "").strip()
             if str(section_id or "").strip():
                 synth_cfg["section_id"] = str(section_id or "").strip()
-            self._record_other_api_request()
+            self._record_tts_api_request()
             create_tts_client(synth_cfg).synthesize(tts_text, audio_path)
             if str(state_key or "").startswith("private:") and not self._private_reply_can_continue(chat):
                 return False
@@ -6056,7 +6141,7 @@ class WXBot:
                     parts = self._api_error_reply_parts()
                     send_success, result = self._send_private_ai_reply_parts(chat, parts)
                     if send_success:
-                        self._record_replied_message_success()
+                        self._record_reply_metric_success(chat.who, chat_type="private")
                         if getattr(self.config, "api_error_reply_once", False):
                             self.reply_count_store.mark_api_err_notified(user_key)
                     return True, result
@@ -6070,7 +6155,7 @@ class WXBot:
 
         send_success, result = self._send_private_ai_reply_parts(chat, [reply_text])
         if send_success:
-            self._record_replied_message_success()
+            self._record_reply_metric_success(chat.who, chat_type="private")
             if self.config.text_reply_limit_reply_once:
                 self.reply_count_store.mark_limit_notified(user_key)
         return True, result
@@ -6229,6 +6314,7 @@ class WXBot:
             target=target,
         )
         try:
+            self._record_ai_outreach_decision_api_request()
             reply = self._get_other_api().chat(message_text, prompt=prompt, history=history)
             decision = parse_ai_outreach_decision(reply)
         except Exception:
@@ -6489,6 +6575,10 @@ class WXBot:
             )
             if part
         ).strip()
+        if str(send_mode or "").strip() in {"ai_chat_outreach", "detection_scan"}:
+            self._record_ai_outreach_preface_api_request()
+        else:
+            self._record_material_preface_api_request()
         reply = self._get_other_api().chat(message_text, prompt=prompt, history=history)
         preface = self._parse_material_outreach_preface_reply(reply)
         if not preface:
@@ -7341,12 +7431,11 @@ class WXBot:
         active_model = ""
         if api_configs:
             active_model = str((api_configs[active_index] or {}).get("model", "") or "").strip()
-        daily_stats = self.get_daily_runtime_stats()
-        received_messages = int((daily_stats or {}).get("received_messages", 0) or 0)
-        replied_messages = int((daily_stats or {}).get("replied_messages", 0) or 0)
-        chat_api_requests = int((daily_stats or {}).get("chat_api_requests", 0) or 0)
-        other_api_requests = int((daily_stats or {}).get("other_api_requests", 0) or 0)
-        reply_behavior_counts = self._daily_reply_behavior_counts(daily_stats)
+        metrics_today = self.runtime_metrics_today()
+        received_messages = int((metrics_today or {}).get("received_messages", 0) or 0)
+        replied_messages = int((metrics_today or {}).get("reply_count", 0) or 0)
+        api_calls = int((metrics_today or {}).get("api_calls", 0) or 0)
+        chat_api_requests = int((metrics_today or {}).get("chat_api_calls", 0) or 0)
 
         return {
             "running":            self.run_flag,
@@ -7367,10 +7456,9 @@ class WXBot:
             "group_count":        len(self.config.group),
             "msg_received":       received_messages,
             "msg_replied":        replied_messages,
-            "api_request_count":   chat_api_requests + other_api_requests,
+            "api_request_count":   api_calls,
             "chat_api_requests":   chat_api_requests,
-            "other_api_requests":  other_api_requests,
-            **reply_behavior_counts,
+            "other_api_requests":  max(0, api_calls - chat_api_requests),
             "last_msg_time":      self.last_msg_time,
             "last_msg_sender":    self.last_msg_sender,
             "callback_is_die":    self.callback_is_die,

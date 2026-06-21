@@ -57,7 +57,7 @@ from core.account_storage import (
 )
 from core.config import coerce_float_range, sanitize_api_capability_map, set_api_capability
 from core.config import api_supports_capability
-from core.daily_runtime_stats import DailyRuntimeStatsStore
+from core.runtime_metrics import RuntimeMetricsStore
 from core.memory import read_memory_original_name, resolve_memory_storage_name
 from core.chat_history_format import format_memory_record_for_display
 from core.identity_index import (
@@ -372,25 +372,6 @@ def normalize_voice_reply_config(config):
 # 启动时确保目录存在
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(PANEL_LOG_DIR, exist_ok=True)
-
-
-def _record_other_api_request():
-    try:
-        DailyRuntimeStatsStore(os.path.join(CONFIG_DIR, 'daily_runtime_stats.json')).increment('other_api_requests')
-    except Exception:
-        pass
-
-
-class _OtherAPIRequestCounter:
-    def __init__(self, api):
-        self._api = api
-
-    def __getattr__(self, name):
-        return getattr(self._api, name)
-
-    def chat(self, *args, **kwargs):
-        _record_other_api_request()
-        return self._api.chat(*args, **kwargs)
 
 
 def _account_area_dir(wx_id, area, *, create=False, base_dir=None):
@@ -2474,16 +2455,8 @@ def _dashboard_config_status_snapshot(cfg):
     global_blacklist = list(cfg.get('global_blacklist', []) or [])
     groups = list(cfg.get('group', []) or [])
     material_task_count = _count_enabled_tasks(cfg.get('material_outreach_list', []))
-    daily_stats = DailyRuntimeStatsStore(os.path.join(CONFIG_DIR, 'daily_runtime_stats.json')).load()
-    received_messages = int((daily_stats or {}).get('received_messages', 0) or 0)
-    replied_messages = int((daily_stats or {}).get('replied_messages', 0) or 0)
-    chat_api_requests = int((daily_stats or {}).get('chat_api_requests', 0) or 0)
-    other_api_requests = int((daily_stats or {}).get('other_api_requests', 0) or 0)
-    private_voice_replies = int((daily_stats or {}).get('private_voice_replies', 0) or 0)
-    group_voice_replies = int((daily_stats or {}).get('group_voice_replies', 0) or 0)
-    private_split_replies = int((daily_stats or {}).get('private_split_replies', 0) or 0)
-    group_split_replies = int((daily_stats or {}).get('group_split_replies', 0) or 0)
-    private_merged_messages = int((daily_stats or {}).get('private_merged_messages', 0) or 0)
+    friend_request_state = friend_request.load_state(DATA_DIR, str(cfg.get('wx_id') or 'default'))
+    friend_request_settings = friend_request.normalize_settings(friend_request_state.get('settings'))
     return {
         'version': str(BOT_VERSION or '').strip(),
         'wx_nickname': '',
@@ -2494,16 +2467,11 @@ def _dashboard_config_status_snapshot(cfg):
         'listen_count': len(global_blacklist if cfg.get('AllListen_switch') else listen_list),
         'group_switch': bool(cfg.get('group_switch', False)),
         'group_count': len(groups),
-        'msg_received': received_messages,
-        'msg_replied': replied_messages,
-        'api_request_count': chat_api_requests + other_api_requests,
-        'chat_api_requests': chat_api_requests,
-        'other_api_requests': other_api_requests,
-        'private_voice_replies': private_voice_replies,
-        'group_voice_replies': group_voice_replies,
-        'private_split_replies': private_split_replies,
-        'group_split_replies': group_split_replies,
-        'private_merged_messages': private_merged_messages,
+        'msg_received': 0,
+        'msg_replied': 0,
+        'api_request_count': 0,
+        'chat_api_requests': 0,
+        'other_api_requests': 0,
         'last_msg_time': '',
         'last_msg_sender': '',
         'callback_is_die': False,
@@ -2533,12 +2501,15 @@ def _dashboard_config_status_snapshot(cfg):
         'clean_ai_reply_switch': bool(cfg.get('clean_ai_reply_switch', True)),
         'chat_voice_reply_switch': bool(cfg.get('chat_voice_reply_switch', False)),
         'group_voice_reply_switch': bool(cfg.get('group_voice_reply_switch', False)),
+        'chat_image_recognition_switch': bool(cfg.get('chat_image_recognition_switch', False)),
+        'group_image_recognition_switch': bool(cfg.get('group_image_recognition_switch', False)),
         'chat_split_reply_switch': bool(cfg.get('chat_split_reply_switch', False)),
         'group_split_reply_switch': bool(cfg.get('group_split_reply_switch', False)),
         'text_reply_limit_switch': bool(cfg.get('text_reply_limit_switch', False)),
         'text_reply_limit_count': cfg.get('text_reply_limit_count', 99),
         'text_reply_limit_hours': cfg.get('text_reply_limit_hours', 24),
         'new_friend_switch': bool(cfg.get('new_friend_switch', False)),
+        'friend_request_enabled': bool(friend_request_settings.get('enabled', False)),
         'contact_directory_auto_maintenance_switch': bool(cfg.get('contact_directory_auto_maintenance_switch', False)),
         'start_time': '',
         'uptime': '',
@@ -3225,9 +3196,61 @@ def api_moments_tasks_generate(task_id):
     })
 
 
-def _enrich_dashboard_status_snapshot(status, *, cfg=None, wx_id='', runtime_material_ids=None):
+def _runtime_metrics_today(payload):
+    try:
+        today = (payload or {}).get('today') or {}
+        return today if isinstance(today, dict) else {}
+    except Exception:
+        return {}
+
+
+def _runtime_metric_count(today, key):
+    try:
+        value = int((today or {}).get(key, 0) or 0)
+        return value if value >= 0 else 0
+    except Exception:
+        return 0
+
+
+def _dashboard_runtime_metrics_payload(days=1, runtime_bot=None):
+    try:
+        days = int(days or 1)
+    except (TypeError, ValueError):
+        days = 1
+    days = max(1, min(365, days))
+    if runtime_bot is not None and hasattr(runtime_bot, 'get_runtime_metrics_series'):
+        try:
+            payload = runtime_bot.get_runtime_metrics_series(days=days)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+    try:
+        return RuntimeMetricsStore(os.path.join(CONFIG_DIR, 'runtime_metrics_v1.json')).series_payload(days=days)
+    except Exception:
+        return None
+
+
+def _sync_status_api_count_from_runtime_metrics(status, payload=None, *, runtime_bot=None):
+    status = dict(status or {})
+    if payload is None:
+        payload = _dashboard_runtime_metrics_payload(days=1, runtime_bot=runtime_bot)
+    today = _runtime_metrics_today(payload)
+    if today:
+        api_calls = _runtime_metric_count(today, 'api_calls')
+        chat_api_calls = _runtime_metric_count(today, 'chat_api_calls')
+        status['msg_received'] = _runtime_metric_count(today, 'received_messages')
+        status['msg_replied'] = _runtime_metric_count(today, 'reply_count')
+        status['api_request_count'] = api_calls
+        status['chat_api_requests'] = chat_api_calls
+        status['other_api_requests'] = max(0, api_calls - chat_api_calls)
+    return status
+
+
+def _enrich_dashboard_status_snapshot(status, *, cfg=None, wx_id='', runtime_material_ids=None, runtime_metrics_payload=None):
     cfg = cfg or {}
     status = dict(status or {})
+    status = _sync_status_api_count_from_runtime_metrics(status, runtime_metrics_payload)
     if 'current_interface' not in status:
         status['current_interface'] = _current_api_snapshot(cfg).get('current_interface', '未连接')
     scheduled_count = _count_enabled_tasks(cfg.get('scheduled_message_task_list', []))
@@ -3241,6 +3264,14 @@ def _enrich_dashboard_status_snapshot(status, *, cfg=None, wx_id='', runtime_mat
         status['new_friend_switch'] = bool(cfg.get('new_friend_switch', False))
     if 'contact_directory_auto_maintenance_switch' not in status:
         status['contact_directory_auto_maintenance_switch'] = bool(cfg.get('contact_directory_auto_maintenance_switch', False))
+    status['chat_image_recognition_switch'] = bool(status.get('chat_image_recognition_switch', cfg.get('chat_image_recognition_switch', False)))
+    status['group_image_recognition_switch'] = bool(status.get('group_image_recognition_switch', cfg.get('group_image_recognition_switch', False)))
+    try:
+        friend_request_state = friend_request.load_state(DATA_DIR, str(wx_id or cfg.get('wx_id') or 'default'))
+        friend_request_settings = friend_request.normalize_settings(friend_request_state.get('settings'))
+        status['friend_request_enabled'] = bool(friend_request_settings.get('enabled', False))
+    except Exception:
+        status['friend_request_enabled'] = False
     status['default_prompt'] = str(cfg.get('default_prompt', '默认') or '默认').strip()
     status['clean_ai_reply_switch'] = bool(cfg.get('clean_ai_reply_switch', True))
     status['chat_voice_reply_switch'] = bool(cfg.get('chat_voice_reply_switch', False))
@@ -3912,9 +3943,9 @@ def _build_memory_extraction_api_config(cfg, *, prompt=""):
 def _build_test_api_client(tmp_config):
     sdk = tmp_config.sdk
     if sdk == "OpenAI SDK":
-        return _OtherAPIRequestCounter(OpenAIAPI(tmp_config))
+        return OpenAIAPI(tmp_config)
     if sdk == "DusAPI":
-        return _OtherAPIRequestCounter(DusAPI(tmp_config))
+        return DusAPI(tmp_config)
     raise ValueError(f"不支持的聊天接口 SDK：{sdk or '（空）'}")
 
 
@@ -4003,7 +4034,6 @@ def api_tts_preview():
         cache_dir = os.path.join(DATA_DIR, 'cache', 'tts_preview')
         client = create_tts_client(payload)
         out_path = make_tts_cache_path(cache_dir, suffix='mp3')
-        _record_other_api_request()
         client.synthesize(payload.get('sample_text') or '你好呀，这是一条语音回复试听。', out_path)
         return jsonify({
             'status': 'success',
@@ -5013,6 +5043,7 @@ def get_status():
     if bot_thread and bot_thread.is_alive() and bot:
         try:
             status = bot.get_status()
+            runtime_metrics_payload = _dashboard_runtime_metrics_payload(days=1, runtime_bot=bot)
             status['bot_running'] = True
             status['bot_stopping'] = bool(bot_stop_requested.is_set() or getattr(bot, 'is_stop_requested', lambda: False)())
             status = _enrich_dashboard_status_snapshot(
@@ -5020,6 +5051,7 @@ def get_status():
                 cfg=cfg,
                 wx_id=str(getattr(bot, 'wx_id', '') or '').strip(),
                 runtime_material_ids=set(getattr(bot, '_material_runtime_messages', {}) or {}),
+                runtime_metrics_payload=runtime_metrics_payload,
             )
             return jsonify({'status': 'success', 'data': status})
         except Exception as e:
@@ -5028,6 +5060,7 @@ def get_status():
         return jsonify({'status': 'success', 'data': {'bot_running': True, 'bot_stopping': bot_stop_requested.is_set()}})
     else:
         status = _dashboard_config_status_snapshot(cfg)
+        runtime_metrics_payload = _dashboard_runtime_metrics_payload(days=1)
         status['bot_running'] = False
         status['bot_stopping'] = False
         status = _enrich_dashboard_status_snapshot(
@@ -5035,8 +5068,30 @@ def get_status():
             cfg=cfg,
             wx_id=str(_contact_profiles_picker_options().get('wx_id', '') or '').strip(),
             runtime_material_ids=set(),
+            runtime_metrics_payload=runtime_metrics_payload,
         )
         return jsonify({'status': 'success', 'data': status})
+
+
+@app.route('/api/runtime-metrics')
+@login_required
+def api_runtime_metrics():
+    global bot, bot_thread
+    try:
+        days = int(request.args.get('days', 7) or 7)
+    except (TypeError, ValueError):
+        days = 7
+    days = max(1, min(365, days))
+    try:
+        payload = _dashboard_runtime_metrics_payload(
+            days=days,
+            runtime_bot=bot if bot_thread and bot_thread.is_alive() and bot else None,
+        )
+        if isinstance(payload, dict):
+            return jsonify(payload)
+    except Exception:
+        pass
+    return jsonify({'status': 'success', 'updated_at': '', 'range_days': days, 'hourly': [], 'daily': [], 'today': {}})
 
 
 @app.route('/api/siver-panel/status')
