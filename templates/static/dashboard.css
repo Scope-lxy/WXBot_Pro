@@ -1729,6 +1729,13 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .runtime-metric-tile strong { color: var(--card-fg); font-size: 22px; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; }
 .runtime-chart-wrap { position: relative; width: 100%; min-height: 300px; border: 1px solid var(--border); border-radius: 8px; background: #fff; overflow: hidden; }
 #runtime-metrics-chart { display: block; width: 100%; height: 300px; }
+.runtime-chart-tooltip { position: absolute; z-index: 3; min-width: 172px; max-width: 240px; padding: 9px 10px; border: 1px solid rgba(15,23,42,.12); border-radius: 8px; background: rgba(255,255,255,.96); box-shadow: 0 10px 24px rgba(15,23,42,.16); pointer-events: none; }
+.runtime-chart-tooltip[hidden] { display: none; }
+.runtime-chart-tooltip-time { margin-bottom: 7px; color: var(--card-fg); font-size: 12px; font-weight: 800; line-height: 1.25; }
+.runtime-chart-tooltip-row { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: center; gap: 7px; min-height: 20px; color: var(--muted); font-size: 11.5px; font-weight: 700; line-height: 1.2; }
+.runtime-chart-tooltip-row i { width: 8px; height: 8px; border-radius: 999px; }
+.runtime-chart-tooltip-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-chart-tooltip-row strong { color: var(--card-fg); font-size: 12px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .runtime-chart-empty { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; font-weight: 700; background: rgba(255,255,255,.72); }
 .runtime-chart-wrap.is-empty .runtime-chart-empty { display: flex; }
 .runtime-chart-legend { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin: 10px 0 14px; min-height: 24px; }

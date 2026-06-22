@@ -338,7 +338,7 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div class="ui-head ui-head--page">
           <i class="bi bi-graph-up"></i>
           <h5>数据图表</h5>
-          <span class="desc" id="runtime-metrics-updated">最近30天运营趋势</span>
+          <span class="desc" id="runtime-metrics-updated">最近15天运营趋势</span>
           <div class="ui-head__actions">
             <div class="runtime-chart-tabs" id="runtime-metrics-granularity">
               <button type="button" class="runtime-chart-tab active" data-runtime-metrics-granularity="daily">按天</button>
@@ -354,6 +354,7 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
         <div class="runtime-chart-wrap">
           <canvas id="runtime-metrics-chart" width="960" height="300"></canvas>
+          <div class="runtime-chart-tooltip" id="runtime-metrics-tooltip" hidden></div>
           <div class="runtime-chart-empty" id="runtime-metrics-empty">暂无趋势数据</div>
         </div>
         <div class="runtime-chart-legend" id="runtime-metrics-legend"></div>
@@ -12641,10 +12642,11 @@ $(function(){
     granularity: 'daily',
     group: 'overview',
     payload: null,
-    days: 30,
+    days: 15,
     loading: false,
     loaded: false,
-    visible: {}
+    visible: {},
+    hoverPoints: []
   };
   var runtimeMetricGroups = {
     overview: {
@@ -12716,7 +12718,15 @@ $(function(){
     return Array.isArray(points) ? points : [];
   }
   function runtimeMetricRangeDays(){
-    return runtimeMetricsState.granularity === 'hourly' ? 7 : 30;
+    return runtimeMetricsState.granularity === 'hourly' ? 3 : 15;
+  }
+  function runtimeMetricPointTimeText(point){
+    var key = String((point && point.key) || '');
+    if(runtimeMetricsState.granularity === 'hourly'){
+      if(key.length >= 13) return key.slice(0, 10) + ' ' + key.slice(11, 13) + ':00';
+      return key;
+    }
+    return key;
   }
   function runtimeMetricLabel(point, index, total){
     var key = String((point && point.key) || '');
@@ -12774,6 +12784,7 @@ $(function(){
     if(!canvas || !canvas.getContext) return;
     var wrap = $('#runtime-metrics-chart').closest('.runtime-chart-wrap');
     var points = runtimeMetricPoints();
+    runtimeMetricsState.hoverPoints = [];
     ensureRuntimeMetricVisibleDefaults();
     var activeSeries = runtimeMetricSeries().filter(function(series){ return runtimeMetricsState.visible[series.key] !== false; });
     var hasData = points.some(function(point){
@@ -12816,6 +12827,18 @@ $(function(){
     }
     var count = Math.max(1, points.length - 1);
     points.forEach(function(point, index){
+      var xx = pad.left + plotW * (points.length <= 1 ? 0 : index / count);
+      runtimeMetricsState.hoverPoints.push({
+        x: xx,
+        time: runtimeMetricPointTimeText(point),
+        values: activeSeries.map(function(series){
+          var value = runtimeMetricNumber(point[series.key]);
+          var yy = pad.top + plotH * (1 - (value / maxValue));
+          return {label: series.label, color: series.color, value: value, y: yy};
+        })
+      });
+    });
+    points.forEach(function(point, index){
       var label = runtimeMetricLabel(point, index, points.length);
       if(!label) return;
       var xx = pad.left + plotW * (points.length <= 1 ? 0 : index / count);
@@ -12857,7 +12880,43 @@ $(function(){
       });
     });
   }
+  function hideRuntimeMetricTooltip(){
+    $('#runtime-metrics-tooltip').prop('hidden', true).empty();
+  }
+  function renderRuntimeMetricTooltip(event){
+    var canvas = document.getElementById('runtime-metrics-chart');
+    var tooltip = $('#runtime-metrics-tooltip');
+    var hoverPoints = runtimeMetricsState.hoverPoints || [];
+    if(!canvas || !hoverPoints.length || !tooltip.length){
+      hideRuntimeMetricTooltip();
+      return;
+    }
+    var rect = canvas.getBoundingClientRect();
+    var x = event.clientX - rect.left;
+    var nearest = null;
+    hoverPoints.forEach(function(point){
+      var distance = Math.abs(point.x - x);
+      if(!nearest || distance < nearest.distance){
+        nearest = {point: point, distance: distance};
+      }
+    });
+    if(!nearest || nearest.distance > 18){
+      hideRuntimeMetricTooltip();
+      return;
+    }
+    var rows = (nearest.point.values || []).map(function(item){
+      return '<div class="runtime-chart-tooltip-row"><i style="background:'+item.color+'"></i><span>'+escapeHtml(item.label)+'</span><strong>'+runtimeMetricNumber(item.value)+'</strong></div>';
+    }).join('');
+    tooltip.html('<div class="runtime-chart-tooltip-time">'+escapeHtml(nearest.point.time || '-')+'</div>'+rows);
+    var tooltipWidth = tooltip.outerWidth() || 180;
+    var tooltipHeight = tooltip.outerHeight() || 120;
+    var left = Math.min(Math.max(8, nearest.point.x - tooltipWidth / 2), Math.max(8, rect.width - tooltipWidth - 8));
+    var top = event.clientY - rect.top - tooltipHeight - 12;
+    if(top < 8) top = event.clientY - rect.top + 12;
+    tooltip.css({left: left + 'px', top: top + 'px'}).prop('hidden', false);
+  }
   function renderRuntimeMetrics(){
+    hideRuntimeMetricTooltip();
     renderRuntimeMetricSummary();
     renderRuntimeMetricLegend();
     drawRuntimeMetricsChart();
@@ -12916,7 +12975,7 @@ $(function(){
       $('#sv-api-requests').text(statusValueOrDash(d.api_request_count));
       $('#sv-chat-api-requests').text(statusValueOrDash(d.chat_api_requests));
       $('#sv-listen-friends').text(statusValueOrDash(d.listen_count));
-      $('#sv-group').text(d.group_switch ? statusValueOrDash(d.group_count) : '0');
+      $('#sv-group').text(statusValueOrDash(d.group_count));
 
       $('#sv-delay').text(statusEnabledText(!!d.reply_delay_switch));
       $('#sv-default-prompt').text(statusValueOrDash(d.default_prompt));
@@ -13064,6 +13123,14 @@ $(function(){
     drawRuntimeMetricsChart();
   });
 
+  $(document).on('mousemove', '#runtime-metrics-chart', function(event){
+    renderRuntimeMetricTooltip(event);
+  });
+
+  $(document).on('mouseleave', '#runtime-metrics-chart', function(){
+    hideRuntimeMetricTooltip();
+  });
+
   $(document).on('click', '[data-runtime-metric-group]', function(){
     var group = String($(this).data('runtime-metric-group') || '').trim();
     if(!runtimeMetricGroups[group]) return;
@@ -13078,6 +13145,7 @@ $(function(){
 
   $(window).on('resize', function(){
     if(runtimeMetricsState.loaded && isStatusTabActive()){
+      hideRuntimeMetricTooltip();
       drawRuntimeMetricsChart();
     }
   });

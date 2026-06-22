@@ -2451,9 +2451,9 @@ def _dashboard_material_home_stats(wx_id='', runtime_material_ids=None):
 def _dashboard_config_status_snapshot(cfg):
     cfg = cfg or {}
     api_snapshot = _current_api_snapshot(cfg)
-    listen_list = list(cfg.get('listen_list', []) or [])
-    global_blacklist = list(cfg.get('global_blacklist', []) or [])
-    groups = list(cfg.get('group', []) or [])
+    listen_list = [str(item).strip() for item in (cfg.get('listen_list', []) or []) if str(item).strip()]
+    global_blacklist = [str(item).strip() for item in (cfg.get('global_blacklist', []) or []) if str(item).strip()]
+    groups = [str(item).strip() for item in (cfg.get('group', []) or []) if str(item).strip()]
     material_task_count = _count_enabled_tasks(cfg.get('material_outreach_list', []))
     friend_request_state = friend_request.load_state(DATA_DIR, str(cfg.get('wx_id') or 'default'))
     friend_request_settings = friend_request.normalize_settings(friend_request_state.get('settings'))
@@ -3251,6 +3251,13 @@ def _enrich_dashboard_status_snapshot(status, *, cfg=None, wx_id='', runtime_mat
     cfg = cfg or {}
     status = dict(status or {})
     status = _sync_status_api_count_from_runtime_metrics(status, runtime_metrics_payload)
+    listen_list = [str(item).strip() for item in (cfg.get('listen_list', []) or []) if str(item).strip()]
+    global_blacklist = [str(item).strip() for item in (cfg.get('global_blacklist', []) or []) if str(item).strip()]
+    groups = [str(item).strip() for item in (cfg.get('group', []) or []) if str(item).strip()]
+    status['listen_mode'] = '黑名单' if cfg.get('AllListen_switch') else '白名单'
+    status['listen_count'] = len(global_blacklist if cfg.get('AllListen_switch') else listen_list)
+    status['group_switch'] = bool(cfg.get('group_switch', False))
+    status['group_count'] = len(groups)
     if 'current_interface' not in status:
         status['current_interface'] = _current_api_snapshot(cfg).get('current_interface', '未连接')
     scheduled_count = _count_enabled_tasks(cfg.get('scheduled_message_task_list', []))
