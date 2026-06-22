@@ -1,10 +1,11 @@
-"""Queue helpers for material outreach AI preface prefetch/send."""
+"""素材触达 AI 附加文案预生成队列；文案跟随素材转发，不单独提前发送。"""
 
 from datetime import datetime, timedelta
 import uuid
 
 from feature.task_workbench_runtime_summary import runtime_snapshot
 
+# 提前生成 AI 附加文案，发送时仍跟随素材转发。
 PREFETCH_LEAD_SECONDS = 30
 _ACTIVE_STATUSES = {"pending"}
 _FINAL_STATUSES = {"sent", "failed"}

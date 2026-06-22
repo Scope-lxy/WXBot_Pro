@@ -3358,6 +3358,7 @@ class WXBot:
         action_mode = str(action.get("mode") or "").strip()
         preface = str(action.get("preface") or "")
         if action_mode == "ai_preface":
+            # 预生成 AI 附加文案，发送时跟随素材转发，不单独提前发送。
             return self._queue_material_outreach_preface_action(task, action)
         if not preface:
             preface_config = normalize_material_outreach_preface_config(task)
