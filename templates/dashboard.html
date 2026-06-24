@@ -560,17 +560,17 @@ html.icons-pref-local [class*=" bi-"]::before {
                 </select>
             </div>
             <div class="col-12 col-md-4">
-              <label class="cfg-label">模型</label>
-              <input type="text" class="form-control api-model-input" value="{{ cfg.get('model', '') }}" placeholder="模型名称">
+              <label class="cfg-label">API Key</label>
+              {% set _k = cfg.get('key', '') %}{% if _k|length > 10 %}{% set _km = _k[:5] + ('*' * (_k|length - 10)) + _k[-5:] %}{% else %}{% set _km = _k %}{% endif %}
+              <input type="text" class="form-control api-key-input" value="{{ _km }}" data-real-key="{{ _k }}" data-masked="{{ _km }}" placeholder="sk-..." autocomplete="off">
             </div>
             <div class="col-12 col-md-4">
               <label class="cfg-label">Base URL</label>
               <input type="text" class="form-control api-url-input" value="{{ cfg.get('url', '') }}" placeholder="https://api.example.com">
             </div>
             <div class="col-12 col-md-4">
-              <label class="cfg-label">API Key</label>
-              {% set _k = cfg.get('key', '') %}{% if _k|length > 10 %}{% set _km = _k[:5] + ('*' * (_k|length - 10)) + _k[-5:] %}{% else %}{% set _km = _k %}{% endif %}
-              <input type="text" class="form-control api-key-input" value="{{ _km }}" data-real-key="{{ _k }}" data-masked="{{ _km }}" placeholder="sk-..." autocomplete="off">
+              <label class="cfg-label">模型</label>
+              <input type="text" class="form-control api-model-input" value="{{ cfg.get('model', '') }}" placeholder="模型名称">
             </div>
             <div class="col-12 col-md-4">
               <label class="cfg-label">思考深度</label>
@@ -652,6 +652,14 @@ html.icons-pref-local [class*=" bi-"]::before {
                 </select>
             </div>
             <div class="col-12 col-md-4">
+              <label class="cfg-label">API Key</label>
+              <input type="text" class="form-control tts-api-key-input" name="tts_api_key" value="{{ tts_masked_key }}" data-real-key="{{ cfg.get('credentials', {}).get('api_key', '') }}" data-masked="{{ tts_masked_key }}" placeholder="填写语音接口 API Key" autocomplete="off">
+            </div>
+            <div class="col-12 col-md-4">
+              <label class="cfg-label">Base URL</label>
+              <input type="text" class="form-control tts-url-input" name="tts_url" value="{{ cfg.get('url', '') }}" placeholder="https://api.example.com">
+            </div>
+            <div class="col-12 col-md-4">
               <label class="cfg-label">语音模型</label>
               <select class="form-select tts-model-select" name="tts_model">
                   {% for model in tts_model_options_by_sdk.get(cfg.get('sdk', ''), []) %}
@@ -659,14 +667,6 @@ html.icons-pref-local [class*=" bi-"]::before {
                   {% endfor %}
                 </select>
               <input type="hidden" name="tts_voice_name" value="{{ cfg.get('voice_name', '') }}">
-            </div>
-            <div class="col-12 col-md-4">
-              <label class="cfg-label">Base URL</label>
-              <input type="text" class="form-control tts-url-input" name="tts_url" value="{{ cfg.get('url', '') }}" placeholder="https://api.example.com">
-            </div>
-            <div class="col-12 col-md-4">
-              <label class="cfg-label">API Key</label>
-              <input type="text" class="form-control tts-api-key-input" name="tts_api_key" value="{{ tts_masked_key }}" data-real-key="{{ cfg.get('credentials', {}).get('api_key', '') }}" data-masked="{{ tts_masked_key }}" placeholder="填写语音接口 API Key" autocomplete="off">
             </div>
             <div class="col-12 col-md-4">
               <label class="cfg-label">音色</label>
@@ -7326,12 +7326,12 @@ $(function(){
               '<option value="DusAPI" selected>DusAPI</option>'+
               '<option value="OpenAI SDK">OpenAI SDK</option>'+
             '</select></div>'+
-          '<div class="col-12 col-md-4"><label class="cfg-label">模型</label>'+
-            '<input type="text" class="form-control api-model-input" value="gpt-5" placeholder="模型名称"></div>'+
-          '<div class="col-12 col-md-4"><label class="cfg-label">Base URL</label>'+
-            '<input type="text" class="form-control api-url-input" value="https://api.dusapi.com" placeholder="https://api.example.com"></div>'+
           '<div class="col-12 col-md-4"><label class="cfg-label">API Key</label>'+
             '<input type="text" class="form-control api-key-input" data-real-key="" placeholder="sk-..." autocomplete="off"></div>'+
+          '<div class="col-12 col-md-4"><label class="cfg-label">Base URL</label>'+
+            '<input type="text" class="form-control api-url-input" value="https://api.dusapi.com" placeholder="https://api.example.com"></div>'+
+          '<div class="col-12 col-md-4"><label class="cfg-label">模型</label>'+
+            '<input type="text" class="form-control api-model-input" value="gpt-5" placeholder="模型名称"></div>'+
           '<div class="col-12 col-md-4"><label class="cfg-label">思考深度</label>'+
             '<select class="form-select api-reasoning-effort-select">'+
               '<option value="none">none</option>'+
@@ -7387,14 +7387,14 @@ $(function(){
         '<div class="row g-2">'+
           '<div class="col-12 col-md-4"><label class="cfg-label">接入方式</label>'+
             '<select class="form-select tts-sdk-select" name="tts_sdk">' + renderTtsSdkOptions(firstSdk) + '</select></div>'+
+          '<div class="col-12 col-md-4"><label class="cfg-label">API Key</label>'+
+            '<input type="text" class="form-control tts-api-key-input" name="tts_api_key" value="" data-real-key="" data-masked="" placeholder="填写语音接口 API Key" autocomplete="off"></div>'+
+          '<div class="col-12 col-md-4"><label class="cfg-label">Base URL</label>'+
+            '<input type="text" class="form-control tts-url-input" name="tts_url" value="' + apiTestEscape(firstUrl) + '" placeholder="https://api.example.com"></div>'+
           '<div class="col-12 col-md-4"><label class="cfg-label">语音模型</label>'+
             '<select class="form-select tts-model-select" name="tts_model">' + renderTtsModelOptions(firstSdk, firstModel) + '</select>'+
             '<input type="hidden" name="tts_voice_name" value="">'+
           '</div>'+
-          '<div class="col-12 col-md-4"><label class="cfg-label">Base URL</label>'+
-            '<input type="text" class="form-control tts-url-input" name="tts_url" value="' + apiTestEscape(firstUrl) + '" placeholder="https://api.example.com"></div>'+
-          '<div class="col-12 col-md-4"><label class="cfg-label">API Key</label>'+
-            '<input type="text" class="form-control tts-api-key-input" name="tts_api_key" value="" data-real-key="" data-masked="" placeholder="填写语音接口 API Key" autocomplete="off"></div>'+
           '<div class="col-12 col-md-4"><label class="cfg-label">音色</label>'+
             '<div class="tts-voice-picker">'+
               '<input type="text" class="form-control" name="tts_voice_id" value="" placeholder="填写音色 ID">'+
