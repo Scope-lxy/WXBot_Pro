@@ -12646,7 +12646,8 @@ $(function(){
     loading: false,
     loaded: false,
     visible: {},
-    hoverPoints: []
+    hoverPoints: [],
+    refreshTimer: null
   };
   var runtimeMetricGroups = {
     overview: {
@@ -12921,6 +12922,18 @@ $(function(){
     renderRuntimeMetricLegend();
     drawRuntimeMetricsChart();
   }
+  function scheduleRuntimeMetricsRefresh(){
+    clearTimeout(runtimeMetricsState.refreshTimer);
+    if(!isStatusTabActive() || runtimeMetricsState.loading || !runtimeMetricsState.loaded){
+      return;
+    }
+    runtimeMetricsState.refreshTimer = setTimeout(function(){
+      runtimeMetricsState.refreshTimer = null;
+      if(isStatusTabActive() && !runtimeMetricsState.loading){
+        loadRuntimeMetrics({silent:true});
+      }
+    }, 1000);
+  }
   function loadRuntimeMetrics(options){
     options = options || {};
     if(runtimeMetricsState.loading) return $.Deferred().resolve().promise();
@@ -13086,6 +13099,7 @@ $(function(){
     statusPollInFlight = true;
     refreshStatus().always(function(){
       statusPollInFlight = false;
+      scheduleRuntimeMetricsRefresh();
       scheduleStatusPolling(getStatusPollDelay());
     });
   }
