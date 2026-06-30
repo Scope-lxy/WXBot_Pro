@@ -4897,32 +4897,15 @@ class WXBot:
         self._ensure_message_runtime_state()
         key = message_content_fingerprint(chat_name, message)
         now = time.time()
-        source = str(getattr(message, "_wxbot_ingress_source", "") or "").strip()
-
-        def fingerprint_seen_at(value):
-            if isinstance(value, (list, tuple)) and value:
-                return float(value[0] or 0)
-            return float(value or 0)
-
-        def fingerprint_seen_source(value):
-            if isinstance(value, (list, tuple)) and len(value) >= 2:
-                return str(value[1] or "").strip()
-            return ""
 
         with self._incoming_seen_lock:
             cutoff = now - max(1, int(ttl or 1))
             self._incoming_seen_fingerprints = {
-                k: v for k, v in self._incoming_seen_fingerprints.items() if fingerprint_seen_at(v) >= cutoff
+                k: v for k, v in self._incoming_seen_fingerprints.items() if float(v or 0) >= cutoff
             }
-            previous = self._incoming_seen_fingerprints.get(key)
-            if (
-                previous
-                and fingerprint_seen_at(previous) >= cutoff
-                and fingerprint_seen_source(previous)
-                and fingerprint_seen_source(previous) != source
-            ):
+            if self._incoming_seen_fingerprints.get(key, 0) >= cutoff:
                 return False
-            self._incoming_seen_fingerprints[key] = (now, source)
+            self._incoming_seen_fingerprints[key] = now
             return True
 
     def _mark_recent_private_image_seen(self, chat_name, image_path, ttl=60):
