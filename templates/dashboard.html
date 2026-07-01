@@ -1181,7 +1181,7 @@ html.icons-pref-local [class*=" bi-"]::before {
               </div>
               <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="chat_voice_reply_request_keywords">触发关键词</label>
-                <input type="text" class="form-control" id="chat_voice_reply_request_keywords" placeholder="发语音；语音回我；说给我听；讲给我听" value="{{ config.get('chat_voice_reply_request_keywords', []) | join('；') }}">
+                <input type="text" class="form-control" id="chat_voice_reply_request_keywords" placeholder="声音；语音；别打字；说给我听" value="{{ config.get('chat_voice_reply_request_keywords', []) | join('；') }}">
                 <div class="cfg-hint">好友文字里包含任一关键词时，会进入临时语音模式；多个关键词用分号分隔。</div>
               </div>
               <div class="col-12 col-lg-4 cfg-inline-combo-col">
@@ -1195,7 +1195,7 @@ html.icons-pref-local [class*=" bi-"]::before {
                   <span class="cfg-inline-combo__separator">最多</span>
                   <div class="cfg-inline-combo__field">
                     <input type="number" class="form-control cfg-inline-combo__input" id="chat_voice_reply_limit_count" min="0" max="99" value="{{ config.get('chat_voice_reply_limit_count', 50) }}">
-                    <span class="cfg-inline-combo__suffix">次</span>
+                    <span class="cfg-inline-combo__suffix">条</span>
                   </div>
                 </div>
                 <div class="cfg-hint">滚动窗口计算；任一输入为 0 时表示不限制。</div>
@@ -1445,7 +1445,7 @@ html.icons-pref-local [class*=" bi-"]::before {
             <div class="row g-3">
               <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="group_voice_reply_request_keywords">触发关键词</label>
-                <input type="text" class="form-control" id="group_voice_reply_request_keywords" placeholder="语音说一下；讲给我们听；说给大家听" value="{{ config.get('group_voice_reply_request_keywords', []) | join('；') }}">
+                <input type="text" class="form-control" id="group_voice_reply_request_keywords" placeholder="声音；语音；别打字；说给我听" value="{{ config.get('group_voice_reply_request_keywords', []) | join('；') }}">
                 <div class="cfg-hint">群消息包含任一关键词时，本轮回复优先尝试发语音；多个关键词用分号分隔。</div>
               </div>
               <div class="col-12 col-lg-4 cfg-inline-combo-col">
