@@ -112,6 +112,81 @@ class RelationshipScanTests(unittest.TestCase):
         self.assertIn(TAG_DELETED, contact["tags"])
         self.assertEqual(contact["relationship_status"], STATUS_DELETED)
 
+    def test_merge_state_skips_ambiguous_duplicate_contact_names(self):
+        directory = {
+            "wx_id": "wxid_test",
+            "subjects": [
+                {
+                    "subject_type": "friend",
+                    "contact_key": "remark:1",
+                    "remark": "张姐",
+                    "display_name": "张姐",
+                    "send_name": "张姐",
+                    "tags": [],
+                },
+                {
+                    "subject_type": "friend",
+                    "contact_key": "remark:2",
+                    "remark": "张姐",
+                    "display_name": "张姐",
+                    "send_name": "张姐",
+                    "tags": [],
+                },
+            ],
+        }
+        state = {
+            "wx_id": "wxid_test",
+            "records": [{
+                "name": "张姐",
+                "status": STATUS_DELETED,
+                "evidence": "张姐开启了朋友验证，你还不是她朋友。",
+            }],
+        }
+
+        updated, matched = merge_state_into_contact_directory(directory, state)
+
+        self.assertEqual(matched, {})
+        self.assertNotIn("relationship_status", updated["subjects"][0])
+        self.assertNotIn("relationship_status", updated["subjects"][1])
+
+    def test_merge_state_uses_contact_key_for_duplicate_contact_names(self):
+        directory = {
+            "wx_id": "wxid_test",
+            "subjects": [
+                {
+                    "subject_type": "friend",
+                    "contact_key": "remark:1",
+                    "remark": "张姐",
+                    "display_name": "张姐",
+                    "send_name": "张姐",
+                    "tags": [],
+                },
+                {
+                    "subject_type": "friend",
+                    "contact_key": "remark:2",
+                    "remark": "张姐",
+                    "display_name": "张姐",
+                    "send_name": "张姐",
+                    "tags": [],
+                },
+            ],
+        }
+        state = {
+            "wx_id": "wxid_test",
+            "records": [{
+                "name": "张姐",
+                "contact_key": "remark:2",
+                "status": STATUS_DELETED,
+                "evidence": "张姐开启了朋友验证，你还不是她朋友。",
+            }],
+        }
+
+        updated, matched = merge_state_into_contact_directory(directory, state)
+
+        self.assertEqual(matched, {"张姐": "remark:2"})
+        self.assertNotIn("relationship_status", updated["subjects"][0])
+        self.assertEqual(updated["subjects"][1]["relationship_status"], STATUS_DELETED)
+
     def test_daily_summary_counts_events_and_pending_sync(self):
         state = {
             "wx_id": "wxid_test",

@@ -951,6 +951,29 @@ def contact_directory_auto_cycle_state(directory):
     }
 
 
+def reset_legacy_tail_complete_auto_cycle(directory, *, now=None) -> tuple[dict[str, Any], bool]:
+    maintenance = ((directory or {}).get("maintenance") or {}) if isinstance(directory, dict) else {}
+    if not isinstance(maintenance, dict):
+        return directory if isinstance(directory, dict) else {}, False
+    if (
+        str(maintenance.get("auto_cycle_status") or "").strip().lower() != "completed"
+        or str(maintenance.get("last_batch_outcome") or "").strip() != "tail_complete"
+    ):
+        return directory, False
+    updated = write_contact_directory_auto_cycle_state(
+        directory,
+        now=now,
+        auto_cycle_status="reset_required",
+        auto_cycle_next_start_name="",
+        auto_cycle_backup_start_name="",
+        auto_cycle_last_outcome="legacy_tail_complete_reset",
+        auto_cycle_retry_count=0,
+        last_full_scan_completed_at="",
+    )
+    updated.setdefault("maintenance", {})["last_error"] = "旧版短批次完成判定已重置，等待重新维护"
+    return updated, True
+
+
 def write_contact_directory_auto_cycle_state(directory, *, now=None, **updates):
     directory = directory if isinstance(directory, dict) else {}
     maintenance = directory.setdefault("maintenance", {})
@@ -1499,6 +1522,18 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         now_dt = now_fn(now)
     else:
         now_dt = maintenance_now(now)
+    reset_fn = getattr(bot, "_reset_legacy_tail_complete_auto_cycle", None)
+    if callable(reset_fn):
+        directory, legacy_reset = reset_fn(directory, now=now_dt)
+    else:
+        directory, legacy_reset = reset_legacy_tail_complete_auto_cycle(directory, now=now_dt)
+    if legacy_reset:
+        save_directory_fn = getattr(bot, "_save_contact_profiles_directory", None)
+        if callable(save_directory_fn):
+            save_directory_fn(directory)
+        else:
+            save_contact_profiles_directory(bot, directory)
+        _bot_log(bot, level="WARNING", message="[通讯录维护] 检测到旧版短批次误完成状态，已重置并等待重新维护")
     interval_minutes_fn = getattr(bot, "_contact_directory_auto_maintenance_interval_minutes_value", None)
     if callable(interval_minutes_fn):
         interval_minutes = interval_minutes_fn()
@@ -1642,7 +1677,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
 
         tail_confirmation_active = (
             cycle["last_outcome"] in {"short_advanced", "tail_confirm_pending"}
-            and outcome in {"empty_batch", "not_advanced", "suspicious_repeat"}
+            and outcome in {"not_advanced", "suspicious_repeat"}
             and bool(cycle_start_name)
         )
         tail_confirm_retry_count = refreshed_cycle["retry_count"] + 1 if tail_confirmation_active else 0

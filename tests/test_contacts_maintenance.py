@@ -559,6 +559,138 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(final_updates["auto_cycle_last_outcome"], "completed")
         self.assertTrue(final_updates["last_full_scan_completed_at"])
 
+    def test_auto_maintenance_empty_batch_does_not_confirm_short_batch_tail(self):
+        calls = []
+
+        class FreeLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        class FakeBot:
+            wx = object()
+            start_time = "2026-06-10 20:00:00"
+            contact_directory_auto_maintenance_switch = True
+            contact_directory_auto_maintenance_interval_minutes = 5
+            contact_directory_auto_maintenance_full_scan_interval_days = 1
+            contact_directory_auto_maintenance_window_start = "00:00"
+            contact_directory_auto_maintenance_window_end = "23:59"
+            contact_directory_auto_maintenance_batch_size = 50
+
+            def _load_contact_profiles_directory(self):
+                return {
+                    "maintenance": {
+                        "auto_cycle_status": "running",
+                        "auto_cycle_next_start_name": "最后联系人",
+                        "auto_cycle_last_outcome": "tail_confirm_pending",
+                        "auto_cycle_retry_count": 2,
+                        "last_attempted_at": "2026-06-10 20:00:00",
+                    }
+                }, "ignored.json", "scope_rui"
+
+            def _get_wechat_action_lock(self):
+                return FreeLock()
+
+            def _flush_lightweight_send_queue(self):
+                return True
+
+            def _has_pending_lightweight_send_queue(self):
+                return False
+
+            def refresh_contact_profiles_batch(self, **kwargs):
+                calls.append(("refresh_batch", kwargs))
+                return {
+                    "directory": {"maintenance": {"auto_cycle_retry_count": 2}},
+                    "analysis": {"outcome": "empty_batch", "completed": False},
+                    "next_start_name": "",
+                    "backup_start_name": "",
+                    "completed": False,
+                }
+
+            def _write_contact_directory_auto_cycle_state(self, directory, **updates):
+                calls.append(("write_cycle", updates))
+                directory = dict(directory or {})
+                directory.setdefault("maintenance", {}).update(updates)
+                return directory
+
+            def _save_contact_profiles_directory(self, _directory):
+                pass
+
+        with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
+            self.assertTrue(check_contact_directory_auto_maintenance(FakeBot(), now=datetime(2026, 6, 10, 21, 0, 0)))
+
+        final_updates = [call[1] for call in calls if call[0] == "write_cycle"][-1]
+        self.assertNotEqual(final_updates["auto_cycle_status"], "completed")
+        self.assertEqual(final_updates["auto_cycle_status"], "reset_required")
+        self.assertFalse(final_updates["auto_cycle_next_start_name"])
+
+    def test_auto_maintenance_resets_legacy_tail_complete_cycle_before_waiting_days(self):
+        calls = []
+
+        class FreeLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        class FakeBot:
+            wx = object()
+            start_time = "2026-06-10 20:00:00"
+            contact_directory_auto_maintenance_switch = True
+            contact_directory_auto_maintenance_interval_minutes = 5
+            contact_directory_auto_maintenance_full_scan_interval_days = 7
+            contact_directory_auto_maintenance_window_start = "00:00"
+            contact_directory_auto_maintenance_window_end = "23:59"
+            contact_directory_auto_maintenance_batch_size = 50
+
+            def _load_contact_profiles_directory(self):
+                return {
+                    "maintenance": {
+                        "auto_cycle_status": "completed",
+                        "auto_cycle_last_outcome": "completed",
+                        "last_batch_outcome": "tail_complete",
+                        "last_full_scan_completed_at": "2026-06-10 20:00:00",
+                        "last_attempted_at": "2026-06-10 20:00:00",
+                    }
+                }, "ignored.json", "scope_rui"
+
+            def _get_wechat_action_lock(self):
+                return FreeLock()
+
+            def _flush_lightweight_send_queue(self):
+                return True
+
+            def _has_pending_lightweight_send_queue(self):
+                return False
+
+            def refresh_contact_profiles_batch(self, **kwargs):
+                calls.append(("refresh_batch", kwargs))
+                return {
+                    "directory": {"maintenance": {"auto_cycle_batches_completed": 0, "auto_cycle_retry_count": 0}},
+                    "analysis": {"outcome": "advanced", "completed": False},
+                    "next_start_name": "阿英50",
+                    "backup_start_name": "阿英49",
+                    "completed": False,
+                }
+
+            def _write_contact_directory_auto_cycle_state(self, directory, **updates):
+                calls.append(("write_cycle", updates))
+                directory = dict(directory or {})
+                directory.setdefault("maintenance", {}).update(updates)
+                return directory
+
+            def _save_contact_profiles_directory(self, directory):
+                calls.append(("save_directory", (directory.get("maintenance") or {}).get("auto_cycle_status")))
+
+        with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
+            self.assertTrue(check_contact_directory_auto_maintenance(FakeBot(), now=datetime(2026, 6, 11, 21, 0, 0)))
+
+        self.assertIn(("save_directory", "reset_required"), calls)
+        self.assertTrue(any(call[0] == "refresh_batch" for call in calls))
+
     def test_prepare_switches_contact_without_show(self):
         calls = []
 

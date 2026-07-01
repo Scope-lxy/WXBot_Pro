@@ -352,6 +352,40 @@ def _contact_match_values(contact: dict[str, Any]) -> set[str]:
     return {value for value in values if value}
 
 
+def _relationship_contact_match_map(contacts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    by_key: dict[str, dict[str, Any]] = {}
+    value_counts: dict[str, int] = {}
+    value_contact: dict[str, dict[str, Any]] = {}
+    for contact in contacts:
+        if not isinstance(contact, dict):
+            continue
+        key = contact_identity_key(contact)
+        if key and key not in by_key:
+            by_key[key] = contact
+        for value in _contact_match_values(contact):
+            value_counts[value] = value_counts.get(value, 0) + 1
+            value_contact[value] = contact
+    unique_values = {
+        value: contact
+        for value, contact in value_contact.items()
+        if value_counts.get(value, 0) == 1
+    }
+    return {"by_key": by_key, "unique_values": unique_values}
+
+
+def _matched_contact_for_record(record: dict[str, Any], match_map: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    contact_key = _clean_text(record.get("contact_key"))
+    if contact_key:
+        contact = match_map["by_key"].get(contact_key)
+        if contact is not None:
+            return contact
+        return None
+    name = _clean_text(record.get("name"))
+    if not name:
+        return None
+    return match_map["unique_values"].get(name)
+
+
 def _relation_tags_for_status(status: str) -> tuple[list[str], list[str]]:
     if status == STATUS_BLOCKED:
         return [TAG_BLOCKED], [TAG_DELETED]
@@ -374,14 +408,11 @@ def merge_state_into_contact_directory(directory: dict[str, Any], state: dict[st
     timestamp = _iso_timestamp(now)
     matched_names: dict[str, str] = {}
     changed = False
-    for contact in updated.get("subjects") or []:
-        if not isinstance(contact, dict):
-            continue
-        values = _contact_match_values(contact)
-        if not values:
-            continue
-        matched_record = next((record for record in records if record["name"] in values), None)
-        if not matched_record:
+    contacts = [contact for contact in (updated.get("subjects") or []) if isinstance(contact, dict)]
+    match_map = _relationship_contact_match_map(contacts)
+    for matched_record in records:
+        contact = _matched_contact_for_record(matched_record, match_map)
+        if contact is None:
             continue
         status = matched_record["status"]
         add_tags, remove_tags = _relation_tags_for_status(status)
