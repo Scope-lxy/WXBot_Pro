@@ -52,6 +52,7 @@ AUTO_FULL_SCAN_MIN_DAYS = 1
 AUTO_FULL_SCAN_MAX_DAYS = 30
 AUTO_WINDOW_START_DEFAULT = "00:00"
 AUTO_WINDOW_END_DEFAULT = "23:59"
+AUTO_TAIL_CONFIRM_RETRY_LIMIT = 3
 STOP_MAINTENANCE_HINT = "停止请求会尽快生效；若当前读取未被打断，则会在本批返回后停止。"
 STOP_INTERRUPT_INITIAL_DELAY_SECONDS = 0.6
 STOP_INTERRUPT_INTERVAL_SECONDS = 0.8
@@ -480,6 +481,7 @@ def analyze_refresh_batch(
     requested_count: int,
     current_start_name: Any,
     previous_next_start_name: Any = "",
+    allow_short_batch_complete: bool = True,
 ) -> dict[str, Any]:
     details = list(raw_details or [])
     names = []
@@ -521,6 +523,14 @@ def analyze_refresh_batch(
             "repeat_count": repeat_count,
         }
     if short_batch and advanced:
+        if not allow_short_batch_complete:
+            return {
+                "outcome": "short_advanced",
+                "completed": False,
+                "advanced": True,
+                "next_start_name": next_start_name,
+                "repeat_count": repeat_count,
+            }
         return {
             "outcome": "tail_complete",
             "completed": True,
@@ -1192,6 +1202,7 @@ def refresh_contact_profiles_single_batch(
             requested_count=settings["count"],
             current_start_name=used_start_name,
             previous_next_start_name=previous_next_start_name,
+            allow_short_batch_complete=run_kind != "auto_maintenance",
         )
         cursor_start_names = start_names_from_details(raw_details, limit=2)
         next_start_name = str(analysis.get("next_start_name") or "") or (cursor_start_names[0] if cursor_start_names else "")
@@ -1224,6 +1235,11 @@ def refresh_contact_profiles_single_batch(
         sync_identity_fn = getattr(bot, "_sync_identity_index_from_contact_directory", None)
         if callable(sync_identity_fn):
             sync_identity_fn(finished)
+        sync_relationship_fn = getattr(bot, "_sync_relationship_state_from_contact_directory", None)
+        if callable(sync_relationship_fn):
+            synced_directory = sync_relationship_fn(finished)
+            if isinstance(synced_directory, dict):
+                finished = synced_directory
         if log_start_finish:
             if externally_paused:
                 _bot_log(bot, level="WARNING", message=f"[通讯录维护] {mode_label}已停止，本次读取 {len(raw_details)} 个好友")
@@ -1624,7 +1640,19 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         backup_start_name = str(result.get("backup_start_name") or "").strip()
         stamp = now_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        if bool(result.get("completed")):
+        tail_confirmation_active = (
+            cycle["last_outcome"] in {"short_advanced", "tail_confirm_pending"}
+            and outcome in {"empty_batch", "not_advanced", "suspicious_repeat"}
+            and bool(cycle_start_name)
+        )
+        tail_confirm_retry_count = refreshed_cycle["retry_count"] + 1 if tail_confirmation_active else 0
+        confirmed_tail_complete = tail_confirmation_active and tail_confirm_retry_count >= AUTO_TAIL_CONFIRM_RETRY_LIMIT
+        if bool(result.get("completed")) or confirmed_tail_complete:
+            if confirmed_tail_complete:
+                _bot_log(
+                    bot,
+                    message=f"[通讯录维护] 自动维护短批次后游标连续未推进，确认本轮完成：{cycle_start_name}",
+                )
             if callable(write_cycle_fn):
                 refreshed_directory = write_cycle_fn(
                     refreshed_directory,
@@ -1651,7 +1679,38 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     auto_cycle_batches_completed=refreshed_cycle["batches_completed"] + 1,
                     last_full_scan_completed_at=stamp,
                 )
-        elif outcome == "advanced":
+        elif tail_confirmation_active:
+            _bot_log(
+                bot,
+                level="WARNING",
+                message=(
+                    f"[通讯录维护] 自动维护短批次后游标暂未推进：{cycle_start_name}，"
+                    f"继续确认尾部 {tail_confirm_retry_count}/{AUTO_TAIL_CONFIRM_RETRY_LIMIT}"
+                ),
+            )
+            if callable(write_cycle_fn):
+                refreshed_directory = write_cycle_fn(
+                    refreshed_directory,
+                    now=now_dt,
+                    auto_cycle_status="running",
+                    auto_cycle_next_start_name=cycle_start_name,
+                    auto_cycle_backup_start_name=cycle["backup_start_name"],
+                    auto_cycle_last_outcome="tail_confirm_pending",
+                    auto_cycle_retry_count=tail_confirm_retry_count,
+                    auto_cycle_batches_completed=refreshed_cycle["batches_completed"] + 1,
+                )
+            else:
+                refreshed_directory = write_contact_directory_auto_cycle_state(
+                    refreshed_directory,
+                    now=now_dt,
+                    auto_cycle_status="running",
+                    auto_cycle_next_start_name=cycle_start_name,
+                    auto_cycle_backup_start_name=cycle["backup_start_name"],
+                    auto_cycle_last_outcome="tail_confirm_pending",
+                    auto_cycle_retry_count=tail_confirm_retry_count,
+                    auto_cycle_batches_completed=refreshed_cycle["batches_completed"] + 1,
+                )
+        elif outcome in {"advanced", "short_advanced"}:
             _bot_log(
                 bot,
                 message=(

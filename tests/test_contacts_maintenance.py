@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+from feature.contacts import analyze_refresh_batch
 from feature.contacts import check_contact_directory_auto_maintenance
 from feature.contacts import edit_friend_info_via_chat_profile
 from feature.contacts import modify_friend_tags_via_chat_profile
@@ -463,6 +464,101 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertIn("[通讯录维护] 自动维护使用游标：主游标，备用游标：备用游标", log_messages)
         self.assertIn("[通讯录维护] 自动维护游标推进：主游标 -> 新主游标，备用游标：新备用游标", log_messages)
 
+    def test_auto_maintenance_short_batch_keeps_cycle_running(self):
+        analysis = analyze_refresh_batch(
+            raw_details=[{"备注": "阿英1"}, {"备注": "阿英2"}],
+            requested_count=50,
+            current_start_name="",
+            allow_short_batch_complete=False,
+        )
+
+        self.assertEqual(analysis["outcome"], "short_advanced")
+        self.assertFalse(analysis["completed"])
+
+    def _tail_confirmation_updates(self, retry_count):
+        calls = []
+
+        class FreeLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        class FakeBot:
+            wx = object()
+            start_time = "2026-06-10 20:00:00"
+            contact_directory_auto_maintenance_switch = True
+            contact_directory_auto_maintenance_interval_minutes = 5
+            contact_directory_auto_maintenance_full_scan_interval_days = 1
+            contact_directory_auto_maintenance_window_start = "00:00"
+            contact_directory_auto_maintenance_window_end = "23:59"
+            contact_directory_auto_maintenance_batch_size = 50
+
+            def _load_contact_profiles_directory(self):
+                return {
+                    "maintenance": {
+                        "auto_cycle_status": "running",
+                        "auto_cycle_next_start_name": "最后联系人",
+                        "auto_cycle_last_outcome": "short_advanced" if retry_count == 0 else "tail_confirm_pending",
+                        "auto_cycle_retry_count": retry_count,
+                        "last_attempted_at": "2026-06-10 20:00:00",
+                    }
+                }, "ignored.json", "scope_rui"
+
+            def _get_wechat_action_lock(self):
+                return FreeLock()
+
+            def _flush_lightweight_send_queue(self):
+                return True
+
+            def _has_pending_lightweight_send_queue(self):
+                return False
+
+            def refresh_contact_profiles_batch(self, **kwargs):
+                calls.append(("refresh_batch", kwargs))
+                return {
+                    "directory": {
+                        "maintenance": {
+                            "auto_cycle_retry_count": retry_count,
+                            "auto_cycle_batches_completed": 8,
+                        }
+                    },
+                    "analysis": {"outcome": "not_advanced", "completed": False},
+                    "next_start_name": "最后联系人",
+                    "backup_start_name": "",
+                    "completed": False,
+                }
+
+            def _write_contact_directory_auto_cycle_state(self, directory, **updates):
+                calls.append(("write_cycle", updates))
+                directory = dict(directory or {})
+                directory.setdefault("maintenance", {}).update(updates)
+                return directory
+
+            def _save_contact_profiles_directory(self, _directory):
+                pass
+
+        with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
+            self.assertTrue(check_contact_directory_auto_maintenance(FakeBot(), now=datetime(2026, 6, 10, 21, 0, 0)))
+
+        return [call[1] for call in calls if call[0] == "write_cycle"][-1]
+
+    def test_auto_maintenance_waits_before_confirming_short_batch_tail(self):
+        final_updates = self._tail_confirmation_updates(retry_count=0)
+
+        self.assertEqual(final_updates["auto_cycle_status"], "running")
+        self.assertEqual(final_updates["auto_cycle_last_outcome"], "tail_confirm_pending")
+        self.assertEqual(final_updates["auto_cycle_next_start_name"], "最后联系人")
+        self.assertEqual(final_updates["auto_cycle_retry_count"], 1)
+
+    def test_auto_maintenance_confirms_completion_after_repeated_short_batch_stalls(self):
+        final_updates = self._tail_confirmation_updates(retry_count=2)
+
+        self.assertEqual(final_updates["auto_cycle_status"], "completed")
+        self.assertEqual(final_updates["auto_cycle_last_outcome"], "completed")
+        self.assertTrue(final_updates["last_full_scan_completed_at"])
+
     def test_prepare_switches_contact_without_show(self):
         calls = []
 
@@ -664,6 +760,54 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(read_logs, [
             "[通讯录维护] 已读取联系人 20 人，当前：阿英20",
         ])
+
+    def test_refresh_batch_uses_relationship_synced_directory_when_available(self):
+        calls = []
+
+        class FakeLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeWeChat:
+            def GetFriendDetails(self, **kwargs):
+                detail = {"备注": "阿英2"}
+                kwargs["callback"](detail)
+                return [detail]
+
+            def SwitchToChat(self):
+                pass
+
+        class FakeBot:
+            wx = FakeWeChat()
+
+            def _get_wechat_action_lock(self):
+                return FakeLock()
+
+            def _load_contact_profiles_directory(self):
+                return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
+
+            def _prepare_contact_directory_window(self):
+                pass
+
+            def _sync_relationship_state_from_contact_directory(self, directory):
+                calls.append(("relationship_sync", directory))
+                updated = dict(directory or {})
+                subjects = list(updated.get("subjects") or [])
+                subjects[0] = dict(subjects[0], relationship_status="deleted")
+                updated["subjects"] = subjects
+                return updated
+
+        with (
+            patch("feature.contacts.save_contact_directory"),
+            patch("feature.contacts.load_contact_directory", return_value={"subjects": [], "maintenance": {}}),
+        ):
+            result = refresh_contact_profiles_single_batch(FakeBot(), mode="standard", run_kind="auto_maintenance")
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(result["directory"]["subjects"][0]["relationship_status"], "deleted")
 
     def test_contact_positioning_does_not_log_every_scanned_callback_item(self):
         log_messages = []

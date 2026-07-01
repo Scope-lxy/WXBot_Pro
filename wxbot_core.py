@@ -2342,6 +2342,21 @@ class WXBot:
         state = relationship_scan.load_state(self.config.DATA_DIR, str(getattr(self, "wx_id", "") or "default"))
         return relationship_scan.relationship_scan_payload(state)
 
+    def _sync_relationship_state_from_contact_directory(self, _directory=None):
+        wx_id = str(getattr(self, "wx_id", "") or "default")
+        try:
+            state = relationship_scan.load_state(self.config.DATA_DIR, wx_id)
+            if not state.get("records"):
+                return None
+            updated_state = relationship_scan.apply_state_to_local_contacts(self, state)
+            if updated_state != state:
+                relationship_scan.save_state(self.config.DATA_DIR, updated_state)
+            directory, _directory_file, _wx_id = self._load_contact_profiles_directory()
+            return directory
+        except Exception as exc:
+            log(level="WARNING", message=f"关系扫描状态回填通讯录失败：{exc}")
+            return None
+
     def scan_relationship_sessions(self):
         result = relationship_scan.scan_current_sessions(self, mode="manual")
         self._sync_relationship_metrics()
