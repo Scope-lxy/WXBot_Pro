@@ -455,4 +455,6 @@ def route_admin_plain_message(bot, chat, message):
         return chat.SendMsg("当前正在发圈，请继续发送文案/图片，或使用 /重新生成、/取消发圈")
     if mode == FORWARD_MODE:
         return chat.SendMsg("当前正在创建转发任务，请继续按提示操作")
+    if getattr(message, "attr", None) == "self":
+        return True
     return chat.SendMsg(admin_idle_prompt(bot))

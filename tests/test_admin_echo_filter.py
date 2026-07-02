@@ -113,6 +113,14 @@ class AdminEchoFilterTests(unittest.TestCase):
         self.assertTrue(getattr(msg, "_skip_memory", False))
         self.assertTrue(getattr(bot, "consumed_runtime_echo", False))
 
+    def test_idle_self_plain_message_does_not_trigger_admin_prompt(self):
+        bot = FakeBot()
+        chat = FakeAdminChat()
+        msg = SimpleNamespace(type="text", attr="self", sender="LXYou", content="哈哈")
+
+        self.assertTrue(takeover_runtime.route_admin_plain_message(bot, chat, msg))
+        self.assertEqual(chat.sent, [])
+
 
 if __name__ == "__main__":
     unittest.main()
