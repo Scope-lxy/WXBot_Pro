@@ -30,6 +30,26 @@ class MemoryContextRepairCoreTests(unittest.TestCase):
         self.assertTrue(plan.anchor_found)
         self.assertEqual([item["content"] for item in plan.messages_to_append], ["今天不舒服", "那多休息"])
 
+    def test_build_repair_plan_appends_missing_messages_before_anchor(self):
+        local = [
+            {"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "早"},
+            {"time": "4", "attr": "friend", "sender": "张三", "type": "text", "content": "后来呢"},
+        ]
+        remote = [
+            {"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "早"},
+            {"time": "2", "attr": "self", "sender": "self", "type": "text", "content": "手机发的第一条"},
+            {"time": "3", "attr": "self", "sender": "self", "type": "text", "content": "手机发的第二条"},
+            {"time": "4", "attr": "friend", "sender": "张三", "type": "text", "content": "后来呢"},
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5)
+
+        self.assertTrue(plan.anchor_found)
+        self.assertEqual(
+            [item["content"] for item in plan.messages_to_append],
+            ["手机发的第一条", "手机发的第二条"],
+        )
+
     def test_repeated_short_text_without_sequence_anchor_is_conservative(self):
         local = [
             {"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "好"},

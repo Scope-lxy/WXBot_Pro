@@ -142,13 +142,9 @@ def build_repair_plan(local_history, remote_history, *, anchor_recent_count=DEFA
         for item in filter_model_repair_messages(local_history)
         if unique_message_key(item)
     }
-    if anchor is None:
-        candidates = remote
-    else:
-        candidates = remote[anchor + 1:]
     messages_to_append = [
         dict(item)
-        for item in candidates
+        for item in remote
         if unique_message_key(item) and unique_message_key(item) not in existing_keys
     ]
     return RepairPlan(
