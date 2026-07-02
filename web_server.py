@@ -2872,7 +2872,7 @@ def api_moments_tasks_update(task_id):
             next_tasks.append(task)
             continue
         if task.get('status') == 'pending':
-            return jsonify({'status': 'error', 'message': '这条朋友圈任务已生成待执行实例，请先取消后再编辑'}), 400
+            return jsonify({'status': 'error', 'message': '这条朋友圈任务正在等待发布，请先取消后再编辑'}), 400
         allowed_updates = {}
         for key in (
             'enabled',
@@ -3097,7 +3097,7 @@ def api_moments_tasks_generate(task_id):
     if task is None:
         return jsonify({'status': 'error', 'message': '朋友圈任务不存在'}), 404
     if task.get('status') == 'pending':
-        return jsonify({'status': 'error', 'message': '这条朋友圈任务已生成待执行实例，请先取消后再重新生成'}), 400
+        return jsonify({'status': 'error', 'message': '这条朋友圈任务正在等待发布，请先取消后再重新生成'}), 400
     pending_task = _normalize_moments_task({
         **task,
         'enabled': True,

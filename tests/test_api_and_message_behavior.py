@@ -1152,6 +1152,7 @@ class MessageBehaviorTests(unittest.TestCase):
             bot._get_pending_visual_context("测试群")["image_paths"],
             [r"C:\tmp\group-image.png"],
         )
+        self.assertEqual(bot._get_pending_visual_context("测试群")["visual_notes"], [""])
 
     def test_private_message_pipeline_merges_batch_without_version_cancelling_reply(self):
         bot = WXBot.__new__(WXBot)
@@ -1179,6 +1180,31 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertEqual(sent_to_ai, ["在吗\n我想你", "刚才忘了说"])
         self.assertFalse(bot._private_message_pipelines["张三"]["worker_running"])
+
+    def test_private_message_pipeline_separates_image_batch_from_text_batch(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_message_merge_delay=3,
+            chat_image_recognition_switch=True,
+        )
+        bot.is_stop_requested = lambda: False
+        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
+        closed_batches = []
+        bot._start_private_message_worker_locked = lambda chat, pipeline: closed_batches.append(
+            [msg.content for msg in pipeline["queued_batches"][-1]]
+        ) or True
+
+        chat = SimpleNamespace(who="张三")
+        text_msg = SimpleNamespace(type="text", attr="friend", sender="张三", content="在吗", id="1")
+        image_msg = SimpleNamespace(type="image", attr="friend", sender="张三", content=r"C:\tmp\a.png", id="2")
+
+        bot._ensure_message_runtime_state()
+        self.assertTrue(bot._enqueue_private_message_for_ai(chat, text_msg))
+        self.assertTrue(bot._enqueue_private_message_for_ai(chat, image_msg))
+
+        pipeline = bot._private_message_pipelines["张三"]
+        self.assertEqual([msg.content for msg in pipeline["open_messages"]], [r"C:\tmp\a.png"])
+        self.assertEqual([list(batch) for batch in closed_batches], [["在吗"]])
 
     def test_private_reply_stops_after_pause_even_when_reply_already_generated(self):
         class FakeChat:

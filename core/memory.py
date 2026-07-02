@@ -180,15 +180,34 @@ class MemoryManager:
         messages[recent_start:] = [item for _, _, item in sortable_recent]
         return messages
 
-    def save_message(self, chat_name, sender, content, msg_type, msg_attr, max_count, message_time=None):
+    def save_message(self, chat_name, sender, content, msg_type, msg_attr, max_count, message_time=None, image_paths=None, visual_notes=None):
         path = self._get_memory_path(chat_name)
+        normalized_msg_type = str(msg_type).strip().lower()
+        normalized_image_paths = [
+            str(path or "").strip()
+            for path in (image_paths or [])
+            if str(path or "").strip()
+        ]
+        normalized_visual_notes = [
+            str(note or "").strip()
+            for note in (visual_notes or [])
+            if str(note or "").strip()
+        ]
+        normalized_content = str(content)
+        if normalized_msg_type == "image":
+            normalized_content = "[图片]"
         entry = {
             "time": self._normalize_message_time(message_time),
             "type": str(msg_type),
             "attr": str(msg_attr),
             "sender": str(sender),
-            "content": str(content),
+            "content": normalized_content,
         }
+        if normalized_image_paths:
+            entry["image_paths"] = normalized_image_paths
+        if normalized_visual_notes:
+            entry["visual_notes"] = normalized_visual_notes
+            entry["visual_note"] = next((note for note in normalized_visual_notes if note), "")
         with self._get_lock(chat_name):
             if os.path.exists(path):
                 try:
@@ -210,9 +229,14 @@ class MemoryManager:
     def _message_image_paths(entry):
         entry = entry if isinstance(entry, dict) else {}
         msg_type = str(entry.get("type", "") or "").strip().lower()
+        image_paths = entry.get("image_paths")
+        if isinstance(image_paths, list):
+            normalized_paths = [str(path or "").strip() for path in image_paths if str(path or "").strip()]
+            if normalized_paths:
+                return normalized_paths
         raw = str(entry.get("content", "") or "").strip()
         if msg_type == "image":
-            return [raw] if raw else []
+            return [raw] if raw and raw != "[图片]" else []
         if not raw:
             return []
         _text_part, image_paths = split_quoted_image_message(raw)
@@ -262,6 +286,12 @@ class MemoryManager:
                 if not any(str(note or "").strip() for note in merged_notes):
                     continue
                 primary_note = next((note for note in merged_notes if str(note or "").strip()), "")
+                if entry.get("type") == "image" and entry.get("content") != "[图片]":
+                    entry["content"] = "[图片]"
+                    changed = True
+                if entry.get("image_paths") != entry_paths:
+                    entry["image_paths"] = entry_paths
+                    changed = True
                 if entry.get("visual_note") != primary_note:
                     entry["visual_note"] = primary_note
                     changed = True

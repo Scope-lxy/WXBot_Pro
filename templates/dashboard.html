@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -2311,8 +2311,8 @@ html.icons-pref-local [class*=" bi-"]::before {
           <span class="ai-moments-chip ui-pill is-success" id="scheduled-message-task-count">总任务 0</span>
           <span class="ai-moments-chip ui-pill is-success">已启用 0</span>
           <span class="ai-moments-chip ui-pill is-danger">已停用 0</span>
-          <span class="ai-moments-chip ui-pill is-info">待执行实例 0</span>
-          <span class="ai-moments-chip ui-pill is-running">执行中实例 0</span>
+          <span class="ai-moments-chip ui-pill is-info">等待发送 0</span>
+          <span class="ai-moments-chip ui-pill is-running">发送中 0</span>
         </div>
         <div class="summary-action-row">
           <select class="form-select cfg-inline-control ui-head-select task-scope-wx-select" id="scheduled-message-account-select" data-task-tab="tab-scheduled-message">
@@ -2484,14 +2484,14 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
     <div class="cfg-card" id="scheduled-message-runtime-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-list-check ui-head__icon"></i><h5 class="ui-head__title">运行时实例与执行记录</h5><span class="desc ui-head__desc">查看系统自动生成的实例，以及已经结束的执行结果</span></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-list-check ui-head__icon"></i><h5 class="ui-head__title">任务队列与执行记录</h5><span class="desc ui-head__desc">查看等待发送的消息，以及已经结束的发送结果</span></div>
       <div class="moments-execution-grid">
         <section class="ai-moments-runtime-block" data-task-runtime-module="scheduled_message" data-task-runtime-card="queue">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">运行时实例</h5><span class="desc">查看系统按任务设置生成的待执行实例</span></div><span class="ai-moments-chip ui-pill" id="scheduled-message-runtime-pending-count" data-task-runtime-count>0 条</span></div>
+          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">等待发送</h5><span class="desc">查看下一批按任务设置自动发送的消息</span></div><span class="ai-moments-chip ui-pill" id="scheduled-message-runtime-pending-count" data-task-runtime-count>0 条</span></div>
           <div class="ai-moments-runtime-list" id="scheduled_message_runtime_pending" data-task-runtime-list></div>
         </section>
         <section class="ai-moments-runtime-block" data-task-runtime-module="scheduled_message" data-task-runtime-card="executions">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">执行记录</h5><span class="desc">查看已经结束的发送结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="scheduled_message">清空</button></div>
+          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">发送记录</h5><span class="desc">查看已经结束的发送结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="scheduled_message">清空</button></div>
           <div class="ai-moments-runtime-list" id="scheduled_message_runtime_executed" data-task-runtime-list></div>
         </section>
       </div>
@@ -2512,8 +2512,8 @@ html.icons-pref-local [class*=" bi-"]::before {
           <span class="ai-moments-chip ui-pill is-success" id="material-task-count">总任务 {{ material_task_count + 1 }}</span>
           <span class="ai-moments-chip ui-pill is-info" id="material-outreach-total-materials-chip">全部素材 {{ material_outreach_status.stats.materials_total }}</span>
           <span class="ai-moments-chip ui-pill is-success" id="material-outreach-available-materials-chip">可用素材 {{ material_outreach_status.stats.available_materials }}</span>
-          <span class="ai-moments-chip ui-pill is-info" id="material-outreach-pending-chip">待执行实例 {{ material_outreach_status.pending_count }}</span>
-          <span class="ai-moments-chip ui-pill is-running" id="material-outreach-running-chip">执行中实例 0</span>
+          <span class="ai-moments-chip ui-pill is-info" id="material-outreach-pending-chip">等待转发 {{ material_outreach_status.pending_count }}</span>
+          <span class="ai-moments-chip ui-pill is-running" id="material-outreach-running-chip">转发中 0</span>
         </div>
         <div class="summary-action-row">
           <select class="form-select cfg-inline-control ui-head-select task-scope-wx-select" id="material-outreach-account-select" data-task-tab="tab-schedule">
@@ -3086,20 +3086,20 @@ html.icons-pref-local [class*=" bi-"]::before {
     <div class="cfg-card">
       <div class="ui-head ui-head--page">
         <i class="bi bi-list-check ui-head__icon"></i>
-        <h5>运行时实例与执行记录</h5>
-        <span class="desc">查看系统自动生成的实例，以及已经结束的素材转发结果</span>
+        <h5>任务队列与执行记录</h5>
+        <span class="desc">查看等待转发的素材，以及已经结束的转发结果</span>
       </div>
       <div class="moments-execution-grid">
         <section class="ai-moments-runtime-block" data-task-runtime-module="material_outreach" data-task-runtime-card="queue">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">运行时实例</h5><span class="desc">查看系统按任务设置生成的待执行实例</span></div><span class="ai-moments-chip ui-pill" id="material-outreach-runtime-pending-count" data-task-runtime-count>{{ material_outreach_status.pending_count }} 条</span></div>
+          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">等待转发</h5><span class="desc">查看等待转发给好友的素材</span></div><span class="ai-moments-chip ui-pill" id="material-outreach-runtime-pending-count" data-task-runtime-count>{{ material_outreach_status.pending_count }} 条</span></div>
           <div id="material_outreach_runtime_pending" class="ai-moments-runtime-list" data-task-runtime-list>
-            <div class="ai-moments-empty task-runtime-empty-state">暂无待执行实例。</div>
+            <div class="ai-moments-empty task-runtime-empty-state">暂无等待转发的素材。</div>
           </div>
         </section>
         <section class="ai-moments-runtime-block" data-task-runtime-module="material_outreach" data-task-runtime-card="executions">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">执行记录</h5><span class="desc">查看已经结束的素材转发结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="material_outreach">清空</button></div>
+          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">转发记录</h5><span class="desc">查看已经结束的素材转发结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="material_outreach">清空</button></div>
           <div class="ai-moments-runtime-list" id="material_outreach_runtime_executed" data-task-runtime-list>
-            <div class="ai-moments-empty task-runtime-empty-state">暂无执行记录。</div>
+            <div class="ai-moments-empty task-runtime-empty-state">暂无转发记录。</div>
           </div>
         </section>
       </div>
@@ -3161,8 +3161,8 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div class="ai-moments-status-row">
           <span class="ai-moments-chip ui-pill is-success" id="moments-task-count">总任务 0</span>
           <span class="ai-moments-chip ui-pill is-warning">待确认 0</span>
-          <span class="ai-moments-chip ui-pill is-info">待执行 0</span>
-          <span class="ai-moments-chip ui-pill is-running">执行中 0</span>
+          <span class="ai-moments-chip ui-pill is-info">等待发布 0</span>
+          <span class="ai-moments-chip ui-pill is-running">发布中 0</span>
           <span class="ai-moments-chip ui-pill is-success">已执行 0</span>
         </div>
         <div class="summary-action-row">
@@ -3267,15 +3267,15 @@ html.icons-pref-local [class*=" bi-"]::before {
     </div>
 
     <div class="cfg-card" id="moments-execution-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-list-check ui-head__icon"></i><h5 class="ui-head__title">运行时实例与执行记录</h5><span class="desc ui-head__desc">确认后会生成待执行实例；取消后任务会回到待确认</span></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-list-check ui-head__icon"></i><h5 class="ui-head__title">任务队列与执行记录</h5><span class="desc ui-head__desc">确认发布后会进入等待发布；取消后任务会回到待确认</span></div>
       <div class="moments-execution-grid">
         <section class="ai-moments-runtime-block" data-task-runtime-module="moments" data-task-runtime-card="queue">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">运行时实例</h5><span class="desc">查看已确认后生成、等待发布的实例</span></div><span class="ai-moments-chip ui-pill" data-task-runtime-count>0 条</span></div>
-          <div class="ai-moments-runtime-list" id="moments_pending_list" data-task-runtime-list><div class="ai-moments-empty task-runtime-empty-state">暂无待执行实例，确认后会自动生成。</div></div>
+          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">等待发布</h5><span class="desc">查看已确认、等待发布的朋友圈任务</span></div><span class="ai-moments-chip ui-pill" data-task-runtime-count>0 条</span></div>
+          <div class="ai-moments-runtime-list" id="moments_pending_list" data-task-runtime-list><div class="ai-moments-empty task-runtime-empty-state">暂无等待发布的任务，点“发布”后会自动生成。</div></div>
         </section>
         <section class="ai-moments-runtime-block" data-task-runtime-module="moments" data-task-runtime-card="executions">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">执行记录</h5><span class="desc">查看已经结束的发圈结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="moments">清空</button></div>
-          <div class="ai-moments-runtime-list" id="moments_executed_list" data-task-runtime-list><div class="ai-moments-empty task-runtime-empty-state">暂无执行记录。</div></div>
+          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">发布记录</h5><span class="desc">查看已经结束的发圈结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="moments">清空</button></div>
+          <div class="ai-moments-runtime-list" id="moments_executed_list" data-task-runtime-list><div class="ai-moments-empty task-runtime-empty-state">暂无发布记录。</div></div>
         </section>
       </div>
     </div>
@@ -4406,6 +4406,40 @@ $(function(){
     if(status === 'running') return '执行中';
     return '待执行';
   }
+  function taskWorkbenchQueueStatusLabel(moduleName, item){
+    moduleName = String(moduleName || '').trim();
+    item = item || {};
+    var status = String(item.status || '').trim();
+    if(status === 'running'){
+      if(moduleName === 'scheduled_message') return '发送中';
+      if(moduleName === 'material_outreach') return '转发中';
+      if(moduleName === 'moments') return '发布中';
+      return '执行中';
+    }
+    if(status !== 'pending'){
+      return String(item.status_label || taskWorkbenchStatusLabel(status)).trim() || taskWorkbenchStatusLabel(status);
+    }
+    if(moduleName === 'scheduled_message') return '等待发送';
+    if(moduleName === 'material_outreach'){
+      return String(item.source || '').trim() === 'preface' ? '文案准备中' : '等待转发';
+    }
+    if(moduleName === 'moments') return '等待发布';
+    return '待执行';
+  }
+  function taskWorkbenchQueueEmptyText(moduleName){
+    moduleName = String(moduleName || '').trim();
+    if(moduleName === 'scheduled_message') return '暂无等待发送的消息。';
+    if(moduleName === 'material_outreach') return '暂无等待转发的素材。';
+    if(moduleName === 'moments') return '暂无等待发布的任务，点“发布”后会自动生成。';
+    return '暂无待执行任务。';
+  }
+  function taskWorkbenchExecutionEmptyText(moduleName){
+    moduleName = String(moduleName || '').trim();
+    if(moduleName === 'scheduled_message') return '暂无发送记录。';
+    if(moduleName === 'material_outreach') return '暂无转发记录。';
+    if(moduleName === 'moments') return '暂无发布记录。';
+    return '暂无执行记录。';
+  }
   function taskWorkbenchResultLabel(result){
     result = String(result || '').trim();
     if(result === 'success') return '成功';
@@ -4635,7 +4669,7 @@ $(function(){
     item = item || {};
     kind = kind === 'executions' ? 'executions' : 'queue';
     if(kind === 'queue'){
-      return normalizeTaskWorkbenchDisplayTime(item.scheduled_at) || (moduleName === 'moments' ? '确认后会自动生成实例' : '当前无实例');
+      return normalizeTaskWorkbenchDisplayTime(item.scheduled_at) || (moduleName === 'moments' ? '点“发布”后会自动生成' : '等待系统安排');
     }
     return normalizeTaskWorkbenchDisplayTime(item.executed_at) || '暂无记录';
   }
@@ -4647,7 +4681,9 @@ $(function(){
     moduleName = String(moduleName || '').trim();
     item = item || {};
     kind = String(kind || 'queue').trim();
-    var statusText = String(item.status_label || taskWorkbenchStatusLabel(item.status)).trim() || taskWorkbenchStatusLabel(item.status);
+    var statusText = kind === 'queue'
+      ? taskWorkbenchQueueStatusLabel(moduleName, item)
+      : (String(item.status_label || taskWorkbenchStatusLabel(item.status)).trim() || taskWorkbenchStatusLabel(item.status));
     var metaText = taskWorkbenchRuntimeMetaParts(item, kind).join(' · ');
     var timeText = taskWorkbenchRuntimeTimeParts(moduleName, item, kind).join(' · ');
     var actionHtml = '<span class="task-runtime-action-placeholder" aria-hidden="true"></span>';
@@ -4687,8 +4723,8 @@ $(function(){
     if(!items.length){
       $list.html(
         kind === 'queue'
-          ? '<div class="ai-moments-empty task-runtime-empty-state">' + (moduleName === 'moments' ? '暂无待执行实例，确认后会自动生成。' : '暂无待执行实例。') + '</div>'
-          : '<div class="ai-moments-empty task-runtime-empty-state">暂无执行记录。</div>'
+          ? '<div class="ai-moments-empty task-runtime-empty-state">' + taskWorkbenchQueueEmptyText(moduleName) + '</div>'
+          : '<div class="ai-moments-empty task-runtime-empty-state">' + taskWorkbenchExecutionEmptyText(moduleName) + '</div>'
       );
       return;
     }
@@ -5801,22 +5837,22 @@ $(function(){
     moduleName = String(moduleName || '').trim();
     actionType = String(actionType || '').trim();
     if(moduleName === 'scheduled_message'){
-      return {message: '确定取消这条定时消息待执行实例？', title: '取消确认', confirm: '确定取消'};
+      return {message: '确定取消这条等待发送的定时消息？', title: '取消确认', confirm: '确定取消'};
     }
     if(moduleName === 'moments'){
-      return {message: '确定取消这条朋友圈待执行实例？取消后任务会回到待确认。', title: '取消确认', confirm: '确定取消'};
+      return {message: '确定取消这条等待发布的朋友圈？取消后任务会回到待确认。', title: '取消确认', confirm: '确定取消'};
     }
-    return {message: '确定取消这条素材转发待执行实例？', title: '取消确认', confirm: '确定取消'};
+    return {message: '确定取消这条等待转发的素材？', title: '取消确认', confirm: '确定取消'};
   }
   function taskWorkbenchClearDialog(moduleName){
     moduleName = String(moduleName || '').trim();
     if(moduleName === 'scheduled_message'){
-      return {message: '确定清空所有定时消息执行记录？', title: '清空确认', confirm: '确定清空'};
+      return {message: '确定清空所有定时消息发送记录？', title: '清空确认', confirm: '确定清空'};
     }
     if(moduleName === 'moments'){
-      return {message: '确定清空所有朋友圈执行记录？', title: '清空确认', confirm: '确定清空'};
+      return {message: '确定清空所有朋友圈发布记录？', title: '清空确认', confirm: '确定清空'};
     }
-    return {message: '确定清空所有素材转发执行记录？', title: '清空确认', confirm: '确定清空'};
+    return {message: '确定清空所有素材转发记录？', title: '清空确认', confirm: '确定清空'};
   }
   function refreshTaskWorkbenchModule(moduleName, options){
     options = options || {};
@@ -5866,7 +5902,7 @@ $(function(){
       }).done(function(res){
         if(res.status === 'success'){
           refreshTaskWorkbenchModule(moduleName, {runtime:res.runtime});
-          handleTaskWorkbenchQueueActionSuccess(moduleName, res.message || '已取消待执行实例');
+          handleTaskWorkbenchQueueActionSuccess(moduleName, res.message || '已取消');
         } else {
           handleTaskWorkbenchQueueActionError(moduleName, res.message || '取消失败');
         }
@@ -5890,7 +5926,7 @@ $(function(){
       }).done(function(res){
         if(res.status === 'success'){
           refreshTaskWorkbenchModule(moduleName, {runtime: res.runtime});
-          handleTaskWorkbenchQueueActionSuccess(moduleName, res.message || '已清空执行记录');
+          handleTaskWorkbenchQueueActionSuccess(moduleName, res.message || '已清空记录');
         } else {
           handleTaskWorkbenchQueueActionError(moduleName, res.message || '清空失败');
         }
@@ -6804,8 +6840,8 @@ $(function(){
     var $chips = $('#scheduled-message-status-row .ai-moments-chip');
     $chips.eq(1).text('已启用 ' + (counts.enabled || 0));
     $chips.eq(2).text('已停用 ' + (counts.disabled || 0));
-    $chips.eq(3).text('待执行实例 ' + (counts.pending || 0));
-    $chips.eq(4).text('执行中实例 ' + (counts.running || 0));
+    $chips.eq(3).text('等待发送 ' + (counts.pending || 0));
+    $chips.eq(4).text('发送中 ' + (counts.running || 0));
     $('#scheduled-message-task-count').text('总任务 ' + tasks.length);
 
     if(tasks.length && !activeScheduledMessageTaskId){
@@ -9914,8 +9950,8 @@ $(function(){
     $imageRow.css('display','grid');
   }
   function momentsStatusLabel(status){
-    if(status==='pending') return '待执行';
-    if(status==='running') return '执行中';
+    if(status==='pending') return '等待发布';
+    if(status==='running') return '发布中';
     if(status==='executed') return '已执行';
     return '待确认';
   }
@@ -10011,8 +10047,8 @@ $(function(){
     counts=counts||{};
     var $chips=$('#ai-moments-card .ai-moments-toolbar .ai-moments-status-row .ai-moments-chip');
     $chips.eq(1).text('待确认 '+(counts.pending_confirm||0));
-    $chips.eq(2).text('待执行 '+(counts.pending||0));
-    $chips.eq(3).text('执行中 '+(counts.running||0));
+    $chips.eq(2).text('等待发布 '+(counts.pending||0));
+    $chips.eq(3).text('发布中 '+(counts.running||0));
     $chips.eq(4).text('已执行 '+(counts.executed||0));
     var editableCount=(tasks||[]).filter(function(task){ return task.status!=='executed'; }).length;
     $('#moments-task-count').text('总任务 ' + editableCount);
@@ -10042,7 +10078,7 @@ $(function(){
   function momentsTaskDisabledReason(task){
     if(!task) return '请先选择一条朋友圈任务';
     if(momentsTaskIsRunning(task)) return '这条任务正在执行，请稍后';
-    if(momentsTaskIsQueued(task)) return '这条任务已生成待执行实例，取消后才能继续编辑';
+    if(momentsTaskIsQueued(task)) return '这条任务正在等待发布，取消后才能继续编辑';
     if(momentsTaskIsGenerating(task)) return '正在生成 AI 候选，请稍后';
     var failureReason=momentsTaskFailureReason(task);
     if(failureReason) return failureReason;
@@ -10171,7 +10207,7 @@ $(function(){
       var statusCls=momentsStatusClass(task.status);
       var isQueued=momentsTaskIsQueued(task);
       var isRunning=momentsTaskIsRunning(task);
-      var lockedTitle=isQueued ? '这条任务已生成待执行实例，取消后才能继续编辑' : '';
+      var lockedTitle=isQueued ? '这条任务正在等待发布，取消后才能继续编辑' : '';
       var queueDisabledReason=lockedTitle || momentsTaskDisabledReason(task);
       var failureReason=momentsTaskFailureReason(task);
       var generateLabel = (task.copy_mode==='original' || (task.candidates||[]).length) ? '重新生成' : '生成候选';
@@ -10181,7 +10217,7 @@ $(function(){
         ? '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l3" disabled>执行中</button>'
         : (isQueued
           ? '<button type="button" class="ui-btn ui-btn--danger ui-btn--l3 btn-cancel-moments-task">取消</button>'
-          : '<button type="button" class="ui-btn ui-btn--primary ui-btn--l3 btn-queue-moments-task" '+(queueDisabledReason?'disabled title="'+queueDisabledReason+'"':'')+'>确认</button>');
+          : '<button type="button" class="ui-btn ui-btn--primary ui-btn--l3 btn-queue-moments-task" '+(queueDisabledReason?'disabled title="'+queueDisabledReason+'"':'')+'>发布</button>');
       var html=
         '<div class="ai-moments-task-preview" data-moments-task-id="'+escapeMomentsHtml(task.id)+'">'+
           '<div class="ai-moments-task-head">'+
@@ -11359,8 +11395,8 @@ $(function(){
     $('#material-task-count').text('总任务 ' + totalCount);
     $('#material-outreach-total-materials-chip').text('全部素材 ' + totalMaterialsCount);
     $('#material-outreach-available-materials-chip').text('可用素材 ' + availableMaterialsCount);
-    $('#material-outreach-pending-chip').text('待执行实例 ' + (parseInt(runtimeStats.queue_pending, 10) || 0));
-    $('#material-outreach-running-chip').text('执行中实例 ' + (parseInt(runtimeStats.queue_running, 10) || 0));
+    $('#material-outreach-pending-chip').text('等待转发 ' + (parseInt(runtimeStats.queue_pending, 10) || 0));
+    $('#material-outreach-running-chip').text('转发中 ' + (parseInt(runtimeStats.queue_running, 10) || 0));
     syncAllMaterialTaskPreviewStatuses();
   }
   function currentMaterialManagementEditor(){
@@ -14053,3 +14089,4 @@ $('#btnBackupNow').on('click', function(){
 </script>
 </body>
 </html>
+

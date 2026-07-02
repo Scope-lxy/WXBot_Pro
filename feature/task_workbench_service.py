@@ -1,4 +1,4 @@
-"""Unified service for task workbench API."""
+﻿"""Unified service for task workbench API."""
 
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ def queue_task(module, task_id, *, data_dir, wx_id, payload=None, hooks=None):
 
     if module == "scheduled_message":
         raise TaskWorkbenchServiceError(
-            "定时消息任务改为按卡片启停自动生成运行时实例，不支持手动加入队列",
+            "定时消息会按任务设置自动安排发送，不支持手动加入",
             400,
         )
     elif module == "moments":
@@ -120,10 +120,10 @@ def queue_task(module, task_id, *, data_dir, wx_id, payload=None, hooks=None):
             hooks=hooks,
         )
         response = build_workbench_payload(module, data_dir=data_dir, wx_id=wx_id, active_task_id=task_id)
-        response["message"] = "已确认这条发圈任务"
+        response["message"] = "已加入等待发布"
     else:
         raise TaskWorkbenchServiceError(
-            "素材转发任务改为按卡片启停自动生成运行时实例，不支持手动加入队列",
+            "素材转发会按任务设置自动安排转发，不支持手动加入",
             400,
         )
 
@@ -152,7 +152,7 @@ def cancel_queue_item(module, queue_id, *, data_dir, wx_id, hooks=None):
 
     if module == "scheduled_message":
         raise TaskWorkbenchServiceError(
-            "定时消息运行时实例由任务设置自动生成，不支持手动取消",
+            "定时消息会按任务设置自动安排发送，不支持手动取消",
             400,
         )
     elif module == "moments":
@@ -166,7 +166,7 @@ def cancel_queue_item(module, queue_id, *, data_dir, wx_id, hooks=None):
     else:
         if queue_id.startswith("manual:"):
             raise TaskWorkbenchServiceError(
-                "素材转发运行时实例由任务设置自动生成，不支持手动取消",
+                "素材转发会按任务设置自动安排转发，不支持手动取消",
                 400,
             )
         updated_task, message = _cancel_material_outreach_queue_item(
@@ -958,7 +958,7 @@ def _queue_scheduled_message_task(task_id, *, data_dir, wx_id, hooks):
     if not task.get("enabled", True):
         raise TaskWorkbenchServiceError("请先启用这条定时消息任务", 400)
     if _clean(task.get("status") or "pending_confirm") != "pending_confirm":
-        raise TaskWorkbenchServiceError("只有待确认的定时消息任务可以加入队列", 400)
+        raise TaskWorkbenchServiceError("只有待确认的定时消息任务可以安排发送", 400)
     if not task.get("msgs"):
         raise TaskWorkbenchServiceError("请先添加消息内容", 400)
     targets_mode = _clean(task.get("targets_mode") or "all") or "all"
@@ -1005,7 +1005,7 @@ def _cancel_scheduled_message_queue_item(task_id, *, data_dir, wx_id, hooks):
                 "stop_requested": False,
             }
         )
-        message = "已取消这条定时消息待执行实例"
+        message = "已取消这条等待发送的定时消息"
         _save_scheduled_message_runtime_record(updated_task, data_dir=data_dir, wx_id=wx_id)
     elif status == "pending_confirm":
         updated_task = normalize_scheduled_message_task_payload(
@@ -1021,10 +1021,10 @@ def _cancel_scheduled_message_queue_item(task_id, *, data_dir, wx_id, hooks):
                 "stop_requested": False,
             }
         )
-        message = "已取消这条定时消息待执行实例"
+        message = "已取消这条等待发送的定时消息"
         _save_scheduled_message_runtime_record(updated_task, data_dir=data_dir, wx_id=wx_id)
     else:
-        raise TaskWorkbenchServiceError("这条定时消息任务不在待执行队列中", 400)
+        raise TaskWorkbenchServiceError("这条定时消息不在等待发送列表中", 400)
     _call_reload(hooks)
     return updated_task, message
 
@@ -1121,7 +1121,7 @@ def _queue_moments_task(task_id, *, data_dir, wx_id, payload, hooks):
     if task is None:
         raise TaskWorkbenchServiceError("朋友圈任务不存在", 404)
     if _clean(task.get("status")) != "pending_confirm":
-        raise TaskWorkbenchServiceError("只有待确认的朋友圈任务可以加入队列", 400)
+        raise TaskWorkbenchServiceError("只有待确认的朋友圈任务可以发布", 400)
     if not moments_task_has_ai_candidates(task):
         raise TaskWorkbenchServiceError("AI文案模式需要先生成 AI候选，或切换为原始文案后再发布", 400)
     if not task.get("selected_caption") and not task.get("raw_text") and not task.get("images"):
@@ -1143,10 +1143,10 @@ def _cancel_moments_queue_item(task_id, *, data_dir, wx_id, hooks):
     elif _clean(task.get("status")) == "pending_confirm":
         updated_task = normalize_moments_task(task)
     else:
-        raise TaskWorkbenchServiceError("这条朋友圈任务不在待执行队列中", 400)
+        raise TaskWorkbenchServiceError("这条朋友圈任务不在等待发布中", 400)
     _save_moments_runtime_and_history_record(updated_task, data_dir=data_dir, wx_id=wx_id)
     _call_reload(hooks)
-    return updated_task, "已取消这条朋友圈待执行实例"
+    return updated_task, "已取消这条等待发布的朋友圈"
 
 
 def _material_outreach_record_status(source_kind, record):
@@ -1460,8 +1460,8 @@ def _cancel_material_outreach_queue_item(queue_id, *, data_dir, wx_id, hooks):
 
         storage.mutate_runtime(_cancel_preface)
         if not changed["ok"]:
-            raise TaskWorkbenchServiceError("未找到可取消的 AI 预生成文案记录", 404)
-        return {"queue_id": preface_queue_id, "removed": True}, "已取消这条素材转发 AI 预生成文案记录"
+            raise TaskWorkbenchServiceError("未找到可取消的文案准备记录", 404)
+        return {"queue_id": preface_queue_id, "removed": True}, "已取消这条素材转发文案准备记录"
 
     raise TaskWorkbenchServiceError("不支持的队列ID", 400)
 
@@ -1486,7 +1486,7 @@ def _find_queue_item(queue, queue_id):
 
 def _require_manual_task_id(queue_id):
     if not queue_id.startswith("manual:"):
-        raise TaskWorkbenchServiceError("仅支持取消手动待执行实例", 400)
+        raise TaskWorkbenchServiceError("仅支持取消手动确认的待发布任务", 400)
     task_id = _clean(queue_id.split(":", 1)[1])
     if not task_id:
         raise TaskWorkbenchServiceError("无效的队列ID", 400)
@@ -1498,3 +1498,4 @@ def _call_reload(hooks):
     if callback is None:
         return
     callback()
+

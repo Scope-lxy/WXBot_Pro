@@ -115,10 +115,13 @@ from core.media import existing_local_image_path, image_content_hash, is_image_p
 from core.message_pipeline import (
     MAX_MERGED_PRIVATE_IMAGES,
     QUOTE_IMAGE_MARKER,
+    format_message_semantic_text,
     build_merged_private_message,
     message_content_fingerprint,
     message_unique_id,
     split_quoted_image_message,
+    strip_message_shell,
+    strip_voice_duration_metadata,
 )
 from core.scheduled_tasks import (
     advance_task_plan_after_success,
@@ -3641,14 +3644,17 @@ class WXBot:
             ):
                 try:
                     memory_chat_name = self._resolve_identity_chat_name(chat.who)
-                    self.memory_manager.save_message(
-                        chat_name=memory_chat_name,
-                        sender=msg.sender,
-                        content=msg.content,
-                        msg_type=msg.type,
-                        msg_attr=msg.attr,
-                        max_count=self.config.memory_max_count,
-                    )
+                    if getattr(msg, "type", "") == "image":
+                        self._save_incoming_image_memory_message(chat, msg)
+                    else:
+                        self.memory_manager.save_message(
+                            chat_name=memory_chat_name,
+                            sender=msg.sender,
+                            content=strip_voice_duration_metadata(msg.content) if msg.type == "voice" else msg.content,
+                            msg_type=msg.type,
+                            msg_attr=msg.attr,
+                            max_count=self.config.memory_max_count,
+                        )
                     if (
                         msg.attr == "self"
                         and chat.who != getattr(self.config, "cmd", "")
@@ -3680,6 +3686,11 @@ class WXBot:
 
     def _should_skip_message_memory(self, chat, message):
         if bool(getattr(message, "_skip_memory", False)):
+            return True
+        if (
+            getattr(message, "type", "") == "voice"
+            and message_routing.voice_content_state(getattr(message, "content", "")) != "valid"
+        ):
             return True
         if (
             getattr(message, "attr", "") == "self"
@@ -3736,13 +3747,16 @@ class WXBot:
         self._voice_reply_state = voice_session_manager.state
         voice_now = datetime.now()
         try:
+            message_type = str(getattr(message, "type", "") or "").strip().lower()
+            message_body = strip_message_shell(getattr(message, "content", ""), message_type)
+            message_semantic_text = format_message_semantic_text(message)
             keyword_plan = plan_private_keyword_reply(
                 bool(getattr(self.config, "chat_keyword_switch", False)),
                 self.config.keyword_dict,
-                message.content,
+                message_body,
             )
             if keyword_plan:
-                log(message=f"私聊 {chat.who} 关键字消息：" + message.content)
+                log(message=f"私聊 {chat.who} 关键字消息：" + message_body)
                 reply_actions = normalize_keyword_reply_actions(keyword_plan["reply"])
                 send_success, result = self._send_keyword_reply_actions(
                     chat,
@@ -3783,11 +3797,11 @@ class WXBot:
                 _effective_prompt = self._build_prompt_with_context(
                     chat.who,
                     history,
-                    message.content,
+                    message_semantic_text,
                     base_prompt=None,
                     chat_type='private',
                 )
-                message_content = str(getattr(message, 'content', '') or '').strip()
+                message_content = message_semantic_text
                 fallback_image_path = ""
                 quoted_text = ""
                 quoted_image_paths = []
@@ -3829,11 +3843,11 @@ class WXBot:
                         image_reply_context_used = True
                     else:
                         reply = self._get_chat_api(chat.who).chat(
-                            message.content, prompt=_effective_prompt, history=history
+                            message_semantic_text, prompt=_effective_prompt, history=history
                         )
                 else:
                     reply = self._get_chat_api(chat.who).chat(
-                        message.content, prompt=_effective_prompt, history=history
+                        message_semantic_text, prompt=_effective_prompt, history=history
                     )
         except Exception as e:
             print(traceback.format_exc())
@@ -4134,7 +4148,7 @@ class WXBot:
             group_image_reply_context_used = False
             content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
             log(message=f"群组 {chat.who}：触发 AI 回复，内容：{content_without_at}")
-            content_with_sender = f"{message.sender}: {content_without_at}"
+            content_with_sender = f"{message.sender}: {format_message_semantic_text({'type': getattr(message, 'type', ''), 'content': content_without_at})}"
             group_voice_candidate_hit = False
             group_meta_reply_should_mark = False
             try:
@@ -4823,6 +4837,173 @@ class WXBot:
             visual_notes=visual_notes,
         )
 
+    def _get_image_recognition_api_for_chat(self, chat_type):
+        if str(chat_type or "").strip().lower() == "group":
+            api_index = getattr(self.config, "group_image_recognition_api", 0)
+        else:
+            api_index = getattr(self.config, "chat_image_recognition_api", 0)
+        return self._wrap_chat_api_for_failover(
+            self._get_api_instance_by_index(api_index),
+            index=api_index,
+            tracked_default=api_index == self._get_primary_chat_api_index(),
+            request_type="chat",
+        )
+
+    def _generate_visual_notes_for_image_paths(self, chat_type, image_paths, *, sender="", attached_text=""):
+        normalized_paths = [
+            str(path or "").strip()
+            for path in (image_paths or [])
+            if str(path or "").strip()
+        ]
+        if not normalized_paths:
+            return []
+        notes = []
+        recognition_api = self._get_image_recognition_api_for_chat(chat_type)
+        for image_path in normalized_paths:
+            note = self._get_vision_bridge().analyze(
+                image_path=image_path,
+                recognition_api=recognition_api,
+                chat_type=chat_type,
+                sender=sender,
+                attached_text=attached_text,
+            )
+            notes.append(note.render())
+        return notes
+
+    def _image_recognition_enabled_for_chat(self, chat_type):
+        chat_type = str(chat_type or "").strip().lower()
+        if chat_type == "group":
+            return bool(getattr(self.config, "group_image_recognition_switch", False))
+        return bool(getattr(self.config, "chat_image_recognition_switch", False))
+
+    def _extract_message_image_paths(self, message):
+        msg_type = str(getattr(message, "type", "") or "").strip().lower()
+        content = str(getattr(message, "content", "") or "").strip()
+        if msg_type == "image":
+            return [content] if content else []
+        if not content or QUOTE_IMAGE_MARKER not in content:
+            return []
+        _text_part, image_paths = split_quoted_image_message(content)
+        return [path for path in image_paths if str(path or "").strip()]
+
+    def _remember_message_visual_notes(self, chat, message, *, image_paths=None, visual_notes=None):
+        normalized_paths = [
+            str(path or "").strip()
+            for path in (image_paths or self._extract_message_image_paths(message))
+            if str(path or "").strip()
+        ]
+        normalized_notes = [
+            str(note or "").strip()
+            for note in (visual_notes or [])
+            if str(note or "").strip()
+        ]
+        if not normalized_paths:
+            return False
+        memory_manager = getattr(self, "memory_manager", None)
+        save_message = getattr(memory_manager, "save_message", None)
+        if not callable(save_message):
+            return False
+        try:
+            memory_chat_name = self._resolve_identity_chat_name(chat.who)
+            save_message(
+                chat_name=memory_chat_name,
+                sender=getattr(message, "sender", ""),
+                content="[图片]",
+                msg_type="image",
+                msg_attr=getattr(message, "attr", "friend"),
+                max_count=getattr(self.config, "memory_max_count", 1000),
+                image_paths=normalized_paths,
+                visual_notes=normalized_notes,
+            )
+            self._mark_chat_memory_dirty(
+                SimpleNamespace(who=memory_chat_name, chat_type=getattr(chat, "chat_type", "private")),
+                message,
+            )
+            if normalized_notes:
+                return self._remember_visual_notes(memory_chat_name, normalized_paths, normalized_notes)
+            return True
+        except Exception as exc:
+            log(level="WARNING", message=f"写入图片记忆失败: {exc}")
+            return False
+
+    def _save_incoming_image_memory_message(self, chat, message):
+        if not getattr(getattr(self, "config", None), "memory_switch", False):
+            return False
+        memory_manager = getattr(self, "memory_manager", None)
+        save_message = getattr(memory_manager, "save_message", None)
+        if not callable(save_message):
+            return False
+        image_paths = self._extract_message_image_paths(message)
+        if not image_paths:
+            return False
+        chat_type = getattr(chat, "chat_type", "private")
+        visual_notes = []
+        if self._image_recognition_enabled_for_chat(chat_type):
+            try:
+                visual_notes = self._generate_visual_notes_for_image_paths(
+                    chat_type,
+                    image_paths,
+                    sender=getattr(message, "sender", ""),
+                    attached_text="",
+                )
+            except Exception as exc:
+                log(level="WARNING", message=f"生成图片摘要失败：{exc}")
+        try:
+            memory_chat_name = self._resolve_identity_chat_name(chat.who)
+            save_message(
+                chat_name=memory_chat_name,
+                sender=getattr(message, "sender", ""),
+                content="[图片]",
+                msg_type="image",
+                msg_attr=getattr(message, "attr", "friend"),
+                max_count=getattr(self.config, "memory_max_count", 1000),
+                image_paths=image_paths,
+                visual_notes=visual_notes,
+            )
+            self._mark_chat_memory_dirty(
+                SimpleNamespace(who=memory_chat_name, chat_type=chat_type),
+                message,
+            )
+            return True
+        except Exception as exc:
+            log(level="WARNING", message=f"写入图片记忆失败：{exc}")
+            return False
+
+    def _save_private_image_memory_message(self, chat, image_paths, visual_notes=None, *, sender=""):
+        if not getattr(getattr(self, "config", None), "memory_switch", False):
+            return False
+        memory_manager = getattr(self, "memory_manager", None)
+        save_message = getattr(memory_manager, "save_message", None)
+        if not callable(save_message):
+            return False
+        normalized_paths = [
+            str(path or "").strip()
+            for path in (image_paths or [])
+            if str(path or "").strip()
+        ]
+        if not normalized_paths:
+            return False
+        try:
+            memory_chat_name = self._resolve_identity_chat_name(chat.who)
+            save_message(
+                chat_name=memory_chat_name,
+                sender=sender or getattr(chat, "who", ""),
+                content="[图片]",
+                msg_type="image",
+                msg_attr="friend",
+                max_count=getattr(self.config, "memory_max_count", 1000),
+                image_paths=normalized_paths,
+                visual_notes=visual_notes or [],
+            )
+            self._mark_chat_memory_dirty(
+                SimpleNamespace(who=memory_chat_name, chat_type="private"),
+                SimpleNamespace(attr="friend"),
+            )
+            return True
+        except Exception as exc:
+            log(level="WARNING", message=f"写入图片记忆失败: {exc}")
+            return False
+
     def _reply_group_image_message(self, chat, message, history, image_paths=None, attached_text=""):
         normalized_paths = (
             [str(path or "").strip() for path in image_paths if str(path or "").strip()]
@@ -5182,10 +5363,16 @@ class WXBot:
             return False
         try:
             memory_chat_name = self._resolve_identity_chat_name(chat.who)
+            if getattr(message, "type", "") == "image":
+                return self._save_incoming_image_memory_message(chat, message)
             save_message(
                 chat_name=memory_chat_name,
                 sender=getattr(message, "sender", ""),
-                content=getattr(message, "content", ""),
+                content=(
+                    strip_voice_duration_metadata(getattr(message, "content", ""))
+                    if getattr(message, "type", "") == "voice"
+                    else getattr(message, "content", "")
+                ),
                 msg_type=getattr(message, "type", "text"),
                 msg_attr=getattr(message, "attr", "friend"),
                 max_count=getattr(self.config, "memory_max_count", 1000),
@@ -5227,6 +5414,7 @@ class WXBot:
             pipeline = {
                 "open_messages": [],
                 "open_started_at": 0.0,
+                "open_kind": "text",
                 "idle_timer": None,
                 "max_timer": None,
                 "queued_batches": deque(),
@@ -5237,7 +5425,19 @@ class WXBot:
             pipeline["queued_batches"] = deque(pipeline.get("queued_batches") or [])
         if not isinstance(pipeline.get("open_messages"), list):
             pipeline["open_messages"] = []
+        if str(pipeline.get("open_kind", "") or "").strip() not in {"text", "image"}:
+            pipeline["open_kind"] = "text"
         return pipeline
+
+    @staticmethod
+    def _private_message_batch_kind(message):
+        msg_type = str(getattr(message, "type", "") or "").strip().lower()
+        content = str(getattr(message, "content", "") or "")
+        if msg_type == "image":
+            return "image"
+        if msg_type == "text" and QUOTE_IMAGE_MARKER in content:
+            return "image"
+        return "text"
 
     @staticmethod
     def _cancel_timer(timer):
@@ -5296,6 +5496,7 @@ class WXBot:
             return False
         pipeline["open_messages"] = []
         pipeline["open_started_at"] = 0.0
+        pipeline["open_kind"] = "text"
         self._cancel_timer(pipeline.get("idle_timer"))
         self._cancel_timer(pipeline.get("max_timer"))
         pipeline["idle_timer"] = None
@@ -5405,12 +5606,20 @@ class WXBot:
 
         self._next_private_message_sequence(chat.who)
         delay = self._private_message_merge_delay()
+        batch_kind = self._private_message_batch_kind(message)
         with self._chat_merge_lock:
             pipeline = self._private_message_pipeline(chat.who)
             if not pipeline:
                 return True
+            open_kind = str(pipeline.get("open_kind") or "text").strip().lower()
+            if pipeline["open_messages"] and open_kind != batch_kind:
+                self._close_private_message_batch_locked(chat)
+                pipeline = self._private_message_pipeline(chat.who)
             if not pipeline["open_messages"]:
                 pipeline["open_started_at"] = time.time()
+                pipeline["open_kind"] = batch_kind
+            else:
+                pipeline["open_kind"] = open_kind if open_kind == batch_kind else batch_kind
             pipeline["open_messages"].append(message)
             self._schedule_private_message_pipeline_locked(chat, pipeline, delay)
         return True
@@ -5540,6 +5749,8 @@ class WXBot:
 
     def _save_private_reply_memory_message(self, chat, content, *, msg_type="text"):
         text = str(content or "").strip()
+        if str(msg_type or "").strip().lower() == "voice":
+            text = strip_voice_duration_metadata(text)
         if not text:
             return False
         if not getattr(getattr(self, "config", None), "memory_switch", False):

@@ -1,12 +1,107 @@
 """Pure message pipeline helpers."""
 
 import hashlib
+import re
 from types import SimpleNamespace
 
 QUOTE_IMAGE_MARKER = "+引用的图片:"
 SINGLE_EMOTION_TEXT = "对方发来了一个微信表情（无法识别具体表情内容）"
 MULTI_EMOTION_TEXT_TEMPLATE = "对方连续发来了 {count} 个微信表情（无法识别具体表情内容）"
 MAX_MERGED_PRIVATE_IMAGES = 9
+VOICE_DURATION_PREFIX_RE = re.compile(r'^\s*语音\s*\d+\s*["”]?\s*秒\s*')
+MESSAGE_TYPE_LABELS = {
+    "voice": "语音",
+    "emotion": "微信表情",
+    "image": "图片",
+    "link": "链接",
+    "miniapp": "小程序",
+    "personal_card": "个人名片",
+    "note": "笔记",
+    "video": "视频",
+    "file": "文件",
+}
+MESSAGE_TYPE_PREFIX_PATTERNS = {
+    "link": re.compile(r'^\s*(?:\[(?:链接|网页链接)\]|链接|网页链接)\s*'),
+    "miniapp": re.compile(r'^\s*(?:\[(?:小程序|小程序卡片)\]|小程序)\s*'),
+    "personal_card": re.compile(r'^\s*(?:\[(?:个人名片|名片)\]|个人名片|名片|好友名片)\s*'),
+    "note": re.compile(r'^\s*(?:\[(?:笔记)\]|笔记)\s*'),
+    "video": re.compile(r'^\s*(?:\[(?:视频|视频号)\]|视频号|视频)\s*'),
+}
+VIDEO_DURATION_SUFFIX_RE = re.compile(r'\s*(\d+:\d+)\s*$')
+LOCAL_PATH_RE = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\|/|file://)', re.IGNORECASE)
+
+
+def strip_voice_duration_metadata(content):
+    """Remove wxauto's leading voice-duration UI text when transcription text follows."""
+    text = str(content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    match = VOICE_DURATION_PREFIX_RE.match(text)
+    if not match:
+        return text
+    tail = text[match.end():].strip()
+    return tail or text
+
+
+def readable_emotion_text(content):
+    text = str(content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text or len(text) > 120:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith("<") or "msg>" in lowered or ("emoji" in lowered and "<" in lowered):
+        return ""
+    text = re.sub(r"^(动画表情|表情)\s*[:：]?\s*", "", text).strip()
+    return text
+
+
+def message_type_label(msg_type):
+    msg_type = str(msg_type or "").strip().lower()
+    return MESSAGE_TYPE_LABELS.get(msg_type, msg_type)
+
+
+def strip_message_shell(content, msg_type):
+    text = str(content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    msg_type = str(msg_type or "").strip().lower()
+    if not text:
+        return ""
+    if msg_type == "voice":
+        match = VOICE_DURATION_PREFIX_RE.match(text)
+        if match:
+            tail = text[match.end():].strip()
+            return tail
+        return text
+    if msg_type == "emotion":
+        return readable_emotion_text(text)
+    pattern = MESSAGE_TYPE_PREFIX_PATTERNS.get(msg_type)
+    if pattern:
+        text = pattern.sub("", text).strip()
+    if msg_type in {"image", "file"} and LOCAL_PATH_RE.match(text):
+        return ""
+    if msg_type == "video":
+        duration = ""
+        duration_match = VIDEO_DURATION_SUFFIX_RE.search(text)
+        if duration_match:
+            duration = duration_match.group(1).strip()
+            text = text[:duration_match.start()].strip()
+        text = re.sub(r'^\s*下载\s*', '', text).strip()
+        if duration:
+            text = duration if not text else f"{text} {duration}"
+        if text in {"下载", "视频"}:
+            text = ""
+    return text
+
+
+def format_message_semantic_text(message, *, compact=False):
+    item = message if isinstance(message, dict) else {}
+    msg_type = str(item.get("type", "") or getattr(message, "type", "") or "").strip().lower()
+    raw = str(item.get("content", "") or getattr(message, "content", "") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    label = message_type_label(msg_type)
+    if msg_type in {"voice", "emotion", "image", "file", "link", "miniapp", "personal_card", "note", "video"}:
+        body = strip_message_shell(raw, msg_type)
+        if body:
+            return f"[{label}]{body}"
+        return f"[{label}]"
+    return raw
 
 
 def message_unique_id(chat_name, message):
@@ -84,10 +179,22 @@ def build_merged_private_message(messages, *, on_extra_image=None):
         attr = getattr(msg, "attr", attr)
         msg_type = getattr(msg, "type", "")
         content = str(getattr(msg, "content", "") or "").strip()
+        semantic_text = format_message_semantic_text(msg)
         if msg_type == "voice":
             contains_voice_message = True
+            content = strip_voice_duration_metadata(content)
         if msg_type == "emotion":
-            pending_emotion_count += 1
+            readable_emotion = readable_emotion_text(content)
+            if readable_emotion:
+                flush_emotions()
+                text_parts.append(semantic_text)
+            else:
+                pending_emotion_count += 1
+            continue
+        if msg_type in {"link", "miniapp", "personal_card", "note", "video", "voice"}:
+            flush_emotions()
+            if semantic_text:
+                text_parts.append(semantic_text)
             continue
         if not content:
             continue

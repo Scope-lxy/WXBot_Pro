@@ -24,7 +24,7 @@ from feature.material_outreach import iter_material_outreach_listen_sources
 from feature.message_routing import voice_content_state
 from feature.new_friends import build_new_friend_remark, iter_new_friend_welcome_actions
 from feature.voice_reply import load_voice_reply_state
-from core.message_pipeline import message_unique_id
+from core.message_pipeline import message_unique_id, strip_voice_duration_metadata
 
 LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS = 5
 LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS = (30, 60)
@@ -1222,7 +1222,6 @@ def alllisten_mode(bot, last_time, timeout=10):
                 if msg.attr == "friend" and chat_type != "group":
                     should_save_memory = not (
                         msg.type == "voice"
-                        and bot.config.chat_voice_recognition_switch
                         and voice_content_state(getattr(msg, "content", "")) != "valid"
                     )
                     if should_save_memory and bot.config.memory_switch and bot.memory_manager:
@@ -1230,7 +1229,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                             bot.memory_manager.save_message(
                                 chat_name=chat,
                                 sender=msg.sender,
-                                content=msg.content,
+                                content=strip_voice_duration_metadata(msg.content) if msg.type == "voice" else msg.content,
                                 msg_type=msg.type,
                                 msg_attr=msg.attr,
                                 max_count=bot.config.memory_max_count,

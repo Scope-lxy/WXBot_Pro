@@ -252,6 +252,8 @@ def material_display_label(msg_type, title):
     if not msg_type and not title:
         return "无素材"
     type_label = material_type_label(msg_type)
+    if msg_type == "link":
+        return type_label or title or "无素材"
     if not title:
         return f"[{type_label}]" if type_label else "无素材"
     if type_label and (title.startswith(type_label) or title.startswith(f"[{type_label}]")):

@@ -3,6 +3,8 @@ import tempfile
 from types import SimpleNamespace
 from unittest import mock
 
+from core.chat_history_format import build_model_visible_history, format_history_message, format_memory_record_for_display
+from core.message_pipeline import build_merged_private_message, format_message_semantic_text, strip_voice_duration_metadata
 from core.memory import MemoryManager
 from wxbot_core import WXBot
 
@@ -73,6 +75,130 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(len(bot.memory_manager.calls), 1)
         self.assertEqual(dirty_calls, [("chat-a", "hello")])
 
+    def test_voice_duration_only_message_is_not_saved_as_chat_content(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="admin")
+
+        chat = SimpleNamespace(who="chat-a", chat_type="private")
+        duration_only = SimpleNamespace(attr="self", sender="self", content='语音10"秒', type="voice")
+        failed = SimpleNamespace(attr="friend", sender="friend-a", content="语音未能转换", type="voice")
+        transcribed = SimpleNamespace(
+            attr="self",
+            sender="self",
+            content='语音10"秒\n\n这么想听啊，那等白天嗓子开了给你哼两句。',
+            type="voice",
+        )
+
+        self.assertTrue(bot._should_skip_message_memory(chat, duration_only))
+        self.assertTrue(bot._should_skip_message_memory(chat, failed))
+        self.assertFalse(bot._should_skip_message_memory(chat, transcribed))
+
+    def test_voice_label_is_display_only_not_model_context(self):
+        record = {
+            "time": "2026/07/02 05:05:51",
+            "type": "voice",
+            "attr": "self",
+            "sender": "self",
+            "content": "这么想听啊，那等白天嗓子开了给你哼两句。",
+        }
+
+        self.assertEqual(format_memory_record_for_display(record)["content"], "[语音]这么想听啊，那等白天嗓子开了给你哼两句。")
+        self.assertEqual(
+            format_history_message(record),
+            {"role": "assistant", "content": "[语音]这么想听啊，那等白天嗓子开了给你哼两句。"},
+        )
+
+    def test_voice_duration_metadata_is_removed_when_transcription_exists(self):
+        self.assertEqual(strip_voice_duration_metadata('语音10"秒\n\n这么想听啊'), "这么想听啊")
+        self.assertEqual(strip_voice_duration_metadata('语音10"秒'), '语音10"秒')
+
+        merged = build_merged_private_message([
+            SimpleNamespace(type="voice", attr="friend", sender="张三", content='语音8"秒我刚说的是这个'),
+        ])
+        self.assertEqual(merged.content, "[语音]我刚说的是这个")
+
+    def test_emotion_history_preserves_readable_meaning(self):
+        record = {
+            "time": "2026/07/02 05:05:51",
+            "type": "emotion",
+            "attr": "friend",
+            "sender": "张三",
+            "content": "动画表情 [好的]",
+        }
+
+        self.assertEqual(format_memory_record_for_display(record)["content"], "[微信表情][好的]")
+        self.assertEqual(
+            format_history_message(record),
+            {"role": "user", "content": "张三: [微信表情][好的]"},
+        )
+
+        merged = build_merged_private_message([
+            SimpleNamespace(type="emotion", attr="friend", sender="张三", content="动画表情 [好的]"),
+        ])
+        self.assertEqual(merged.content, "[微信表情][好的]")
+
+    def test_empty_emotion_history_uses_stable_description(self):
+        record = {
+            "time": "2026/07/02 05:05:51",
+            "type": "emotion",
+            "attr": "friend",
+            "sender": "张三",
+            "content": "",
+        }
+
+        self.assertEqual(format_memory_record_for_display(record)["content"], "[微信表情]")
+        self.assertEqual(
+            format_history_message(record),
+            {"role": "user", "content": "张三: [微信表情]"},
+        )
+
+    def test_system_time_separator_marks_next_real_message_time(self):
+        history = [
+            {"time": "2026/07/02 05:05:53", "type": "time", "attr": "system", "sender": "system", "content": "05:05"},
+            {"time": "2026/07/02 05:06:30", "type": "text", "attr": "friend", "sender": "张三", "content": "什么意思"},
+            {"time": "2026/07/02 05:06:44", "type": "text", "attr": "self", "sender": "self", "content": "没唱，就是想让你听听我的声音。"},
+            {"time": "2026/07/02 05:10:00", "type": "time", "attr": "system", "sender": "system", "content": "05:10"},
+            {"time": "2026/07/02 05:10:10", "type": "text", "attr": "friend", "sender": "张三", "content": "知道了"},
+        ]
+
+        visible, skipped = build_model_visible_history(history)
+
+        self.assertEqual(skipped, 0)
+        self.assertEqual(
+            visible,
+            [
+                {"role": "user", "content": "发送时间：05:05\n张三: 什么意思"},
+                {"role": "assistant", "content": "没唱，就是想让你听听我的声音。"},
+                {"role": "user", "content": "发送时间：05:10\n张三: 知道了"},
+            ],
+        )
+
+    def test_semantic_messages_are_normalized_consistently(self):
+        self.assertEqual(format_message_semantic_text({"type": "link", "content": "[链接]青藏高原(Live)\n来自优优的作品\n全民K歌"}), "[链接]青藏高原(Live)\n来自优优的作品\n全民K歌")
+        self.assertEqual(format_message_semantic_text({"type": "miniapp", "content": "小程序冷亦文集有一种执念，生命不老，此情不变"}), "[小程序]冷亦文集有一种执念，生命不老，此情不变")
+        self.assertEqual(format_message_semantic_text({"type": "video", "content": "视频 下载0:09"}), "[视频]0:09")
+        self.assertEqual(format_message_semantic_text({"type": "personal_card", "content": "名片张三"}), "[个人名片]张三")
+        self.assertEqual(format_message_semantic_text({"type": "image", "content": "C:/temp/a.png"}), "[图片]")
+
+    def test_image_history_preserves_image_shell_and_summary(self):
+        record = {
+            "time": "2026/07/02 05:05:51",
+            "type": "image",
+            "attr": "friend",
+            "sender": "张三",
+            "content": "[图片]",
+            "image_paths": [r"C:\tmp\a.png"],
+            "visual_notes": [
+                "图片概览：一张聊天截图。\n可见文字：有。\n关键细节：像是在讨论出发时间。\n不确定项：部分字看不清。",
+            ],
+        }
+
+        self.assertEqual(format_memory_record_for_display(record)["content"], "[图片] 图片概览：一张聊天截图。")
+        self.assertEqual(
+            format_history_message(record),
+            {"role": "user", "content": "张三: [图片]\n图片概览：一张聊天截图。\n可见文字：有。\n关键细节：像是在讨论出发时间。"},
+        )
+
     def test_group_voice_text_without_at_is_saved_but_not_replied(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
@@ -120,7 +246,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(len(bot.memory_manager.calls), 1)
         self.assertEqual(bot.memory_manager.calls[0]["chat_name"], "测试群")
         self.assertEqual(bot.memory_manager.calls[0]["sender"], "B")
-        self.assertEqual(bot.memory_manager.calls[0]["content"], '语音2"秒B 的语音内容')
+        self.assertEqual(bot.memory_manager.calls[0]["content"], "B 的语音内容")
         self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "voice")
 
     def test_group_image_without_at_is_saved_but_not_replied(self):
@@ -169,8 +295,9 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(len(bot.memory_manager.calls), 1)
         self.assertEqual(bot.memory_manager.calls[0]["chat_name"], "测试群")
         self.assertEqual(bot.memory_manager.calls[0]["sender"], "B")
-        self.assertEqual(bot.memory_manager.calls[0]["content"], r"C:\tmp\group-image.png")
+        self.assertEqual(bot.memory_manager.calls[0]["content"], "[图片]")
         self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "image")
+        self.assertEqual(bot.memory_manager.calls[0]["image_paths"], [r"C:\tmp\group-image.png"])
 
     def test_chat_memory_background_worker_uses_existing_update_logic(self):
         bot = WXBot.__new__(WXBot)

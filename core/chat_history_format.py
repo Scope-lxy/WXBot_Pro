@@ -1,6 +1,10 @@
 """Helpers for converting stored chat history into UI/model-visible context."""
 
-from core.message_pipeline import split_quoted_image_message
+from core.message_pipeline import (
+    format_message_semantic_text,
+    readable_emotion_text,
+    split_quoted_image_message,
+)
 from core.vision_bridge import VisionNote
 
 
@@ -9,6 +13,7 @@ _EMPTY_KEY_DETAILS = "未提取到稳定细节。"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v"}
 DEFAULT_MODEL_HISTORY_MEDIA_LIMIT = 3
+_SEMANTIC_MESSAGE_TYPES = {"voice", "emotion", "link", "miniapp", "personal_card", "note", "video"}
 
 
 def _clean_text(value):
@@ -25,6 +30,18 @@ def _normalized_visual_notes(item):
     if single and single not in notes:
         notes.insert(0, single)
     return notes
+
+
+def _normalized_image_paths(item):
+    item = item if isinstance(item, dict) else {}
+    paths = item.get("image_paths")
+    if isinstance(paths, list):
+        return [_clean_text(path) for path in paths if _clean_text(path)]
+    raw = _clean_text(item.get("content"))
+    if not raw or raw == "[图片]":
+        return []
+    _text_part, quoted_paths = split_quoted_image_message(raw)
+    return [_clean_text(path) for path in quoted_paths if _clean_text(path)]
 
 
 def _render_visual_note_summary(note_text, *, compact=False):
@@ -77,6 +94,8 @@ def _media_word(kind):
         return "图片"
     if kind == "video":
         return "视频"
+    if kind == "emotion":
+        return "微信表情"
     return "文件"
 
 
@@ -84,6 +103,9 @@ def _media_message_text(kind, count, *, speaker_role="user", compact=False):
     word = _media_word(kind)
     if compact:
         return f"[{word}]" if count <= 1 else f"[{word} x{count}]"
+    if kind == "emotion":
+        action = "发出" if speaker_role == "assistant" else "发来"
+        return f"{action}一个微信表情（无法识别具体内容）。"
     if kind == "image":
         count_text = "一张" if count <= 1 else f"{count}张"
     else:
@@ -92,8 +114,25 @@ def _media_message_text(kind, count, *, speaker_role="user", compact=False):
     return f"{action}{count_text}{word}。"
 
 
+def _render_emotion_message(raw, *, speaker_role="user", compact=False):
+    text = readable_emotion_text(raw)
+    if compact:
+        return f"表情：{text}" if text else "[微信表情]"
+    action = "发出" if speaker_role == "assistant" else "发来"
+    if text:
+        return f"{action}一个微信表情：{text}"
+    return f"{action}一个微信表情（无法识别具体内容）。"
+
+
 def _render_media_message(item, raw, notes, *, speaker_role="user", compact=False):
     kind = _media_kind_from_record(item)
+    if kind == "image":
+        summary = _render_visual_summaries(notes, compact=compact)
+        if compact:
+            if summary:
+                return f"[图片] {summary.split(' ')[0]}"
+            return "[图片]"
+        return f"[图片]\n{summary}".strip() if summary else "[图片]"
     content = _media_message_text(kind, 1, speaker_role=speaker_role, compact=compact)
     summary = _render_visual_summaries(notes, compact=compact)
     if summary:
@@ -129,8 +168,13 @@ def _render_record_content(item, *, speaker_role="user", compact=False):
     msg_type = str(item.get("type", "") or "").strip().lower()
     raw = _clean_text(item.get("content"))
     notes = _normalized_visual_notes(item)
+    image_paths = _normalized_image_paths(item)
+    if msg_type in _SEMANTIC_MESSAGE_TYPES:
+        return format_message_semantic_text(item)
     if msg_type in {"image", "video", "file"}:
         return _render_media_message(item, raw, notes, speaker_role=speaker_role, compact=compact)
+    if image_paths:
+        return _render_media_message({**item, "type": "image", "image_paths": image_paths}, raw, notes, speaker_role=speaker_role, compact=compact)
     if raw:
         _text_part, image_paths = split_quoted_image_message(raw)
         if image_paths:
@@ -149,6 +193,40 @@ def _is_media_record(item):
         return False
     _text_part, image_paths = split_quoted_image_message(raw)
     return bool(image_paths)
+
+
+def _is_time_separator_record(item):
+    if not isinstance(item, dict):
+        return False
+    attr = str(item.get("attr", "") or "").strip().lower()
+    msg_type = str(item.get("type", "") or "").strip().lower()
+    return attr == "system" and msg_type in {"system", "time"} and bool(_clean_text(item.get("content")))
+
+
+def _is_model_visible_record(item):
+    if not isinstance(item, dict):
+        return True
+    attr = str(item.get("attr", "") or "").strip().lower()
+    if attr == "system":
+        return False
+    return True
+
+
+def _attach_time_separators(history):
+    visible = []
+    pending_time = ""
+    for item in history or []:
+        if _is_time_separator_record(item):
+            pending_time = _clean_text(item.get("content"))
+            continue
+        if not _is_model_visible_record(item):
+            continue
+        if pending_time and isinstance(item, dict):
+            item = dict(item)
+            item["_history_time"] = pending_time
+            pending_time = ""
+        visible.append(item)
+    return visible
 
 
 def limit_recent_media_records(history, media_limit=DEFAULT_MODEL_HISTORY_MEDIA_LIMIT):
@@ -170,7 +248,8 @@ def limit_recent_media_records(history, media_limit=DEFAULT_MODEL_HISTORY_MEDIA_
 
 
 def build_model_visible_history(history, *, assistant_limit=None, media_limit=DEFAULT_MODEL_HISTORY_MEDIA_LIMIT):
-    visible_history = limit_recent_media_records(history, media_limit=media_limit)
+    visible_history = _attach_time_separators(history)
+    visible_history = limit_recent_media_records(visible_history, media_limit=media_limit)
     skipped_assistant = 0
     if assistant_limit is not None:
         visible_history, skipped_assistant = filter_model_visible_history(
@@ -198,11 +277,14 @@ def format_history_message(h):
     else:
         role = "assistant" if h.get("attr") == "self" else "user"
     raw = _render_record_content(h, speaker_role=role, compact=False)
+    history_time = _clean_text(h.get("_history_time")) if isinstance(h, dict) else ""
     sender = h.get("sender", "")
     if role == "user" and sender:
         content = f"{sender}: {raw}"
     else:
         content = str(raw)
+    if history_time:
+        content = f"发送时间：{history_time}\n{content}"
     return {"role": role, "content": content}
 
 
