@@ -540,7 +540,10 @@ class WXBot:
     def _start_wxauto_save_cache_cleanup(self):
         def run_cleanup():
             try:
-                stats = cleanup_wxauto_save_cache(WxParam.DEFAULT_SAVE_PATH)
+                retention_days = int(getattr(self.config, "wxauto_save_cache_retention_days", 30) or 0)
+                if retention_days <= 0:
+                    return
+                stats = cleanup_wxauto_save_cache(WxParam.DEFAULT_SAVE_PATH, retention_days=retention_days)
                 if not stats or stats.get("skipped"):
                     return
                 deleted_files = int(stats.get("deleted_files") or 0)
@@ -898,11 +901,17 @@ class WXBot:
             return False
         return True
 
-    def _queue_lightweight_send(self, target, actions, *, source=""):
+    def _queue_lightweight_send(self, target, actions, *, source="", expected_sequence=None):
         target = str(target or "").strip()
         actions = [dict(item) for item in (actions or []) if isinstance(item, dict)]
         if not target or not actions:
             return False
+        sequence = None
+        if expected_sequence is not None:
+            try:
+                sequence = int(expected_sequence)
+            except Exception:
+                sequence = None
         self._ensure_lightweight_send_queue_state()
         with self._lightweight_send_queue_lock:
             self._lightweight_send_queue[target] = {
@@ -911,6 +920,8 @@ class WXBot:
                 "source": str(source or "").strip(),
                 "queued_at": datetime.now().replace(microsecond=0).isoformat(),
             }
+            if sequence is not None:
+                self._lightweight_send_queue[target]["expected_sequence"] = sequence
         return {"status": "queued", "message": "已进入轻量延后发送队列", "data": {"target": target}}
 
     def _ensure_target_listen_chat_for_send(self, target):
@@ -1011,6 +1022,11 @@ class WXBot:
                     if not self._lightweight_send_queue:
                         break
                     target, item = next(iter(self._lightweight_send_queue.items()))
+                    expected_sequence = item.get("expected_sequence")
+                    if expected_sequence is not None and self._get_private_message_sequence(target) != expected_sequence:
+                        self._lightweight_send_queue.pop(target, None)
+                        log(message=f"[轻量发送队列] {target} 已有新消息，丢弃上一轮过期回复")
+                        continue
                 if self._wechat_action_lock_is_busy():
                     break
                 result = self._send_lightweight_actions_to_child(target, item.get("actions") or [])
@@ -1049,7 +1065,7 @@ class WXBot:
         with self._get_chat_send_lock(target):
             return chat.SendMsg(str(msg or ""))
 
-    def _queue_text_reply_until_target_verified(self, target, parts, *, source="reply"):
+    def _queue_text_reply_until_target_verified(self, target, parts, *, source="reply", expected_sequence=None):
         actions = [
             {"type": "text", "text": str(part or "")}
             for part in (parts or [])
@@ -1057,7 +1073,12 @@ class WXBot:
         ]
         if not actions:
             return False
-        return self._queue_lightweight_send(target, actions, source=source)
+        return self._queue_lightweight_send(
+            target,
+            actions,
+            source=source,
+            expected_sequence=expected_sequence,
+        )
 
     def _queue_keyword_reply_until_target_verified(self, target, actions):
         queued_actions = []
@@ -6141,7 +6162,12 @@ class WXBot:
         if send_chat is None and target:
             send_chat = self._ensure_target_listen_chat_for_send(target)
         if send_chat is None:
-            queued = self._queue_text_reply_until_target_verified(target, parts, source="private_ai_reply")
+            queued = self._queue_text_reply_until_target_verified(
+                target,
+                parts,
+                source="private_ai_reply",
+                expected_sequence=expected_sequence,
+            )
             log(level="WARNING", message=f"私聊 {target} 发送前未能确认目标子窗口，已进入延迟发送队列，避免回错人")
             return False, queued
         chat = send_chat

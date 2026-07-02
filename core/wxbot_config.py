@@ -169,6 +169,7 @@ class WXBotConfig:
         self.reply_delay_split_speed_mode = "fast"  # 拆分消息发送延迟档位
         self.reply_delay_split_min = 1   # 拆分消息最小延迟秒数
         self.reply_delay_split_max = 2   # 拆分消息最大延迟秒数
+        self.wxauto_save_cache_retention_days = 30  # wxauto_save 缓存自动清理周期，0=不清理
         self.clean_ai_reply_switch = True  # AI 回复清洗开关
         self.current_account_wx_id = ""
 
@@ -312,6 +313,7 @@ class WXBotConfig:
                     "reply_delay_split_speed_mode": "fast",
                     "reply_delay_split_min": 1,
                     "reply_delay_split_max": 2,
+                    "wxauto_save_cache_retention_days": 30,
                     "clean_ai_reply_switch": True,
                     "chat_image_recognition_switch": False,
                     "chat_voice_recognition_switch": False,
@@ -1001,6 +1003,7 @@ class WXBotConfig:
             'reply_delay_split_speed_mode': 'fast',
             'reply_delay_split_min': 1,
             'reply_delay_split_max': 2,
+            'wxauto_save_cache_retention_days': 30,
         }
         _needs_save = removed_delay_keys or any(k not in self.config for k in _delay_defaults)
         for k, v in _delay_defaults.items():
@@ -1032,6 +1035,12 @@ class WXBotConfig:
             1,
             600,
         )
+        self.wxauto_save_cache_retention_days = self._coerce_choice_int(
+            self.config.get('wxauto_save_cache_retention_days', 30),
+            30,
+            {0, 7, 30, 90, 180, 360},
+        )
+        self.config['wxauto_save_cache_retention_days'] = self.wxauto_save_cache_retention_days
         self.clean_ai_reply_switch = bool(self.config.get('clean_ai_reply_switch', True))
 
         # 图片识别配置
@@ -1286,6 +1295,14 @@ class WXBotConfig:
     def _coerce_int_range(value, default, min_value, max_value):
         """将配置值转为指定范围内的整数"""
         return coerce_int_range(value, default, min_value, max_value)
+
+    @staticmethod
+    def _coerce_choice_int(value, default, choices):
+        try:
+            number = int(value)
+        except Exception:
+            number = int(default)
+        return number if number in set(choices or []) else int(default)
 
     def human_delay(self, split_continuation=False):
         """模拟首条回复的人工操作随机延迟。"""

@@ -34,7 +34,7 @@
 .\打开软件.bat
 ```
 
-启动脚本会自动创建或复用 `venv`、安装依赖并启动管理面板。开发时也可以手动运行 `venv\Scripts\python.exe web_server.py`。
+启动脚本会自动创建或复用 `venv`、安装依赖并启动管理面板。图片压缩依赖 `Pillow`，脚本会随其他 Python 依赖一起安装，并在复用旧虚拟环境时补检。开发时也可以手动运行 `venv\Scripts\python.exe web_server.py`。
 
 如果系统里没有 `ffmpeg` / `ffprobe`，脚本会首次自动下载 Windows 预编译包到 `venv\tools\ffmpeg\`；如果系统 PATH 已经有可用版本，则直接复用。面板默认优先使用 `http://127.0.0.1:10001`，端口被占用时会顺延。
 
@@ -79,6 +79,7 @@
 - `feature/`：机器人业务规则，例如监听维护、管理员工作台、素材转发、任务执行。
 - `extension/`：邮件通知、Webhook、SiverPanel 远程访问等外部增强。
 - `templates/`：Web 管理面板模板与静态资源。
+- `wxauto_save/`：微信下载原件和 AI 图片压缩副本缓存；机器人启动时会按面板配置后台清理，默认保留 30 天。
 - `wxbot_logs/`：面板运行日志。
 - `backups/`：面板一键备份产物，不是运行时账号数据真源。
 
@@ -87,7 +88,7 @@
 - 微信主窗口需要保持可见，不要最小化。
 - 这是个人自用 fork，默认优先当前目录结构和当前使用方式，不额外维护旧版迁移壳。
 - 当前运行目录以 `data/`、`wxbot_logs/`、`backups/` 为准；跨设备继续使用时，优先复制这些真实数据目录。
-- 公开同步代码前，不要提交 `data/config/`、`data/prompt/`、`data/accounts/`、`wxbot_logs/`、`backups/` 等本地私有数据。
+- 公开同步代码前，不要提交 `data/config/`、`data/prompt/`、`data/accounts/`、`wxauto_save/`、`wxbot_logs/`、`backups/` 等本地私有数据。
 
 ## 迁移与打包
 

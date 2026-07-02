@@ -2219,6 +2219,7 @@ def dashboard():
     config.setdefault('reply_delay_split_min', 1)
     config.setdefault('reply_delay_split_max', 2)
     config.setdefault('reply_delay_split_speed_mode', 'fast')
+    config.setdefault('wxauto_save_cache_retention_days', 30)
     config.setdefault('clean_ai_reply_switch', True)
     if isinstance(config.get('material_outreach_list'), list):
         config['material_outreach_list'] = [
@@ -3473,6 +3474,13 @@ def _coerce_int_range_fields(merged_config):
     if split_speed_mode not in ('fast', 'normal', 'slow'):
         split_speed_mode = 'fast'
     merged_config['reply_delay_split_speed_mode'] = split_speed_mode
+    try:
+        wxauto_retention_days = int(merged_config.get('wxauto_save_cache_retention_days', 30))
+    except (TypeError, ValueError):
+        wxauto_retention_days = 30
+    if wxauto_retention_days not in {0, 7, 30, 90, 180, 360}:
+        wxauto_retention_days = 30
+    merged_config['wxauto_save_cache_retention_days'] = wxauto_retention_days
     try:
         merged_config['reply_delay_first_min'] = max(1, min(600, int(reply_delay_first_min)))
     except (TypeError, ValueError):
@@ -7326,6 +7334,7 @@ def main():
                 "reply_delay_split_speed_mode": "fast",
                 "reply_delay_split_min": 1,
                 "reply_delay_split_max": 2,
+                "wxauto_save_cache_retention_days": 30,
                 "clean_ai_reply_switch": True,
                 "chat_image_recognition_switch": False,
                 "chat_voice_recognition_switch": False,

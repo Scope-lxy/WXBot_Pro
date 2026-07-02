@@ -463,6 +463,29 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertEqual(logs, ["[轻量发送队列] 李四 待发送任务暂未发出，保留队列"])
 
+    def test_stale_private_ai_reply_is_dropped_from_lightweight_send_queue(self):
+        bot = WXBot.__new__(WXBot)
+        bot._get_wechat_action_lock = lambda: threading.RLock()
+        bot._wechat_action_lock_is_busy = lambda: False
+        bot._send_lightweight_actions_to_child = lambda _target, _actions: self.fail("旧回复不应继续发送")
+        bot._ensure_message_runtime_state()
+        bot._next_private_message_sequence("张三")
+        expected_sequence = bot._get_private_message_sequence("张三")
+        bot._queue_text_reply_until_target_verified(
+            "张三",
+            ["旧回复"],
+            source="private_ai_reply",
+            expected_sequence=expected_sequence,
+        )
+        bot._next_private_message_sequence("张三")
+
+        logs = []
+        with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append(kwargs.get("message", ""))):
+            self.assertFalse(bot._flush_lightweight_send_queue())
+
+        self.assertEqual(bot._lightweight_send_queue, {})
+        self.assertEqual(logs, ["[轻量发送队列] 张三 已有新消息，丢弃上一轮过期回复"])
+
     def test_wxauto_download_dir_follows_kernel_save_path(self):
         bot = WXBot.__new__(WXBot)
         original = getattr(WxParam, "DEFAULT_SAVE_PATH", "")

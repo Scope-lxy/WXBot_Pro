@@ -3465,6 +3465,29 @@ html.icons-pref-local [class*=" bi-"]::before {
     </div>
 
     <div class="cfg-card">
+      <div class="ui-head ui-head--page">
+        <i class="bi bi-folder2-open"></i><h5>自动清理缓存</h5><span class="desc">控制微信下载和 AI 处理缓存的保留时间</span>
+      </div>
+      <div class="cfg-page-form">
+        <div class="row g-3">
+          <div class="col-12 col-lg-4">
+            <label class="cfg-label" for="wxauto_save_cache_retention_days">自动清理时间</label>
+            {% set wxauto_cache_retention_days = config.get('wxauto_save_cache_retention_days', 30) | int %}
+            <select class="form-select" id="wxauto_save_cache_retention_days">
+              <option value="0" {% if wxauto_cache_retention_days == 0 %}selected{% endif %}>不清理</option>
+              <option value="7" {% if wxauto_cache_retention_days == 7 %}selected{% endif %}>7天</option>
+              <option value="30" {% if wxauto_cache_retention_days == 30 %}selected{% endif %}>30天</option>
+              <option value="90" {% if wxauto_cache_retention_days == 90 %}selected{% endif %}>90天</option>
+              <option value="180" {% if wxauto_cache_retention_days == 180 %}selected{% endif %}>180天</option>
+              <option value="360" {% if wxauto_cache_retention_days == 360 %}selected{% endif %}>360天</option>
+            </select>
+            <div class="cfg-hint">只清理 <code>wxauto_save</code> 缓存文件；聊天文字记录和配置不会被删除。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="cfg-card">
       <div class="ui-head ui-head--page"><i class="bi bi-shield-lock"></i><h5>管理员设置</h5><span class="desc">设置机器人管理员微信名</span></div>
       <div class="mb-3">
         <label class="cfg-label" for="admin">管理员名称</label>
@@ -11916,6 +11939,7 @@ $(function(){
       reply_delay_first_min:Math.max(1,parseInt($('#reply_delay_first_min').val())||1),
       reply_delay_first_max:Math.max(1,parseInt($('#reply_delay_first_max').val())||5),
       reply_delay_split_speed_mode:$('#reply_delay_split_speed_mode').val()||'fast',
+      wxauto_save_cache_retention_days:parseInt($('#wxauto_save_cache_retention_days').val(),10)||0,
       chat_image_recognition_switch:$('#chat_image_recognition_switch').is(':checked'),
       chat_voice_recognition_switch:$('#chat_voice_recognition_switch').is(':checked'),
       voice_transcription_fallback_text:voiceTranscriptionFallbackText(),
