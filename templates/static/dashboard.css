@@ -1136,6 +1136,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .memory-config-section { min-width: 0; }
 .memory-config-section .switch-row { margin-bottom: 12px; min-height: 44px; }
 .memory-config-section .cfg-label { display: block; }
+.memory-repair-section .switch-row { margin-bottom: 8px; }
 @media (max-width: 900px) {
   .memory-config-grid { grid-template-columns: 1fr; }
 }

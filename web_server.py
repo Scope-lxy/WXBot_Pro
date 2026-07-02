@@ -2213,6 +2213,8 @@ def dashboard():
     config.setdefault('memory_max_count', 5000)
     config.setdefault('memory_context_count', 50)
     config.setdefault('memory_context_assistant_count', 10)
+    config.setdefault('memory_context_repair_low_risk_switch', True)
+    config.setdefault('memory_context_repair_high_risk_switch', False)
     config.setdefault('reply_delay_switch', True)
     config.setdefault('reply_delay_first_min', 1)
     config.setdefault('reply_delay_first_max', 5)
@@ -3320,6 +3322,8 @@ def _coerce_bool_fields(merged_config):
         'everyday_start_stop_bot_switch',   # 新增
         'memory_switch',                    # 聊天记录保存开关
         'memory_context_switch',            # 最近聊天带入开关
+        'memory_context_repair_low_risk_switch',
+        'memory_context_repair_high_risk_switch',
         'reply_delay_switch',               # 发送延迟开关
         'clean_ai_reply_switch',            # AI 回复清洗开关
         'chat_image_recognition_switch',    # 私聊图片识别开关
@@ -7328,6 +7332,8 @@ def main():
                 "memory_max_count": 5000,
                 "memory_context_count": 50,
                 "memory_context_assistant_count": 10,
+                "memory_context_repair_low_risk_switch": True,
+                "memory_context_repair_high_risk_switch": False,
                 "reply_delay_switch": True,
                 "reply_delay_first_min": 1,
                 "reply_delay_first_max": 5,

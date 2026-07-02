@@ -3663,6 +3663,22 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
           <div class="cfg-hint">从最近聊天历史中带入好友消息和 AI 历史回复作为上下文</div>
         </div>
+        <div class="memory-config-section memory-repair-section">
+          <div class="switch-row">
+            <input class="form-check-input" type="checkbox" id="memory_context_repair_low_risk_switch" {% if config.get('memory_context_repair_low_risk_switch', True) %}checked{% endif %}>
+            <label class="form-check-label" for="memory_context_repair_low_risk_switch">自动补最近上下文</label>
+            <span class="switch-desc">只读当前私聊子窗口</span>
+          </div>
+          <div class="cfg-hint">私聊 AI 接管前，仅读取当前子窗口最近可见消息，补齐手机端或人工回复后的短缺口</div>
+        </div>
+        <div class="memory-config-section memory-repair-section">
+          <div class="switch-row">
+            <input class="form-check-input" type="checkbox" id="memory_context_repair_high_risk_switch" {% if config.get('memory_context_repair_high_risk_switch', False) %}checked{% endif %}>
+            <label class="form-check-label" for="memory_context_repair_high_risk_switch">必要时补更多历史</label>
+            <span class="switch-desc">低风险失败后尝试</span>
+          </div>
+          <div class="cfg-hint">低风险未找到锚点时，尝试按历史读取最多 50 条；会占用微信操作锁，默认关闭</div>
+        </div>
       </div>
     </div>
     <!-- 记忆查看卡片 -->
@@ -11935,6 +11951,8 @@ $(function(){
         var v=parseInt($('#memory_context_assistant_count').val(), 10);
         return isNaN(v) ? 10 : Math.max(0, Math.min(100, v));
       })(),
+      memory_context_repair_low_risk_switch:$('#memory_context_repair_low_risk_switch').is(':checked'),
+      memory_context_repair_high_risk_switch:$('#memory_context_repair_high_risk_switch').is(':checked'),
       reply_delay_switch:$('#reply_delay_switch').is(':checked'),
       reply_delay_first_min:Math.max(1,parseInt($('#reply_delay_first_min').val())||1),
       reply_delay_first_max:Math.max(1,parseInt($('#reply_delay_first_max').val())||5),

@@ -257,6 +257,9 @@ def handle_restore_friend(bot, chat, message):
     if not target:
         return chat.SendMsg("请提供好友昵称，如：/恢复 张三")
     if runtime_chat_state.resume_single_chat_reply(bot, target):
+        marker = getattr(bot, "_mark_context_repair_needed_after_restore", None)
+        if callable(marker):
+            marker(target)
         takeover_runtime.clear_pending_takeover_messages(bot, target)
         takeover_runtime.clear_takeover(bot, target)
         return chat.SendMsg(f"{target} 的自动回复已恢复")

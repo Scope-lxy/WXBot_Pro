@@ -9,6 +9,7 @@ from datetime import datetime
 
 from core.account_storage import account_area_dir
 from core.message_pipeline import split_quoted_image_message
+from core.memory_context_repair import unique_message_key
 
 
 WINDOWS_RESERVED_NAMES = {
@@ -222,11 +223,89 @@ class MemoryManager:
                     messages = []
             else:
                 messages = []
+            entry_key = unique_message_key(entry)
+            if message_time is not None and entry_key:
+                for item in messages[-20:]:
+                    if isinstance(item, dict) and unique_message_key(item) == entry_key:
+                        return
             messages = self._append_message_in_order(messages, entry, recent_count=5)
             if len(messages) > max_count:
                 messages = messages[-max_count:]
             with open(path, "w", encoding="utf-8") as file:
                 json.dump(messages, file, ensure_ascii=False, indent=2)
+
+    def append_missing_messages(self, chat_name, entries, max_count, *, recent_dedupe_count=300):
+        path = self._get_memory_path(chat_name)
+        normalized_entries = []
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            msg_type = str(entry.get("type", "text") or "text").strip() or "text"
+            content = str(entry.get("content", "") or "")
+            if msg_type.lower() == "image":
+                content = "[图片]"
+            normalized = {
+                "time": self._normalize_message_time(entry.get("time")),
+                "type": msg_type,
+                "attr": str(entry.get("attr", "") or ""),
+                "sender": str(entry.get("sender", "") or ""),
+                "content": content,
+            }
+            source = str(entry.get("source", "") or "").strip()
+            if source:
+                normalized["source"] = source
+            if isinstance(entry.get("image_paths"), list):
+                image_paths = [str(path or "").strip() for path in entry.get("image_paths") if str(path or "").strip()]
+                if image_paths:
+                    normalized["image_paths"] = image_paths
+            if isinstance(entry.get("visual_notes"), list):
+                visual_notes = [str(note or "").strip() for note in entry.get("visual_notes")]
+                if any(visual_notes):
+                    normalized["visual_notes"] = visual_notes
+                    normalized["visual_note"] = next((note for note in visual_notes if note), "")
+            if unique_message_key(normalized):
+                normalized_entries.append(normalized)
+        if not normalized_entries:
+            return {"added": 0, "total": len(self.get_messages(chat_name, max_count))}
+
+        with self._get_lock(chat_name):
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as file:
+                        messages = json.load(file)
+                    if not isinstance(messages, list):
+                        messages = []
+                except Exception:
+                    messages = []
+            else:
+                messages = []
+
+            try:
+                recent_dedupe_count = max(1, int(recent_dedupe_count or 300))
+            except Exception:
+                recent_dedupe_count = 300
+            existing_keys = {
+                unique_message_key(item)
+                for item in messages[-recent_dedupe_count:]
+                if isinstance(item, dict) and unique_message_key(item)
+            }
+            added = 0
+            for entry in normalized_entries:
+                key = unique_message_key(entry)
+                if not key or key in existing_keys:
+                    continue
+                messages = self._append_message_in_order(messages, entry, recent_count=10)
+                existing_keys.add(key)
+                added += 1
+            try:
+                max_count = int(max_count)
+            except (TypeError, ValueError):
+                max_count = 0
+            if max_count > 0 and len(messages) > max_count:
+                messages = messages[-max_count:]
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump(messages, file, ensure_ascii=False, indent=2)
+            return {"added": added, "total": len(messages)}
 
     @staticmethod
     def _message_image_paths(entry):

@@ -41,7 +41,6 @@ from feature.scheduled_message_tasks import (
 )
 from feature.task_workbench_storage import TaskWorkbenchStorage
 from feature.voice_reply import DEFAULT_CHAT_VOICE_REPLY_KEYWORDS, DEFAULT_GROUP_VOICE_REPLY_KEYWORDS
-
 LONG_REPLY_SEGMENT_CHARS = 1000
 DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
 
@@ -161,6 +160,8 @@ class WXBotConfig:
         self.memory_max_count     = 5000     # 单窗口最多存储条数（上限 5000）
         self.memory_context_count = 50       # AI 请求时带入条数
         self.memory_context_assistant_count = 10  # AI 请求时保留的机器人历史回复条数
+        self.memory_context_repair_low_risk_switch = True
+        self.memory_context_repair_high_risk_switch = False
 
         # ---------- 发送延迟配置 ----------
         self.reply_delay_switch = True   # 模拟人工操作延迟开关（默认开启）
@@ -307,6 +308,8 @@ class WXBotConfig:
                     "memory_max_count": 5000,
                     "memory_context_count": 50,
                     "memory_context_assistant_count": 10,
+                    "memory_context_repair_low_risk_switch": True,
+                    "memory_context_repair_high_risk_switch": False,
                     "reply_delay_switch": True,
                     "reply_delay_first_min": 1,
                     "reply_delay_first_max": 5,
@@ -991,6 +994,25 @@ class WXBotConfig:
         )
         if self.memory_context_assistant_count > self.memory_context_count:
             self.memory_context_assistant_count = self.memory_context_count
+        repair_defaults = {
+            "memory_context_repair_low_risk_switch": True,
+            "memory_context_repair_high_risk_switch": False,
+        }
+        repair_needs_save = any(key not in self.config for key in repair_defaults)
+        for key, value in repair_defaults.items():
+            self.config.setdefault(key, value)
+        self.memory_context_repair_low_risk_switch = bool(
+            self.config.get("memory_context_repair_low_risk_switch", True)
+        )
+        self.memory_context_repair_high_risk_switch = bool(
+            self.config.get("memory_context_repair_high_risk_switch", False)
+        )
+        if repair_needs_save:
+            self.config.update({
+                "memory_context_repair_low_risk_switch": self.memory_context_repair_low_risk_switch,
+                "memory_context_repair_high_risk_switch": self.memory_context_repair_high_risk_switch,
+            })
+            self.save_config()
 
         # 发送延迟配置
         removed_delay_keys = False
