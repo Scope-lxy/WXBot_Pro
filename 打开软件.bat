@@ -7,7 +7,7 @@ set "LOCAL_FFMPEG_BIN=%LOCAL_FFMPEG_ROOT%\bin"
 set "LOCAL_FFMPEG_EXE=%CD%\venv\tools\ffmpeg\bin\ffmpeg.exe"
 set "LOCAL_FFPROBE_EXE=%CD%\venv\tools\ffmpeg\bin\ffprobe.exe"
 set "FFMPEG_RELEASE_PATH=https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
-set PIP_DEPENDENCIES="flask" "pywin32" "openai" "requests" "schedule" "wxautox4>=40.1.14" "cozepy" "websockets"
+set PIP_DEPENDENCIES="flask" "pywin32" "openai" "requests" "schedule" "wxautox4>=40.1.14" "cozepy" "websockets" "Pillow"
 
 if /i "%~1"=="--create-venv-only" (
     call :create_venv
@@ -35,6 +35,17 @@ if not exist "venv\.deps_installed" (
         exit /b 1
     )
     echo ok> "venv\.deps_installed"
+)
+
+"venv\Scripts\python.exe" -c "import PIL" >nul 2>nul
+if errorlevel 1 (
+    echo Installing Pillow for image compression...
+    "venv\Scripts\python.exe" -m pip install "Pillow"
+    if errorlevel 1 (
+        echo [ERROR] Failed to install Pillow.
+        pause
+        exit /b 1
+    )
 )
 
 if not exist "data\config" (

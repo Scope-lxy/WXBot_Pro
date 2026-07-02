@@ -1226,17 +1226,26 @@ def alllisten_mode(bot, last_time, timeout=10):
                     )
                     if should_save_memory and bot.config.memory_switch and bot.memory_manager:
                         try:
-                            bot.memory_manager.save_message(
-                                chat_name=chat,
-                                sender=msg.sender,
-                                content=strip_voice_duration_metadata(msg.content) if msg.type == "voice" else msg.content,
-                                msg_type=msg.type,
-                                msg_attr=msg.attr,
-                                max_count=bot.config.memory_max_count,
-                            )
-                            mark_memory_dirty = getattr(bot, "_mark_chat_memory_dirty", None)
-                            if callable(mark_memory_dirty):
-                                mark_memory_dirty(_types.SimpleNamespace(who=chat, chat_type="private"), msg)
+                            memory_chat = _types.SimpleNamespace(who=chat, chat_type="private")
+                            save_image_memory = getattr(bot, "_save_incoming_image_memory_message", None)
+                            saved_by_image_path = False
+                            if msg.type == "image" and callable(save_image_memory):
+                                saved_by_image_path = bool(save_image_memory(memory_chat, msg))
+                            if not saved_by_image_path:
+                                save_kwargs = {
+                                    "chat_name": chat,
+                                    "sender": msg.sender,
+                                    "content": strip_voice_duration_metadata(msg.content) if msg.type == "voice" else msg.content,
+                                    "msg_type": msg.type,
+                                    "msg_attr": msg.attr,
+                                    "max_count": bot.config.memory_max_count,
+                                }
+                                if msg.type == "image" and str(getattr(msg, "content", "") or "").strip():
+                                    save_kwargs["image_paths"] = [str(msg.content).strip()]
+                                bot.memory_manager.save_message(**save_kwargs)
+                                mark_memory_dirty = getattr(bot, "_mark_chat_memory_dirty", None)
+                                if callable(mark_memory_dirty):
+                                    mark_memory_dirty(memory_chat, msg)
                         except Exception as exc:
                             _bot_log(bot, level="WARNING", message=f"写入记忆失败: {exc}")
 

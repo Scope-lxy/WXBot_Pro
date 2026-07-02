@@ -421,6 +421,60 @@ class RemoveListenChatTests(unittest.TestCase):
         matching = [item for item in logs if "临时接管窗口不可用" in item]
         self.assertEqual(matching, ["全局监听 张三：临时接管窗口不可用，已暂存 1 条并延后 30s 重试"])
 
+    def test_global_listen_image_memory_uses_structured_image_save(self):
+        msg = SimpleNamespace(
+            id="img-1",
+            type="image",
+            attr="friend",
+            sender="张三",
+            content="",
+            download=lambda: r"C:\tmp\global-image.png",
+        )
+
+        def get_next_new_message(**kwargs):
+            callback = kwargs.get("callback")
+            if callable(callback):
+                callback(msg)
+            return {"chat_name": "张三", "chat_type": "private", "msg": [msg]}
+
+        image_saves = []
+        direct_saves = []
+        processed = []
+        bot = SimpleNamespace(
+            config=SimpleNamespace(
+                AllListen_switch=True,
+                listen_list=[],
+                group=[],
+                group_switch=False,
+                custom_forward_switch=False,
+                memory_switch=True,
+                memory_max_count=100,
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=True,
+            ),
+            memory_manager=SimpleNamespace(save_message=lambda **kwargs: direct_saves.append(kwargs)),
+            wx=SimpleNamespace(
+                GetAllListenMessage=lambda: {},
+                GetNextNewMessage=get_next_new_message,
+                chat_type="private",
+            ),
+            all_Mode_listen_list=[],
+            is_chat_listened=lambda _chat: False,
+            add_chat_to_listen=lambda _chat: SimpleNamespace(who="张三"),
+            _forget_runtime_listener_caches=lambda _chat: None,
+            _remove_dynamic_listener_entries=lambda _chat: None,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            _save_incoming_image_memory_message=lambda chat, message: image_saves.append((chat.who, chat.chat_type, message.content)) or True,
+            process_message=lambda _chat, message: processed.append(message.content),
+        )
+
+        listening.alllisten_mode(bot, last_time=9999999999)
+
+        self.assertEqual(image_saves, [("张三", "private", r"C:\tmp\global-image.png")])
+        self.assertEqual(direct_saves, [])
+        self.assertEqual(processed, [r"C:\tmp\global-image.png"])
+
     def test_add_and_verify_uses_add_listen_returned_chat_directly(self):
         calls = []
         sub_chat = SimpleNamespace(who="张三", SendMsg=lambda _msg: True)

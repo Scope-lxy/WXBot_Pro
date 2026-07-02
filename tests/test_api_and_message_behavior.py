@@ -1,3 +1,5 @@
+import base64
+import os
 import unittest
 import threading
 import tempfile
@@ -171,6 +173,21 @@ class ApiBehaviorTests(unittest.TestCase):
         self.assertEqual(captured_payloads[0]["model"], "gpt-test")
         self.assertEqual(captured_payloads[0]["reasoning"], {"effort": "high"})
 
+    def test_openai_image_data_url_uses_prepared_ai_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            original_path = os.path.join(tmp, "original.png")
+            prepared_path = os.path.join(tmp, "prepared.jpg")
+            with open(original_path, "wb") as file:
+                file.write(b"original-bytes")
+            with open(prepared_path, "wb") as file:
+                file.write(b"prepared-bytes")
+
+            with mock.patch("core.api.prepare_ai_image_path", return_value=prepared_path):
+                data_url = OpenAIAPI._image_to_data_url(image_path=original_path)
+
+            encoded = data_url.split(",", 1)[1]
+            self.assertEqual(base64.standard_b64decode(encoded), b"prepared-bytes")
+
 
 class MessageBehaviorTests(unittest.TestCase):
     def test_two_stage_image_reply_places_visual_note_in_current_user_message(self):
@@ -219,6 +236,81 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertIn("消息内容：这里写的什么？", captured["message"])
         self.assertNotIn("图片概览：", captured["message"])
         self.assertEqual(captured["prompt_kwargs"]["image_parse_block"], "IMAGE_RULES")
+
+    def test_private_image_reply_generates_visual_note_before_final_reply(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(chat_image_recognition_api=0)
+        note = "图片概览：一张自拍。\n可见文字：无。\n关键细节：戴着帽子。\n不确定项：无。"
+        generated = []
+        remembered = []
+        captured = {}
+        bot._generate_visual_notes_for_image_paths = (
+            lambda chat_type, paths, **kwargs: generated.append((chat_type, list(paths), kwargs)) or [note]
+        )
+        bot._remember_visual_notes = (
+            lambda chat_name, paths, notes: remembered.append((chat_name, list(paths), list(notes))) or True
+        )
+        bot._reply_image_message = lambda **kwargs: captured.update(kwargs) or "图片回复"
+        bot._get_chat_api = lambda _chat: SimpleNamespace()
+        bot._chat_reply_api_supports_vision = lambda _chat: True
+
+        result = bot._reply_private_image_message(
+            SimpleNamespace(who="张三"),
+            history=[],
+            image_paths=[r"C:\tmp\selfie.png"],
+        )
+
+        self.assertEqual(result, "图片回复")
+        self.assertEqual(generated[0][0], "private")
+        self.assertEqual(generated[0][1], [r"C:\tmp\selfie.png"])
+        self.assertEqual(remembered, [("张三", [r"C:\tmp\selfie.png"], [note])])
+        self.assertEqual(captured["visual_notes"], [note])
+
+    def test_private_pending_visual_context_clears_only_after_notes_exist(self):
+        bot = WXBot.__new__(WXBot)
+        bot._ensure_message_runtime_state()
+        bot._set_pending_visual_context("张三", [r"C:\tmp\selfie.png"], visual_notes=[""])
+
+        self.assertFalse(bot._pending_visual_context_ready_to_clear("张三"))
+
+        bot._set_pending_visual_context(
+            "张三",
+            [r"C:\tmp\selfie.png"],
+            visual_notes=["图片概览：一张自拍。\n可见文字：无。\n关键细节：戴着帽子。\n不确定项：无。"],
+        )
+
+        self.assertTrue(bot._pending_visual_context_ready_to_clear("张三"))
+
+    def test_group_image_reply_generates_visual_note_before_final_reply(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(group_image_recognition_api=0)
+        note = "图片概览：一张活动海报。\n可见文字：周六 19:00。\n关键细节：地点在东门。\n不确定项：无。"
+        generated = []
+        remembered = []
+        captured = {}
+        bot._generate_visual_notes_for_image_paths = (
+            lambda chat_type, paths, **kwargs: generated.append((chat_type, list(paths), kwargs)) or [note]
+        )
+        bot._remember_visual_notes = (
+            lambda chat_name, paths, notes: remembered.append((chat_name, list(paths), list(notes))) or True
+        )
+        bot._reply_image_message = lambda **kwargs: captured.update(kwargs) or "群图回复"
+        bot._get_group_api = lambda _group: SimpleNamespace()
+        bot._group_reply_api_supports_vision = lambda _group: True
+
+        result = bot._reply_group_image_message(
+            SimpleNamespace(who="测试群"),
+            SimpleNamespace(sender="李四"),
+            history=[],
+            image_paths=[r"C:\tmp\poster.png"],
+            attached_text="几点开始？",
+        )
+
+        self.assertEqual(result, "群图回复")
+        self.assertEqual(generated[0][0], "group")
+        self.assertEqual(generated[0][1], [r"C:\tmp\poster.png"])
+        self.assertEqual(remembered, [("测试群", [r"C:\tmp\poster.png"], [note])])
+        self.assertEqual(captured["visual_notes"], [note])
 
     def test_friend_message_callback_still_dispatches_and_sends_reply(self):
         class FakeChat:
@@ -719,6 +811,56 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertTrue(bot.wx_send_ai(chat, message))
             self.assertEqual(sent, ["换个说法吧", "换个说法吧"])
 
+    def test_private_api_error_reply_is_sent_after_new_message_arrives(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_keyword_switch=False,
+            keyword_dict={},
+            memory_switch=False,
+            memory_context_switch=False,
+            chat_image_recognition_switch=False,
+            chat_split_reply_switch=False,
+            chat_split_max_count=4,
+            chat_split_max_chars=100,
+            clean_ai_reply_switch=False,
+            meta_reply_blocked_reply="",
+            meta_reply_blocked_reply_once=False,
+            api_error_reply="接口忙，稍后再聊",
+            api_error_reply_once=False,
+            text_reply_limit_switch=False,
+            text_reply_limit_hours=24,
+            chat_voice_reply_switch=False,
+            cmd="文件传输助手",
+            split_long_text=lambda text: [text],
+        )
+        bot.memory_manager = None
+        bot._voice_reply_state = {"private_sessions": {}, "limits": {}}
+        bot._current_ai_material_outreach_config = lambda: {"ai_material_outreach_switch": False}
+        bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+        bot._get_chat_api = lambda _user: SimpleNamespace(
+            chat=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
+        continue_calls = []
+
+        def can_continue(_chat, **kwargs):
+            continue_calls.append(kwargs)
+            return len(continue_calls) == 1
+
+        bot._private_reply_can_continue = can_continue
+        sent = []
+        bot._send_private_ai_reply_parts = (
+            lambda _chat, parts, **kwargs: sent.append((parts, kwargs.get("expected_sequence"))) or (True, True)
+        )
+        bot._record_reply_metric_success = lambda *_args, **_kwargs: None
+        bot._record_replied_message_success = lambda: None
+        bot._get_private_message_sequence = lambda _name: 1
+
+        chat = SimpleNamespace(who="张三")
+        message = SimpleNamespace(type="text", attr="friend", sender="张三", content="测试", id="1")
+
+        self.assertTrue(bot.wx_send_ai(chat, message))
+        self.assertEqual(sent, [(["接口忙，稍后再聊"], None)])
+
     def test_group_meta_reply_blocked_reply_once_uses_sender_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
@@ -1078,10 +1220,17 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._record_replied_message_success = lambda: None
 
         image_reply_calls = []
-        bot._reply_group_image_message = (
-            lambda _chat, _message, _history, image_paths=None, attached_text="":
-                image_reply_calls.append((list(image_paths or []), attached_text)) or "图片答案"
-        )
+        def fake_group_image_reply(_chat, _message, _history, image_paths=None, attached_text=""):
+            paths = list(image_paths or [])
+            image_reply_calls.append((paths, attached_text))
+            bot._set_pending_visual_context(
+                "测试群",
+                paths,
+                visual_notes=["图片概览：一张测试图。\n可见文字：无。\n关键细节：用于测试。\n不确定项：无。"],
+            )
+            return "图片答案"
+
+        bot._reply_group_image_message = fake_group_image_reply
         bot._get_group_api = lambda _group: self.fail("问图时应走图片回复管线，而不是普通群聊 AI")
 
         chat = SimpleNamespace(

@@ -303,7 +303,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
         bot._get_group_api = lambda _group: self.fail("没 @ 的群聊图片不应触发 AI 回复")
         bot._generate_visual_notes_for_image_paths = (
-            lambda *_args, **_kwargs: ["图片概览：一张测试图片。\n可见文字：无。\n关键细节：用于测试。\n不确定项：无。"]
+            lambda *_args, **_kwargs: self.fail("群聊图片只保存记录时不应同步调用视觉模型")
         )
 
         msg = SimpleNamespace(
@@ -323,10 +323,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(bot.memory_manager.calls[0]["content"], "[图片]")
         self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "image")
         self.assertEqual(bot.memory_manager.calls[0]["image_paths"], [r"C:\tmp\group-image.png"])
-        self.assertEqual(
-            bot.memory_manager.calls[0]["visual_notes"],
-            ["图片概览：一张测试图片。\n可见文字：无。\n关键细节：用于测试。\n不确定项：无。"],
-        )
+        self.assertNotIn("visual_notes", bot.memory_manager.calls[0])
 
     def test_chat_memory_background_worker_uses_existing_update_logic(self):
         bot = WXBot.__new__(WXBot)

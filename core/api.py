@@ -13,6 +13,7 @@ from openai import OpenAI
 
 from core.chat_history_format import format_history_message
 from core.logger import log
+from core.media import prepare_ai_image_path
 from core.tts import (
     default_tts_model,
     default_tts_sdk,
@@ -252,6 +253,7 @@ class OpenAIAPI:
     @staticmethod
     def _image_to_data_url(image_path: str = "", image_url: str = "") -> str:
         if image_path:
+            image_path = prepare_ai_image_path(image_path)
             mime_type, _ = mimetypes.guess_type(image_path)
             if mime_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
                 mime_type = "image/jpeg"
@@ -474,6 +476,7 @@ class DusAPI:
     @staticmethod
     def build_image_block(image_path: str = "", image_url: str = "") -> dict:
         if image_path:
+            image_path = prepare_ai_image_path(image_path)
             mime_type, _ = mimetypes.guess_type(image_path)
             if mime_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
                 mime_type = "image/jpeg"
@@ -500,6 +503,7 @@ class DusAPI:
     @staticmethod
     def _build_gpt_image_block(image_path: str = "", image_url: str = "") -> dict:
         if image_path:
+            image_path = prepare_ai_image_path(image_path)
             mime_type, _ = mimetypes.guess_type(image_path)
             if mime_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
                 mime_type = "image/jpeg"

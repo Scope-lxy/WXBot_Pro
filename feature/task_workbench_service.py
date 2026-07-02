@@ -1498,4 +1498,3 @@ def _call_reload(hooks):
     if callback is None:
         return
     callback()
-

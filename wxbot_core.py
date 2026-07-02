@@ -111,7 +111,7 @@ from core.identity_index import (
     update_index_from_directory,
     reconcile_storage_names,
 )
-from core.media import existing_local_image_path, image_content_hash, is_image_path
+from core.media import cleanup_wxauto_save_cache, existing_local_image_path, image_content_hash, is_image_path
 from core.message_pipeline import (
     MAX_MERGED_PRIVATE_IMAGES,
     QUOTE_IMAGE_MARKER,
@@ -528,6 +528,7 @@ class WXBot:
         self._chat_memory_dirty_lock = threading.Lock()
         self._chat_memory_dirty_chats = {}
         self._chat_memory_worker_running = False
+        self._start_wxauto_save_cache_cleanup()
 
     def _ensure_stop_requested_event(self):
         event = getattr(self, "_stop_requested", None)
@@ -535,6 +536,26 @@ class WXBot:
             event = threading.Event()
             self._stop_requested = event
         return event
+
+    def _start_wxauto_save_cache_cleanup(self):
+        def run_cleanup():
+            try:
+                stats = cleanup_wxauto_save_cache(WxParam.DEFAULT_SAVE_PATH)
+                if not stats or stats.get("skipped"):
+                    return
+                deleted_files = int(stats.get("deleted_files") or 0)
+                deleted_dirs = int(stats.get("deleted_dirs") or 0)
+                failed = int(stats.get("failed") or 0)
+                if deleted_files or deleted_dirs or failed:
+                    log(
+                        "INFO",
+                        "wxauto_save 缓存清理完成："
+                        f"删除文件 {deleted_files} 个，清理空目录 {deleted_dirs} 个，失败 {failed} 个",
+                    )
+            except Exception as exc:
+                log("WARNING", f"wxauto_save 缓存清理失败（已跳过，不影响启动）：{exc}")
+
+        threading.Thread(target=run_cleanup, name="wxauto-save-cache-cleanup", daemon=True).start()
 
     def _reset_stop_request(self):
         self._ensure_stop_requested_event().clear()
@@ -3924,7 +3945,7 @@ class WXBot:
             )
             meta_reply_should_mark = meta_reply_should_mark and parts == [blocked_policy["fallback_reply"]]
 
-        if not self._private_reply_can_continue(chat):
+        if not api_error_reply and not self._private_reply_can_continue(chat):
             return True
 
         if voice_candidate and not api_error_reply:
@@ -3972,11 +3993,14 @@ class WXBot:
         send_success, result = self._send_private_ai_reply_parts(
             chat,
             parts,
-            expected_sequence=reply_message_sequence,
+            expected_sequence=None if api_error_reply else reply_message_sequence,
         )
 
         if image_reply_context_used and send_success and not api_error_reply:
-            self._clear_pending_visual_context(chat.who)
+            if self._pending_visual_context_ready_to_clear(chat.who):
+                self._clear_pending_visual_context(chat.who)
+            else:
+                log(message=f"私聊 {chat.who}：图片摘要尚未回写，暂保留最近图片上下文")
 
         if send_success and api_error_should_mark:
             self.reply_count_store.mark_api_err_notified(user_key)
@@ -4326,7 +4350,10 @@ class WXBot:
 
             if sent_any:
                 if group_image_reply_context_used and not is_api_error_reply(reply):
-                    self._clear_pending_visual_context(chat.who)
+                    if self._pending_visual_context_ready_to_clear(chat.who):
+                        self._clear_pending_visual_context(chat.who)
+                    else:
+                        log(message=f"群聊 {chat.who}：图片摘要尚未回写，暂保留最近图片上下文")
                 if group_api_error_should_mark:
                     group_user_key = self._get_group_reply_once_key(chat, message)
                     if group_user_key:
@@ -4836,6 +4863,19 @@ class WXBot:
             if isinstance(image_paths, (list, tuple))
             else [str(image_paths or "").strip()] if str(image_paths or "").strip() else []
         )
+        normalized_notes = self._normalize_visual_note_slots(normalized_paths, visual_notes)
+        if normalized_paths and not any(normalized_notes):
+            try:
+                normalized_notes = self._generate_visual_notes_for_image_paths(
+                    "private",
+                    normalized_paths,
+                    sender=getattr(chat, "who", ""),
+                    attached_text="",
+                )
+                self._remember_visual_notes(chat.who, normalized_paths, normalized_notes)
+            except Exception as exc:
+                log(level="WARNING", message=f"生成私聊图片摘要失败：{exc}")
+                normalized_notes = []
         return self._reply_image_message(
             chat_name=chat.who,
             chat_type='private',
@@ -4846,7 +4886,7 @@ class WXBot:
             image_path=normalized_paths[0] if len(normalized_paths) == 1 else "",
             image_paths=normalized_paths,
             attached_text=attached_text,
-            visual_notes=visual_notes,
+            visual_notes=normalized_notes,
         )
 
     def _get_image_recognition_api_for_chat(self, chat_type):
@@ -4909,17 +4949,6 @@ class WXBot:
         if not image_paths:
             return False
         chat_type = getattr(chat, "chat_type", "private")
-        visual_notes = []
-        if self._image_recognition_enabled_for_chat(chat_type):
-            try:
-                visual_notes = self._generate_visual_notes_for_image_paths(
-                    chat_type,
-                    image_paths,
-                    sender=getattr(message, "sender", ""),
-                    attached_text="",
-                )
-            except Exception as exc:
-                log(level="WARNING", message=f"生成图片摘要失败：{exc}")
         try:
             memory_chat_name = self._resolve_identity_chat_name(chat.who)
             save_message(
@@ -4931,7 +4960,6 @@ class WXBot:
                 max_count=getattr(self.config, "memory_max_count", 1000),
                 message_time=getattr(message, "_wxbot_received_at", None),
                 image_paths=image_paths,
-                visual_notes=visual_notes,
             )
             self._mark_chat_memory_dirty(
                 SimpleNamespace(who=memory_chat_name, chat_type=chat_type),
@@ -4948,6 +4976,19 @@ class WXBot:
             if isinstance(image_paths, (list, tuple))
             else [str(image_paths or "").strip()] if str(image_paths or "").strip() else []
         )
+        normalized_notes = self._normalize_visual_note_slots(normalized_paths, None)
+        if normalized_paths:
+            try:
+                normalized_notes = self._generate_visual_notes_for_image_paths(
+                    "group",
+                    normalized_paths,
+                    sender=getattr(message, "sender", ""),
+                    attached_text="",
+                )
+                self._remember_visual_notes(chat.who, normalized_paths, normalized_notes)
+            except Exception as exc:
+                log(level="WARNING", message=f"生成群聊图片摘要失败：{exc}")
+                normalized_notes = []
         return self._reply_image_message(
             chat_name=chat.who,
             chat_type='group',
@@ -4959,6 +5000,7 @@ class WXBot:
             image_paths=normalized_paths,
             attached_text=attached_text,
             sender=getattr(message, 'sender', ''),
+            visual_notes=normalized_notes,
         )
 
     def _get_chat_send_lock(self, chat_name):
@@ -5903,6 +5945,14 @@ class WXBot:
         self._ensure_message_runtime_state()
         with self._chat_merge_lock:
             self._pending_visual_contexts.pop(chat_name, None)
+
+    def _pending_visual_context_ready_to_clear(self, chat_name):
+        context = self._get_pending_visual_context(chat_name)
+        if not context:
+            return True
+        image_paths = self._normalize_visual_image_paths(context.get("image_paths"))
+        visual_notes = self._normalize_visual_note_slots(image_paths, context.get("visual_notes"))
+        return bool(visual_notes and any(visual_notes))
 
     def _remember_visual_notes(self, chat_name, image_paths, visual_notes):
         normalized_paths = self._normalize_visual_image_paths(image_paths)
