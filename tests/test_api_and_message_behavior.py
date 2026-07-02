@@ -549,7 +549,7 @@ class MessageBehaviorTests(unittest.TestCase):
             bot.reply_count_store.increment_ai_count("张三", limit_hours=24)
             bot._record_replied_message_success = lambda: None
             sent = []
-            bot._send_private_ai_reply_parts = lambda _chat, parts: sent.extend(parts) or (True, True)
+            bot._send_private_ai_reply_parts = lambda _chat, parts, **_kwargs: sent.extend(parts) or (True, True)
             chat = SimpleNamespace(who="张三")
             logs = []
 
@@ -576,7 +576,7 @@ class MessageBehaviorTests(unittest.TestCase):
         from feature.voice_reply import VoiceReplyState
 
         bot._voice_reply_state = VoiceReplyState(limits=state["limits"], private_sessions={})
-        bot._private_reply_can_continue = lambda _chat: True
+        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
         logs = []
         chat = SimpleNamespace(who="张三")
 
@@ -1400,6 +1400,45 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertEqual(bot._send_private_ai_reply_parts(chat, ["已经生成的回复"]), (False, True))
         self.assertEqual(chat.sent, [])
+
+    def test_private_reply_stops_remaining_parts_when_new_message_arrives(self):
+        class FakeChat:
+            who = "张三"
+            chat_type = "private"
+
+            def __init__(self, bot):
+                self.bot = bot
+                self.sent = []
+
+            def SendMsg(self, msg=None, message=None, **_kwargs):
+                text = msg if msg is not None else message
+                self.sent.append(text)
+                if len(self.sent) == 1:
+                    self.bot._next_private_message_sequence(self.who)
+                return True
+
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="管理员", chat_listen_only=False)
+        bot.is_stop_requested = lambda: False
+        bot._pause_chat_reply = False
+        bot._verified_send_chat = lambda _target, chat: chat
+        bot._get_chat_send_lock = lambda _name: threading.Lock()
+        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+        bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
+        bot._ensure_message_runtime_state()
+        bot._next_private_message_sequence("张三")
+        expected_sequence = bot._get_private_message_sequence("张三")
+        chat = FakeChat(bot)
+
+        self.assertEqual(
+            bot._send_private_ai_reply_parts(
+                chat,
+                ["第一段", "第二段", "第三段"],
+                expected_sequence=expected_sequence,
+            ),
+            (True, True),
+        )
+        self.assertEqual(chat.sent, ["第一段"])
 
     def test_reset_stop_request_allows_next_start(self):
         bot = WXBot.__new__(WXBot)

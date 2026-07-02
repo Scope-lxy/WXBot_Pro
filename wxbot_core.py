@@ -3709,7 +3709,7 @@ class WXBot:
             return True
         return False
 
-    def _private_reply_can_continue(self, chat, *, log_prefix="私聊"):
+    def _private_reply_can_continue(self, chat, *, log_prefix="私聊", expected_sequence=None):
         target = str(getattr(chat, "who", "") or "").strip()
         if self.is_stop_requested():
             if target:
@@ -3726,12 +3726,21 @@ class WXBot:
             if target:
                 log(message=f"{log_prefix} {target} 已启用只监听不AI回复，跳过 AI 调用")
             return False
+        if expected_sequence is not None and target:
+            try:
+                expected_sequence = int(expected_sequence)
+            except Exception:
+                expected_sequence = None
+            if expected_sequence is not None and self._get_private_message_sequence(target) != expected_sequence:
+                log(message=f"{log_prefix} {target}：收到新的用户消息，已停止发送上一轮剩余回复")
+                return False
         return True
 
     def wx_send_ai(self, chat, message):
         """私聊 AI 自动回复。连续消息按好友串行处理，安全状态变化会停止发送。"""
         if not self._private_reply_can_continue(chat):
             return True
+        reply_message_sequence = self._get_private_message_sequence(chat.who)
         result = True
         user_key = self._get_reply_count_key(chat, message)
         limit_handled, limit_result = self._check_text_reply_limit_runtime(chat, user_key, message=message)
@@ -3938,6 +3947,7 @@ class WXBot:
                     limit_hours=getattr(self.config, 'chat_voice_reply_limit_hours', 24),
                     context_text=context_text,
                     section_id=section_id,
+                    expected_sequence=reply_message_sequence,
                 ):
                     if image_reply_context_used:
                         self._clear_pending_visual_context(chat.who)
@@ -3962,6 +3972,7 @@ class WXBot:
         send_success, result = self._send_private_ai_reply_parts(
             chat,
             parts,
+            expected_sequence=reply_message_sequence,
         )
 
         if image_reply_context_used and send_success and not api_error_reply:
@@ -5995,11 +6006,15 @@ class WXBot:
         limit_hours,
         context_text="",
         section_id="",
+        expected_sequence=None,
     ):
         tts_text = normalize_text_for_tts(clean_reply)
         if not is_text_suitable_for_voice(tts_text, max_chars=100):
             return False
-        if str(state_key or "").startswith("private:") and not self._private_reply_can_continue(chat):
+        if str(state_key or "").startswith("private:") and not self._private_reply_can_continue(
+            chat,
+            expected_sequence=expected_sequence,
+        ):
             return False
         now = datetime.now()
         limiter = VoiceReplyLimiter(getattr(self, "_voice_reply_state", None) or load_voice_reply_state(self._voice_reply_state_path()))
@@ -6039,7 +6054,10 @@ class WXBot:
                 synth_cfg["section_id"] = str(section_id or "").strip()
             self._record_tts_api_request()
             create_tts_client(synth_cfg).synthesize(tts_text, audio_path)
-            if str(state_key or "").startswith("private:") and not self._private_reply_can_continue(chat):
+            if str(state_key or "").startswith("private:") and not self._private_reply_can_continue(
+                chat,
+                expected_sequence=expected_sequence,
+            ):
                 return False
             send_audio = getattr(chat, 'SendAudio', None)
             if not callable(send_audio):
@@ -6063,10 +6081,10 @@ class WXBot:
             self._remove_temp_audio_file(audio_path)
         return False
 
-    def _send_private_ai_reply_parts(self, chat, parts):
+    def _send_private_ai_reply_parts(self, chat, parts, *, expected_sequence=None):
         send_success = False
         result = True
-        if not self._private_reply_can_continue(chat):
+        if not self._private_reply_can_continue(chat, expected_sequence=expected_sequence):
             return False, True
         target = str(getattr(chat, "who", "") or "").strip()
         send_chat = self._verified_send_chat(target, chat)
@@ -6082,20 +6100,20 @@ class WXBot:
             with self._get_chat_send_lock(chat.who):
                 last_index = max(0, len(parts) - 1)
                 for idx, part in enumerate(parts):
-                    if not self._private_reply_can_continue(chat):
+                    if not self._private_reply_can_continue(chat, expected_sequence=expected_sequence):
                         break
                     self._human_delay_for_reply_part(
                         part_text=part,
                         split_continuation=(idx > 0),
                         is_last=(idx == last_index),
                     )
-                    if not self._private_reply_can_continue(chat):
+                    if not self._private_reply_can_continue(chat, expected_sequence=expected_sequence):
                         break
                     if len(part) >= LONG_REPLY_SEGMENT_CHARS:
                         segments = list(self.config.split_long_text(part))
                         last_segment_index = max(0, len(segments) - 1)
                         for segment_index, segment in enumerate(segments):
-                            if not self._private_reply_can_continue(chat):
+                            if not self._private_reply_can_continue(chat, expected_sequence=expected_sequence):
                                 break
                             if segment_index > 0:
                                 self._human_delay_for_reply_part(
@@ -6103,9 +6121,9 @@ class WXBot:
                                     split_continuation=True,
                                     is_last=(segment_index == last_segment_index),
                                 )
-                                if not self._private_reply_can_continue(chat):
+                                if not self._private_reply_can_continue(chat, expected_sequence=expected_sequence):
                                     break
-                            if not self._private_reply_can_continue(chat):
+                            if not self._private_reply_can_continue(chat, expected_sequence=expected_sequence):
                                 break
                             if chat.who == getattr(self.config, "cmd", ""):
                                 takeover_runtime.remember_admin_echo_message(self, segment)
