@@ -166,6 +166,11 @@ class FakeChat:
         return self.history[:limit]
 
 
+class FailingHistoryChat(FakeChat):
+    def get_msgs_from_history(self, limit, callback=None, interval=0.2, speed=5, goback=True):
+        raise RuntimeError("history boom")
+
+
 class WXBotContextRepairTests(unittest.TestCase):
     def make_bot(self, tmp, *, high_enabled=False, lock=None):
         bot = WXBot.__new__(WXBot)
@@ -274,6 +279,21 @@ class WXBotContextRepairTests(unittest.TestCase):
                 ["旧锚点", "另一个窗口", "新内容"],
             )
 
+    def test_high_risk_read_failure_clears_high_cooldown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp, high_enabled=True)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FailingHistoryChat(visible=[msg("新内容", time="3")])
+
+            repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
+
+            self.assertFalse(repaired)
+            self.assertNotIn("张三", bot._memory_context_repair_last_high_risk_at)
+
     def test_low_risk_without_anchor_and_high_risk_disabled_appends_visible(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = self.make_bot(tmp, high_enabled=False)
@@ -287,6 +307,65 @@ class WXBotContextRepairTests(unittest.TestCase):
             bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
             self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("张三", 10)], ["旧锚点", "新内容"])
+
+    def test_scheduled_low_risk_runs_after_cooldown_without_strong_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [
+                    {"time": "2026/07/03 05:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "早"},
+                    {"time": "2026/07/03 05:03:00", "attr": "friend", "sender": "张三", "type": "text", "content": "后来呢"},
+                ],
+                100,
+            )
+            bot._memory_context_repair_startup_done.add("张三")
+            bot._memory_context_repair_last_low_risk_at["张三"] = 0
+            chat = FakeChat(visible=[
+                msg("早", time="2026/07/03 05:00:00"),
+                msg("手机发的第一条", attr="self", sender="self", time="2026/07/03 05:01:00"),
+                msg("手机发的第二条", attr="self", sender="self", time="2026/07/03 05:02:00"),
+                msg("后来呢", time="2026/07/03 05:03:00"),
+            ])
+
+            repaired = bot._repair_private_context_before_ai(chat, msg("后来呢", time="2026/07/03 05:03:00"))
+
+            self.assertTrue(repaired)
+            self.assertEqual(
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                ["早", "手机发的第一条", "手机发的第二条", "后来呢"],
+            )
+
+    def test_scheduled_low_risk_does_not_trigger_high_risk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = FakeLock()
+            bot = self.make_bot(tmp, high_enabled=True, lock=lock)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [
+                    {"time": "2026/07/03 05:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "本地旧消息"},
+                    {"time": "2026/07/03 05:10:00", "attr": "friend", "sender": "张三", "type": "text", "content": "当前消息"},
+                ],
+                100,
+            )
+            bot._memory_context_repair_startup_done.add("张三")
+            bot._memory_context_repair_last_low_risk_at["张三"] = 0
+            chat = FakeChat(
+                visible=[msg("另一个可见消息", time="2026/07/03 05:11:00")],
+                history=[
+                    msg("本地旧消息", time="2026/07/03 05:00:00"),
+                    msg("历史中间", time="2026/07/03 05:01:00"),
+                    msg("当前消息", time="2026/07/03 05:10:00"),
+                ],
+            )
+
+            bot._repair_private_context_before_ai(chat, msg("当前消息", time="2026/07/03 05:10:00"))
+
+            self.assertEqual(lock.acquire_calls, [])
+            self.assertEqual(
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                ["本地旧消息", "当前消息", "另一个可见消息"],
+            )
 
     def test_group_configured_chat_does_not_repair(self):
         with tempfile.TemporaryDirectory() as tmp:

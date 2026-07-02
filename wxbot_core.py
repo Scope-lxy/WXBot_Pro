@@ -5546,8 +5546,10 @@ class WXBot:
             return False
         memory_chat_name = self._resolve_identity_chat_name(chat_name)
         reasons = self._context_repair_reasons(chat, message, memory_chat_name)
+        scheduled_low_risk_only = False
         if not reasons:
-            return False
+            reasons = ["scheduled_low_risk_check"]
+            scheduled_low_risk_only = True
         if not self._context_repair_cooldown_allows(chat_name, "low", cfg["low_cooldown"]):
             log(message=f"私聊 {chat_name}：上下文补洞已在冷却中，跳过本轮")
             return False
@@ -5578,7 +5580,8 @@ class WXBot:
                 self._consume_context_repair_reasons(chat_name, reasons)
                 return True
 
-            if plan.anchor_found or not cfg["high_enabled"]:
+            allow_high_risk = cfg["high_enabled"] and not scheduled_low_risk_only
+            if plan.anchor_found or not allow_high_risk:
                 if not plan.anchor_found:
                     result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
                     log(
@@ -5607,6 +5610,10 @@ class WXBot:
                 return bool(plan.messages_to_append)
             try:
                 history_messages = self._read_high_risk_context_messages(chat, cfg["history_limit"])
+            except Exception:
+                with self._memory_context_repair_lock:
+                    self._memory_context_repair_last_high_risk_at.pop(chat_name, None)
+                raise
             finally:
                 lock.release()
             history_entries = [
