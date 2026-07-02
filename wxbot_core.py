@@ -3577,7 +3577,9 @@ class WXBot:
         if self.is_stop_requested():
             return True
         try:
+            received_at = datetime.now()
             setattr(msg, "_wxbot_ingress_source", "subwindow")
+            setattr(msg, "_wxbot_received_at", received_at)
             if takeover_runtime.consume_admin_chat_echo_message(self, chat, msg):
                 self._mark_message_skip_memory(msg)
                 self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
@@ -3654,6 +3656,7 @@ class WXBot:
                             msg_type=msg.type,
                             msg_attr=msg.attr,
                             max_count=self.config.memory_max_count,
+                            message_time=getattr(msg, "_wxbot_received_at", None),
                         )
                     if (
                         msg.attr == "self"
@@ -4732,18 +4735,16 @@ class WXBot:
     def _build_image_parse_block(self, visual_note_text=""):
         return SystemPromptStore().render(
             IMAGE_PARSE_PROMPT_FILE,
-            {
-                "visual_note_block": str(visual_note_text or "").strip(),
-            },
-            required_placeholders=("{{visual_note_block}}",),
+            {},
         ).strip()
 
-    def _build_image_user_message(self, chat_type="private", sender="", attached_text="", image_count=1):
+    def _build_image_user_message(self, chat_type="private", sender="", attached_text="", image_count=1, visual_notes=None):
         return build_image_user_message(
             chat_type,
             sender=sender,
             attached_text=attached_text,
             image_count=image_count,
+            visual_notes=visual_notes,
         )
 
     def _build_image_description_prompt(self, chat_type="private", sender="", attached_text=""):
@@ -4886,46 +4887,6 @@ class WXBot:
         _text_part, image_paths = split_quoted_image_message(content)
         return [path for path in image_paths if str(path or "").strip()]
 
-    def _remember_message_visual_notes(self, chat, message, *, image_paths=None, visual_notes=None):
-        normalized_paths = [
-            str(path or "").strip()
-            for path in (image_paths or self._extract_message_image_paths(message))
-            if str(path or "").strip()
-        ]
-        normalized_notes = [
-            str(note or "").strip()
-            for note in (visual_notes or [])
-            if str(note or "").strip()
-        ]
-        if not normalized_paths:
-            return False
-        memory_manager = getattr(self, "memory_manager", None)
-        save_message = getattr(memory_manager, "save_message", None)
-        if not callable(save_message):
-            return False
-        try:
-            memory_chat_name = self._resolve_identity_chat_name(chat.who)
-            save_message(
-                chat_name=memory_chat_name,
-                sender=getattr(message, "sender", ""),
-                content="[图片]",
-                msg_type="image",
-                msg_attr=getattr(message, "attr", "friend"),
-                max_count=getattr(self.config, "memory_max_count", 1000),
-                image_paths=normalized_paths,
-                visual_notes=normalized_notes,
-            )
-            self._mark_chat_memory_dirty(
-                SimpleNamespace(who=memory_chat_name, chat_type=getattr(chat, "chat_type", "private")),
-                message,
-            )
-            if normalized_notes:
-                return self._remember_visual_notes(memory_chat_name, normalized_paths, normalized_notes)
-            return True
-        except Exception as exc:
-            log(level="WARNING", message=f"写入图片记忆失败: {exc}")
-            return False
-
     def _save_incoming_image_memory_message(self, chat, message):
         if not getattr(getattr(self, "config", None), "memory_switch", False):
             return False
@@ -4957,6 +4918,7 @@ class WXBot:
                 msg_type="image",
                 msg_attr=getattr(message, "attr", "friend"),
                 max_count=getattr(self.config, "memory_max_count", 1000),
+                message_time=getattr(message, "_wxbot_received_at", None),
                 image_paths=image_paths,
                 visual_notes=visual_notes,
             )
@@ -4967,41 +4929,6 @@ class WXBot:
             return True
         except Exception as exc:
             log(level="WARNING", message=f"写入图片记忆失败：{exc}")
-            return False
-
-    def _save_private_image_memory_message(self, chat, image_paths, visual_notes=None, *, sender=""):
-        if not getattr(getattr(self, "config", None), "memory_switch", False):
-            return False
-        memory_manager = getattr(self, "memory_manager", None)
-        save_message = getattr(memory_manager, "save_message", None)
-        if not callable(save_message):
-            return False
-        normalized_paths = [
-            str(path or "").strip()
-            for path in (image_paths or [])
-            if str(path or "").strip()
-        ]
-        if not normalized_paths:
-            return False
-        try:
-            memory_chat_name = self._resolve_identity_chat_name(chat.who)
-            save_message(
-                chat_name=memory_chat_name,
-                sender=sender or getattr(chat, "who", ""),
-                content="[图片]",
-                msg_type="image",
-                msg_attr="friend",
-                max_count=getattr(self.config, "memory_max_count", 1000),
-                image_paths=normalized_paths,
-                visual_notes=visual_notes or [],
-            )
-            self._mark_chat_memory_dirty(
-                SimpleNamespace(who=memory_chat_name, chat_type="private"),
-                SimpleNamespace(attr="friend"),
-            )
-            return True
-        except Exception as exc:
-            log(level="WARNING", message=f"写入图片记忆失败: {exc}")
             return False
 
     def _reply_group_image_message(self, chat, message, history, image_paths=None, attached_text=""):
@@ -5376,6 +5303,7 @@ class WXBot:
                 msg_type=getattr(message, "type", "text"),
                 msg_attr=getattr(message, "attr", "friend"),
                 max_count=getattr(self.config, "memory_max_count", 1000),
+                message_time=getattr(message, "_wxbot_received_at", None),
             )
             self._mark_chat_memory_dirty(
                 SimpleNamespace(who=memory_chat_name, chat_type="private"),
@@ -5404,6 +5332,12 @@ class WXBot:
     def _private_message_max_wait(delay):
         return max(9.0, min(30.0, float(delay or 3.0) * 3.0))
 
+    @staticmethod
+    def _private_message_effective_merge_delay(pipeline, base_delay):
+        kind = str((pipeline or {}).get("open_kind") or "text").strip().lower()
+        multiplier = 2.0 if kind in {"image", "mixed"} else 1.0
+        return float(base_delay or 3.0) * multiplier
+
     def _private_message_pipeline(self, chat_name):
         self._ensure_message_runtime_state()
         name = str(chat_name or "").strip()
@@ -5425,7 +5359,7 @@ class WXBot:
             pipeline["queued_batches"] = deque(pipeline.get("queued_batches") or [])
         if not isinstance(pipeline.get("open_messages"), list):
             pipeline["open_messages"] = []
-        if str(pipeline.get("open_kind", "") or "").strip() not in {"text", "image"}:
+        if str(pipeline.get("open_kind", "") or "").strip() not in {"text", "image", "mixed"}:
             pipeline["open_kind"] = "text"
         return pipeline
 
@@ -5454,7 +5388,7 @@ class WXBot:
         timer.start()
         return timer
 
-    def _schedule_private_message_pipeline_locked(self, chat, pipeline, delay):
+    def _schedule_private_message_pipeline_locked(self, chat, pipeline, delay, max_wait_base_delay=None):
         self._cancel_timer(pipeline.get("idle_timer"))
         pipeline["idle_timer"] = self._schedule_private_message_timer(
             delay,
@@ -5463,7 +5397,7 @@ class WXBot:
         )
         if not pipeline.get("max_timer"):
             elapsed = max(0.0, time.time() - float(pipeline.get("open_started_at") or time.time()))
-            max_wait = self._private_message_max_wait(delay)
+            max_wait = self._private_message_max_wait(max_wait_base_delay if max_wait_base_delay is not None else delay)
             pipeline["max_timer"] = self._schedule_private_message_timer(
                 max(0.0, max_wait - elapsed),
                 self._close_private_message_batch_by_max_wait,
@@ -5519,18 +5453,28 @@ class WXBot:
         return True
 
     def _close_private_message_batch_by_idle(self, chat):
-        if self.is_stop_requested():
+        try:
+            if self.is_stop_requested():
+                self._clear_private_message_pipeline(getattr(chat, "who", ""))
+                return True
+            with self._chat_merge_lock:
+                return self._close_private_message_batch_locked(chat, reason="idle")
+        except Exception as exc:
+            log(level="ERROR", message=f"私聊连续消息空闲关闭失败：{exc}\n{traceback.format_exc()}")
             self._clear_private_message_pipeline(getattr(chat, "who", ""))
-            return True
-        with self._chat_merge_lock:
-            return self._close_private_message_batch_locked(chat, reason="idle")
+            return False
 
     def _close_private_message_batch_by_max_wait(self, chat):
-        if self.is_stop_requested():
+        try:
+            if self.is_stop_requested():
+                self._clear_private_message_pipeline(getattr(chat, "who", ""))
+                return True
+            with self._chat_merge_lock:
+                return self._close_private_message_batch_locked(chat, reason="max_wait")
+        except Exception as exc:
+            log(level="ERROR", message=f"私聊连续消息最大等待关闭失败：{exc}\n{traceback.format_exc()}")
             self._clear_private_message_pipeline(getattr(chat, "who", ""))
-            return True
-        with self._chat_merge_lock:
-            return self._close_private_message_batch_locked(chat, reason="max_wait")
+            return False
 
     def _clear_private_message_pipeline(self, chat_name):
         self._ensure_message_runtime_state()
@@ -5570,7 +5514,11 @@ class WXBot:
                 merged = self._build_merged_private_message(messages)
                 if not str(getattr(merged, 'content', '') or '').strip():
                     continue
-                self.wx_send_ai(chat, merged)
+                try:
+                    self.wx_send_ai(chat, merged)
+                except Exception as exc:
+                    log(level="ERROR", message=f"私聊连续消息处理失败：{exc}\n{traceback.format_exc()}")
+                    continue
             self._clear_private_message_pipeline(name)
             return True
         finally:
@@ -5605,23 +5553,27 @@ class WXBot:
             return True
 
         self._next_private_message_sequence(chat.who)
-        delay = self._private_message_merge_delay()
+        base_delay = self._private_message_merge_delay()
         batch_kind = self._private_message_batch_kind(message)
+        pending_image_paths = []
         with self._chat_merge_lock:
             pipeline = self._private_message_pipeline(chat.who)
             if not pipeline:
                 return True
             open_kind = str(pipeline.get("open_kind") or "text").strip().lower()
-            if pipeline["open_messages"] and open_kind != batch_kind:
-                self._close_private_message_batch_locked(chat)
-                pipeline = self._private_message_pipeline(chat.who)
             if not pipeline["open_messages"]:
                 pipeline["open_started_at"] = time.time()
                 pipeline["open_kind"] = batch_kind
             else:
-                pipeline["open_kind"] = open_kind if open_kind == batch_kind else batch_kind
+                pipeline["open_kind"] = open_kind if open_kind == batch_kind else "mixed"
             pipeline["open_messages"].append(message)
-            self._schedule_private_message_pipeline_locked(chat, pipeline, delay)
+            if getattr(self.config, 'chat_image_recognition_switch', False):
+                for queued_message in pipeline["open_messages"]:
+                    pending_image_paths.extend(self._extract_message_image_paths(queued_message))
+            delay = self._private_message_effective_merge_delay(pipeline, base_delay)
+            self._schedule_private_message_pipeline_locked(chat, pipeline, delay, max_wait_base_delay=base_delay)
+        if pending_image_paths:
+            self._set_pending_visual_context(chat.who, pending_image_paths)
         return True
 
     @staticmethod
@@ -5887,15 +5839,26 @@ class WXBot:
             )
         )
 
-    def _set_pending_visual_context(self, chat_name, image_paths, *, visual_notes=None):
+    def _set_pending_visual_context(self, chat_name, image_paths, *, visual_notes=None, append=False):
         self._ensure_message_runtime_state()
         normalized_paths = self._normalize_visual_image_paths(image_paths)
         if not normalized_paths:
             self._clear_pending_visual_context(chat_name)
             return None
+        normalized_notes = self._normalize_visual_note_slots(normalized_paths, visual_notes)
+        if append:
+            existing = self._get_pending_visual_context(chat_name)
+            if existing:
+                existing_paths = self._normalize_visual_image_paths(existing.get("image_paths"))
+                existing_notes = self._normalize_visual_note_slots(existing_paths, existing.get("visual_notes"))
+                normalized_paths = self._normalize_visual_image_paths(existing_paths + normalized_paths)
+                normalized_notes = self._normalize_visual_note_slots(
+                    normalized_paths,
+                    existing_notes + normalized_notes,
+                )
         context = {
             "image_paths": normalized_paths,
-            "visual_notes": self._normalize_visual_note_slots(normalized_paths, visual_notes),
+            "visual_notes": normalized_notes,
             "expires_at": time.time() + PENDING_VISUAL_CONTEXT_TTL_SECONDS,
             "resolved": False,
         }

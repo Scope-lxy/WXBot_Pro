@@ -18,7 +18,7 @@ class CaptureMemory:
 
 
 class MemoryWriteCallbackTests(unittest.TestCase):
-    def test_message_callback_saves_memory_without_external_message_time(self):
+    def test_message_callback_saves_memory_with_callback_receive_time(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             memory_switch=True,
@@ -40,7 +40,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
 
         self.assertEqual(len(bot.memory_manager.calls), 1)
         self.assertEqual(bot.memory_manager.calls[0]["chat_name"], "chat-a")
-        self.assertNotIn("message_time", bot.memory_manager.calls[0])
+        self.assertIn("message_time", bot.memory_manager.calls[0])
 
     def test_friend_message_callback_marks_chat_memory_dirty_without_sync_update(self):
         bot = WXBot.__new__(WXBot)
@@ -173,6 +173,25 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             ],
         )
 
+    def test_system_text_time_separator_marks_next_real_message_time(self):
+        history = [
+            {"time": "2026/07/02 05:05:53", "type": "text", "attr": "system", "sender": "system", "content": "05:05"},
+            {"time": "2026/07/02 05:06:30", "type": "text", "attr": "friend", "sender": "张三", "content": "什么意思"},
+            {"time": "2026/07/02 05:07:00", "type": "text", "attr": "system", "sender": "system", "content": "你撤回了一条消息"},
+            {"time": "2026/07/02 05:07:30", "type": "text", "attr": "friend", "sender": "张三", "content": "没事"},
+        ]
+
+        visible, skipped = build_model_visible_history(history)
+
+        self.assertEqual(skipped, 0)
+        self.assertEqual(
+            visible,
+            [
+                {"role": "user", "content": "发送时间：05:05\n张三: 什么意思"},
+                {"role": "user", "content": "张三: 没事"},
+            ],
+        )
+
     def test_semantic_messages_are_normalized_consistently(self):
         self.assertEqual(format_message_semantic_text({"type": "link", "content": "[链接]青藏高原(Live)\n来自优优的作品\n全民K歌"}), "[链接]青藏高原(Live)\n来自优优的作品\n全民K歌")
         self.assertEqual(format_message_semantic_text({"type": "miniapp", "content": "小程序冷亦文集有一种执念，生命不老，此情不变"}), "[小程序]冷亦文集有一种执念，生命不老，此情不变")
@@ -193,10 +212,13 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             ],
         }
 
-        self.assertEqual(format_memory_record_for_display(record)["content"], "[图片] 图片概览：一张聊天截图。")
+        self.assertEqual(
+            format_memory_record_for_display(record)["content"],
+            "[图片] 一张聊天截图。 可见文字：有。 关键细节：像是在讨论出发时间。",
+        )
         self.assertEqual(
             format_history_message(record),
-            {"role": "user", "content": "张三: [图片]\n图片概览：一张聊天截图。\n可见文字：有。\n关键细节：像是在讨论出发时间。"},
+            {"role": "user", "content": "张三: [图片]\n一张聊天截图。\n可见文字：有。\n关键细节：像是在讨论出发时间。"},
         )
 
     def test_group_voice_text_without_at_is_saved_but_not_replied(self):
@@ -280,6 +302,9 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.wx = SimpleNamespace(nickname="bot")
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
         bot._get_group_api = lambda _group: self.fail("没 @ 的群聊图片不应触发 AI 回复")
+        bot._generate_visual_notes_for_image_paths = (
+            lambda *_args, **_kwargs: ["图片概览：一张测试图片。\n可见文字：无。\n关键细节：用于测试。\n不确定项：无。"]
+        )
 
         msg = SimpleNamespace(
             attr="group",
@@ -298,6 +323,10 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(bot.memory_manager.calls[0]["content"], "[图片]")
         self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "image")
         self.assertEqual(bot.memory_manager.calls[0]["image_paths"], [r"C:\tmp\group-image.png"])
+        self.assertEqual(
+            bot.memory_manager.calls[0]["visual_notes"],
+            ["图片概览：一张测试图片。\n可见文字：无。\n关键细节：用于测试。\n不确定项：无。"],
+        )
 
     def test_chat_memory_background_worker_uses_existing_update_logic(self):
         bot = WXBot.__new__(WXBot)

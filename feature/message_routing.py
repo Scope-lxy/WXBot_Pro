@@ -225,7 +225,7 @@ def _route_group_message(bot, chat, message):
     ):
         set_pending_visual_context = getattr(bot, "_set_pending_visual_context", None)
         if callable(set_pending_visual_context):
-            set_pending_visual_context(chat.who, [getattr(message, "content", "")])
+            set_pending_visual_context(chat.who, [getattr(message, "content", "")], append=True)
         return {"action": "skip"}
 
     keyword_plan = plan_group_keyword_reply(

@@ -188,11 +188,14 @@ class MemoryManager:
             for path in (image_paths or [])
             if str(path or "").strip()
         ]
-        normalized_visual_notes = [
-            str(note or "").strip()
-            for note in (visual_notes or [])
-            if str(note or "").strip()
-        ]
+        raw_visual_notes = [str(note or "").strip() for note in (visual_notes or [])]
+        if normalized_image_paths:
+            normalized_visual_notes = [
+                raw_visual_notes[index] if index < len(raw_visual_notes) else ""
+                for index, _path in enumerate(normalized_image_paths)
+            ]
+        else:
+            normalized_visual_notes = [note for note in raw_visual_notes if note]
         normalized_content = str(content)
         if normalized_msg_type == "image":
             normalized_content = "[图片]"
@@ -205,7 +208,7 @@ class MemoryManager:
         }
         if normalized_image_paths:
             entry["image_paths"] = normalized_image_paths
-        if normalized_visual_notes:
+        if any(normalized_visual_notes):
             entry["visual_notes"] = normalized_visual_notes
             entry["visual_note"] = next((note for note in normalized_visual_notes if note), "")
         with self._get_lock(chat_name):

@@ -66,12 +66,6 @@ class ImageReplyPipeline:
                 normalized.append(None)
         return normalized
 
-    def _build_multi_image_parse_block(self, notes):
-        blocks = []
-        for index, note in enumerate(notes, start=1):
-            blocks.append(f"## 图片{index}\n{note.render()}")
-        return self.image_parse_block_builder("\n\n".join(blocks))
-
     def _reply_with_direct_vision(self, request: ImageReplyRequest):
         self.log_info(
             f"图片回复路径：直传，chat_type={request.chat_type}，chat_name={request.chat_name}，"
@@ -89,6 +83,7 @@ class ImageReplyPipeline:
             request.history,
             message,
             chat_type=request.chat_type,
+            image_parse_block=self.image_parse_block_builder(),
         )
         kwargs = {
             "prompt": prompt,
@@ -131,12 +126,9 @@ class ImageReplyPipeline:
             sender=request.sender,
             attached_text=request.attached_text,
             image_count=len(image_paths),
+            visual_notes=[note.render() for note in notes],
         )
-        image_parse_block = (
-            self.image_parse_block_builder(notes[0].render())
-            if len(notes) == 1
-            else self._build_multi_image_parse_block(notes)
-        )
+        image_parse_block = self.image_parse_block_builder()
 
         prompt = self.prompt_builder(
             request.chat_name,

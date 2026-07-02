@@ -7,7 +7,10 @@ from types import SimpleNamespace
 from unittest import mock
 
 from core.api import API_ERROR_REPLY_TEXT, DusAPI, OpenAIAPI, build_api_config_snapshot
+from core.prompting import build_image_user_message
+from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.reply_count_store import ReplyCountStore
+from core.vision_bridge import VisionNote
 from feature import message_routing
 from feature.scheduled_messages import execute_scheduled_message_task
 from wxbot_core import WXAUTO_SAVE_DIR_NAME, WXBot, WxParam
@@ -170,6 +173,53 @@ class ApiBehaviorTests(unittest.TestCase):
 
 
 class MessageBehaviorTests(unittest.TestCase):
+    def test_two_stage_image_reply_places_visual_note_in_current_user_message(self):
+        captured = {}
+
+        class FakeFinalApi:
+            def chat(self, message, **kwargs):
+                captured["message"] = message
+                captured["kwargs"] = kwargs
+                return "最终回复"
+
+        def build_prompt(*_args, **kwargs):
+            captured["prompt_kwargs"] = kwargs
+            return "prompt"
+
+        pipeline = ImageReplyPipeline(
+            prompt_builder=build_prompt,
+            image_parse_block_builder=lambda: "IMAGE_RULES",
+            user_message_builder=build_image_user_message,
+            vision_bridge=SimpleNamespace(
+                analyze=lambda **_kwargs: VisionNote(
+                    overview="一张蓝色会标。",
+                    visible_text="ERC 博济全球慈善互助会；EXTENSIVE RELIEVE CHARITY MUTUAL AID",
+                    key_details="圆形徽章，中间是地球和绿色叶片。",
+                    uncertainty="顶部部分字形略模糊。",
+                )
+            ),
+        )
+
+        result = pipeline.reply(ImageReplyRequest(
+            chat_name="张三",
+            chat_type="private",
+            attached_text="这里写的什么？",
+            sender="张三",
+            history=[],
+            final_api=FakeFinalApi(),
+            recognition_api=SimpleNamespace(),
+            final_api_supports_vision=False,
+            image_path=r"C:\tmp\logo.png",
+        ))
+
+        self.assertEqual(result, "最终回复")
+        self.assertIn("本轮消息包含图片：", captured["message"])
+        self.assertIn("[图片]一张蓝色会标。", captured["message"])
+        self.assertIn("可见文字：ERC 博济全球慈善互助会", captured["message"])
+        self.assertIn("消息内容：这里写的什么？", captured["message"])
+        self.assertNotIn("图片概览：", captured["message"])
+        self.assertEqual(captured["prompt_kwargs"]["image_parse_block"], "IMAGE_RULES")
+
     def test_friend_message_callback_still_dispatches_and_sends_reply(self):
         class FakeChat:
             who = "张三"
@@ -264,7 +314,7 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", first))
         self.assertFalse(bot._mark_message_content_fingerprint_seen("张三", duplicate))
 
-    def test_private_message_allows_same_content_from_same_ingress_source(self):
+    def test_private_message_dedupes_same_content_from_same_ingress_source(self):
         bot = WXBot.__new__(WXBot)
         first = SimpleNamespace(
             type="text",
@@ -284,7 +334,7 @@ class MessageBehaviorTests(unittest.TestCase):
         )
 
         self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", first))
-        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", second))
+        self.assertFalse(bot._mark_message_content_fingerprint_seen("张三", second))
 
     def test_verified_send_chat_does_not_probe_wechat_when_candidate_missing(self):
         bot = WXBot.__new__(WXBot)
@@ -1154,6 +1204,47 @@ class MessageBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(bot._get_pending_visual_context("测试群")["visual_notes"], [""])
 
+    def test_group_consecutive_images_accumulate_pending_context(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AtMe="@机器人",
+            cmd="文件传输助手",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=True,
+            group_listen_only=False,
+            group_image_recognition_switch=True,
+        )
+        bot._pause_group_reply = False
+        bot._reply_group_image_message = lambda *_args, **_kwargs: self.fail("群图片本身不应立即识图")
+        bot._get_group_api = lambda _group: self.fail("群图片本身不应触发普通群聊 AI")
+
+        chat = SimpleNamespace(who="测试群", chat_type="group")
+
+        self.assertTrue(bot.process_message(chat, SimpleNamespace(
+            type="image",
+            attr="group",
+            sender="A",
+            content=r"C:\tmp\group-image-1.png",
+        )))
+        self.assertTrue(bot.process_message(chat, SimpleNamespace(
+            type="image",
+            attr="group",
+            sender="A",
+            content=r"C:\tmp\group-image-2.png",
+        )))
+
+        self.assertEqual(
+            bot._get_pending_visual_context("测试群")["image_paths"],
+            [r"C:\tmp\group-image-1.png", r"C:\tmp\group-image-2.png"],
+        )
+
     def test_private_message_pipeline_merges_batch_without_version_cancelling_reply(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(chat_message_merge_delay=3)
@@ -1181,7 +1272,7 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(sent_to_ai, ["在吗\n我想你", "刚才忘了说"])
         self.assertFalse(bot._private_message_pipelines["张三"]["worker_running"])
 
-    def test_private_message_pipeline_separates_image_batch_from_text_batch(self):
+    def test_private_message_pipeline_merges_image_batch_with_followup_text(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             chat_message_merge_delay=3,
@@ -1189,22 +1280,104 @@ class MessageBehaviorTests(unittest.TestCase):
         )
         bot.is_stop_requested = lambda: False
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
-        closed_batches = []
-        bot._start_private_message_worker_locked = lambda chat, pipeline: closed_batches.append(
-            [msg.content for msg in pipeline["queued_batches"][-1]]
-        ) or True
+        bot._start_private_message_worker_locked = lambda _chat, _pipeline: True
 
         chat = SimpleNamespace(who="张三")
-        text_msg = SimpleNamespace(type="text", attr="friend", sender="张三", content="在吗", id="1")
-        image_msg = SimpleNamespace(type="image", attr="friend", sender="张三", content=r"C:\tmp\a.png", id="2")
+        image_msg = SimpleNamespace(type="image", attr="friend", sender="张三", content=r"C:\tmp\a.png", id="1")
+        text_msg = SimpleNamespace(type="text", attr="friend", sender="张三", content="猜猜哪个是我？", id="2")
 
         bot._ensure_message_runtime_state()
-        self.assertTrue(bot._enqueue_private_message_for_ai(chat, text_msg))
         self.assertTrue(bot._enqueue_private_message_for_ai(chat, image_msg))
+        self.assertTrue(bot._enqueue_private_message_for_ai(chat, text_msg))
 
         pipeline = bot._private_message_pipelines["张三"]
-        self.assertEqual([msg.content for msg in pipeline["open_messages"]], [r"C:\tmp\a.png"])
-        self.assertEqual([list(batch) for batch in closed_batches], [["在吗"]])
+        self.assertEqual([msg.content for msg in pipeline["open_messages"]], [r"C:\tmp\a.png", "猜猜哪个是我？"])
+        self.assertEqual(pipeline["open_kind"], "mixed")
+        merged = bot._build_merged_private_message(pipeline["open_messages"])
+        self.assertEqual(merged.type, "text")
+        self.assertIn("猜猜哪个是我？", merged.content)
+        self.assertIn("+引用的图片:", merged.content)
+        self.assertIn(r"C:\tmp\a.png", merged.content)
+
+    def test_private_image_batch_uses_double_idle_and_base_triple_max_wait(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_message_merge_delay=3,
+            chat_image_recognition_switch=True,
+        )
+        bot.is_stop_requested = lambda: False
+        scheduled = []
+
+        def capture_timer(seconds, callback, _chat):
+            scheduled.append((callback.__name__, seconds))
+            return SimpleNamespace(cancel=lambda: None)
+
+        bot._schedule_private_message_timer = capture_timer
+        bot._existing_local_image_path = lambda path: path
+        bot._start_private_message_worker_locked = lambda _chat, _pipeline: True
+
+        chat = SimpleNamespace(who="张三")
+        image_msg = SimpleNamespace(type="image", attr="friend", sender="张三", content=r"C:\tmp\a.png", id="1")
+        text_msg = SimpleNamespace(type="text", attr="friend", sender="张三", content="这里写的什么？", id="2")
+
+        bot._ensure_message_runtime_state()
+        self.assertTrue(bot._enqueue_private_message_for_ai(chat, image_msg))
+
+        self.assertEqual(scheduled[0][0], "_close_private_message_batch_by_idle")
+        self.assertEqual(scheduled[0][1], 6.0)
+        self.assertEqual(scheduled[1][0], "_close_private_message_batch_by_max_wait")
+        self.assertAlmostEqual(scheduled[1][1], 9.0, delta=0.1)
+
+        self.assertTrue(bot._enqueue_private_message_for_ai(chat, text_msg))
+
+        self.assertEqual(scheduled[-1][0], "_close_private_message_batch_by_idle")
+        self.assertEqual(scheduled[-1][1], 6.0)
+        self.assertEqual(
+            [name for name, _seconds in scheduled].count("_close_private_message_batch_by_max_wait"),
+            1,
+        )
+
+    def test_private_image_sets_pending_context_before_ai_worker_runs(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_message_merge_delay=3,
+            chat_image_recognition_switch=True,
+        )
+        bot.is_stop_requested = lambda: False
+        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
+        bot._existing_local_image_path = lambda path: path
+        bot._start_private_message_worker_locked = lambda _chat, _pipeline: True
+
+        chat = SimpleNamespace(who="张三")
+        image_msg = SimpleNamespace(type="image", attr="friend", sender="张三", content=r"C:\tmp\logo.png", id="1")
+
+        bot._ensure_message_runtime_state()
+        self.assertTrue(bot._enqueue_private_message_for_ai(chat, image_msg))
+
+        pending = bot._get_pending_visual_context("张三")
+        self.assertEqual(pending["image_paths"], [r"C:\tmp\logo.png"])
+
+    def test_private_image_only_batch_reaches_ai_after_idle_close(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(chat_message_merge_delay=3)
+        bot.is_stop_requested = lambda: False
+        sent_to_ai = []
+        bot.wx_send_ai = lambda _chat, message: sent_to_ai.append((message.type, message.content)) or True
+
+        chat = SimpleNamespace(who="张三")
+        image_msg = SimpleNamespace(type="image", attr="friend", sender="张三", content=r"C:\tmp\only.png", id="1")
+
+        bot._ensure_message_runtime_state()
+        with bot._chat_merge_lock:
+            pipeline = bot._private_message_pipeline("张三")
+            pipeline["open_messages"] = [image_msg]
+            pipeline["open_started_at"] = 1.0
+            pipeline["open_kind"] = "image"
+
+        self.assertTrue(bot._close_private_message_batch_by_idle(chat))
+        self.assertTrue(bot._run_private_message_pipeline_worker(chat))
+
+        self.assertEqual(sent_to_ai, [("image", r"C:\tmp\only.png")])
 
     def test_private_reply_stops_after_pause_even_when_reply_already_generated(self):
         class FakeChat:

@@ -1,5 +1,7 @@
 """Helpers for converting stored chat history into UI/model-visible context."""
 
+import re
+
 from core.message_pipeline import (
     format_message_semantic_text,
     readable_emotion_text,
@@ -14,6 +16,14 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v"}
 DEFAULT_MODEL_HISTORY_MEDIA_LIMIT = 3
 _SEMANTIC_MESSAGE_TYPES = {"voice", "emotion", "link", "miniapp", "personal_card", "note", "video"}
+_TIME_SEPARATOR_RE = re.compile(
+    r"^(?:"
+    r"\d{1,2}:\d{2}"
+    r"|(?:今天|昨天|前天|星期[一二三四五六日天]|周[一二三四五六日天])\s*(?:上午|下午|晚上|凌晨|早上)?\s*\d{1,2}:\d{2}"
+    r"|\d{4}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2}"
+    r"|\d{4}年\d{1,2}月\d{1,2}日\s*(?:上午|下午|晚上|凌晨|早上)?\s*\d{1,2}:\d{2}"
+    r")$"
+)
 
 
 def _clean_text(value):
@@ -46,7 +56,7 @@ def _normalized_image_paths(item):
 
 def _render_visual_note_summary(note_text, *, compact=False):
     note = VisionNote.from_recognition_text(note_text)
-    parts = [f"图片概览：{note.overview}"]
+    parts = [note.overview]
     if note.visible_text and note.visible_text != _EMPTY_VISIBLE_TEXT:
         parts.append(f"可见文字：{note.visible_text}")
     if note.key_details and note.key_details != _EMPTY_KEY_DETAILS:
@@ -129,9 +139,7 @@ def _render_media_message(item, raw, notes, *, speaker_role="user", compact=Fals
     if kind == "image":
         summary = _render_visual_summaries(notes, compact=compact)
         if compact:
-            if summary:
-                return f"[图片] {summary.split(' ')[0]}"
-            return "[图片]"
+            return f"[图片] {summary}" if summary else "[图片]"
         return f"[图片]\n{summary}".strip() if summary else "[图片]"
     content = _media_message_text(kind, 1, speaker_role=speaker_role, compact=compact)
     summary = _render_visual_summaries(notes, compact=compact)
@@ -200,7 +208,10 @@ def _is_time_separator_record(item):
         return False
     attr = str(item.get("attr", "") or "").strip().lower()
     msg_type = str(item.get("type", "") or "").strip().lower()
-    return attr == "system" and msg_type in {"system", "time"} and bool(_clean_text(item.get("content")))
+    content = _clean_text(item.get("content"))
+    if attr != "system" or not content:
+        return False
+    return msg_type == "time" or bool(_TIME_SEPARATOR_RE.match(content))
 
 
 def _is_model_visible_record(item):
