@@ -5453,10 +5453,8 @@ class WXBot:
         with self._memory_context_repair_lock:
             if chat_name not in self._memory_context_repair_startup_done:
                 reasons.append("startup_first_reply")
-                self._memory_context_repair_startup_done.add(chat_name)
             if chat_name in self._memory_context_repair_restore_pending:
                 reasons.append("restore_first_reply")
-                self._memory_context_repair_restore_pending.discard(chat_name)
 
         try:
             tail = self.memory_manager.get_messages(memory_chat_name, 8) if self.memory_manager else []
@@ -5465,6 +5463,17 @@ class WXBot:
         except Exception:
             reasons.append("memory_tail_check_failed")
         return reasons
+
+    def _consume_context_repair_reasons(self, chat_name, reasons):
+        chat_name = str(chat_name or "").strip()
+        if not chat_name or not reasons:
+            return
+        self._ensure_message_runtime_state()
+        with self._memory_context_repair_lock:
+            if "startup_first_reply" in reasons:
+                self._memory_context_repair_startup_done.add(chat_name)
+            if "restore_first_reply" in reasons:
+                self._memory_context_repair_restore_pending.discard(chat_name)
 
     def _context_repair_cooldown_allows(self, chat_name, kind, cooldown_seconds):
         chat_name = str(chat_name or "").strip()
@@ -5566,19 +5575,35 @@ class WXBot:
                 local_history = self.memory_manager.get_messages(memory_chat_name, cfg["history_limit"]) or []
             elif plan.anchor_found:
                 log(message=f"私聊 {chat_name}：低风险上下文补洞已对齐，无需补入")
+                self._consume_context_repair_reasons(chat_name, reasons)
                 return True
 
             if plan.anchor_found or not cfg["high_enabled"]:
                 if not plan.anchor_found:
-                    log(message=f"私聊 {chat_name}：低风险上下文补洞未找到锚点，高风险补洞未开启")
+                    result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
+                    log(
+                        message=(
+                            f"私聊 {chat_name}：低风险上下文补洞未找到锚点，"
+                            f"已按最近可见消息补入 {result.get('added', 0)} 条"
+                        )
+                    )
+                self._consume_context_repair_reasons(chat_name, reasons)
                 return bool(plan.messages_to_append)
 
             if not self._context_repair_cooldown_allows(chat_name, "high", cfg["high_cooldown"]):
                 log(message=f"私聊 {chat_name}：高风险上下文补洞已在冷却中，跳过本轮")
+                result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
+                if int(result.get("added", 0) or 0) > 0:
+                    self._consume_context_repair_reasons(chat_name, reasons)
                 return bool(plan.messages_to_append)
             lock = self._get_wechat_action_lock()
             if not lock.acquire(blocking=False):
                 log(level="WARNING", message=f"私聊 {chat_name}：高风险上下文补洞需要微信操作锁，当前繁忙，已跳过")
+                with self._memory_context_repair_lock:
+                    self._memory_context_repair_last_high_risk_at.pop(chat_name, None)
+                result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
+                if int(result.get("added", 0) or 0) > 0:
+                    self._consume_context_repair_reasons(chat_name, reasons)
                 return bool(plan.messages_to_append)
             try:
                 history_messages = self._read_high_risk_context_messages(chat, cfg["history_limit"])
@@ -5594,7 +5619,16 @@ class WXBot:
                 anchor_recent_count=cfg["anchor_count"],
             )
             if not high_plan.anchor_found:
-                log(level="WARNING", message=f"私聊 {chat_name}：高风险上下文补洞仍未找到锚点，将按去重补入最近历史")
+                result = self._append_context_repair_messages(memory_chat_name, high_plan.messages_to_append)
+                log(
+                    level="WARNING",
+                    message=(
+                        f"私聊 {chat_name}：高风险上下文补洞仍未找到锚点，"
+                        f"已按最近历史补入 {result.get('added', 0)} 条"
+                    ),
+                )
+                self._consume_context_repair_reasons(chat_name, reasons)
+                return bool(high_plan.messages_to_append)
             result = self._append_context_repair_messages(memory_chat_name, high_plan.messages_to_append)
             log(
                 message=(
@@ -5602,6 +5636,7 @@ class WXBot:
                     f"补入 {result.get('added', 0)} 条"
                 )
             )
+            self._consume_context_repair_reasons(chat_name, reasons)
             return bool(high_plan.messages_to_append)
         except Exception as exc:
             log(level="WARNING", message=f"私聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")

@@ -89,6 +89,26 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
             self.assertEqual(result["added"], 1)
             self.assertEqual([item["content"] for item in manager.get_messages("张三", 10)], ["早", "早呀"])
 
+    def test_append_missing_messages_sorts_entries_by_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = MemoryManager("wxid", tmp)
+
+            result = manager.append_missing_messages(
+                "张三",
+                [
+                    {"time": "2026/07/03 05:02:00", "attr": "friend", "sender": "张三", "type": "text", "content": "第三条"},
+                    {"time": "2026/07/03 05:01:00", "attr": "self", "sender": "self", "type": "text", "content": "第二条"},
+                    {"time": "2026/07/03 05:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "第一条"},
+                ],
+                100,
+            )
+
+            self.assertEqual(result["added"], 3)
+            self.assertEqual(
+                [item["content"] for item in manager.get_messages("张三", 10)],
+                ["第一条", "第二条", "第三条"],
+            )
+
 
 class FakeLock:
     def __init__(self, acquired=True):
@@ -194,7 +214,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                 ["旧锚点", "中间", "新内容"],
             )
 
-    def test_high_risk_lock_busy_does_not_block_or_append(self):
+    def test_high_risk_lock_busy_appends_visible_and_clears_high_cooldown(self):
         with tempfile.TemporaryDirectory() as tmp:
             lock = FakeLock(acquired=False)
             bot = self.make_bot(tmp, high_enabled=True, lock=lock)
@@ -209,9 +229,32 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             self.assertEqual(lock.acquire_calls, [False])
             self.assertFalse(lock.released)
-            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("张三", 10)], ["旧锚点"])
+            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("张三", 10)], ["旧锚点", "新内容"])
+            self.assertIn("张三", bot._memory_context_repair_startup_done)
+            self.assertNotIn("张三", bot._memory_context_repair_last_high_risk_at)
 
-    def test_low_risk_without_anchor_and_high_risk_disabled_does_not_append(self):
+    def test_high_risk_without_anchor_appends_recent_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp, high_enabled=True)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FakeChat(
+                visible=[msg("新内容", time="3")],
+                history=[msg("另一个窗口", time="10"), msg("新内容", time="11")],
+            )
+
+            repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
+
+            self.assertTrue(repaired)
+            self.assertEqual(
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                ["旧锚点", "另一个窗口", "新内容"],
+            )
+
+    def test_low_risk_without_anchor_and_high_risk_disabled_appends_visible(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = self.make_bot(tmp, high_enabled=False)
             bot.memory_manager.append_missing_messages(
@@ -223,7 +266,7 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
-            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("张三", 10)], ["旧锚点"])
+            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("张三", 10)], ["旧锚点", "新内容"])
 
     def test_group_configured_chat_does_not_repair(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -241,6 +284,23 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             self.assertFalse(repaired)
             self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("测试群", 10)], ["旧锚点"])
+
+    def test_group_chat_type_does_not_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp, high_enabled=True)
+            bot.memory_manager.append_missing_messages(
+                "未配置群",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FakeChat(visible=[msg("新内容", time="3")])
+            chat.who = "未配置群"
+            chat.chat_type = "group"
+
+            repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
+
+            self.assertFalse(repaired)
+            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("未配置群", 10)], ["旧锚点"])
 
 
 if __name__ == "__main__":

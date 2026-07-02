@@ -104,13 +104,17 @@
 -> message_routing 第一轮入口分流
 -> 管理员发圈输入 / 素材来源投喂 / 自定义转发人工接管优先链路
 -> 普通消息处理
+-> 私聊好友消息去重后先写入聊天记录，再进入连续消息合并队列
+-> 私聊普通 AI 回复前按需补齐最近上下文，再读取 history 组装 Prompt
 -> 发送前清洗、按需拆分多条、人工延迟
 -> 真正 SendMsg / SendFiles / message.forward(...)
--> 写入聊天记录
+-> 成功发送后写入 AI 回复等输出记录
 -> 视情况更新会话记忆
 ```
 
 当前去重口径按“同一会话 + 同一发送者 + 同一类型 + 同一内容”的短时间重复回调处理，不再按回调来源区分放行；这样能避免同一条真实消息从不同监听入口进来时被重复处理。
+
+私聊好友输入在 `_enqueue_private_message_for_ai()` 里会先调用 `_save_private_incoming_memory_message()` 落到本地聊天记录，再进入连续消息合并队列；这只是对方输入的预写，不是提前写 AI 输出。随后 `wx_send_ai()` 在 `_get_model_context_history()` 之前调用 `_repair_private_context_before_ai()`，让模型拿到的 history 尽量贴近微信窗口真实尾部。
 
 ### 6. 保存配置后的运行中同步
 
@@ -177,6 +181,8 @@
 ## 当前关键行为边界
 
 - 会话记忆页里的“带入最近聊天”是组合控件：`好友 N 条 + AI M 条`。`memory_context_count` 最小值是 `1`，不要恢复成 `0=关闭上下文`。
+- 私聊上下文补洞只由聊天记录配置里的两个开关控制：`memory_context_repair_low_risk_switch` 默认开，`memory_context_repair_high_risk_switch` 默认关；不要把冷却、锚点数量、可见读取上限等内部参数重新暴露到 UI。
+- 低风险补洞只读当前私聊子窗口 `GetAllMessage()` 的最近可见消息，内部上限 `30`；高风险只在低风险无锚点且开关开启时走历史读取，内部上限 `50`，并且必须拿到非阻塞微信操作锁。无锚点也会把读取到的新消息按去重和时间排序补入 memory，因为更常见原因是本地记录落后太多。该机制必须排除群聊，包括 `chat_type == "group"` 和已配置在 `config.group` 的对象。
 - 图片回复按“最终回复接口是否支持视觉”分两条路径：支持视觉时直接把 `image_path/image_paths` 传给回复接口；不支持视觉时先走 `core/vision_bridge.py` 生成结构化视觉笔记，再把视觉笔记贴近当前 user 消息交给主回复模型。`image_parse.md` 只放图片处理规则，不再塞具体图片解析结果。
 - 图片消息本地记忆使用 `[图片]` + `image_paths` + `visual_notes`。AI 可见 `history` 统一走 `core/chat_history_format.py::build_model_visible_history(...)` 渲染，不把本地绝对路径喂给 AI；图片、视频、文件等媒体上下文合计最多保留最近 `3` 条。语音进入 history 时保留 `[语音]文本`，不带语音时长；语音转文字失败或空内容不作为普通聊天内容污染 history。链接、小程序、视频、名片等保留必要类型壳和语义内容，视频去掉“下载”按钮字样但保留时长。
 - `wxauto_save/` 是微信下载原件和 AI 图片压缩副本的统一缓存区。AI 图片副本由 `core/media.py::prepare_ai_image_path(...)` 生成，最长边限制为 `2048`，照片类优先 JPEG，透明图、PNG、BMP、GIF 首帧保留 PNG。机器人启动时会按 `wxauto_save_cache_retention_days` 清理旧文件，并顺手移除变空的子目录；可选值为 `0/7/30/90/180/360`，其中 `0` 表示不清理，不要为 `compress_images/` 等子目录另起独立保留策略。
@@ -221,6 +227,7 @@
 - 发送前清洗、拆分多条和延迟策略
 - 回复轮数计数和超限结束语
 - 会话记忆提取、提案合并和保护规则
+- 私聊上下文补洞、history 组装顺序和微信操作锁占用
 - 定时任务 `next_fire_at` 推进、任务热更新和状态回写
 - 素材转发记录、进度记录和 AI pending 队列状态
 - 通讯录档案、身份索引、备注修复和手动目标名解析

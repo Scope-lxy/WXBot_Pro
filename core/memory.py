@@ -234,7 +234,7 @@ class MemoryManager:
             with open(path, "w", encoding="utf-8") as file:
                 json.dump(messages, file, ensure_ascii=False, indent=2)
 
-    def append_missing_messages(self, chat_name, entries, max_count, *, recent_dedupe_count=300):
+    def append_missing_messages(self, chat_name, entries, max_count):
         path = self._get_memory_path(chat_name)
         normalized_entries = []
         for entry in entries or []:
@@ -280,16 +280,18 @@ class MemoryManager:
             else:
                 messages = []
 
-            try:
-                recent_dedupe_count = max(1, int(recent_dedupe_count or 300))
-            except Exception:
-                recent_dedupe_count = 300
             existing_keys = {
                 unique_message_key(item)
-                for item in messages[-recent_dedupe_count:]
+                for item in messages
                 if isinstance(item, dict) and unique_message_key(item)
             }
             added = 0
+            normalized_entries.sort(
+                key=lambda item: (
+                    self._parse_message_time(item.get("time")) or datetime.max,
+                    unique_message_key(item),
+                )
+            )
             for entry in normalized_entries:
                 key = unique_message_key(entry)
                 if not key or key in existing_keys:
