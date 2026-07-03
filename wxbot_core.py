@@ -5491,7 +5491,11 @@ class WXBot:
         get_all = getattr(chat, "GetAllMessage", None)
         if not callable(get_all):
             raise RuntimeError("当前私聊子窗口不支持 GetAllMessage")
-        with warn_slow_wechat_ui_action(f"上下文补洞 GetAllMessage({getattr(chat, 'who', '')})"):
+        with warn_slow_wechat_ui_action(
+            f"上下文补洞 GetAllMessage({getattr(chat, 'who', '')})",
+            threshold=10.0,
+            level="WARNING",
+        ):
             messages = list(get_all() or [])
         limit = max(1, min(50, int(limit or DEFAULT_VISIBLE_LIMIT)))
         return messages[-limit:] if len(messages) > limit else messages
@@ -5540,17 +5544,13 @@ class WXBot:
             return False
         memory_chat_name = self._resolve_identity_chat_name(chat_name)
         reasons = self._context_repair_reasons(chat, message, memory_chat_name)
-        scheduled_low_risk_only = False
         if not reasons:
             reasons = ["scheduled_low_risk_check"]
-            scheduled_low_risk_only = True
         if not self._context_repair_cooldown_allows(chat_name, "low", cfg["low_cooldown"]):
-            log(message=f"私聊 {chat_name}：上下文补洞已在冷却中，跳过本轮")
             return False
 
         lock = self._get_wechat_action_lock()
         if not lock.acquire(blocking=False):
-            log(level="WARNING", message=f"私聊 {chat_name}：低风险上下文补洞需要微信操作锁，当前繁忙，已跳过")
             with self._memory_context_repair_lock:
                 self._memory_context_repair_last_low_risk_at.pop(chat_name, None)
             return False
@@ -5588,71 +5588,53 @@ class WXBot:
                 self._consume_context_repair_reasons(chat_name, reasons)
                 return True
 
-            allow_high_risk = cfg["high_enabled"] and not scheduled_low_risk_only
-            if plan.anchor_found or not allow_high_risk:
-                if not plan.anchor_found:
-                    result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
-                    log(
-                        message=(
-                            f"私聊 {chat_name}：低风险上下文补洞未找到锚点，"
-                            f"已按最近可见消息补入 {result.get('added', 0)} 条"
-                        )
-                    )
-                self._consume_context_repair_reasons(chat_name, reasons)
-                return bool(plan.messages_to_append)
+            if not plan.anchor_found and cfg["high_enabled"]:
+                if self._context_repair_cooldown_allows(chat_name, "high", cfg["high_cooldown"]):
+                    high_lock = self._get_wechat_action_lock()
+                    if high_lock.acquire(blocking=False):
+                        try:
+                            history_messages = self._read_high_risk_context_messages(chat, cfg["history_limit"])
+                            history_entries = [
+                                normalize_wechat_message(item, source="wechat_context_repair_high")
+                                for item in history_messages
+                            ]
+                            history_plan = build_repair_plan(
+                                local_history,
+                                history_entries,
+                                anchor_recent_count=cfg["anchor_count"],
+                            )
+                            result = self._append_context_repair_messages(
+                                memory_chat_name,
+                                history_plan.messages_to_append + plan.messages_to_append,
+                            )
+                            if int(result.get("added", 0) or 0) > 0:
+                                log(
+                                    message=(
+                                        f"私聊 {chat_name}：高风险上下文补洞完成，原因 {','.join(reasons)}，"
+                                        f"读取 {len(history_entries)} 条，补入 {result.get('added', 0)} 条"
+                                    )
+                                )
+                                self._consume_context_repair_reasons(chat_name, reasons)
+                                return True
+                            log(message=f"私聊 {chat_name}：高风险上下文补洞未发现可补入消息")
+                        except Exception as exc:
+                            log(level="WARNING", message=f"私聊 {chat_name}：高风险上下文补洞失败，已退回低风险结果，详情：{exc}")
+                        finally:
+                            high_lock.release()
+                    else:
+                        with self._memory_context_repair_lock:
+                            self._memory_context_repair_last_high_risk_at.pop(chat_name, None)
 
-            if not self._context_repair_cooldown_allows(chat_name, "high", cfg["high_cooldown"]):
-                log(message=f"私聊 {chat_name}：高风险上下文补洞已在冷却中，跳过本轮")
+            if not plan.anchor_found:
                 result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
-                if int(result.get("added", 0) or 0) > 0:
-                    self._consume_context_repair_reasons(chat_name, reasons)
-                return bool(plan.messages_to_append)
-            lock = self._get_wechat_action_lock()
-            if not lock.acquire(blocking=False):
-                log(level="WARNING", message=f"私聊 {chat_name}：高风险上下文补洞需要微信操作锁，当前繁忙，已跳过")
-                with self._memory_context_repair_lock:
-                    self._memory_context_repair_last_high_risk_at.pop(chat_name, None)
-                result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
-                if int(result.get("added", 0) or 0) > 0:
-                    self._consume_context_repair_reasons(chat_name, reasons)
-                return bool(plan.messages_to_append)
-            try:
-                history_messages = self._read_high_risk_context_messages(chat, cfg["history_limit"])
-            except Exception:
-                with self._memory_context_repair_lock:
-                    self._memory_context_repair_last_high_risk_at.pop(chat_name, None)
-                raise
-            finally:
-                lock.release()
-            history_entries = [
-                normalize_wechat_message(item, source="wechat_context_repair_high")
-                for item in history_messages
-            ]
-            high_plan = build_repair_plan(
-                local_history,
-                history_entries,
-                anchor_recent_count=cfg["anchor_count"],
-            )
-            if not high_plan.anchor_found:
-                result = self._append_context_repair_messages(memory_chat_name, high_plan.messages_to_append)
                 log(
-                    level="WARNING",
                     message=(
-                        f"私聊 {chat_name}：高风险上下文补洞仍未找到锚点，"
-                        f"已按最近历史补入 {result.get('added', 0)} 条"
-                    ),
+                        f"私聊 {chat_name}：低风险上下文补洞未找到锚点，"
+                        f"已按最近可见消息补入 {result.get('added', 0)} 条"
+                    )
                 )
-                self._consume_context_repair_reasons(chat_name, reasons)
-                return bool(high_plan.messages_to_append)
-            result = self._append_context_repair_messages(memory_chat_name, high_plan.messages_to_append)
-            log(
-                message=(
-                    f"私聊 {chat_name}：高风险上下文补洞完成，读取 {len(history_entries)} 条，"
-                    f"补入 {result.get('added', 0)} 条"
-                )
-            )
             self._consume_context_repair_reasons(chat_name, reasons)
-            return bool(high_plan.messages_to_append)
+            return bool(plan.messages_to_append)
         except Exception as exc:
             log(level="WARNING", message=f"私聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")
             return False

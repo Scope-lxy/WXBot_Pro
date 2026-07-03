@@ -217,7 +217,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                 ["早", "早呀", "新内容"],
             )
 
-    def test_high_risk_uses_history_reader_when_low_risk_has_no_anchor(self):
+    def test_high_risk_reads_history_when_enabled_and_low_risk_has_no_anchor(self):
         with tempfile.TemporaryDirectory() as tmp:
             lock = FakeLock()
             bot = self.make_bot(tmp, high_enabled=True, lock=lock)
@@ -233,7 +233,7 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
-            self.assertEqual(chat.history_args, {"limit": 50, "interval": 0.2, "speed": 5, "goback": True})
+            self.assertEqual(chat.history_args["limit"], 50)
             self.assertEqual(lock.acquire_calls, [False, False])
             self.assertTrue(lock.released)
             self.assertEqual(
@@ -261,7 +261,7 @@ class WXBotContextRepairTests(unittest.TestCase):
             self.assertNotIn("张三", bot._memory_context_repair_startup_done)
             self.assertNotIn("张三", bot._memory_context_repair_last_low_risk_at)
 
-    def test_high_risk_without_anchor_appends_recent_history(self):
+    def test_high_risk_without_anchor_appends_read_messages_when_enabled(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = self.make_bot(tmp, high_enabled=True)
             bot.memory_manager.append_missing_messages(
@@ -271,18 +271,19 @@ class WXBotContextRepairTests(unittest.TestCase):
             )
             chat = FakeChat(
                 visible=[msg("新内容", time="3")],
-                history=[msg("另一个窗口", time="10"), msg("新内容", time="11")],
+                history=[msg("更深历史", time="2"), msg("新内容", time="3")],
             )
 
             repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
             self.assertTrue(repaired)
+            self.assertEqual(chat.history_args["limit"], 50)
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
-                ["旧锚点", "另一个窗口", "新内容"],
+                ["旧锚点", "更深历史", "新内容"],
             )
 
-    def test_high_risk_read_failure_clears_high_cooldown(self):
+    def test_high_risk_failure_falls_back_to_visible_messages(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = self.make_bot(tmp, high_enabled=True)
             bot.memory_manager.append_missing_messages(
@@ -294,8 +295,8 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
-            self.assertFalse(repaired)
-            self.assertNotIn("张三", bot._memory_context_repair_last_high_risk_at)
+            self.assertTrue(repaired)
+            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("张三", 10)], ["旧锚点", "新内容"])
 
     def test_low_risk_without_anchor_and_high_risk_disabled_appends_visible(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -339,7 +340,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                 ["早", "手机发的第一条", "手机发的第二条", "后来呢"],
             )
 
-    def test_scheduled_low_risk_does_not_trigger_high_risk(self):
+    def test_scheduled_low_risk_can_trigger_high_risk_when_enabled_and_no_anchor(self):
         with tempfile.TemporaryDirectory() as tmp:
             lock = FakeLock()
             bot = self.make_bot(tmp, high_enabled=True, lock=lock)
@@ -364,10 +365,11 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             bot._repair_private_context_before_ai(chat, msg("当前消息", time="2026/07/03 05:10:00"))
 
-            self.assertEqual(lock.acquire_calls, [False])
+            self.assertEqual(lock.acquire_calls, [False, False])
+            self.assertEqual(chat.history_args["limit"], 50)
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
-                ["本地旧消息", "当前消息", "另一个可见消息"],
+                ["本地旧消息", "历史中间", "当前消息", "另一个可见消息"],
             )
 
     def test_group_configured_chat_does_not_repair(self):
