@@ -3,8 +3,10 @@
 import re
 
 from core.message_pipeline import (
+    format_model_message_text,
     format_message_semantic_text,
     readable_emotion_text,
+    strip_leading_voice_label,
     split_quoted_image_message,
 )
 from core.vision_bridge import VisionNote
@@ -177,6 +179,8 @@ def _render_record_content(item, *, speaker_role="user", compact=False):
     notes = _normalized_visual_notes(item)
     image_paths = _normalized_image_paths(item)
     if msg_type in _SEMANTIC_MESSAGE_TYPES:
+        if not compact:
+            return format_model_message_text(item)
         return format_message_semantic_text(item)
     if msg_type in {"image", "video", "file"}:
         return _render_media_message(item, raw, notes, speaker_role=speaker_role, compact=compact)
@@ -261,7 +265,7 @@ def format_history_message(h):
         role = explicit_role
     else:
         role = "assistant" if h.get("attr") == "self" else "user"
-    raw = _render_record_content(h, speaker_role=role, compact=False)
+    raw = strip_leading_voice_label(_render_record_content(h, speaker_role=role, compact=False))
     history_time = _clean_text(h.get("_history_time")) if isinstance(h, dict) else ""
     sender = h.get("sender", "")
     if role == "user" and sender:

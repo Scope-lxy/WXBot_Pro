@@ -9,6 +9,7 @@ SINGLE_EMOTION_TEXT = "对方发来了一个微信表情（无法识别具体表
 MULTI_EMOTION_TEXT_TEMPLATE = "对方连续发来了 {count} 个微信表情（无法识别具体表情内容）"
 MAX_MERGED_PRIVATE_IMAGES = 9
 VOICE_DURATION_PREFIX_RE = re.compile(r'^\s*语音\s*\d+\s*["”]?\s*秒\s*')
+LEADING_VOICE_LABEL_RE = re.compile(r'^\s*\[语音\]\s*')
 MESSAGE_TYPE_LABELS = {
     "voice": "语音",
     "emotion": "微信表情",
@@ -41,6 +42,13 @@ def strip_voice_duration_metadata(content):
         return text
     tail = text[match.end():].strip()
     return tail or text
+
+
+def strip_leading_voice_label(content):
+    text = str(content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    return LEADING_VOICE_LABEL_RE.sub("", text, count=1).strip()
 
 
 def readable_emotion_text(content):
@@ -102,6 +110,18 @@ def format_message_semantic_text(message, *, compact=False):
             return f"[{label}]{body}"
         return f"[{label}]"
     return raw
+
+
+def format_model_message_text(message):
+    item = message if isinstance(message, dict) else {}
+    msg_type = str(item.get("type", "") or getattr(message, "type", "") or "").strip().lower()
+    raw = str(item.get("content", "") or getattr(message, "content", "") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if msg_type == "voice":
+        body = strip_leading_voice_label(strip_message_shell(raw, msg_type))
+        return body or "一条语音消息（未识别出文字）"
+    if msg_type in {"", "text"}:
+        return strip_leading_voice_label(raw)
+    return format_message_semantic_text(message)
 
 
 def message_unique_id(chat_name, message):
@@ -194,7 +214,7 @@ def build_merged_private_message(messages, *, on_extra_image=None):
         if msg_type in {"link", "miniapp", "personal_card", "note", "video", "voice"}:
             flush_emotions()
             if semantic_text:
-                text_parts.append(semantic_text)
+                text_parts.append(format_model_message_text(msg) if msg_type == "voice" else semantic_text)
             continue
         if not content:
             continue

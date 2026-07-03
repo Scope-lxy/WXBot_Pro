@@ -125,6 +125,7 @@ from core.media import cleanup_wxauto_save_cache, existing_local_image_path, ima
 from core.message_pipeline import (
     MAX_MERGED_PRIVATE_IMAGES,
     QUOTE_IMAGE_MARKER,
+    format_model_message_text,
     format_message_semantic_text,
     build_merged_private_message,
     message_content_fingerprint,
@@ -3824,6 +3825,7 @@ class WXBot:
             message_type = str(getattr(message, "type", "") or "").strip().lower()
             message_body = strip_message_shell(getattr(message, "content", ""), message_type)
             message_semantic_text = format_message_semantic_text(message)
+            model_message_text = format_model_message_text(message)
             keyword_plan = plan_private_keyword_reply(
                 bool(getattr(self.config, "chat_keyword_switch", False)),
                 self.config.keyword_dict,
@@ -3875,7 +3877,7 @@ class WXBot:
                     chat_type='private',
                 )
                 message_content = message_semantic_text
-                model_user_message = build_current_turn_user_message(message_semantic_text)
+                model_user_message = build_current_turn_user_message(model_message_text)
                 fallback_image_path = ""
                 quoted_text = ""
                 quoted_image_paths = []
@@ -4227,7 +4229,7 @@ class WXBot:
             group_image_reply_context_used = False
             content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
             log(message=f"群组 {chat.who}：触发 AI 回复，内容：{content_without_at}")
-            content_with_sender = f"{message.sender}: {format_message_semantic_text({'type': getattr(message, 'type', ''), 'content': content_without_at})}"
+            content_with_sender = f"{message.sender}: {format_model_message_text({'type': getattr(message, 'type', ''), 'content': content_without_at})}"
             model_group_user_message = build_current_turn_user_message(content_with_sender)
             group_voice_candidate_hit = False
             group_meta_reply_should_mark = False

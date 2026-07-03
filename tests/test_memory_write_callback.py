@@ -4,8 +4,14 @@ from types import SimpleNamespace
 from unittest import mock
 
 from core.chat_history_format import build_model_visible_history, format_history_message, format_memory_record_for_display
-from core.message_pipeline import build_merged_private_message, format_message_semantic_text, strip_voice_duration_metadata
+from core.message_pipeline import (
+    build_merged_private_message,
+    format_message_semantic_text,
+    format_model_message_text,
+    strip_voice_duration_metadata,
+)
 from core.memory import MemoryManager
+from core.sending import clean_ai_reply_text
 from wxbot_core import WXBot
 
 
@@ -105,7 +111,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(format_memory_record_for_display(record)["content"], "[语音]这么想听啊，那等白天嗓子开了给你哼两句。")
         self.assertEqual(
             format_history_message(record),
-            {"role": "assistant", "content": "[语音]这么想听啊，那等白天嗓子开了给你哼两句。"},
+            {"role": "assistant", "content": "这么想听啊，那等白天嗓子开了给你哼两句。"},
         )
 
     def test_voice_duration_metadata_is_removed_when_transcription_exists(self):
@@ -115,7 +121,32 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         merged = build_merged_private_message([
             SimpleNamespace(type="voice", attr="friend", sender="张三", content='语音8"秒我刚说的是这个'),
         ])
-        self.assertEqual(merged.content, "[语音]我刚说的是这个")
+        self.assertEqual(merged.content, "我刚说的是这个")
+
+    def test_current_voice_message_uses_transcription_without_voice_label_for_model(self):
+        self.assertEqual(
+            format_model_message_text({"type": "voice", "content": '语音8"秒我刚说的是这个'}),
+            "我刚说的是这个",
+        )
+        self.assertEqual(
+            format_model_message_text({"type": "voice", "content": ""}),
+            "一条语音消息（未识别出文字）",
+        )
+
+    def test_existing_text_voice_label_is_removed_from_model_context(self):
+        record = {
+            "time": "2026/07/02 05:05:51",
+            "type": "text",
+            "attr": "self",
+            "sender": "self",
+            "content": "[语音]你这些话我都听进去了。",
+        }
+
+        self.assertEqual(
+            format_history_message(record),
+            {"role": "assistant", "content": "你这些话我都听进去了。"},
+        )
+        self.assertEqual(clean_ai_reply_text("[语音]你这些话我都听进去了。"), "你这些话我都听进去了。")
 
     def test_emotion_history_preserves_readable_meaning(self):
         record = {

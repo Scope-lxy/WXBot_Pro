@@ -15,6 +15,7 @@ LEADING_REPLY_LABEL_RE = re.compile(
     r"^\s*(?:回复|回答|assistant|self|ai|机器人|小东|瑞瑞|弟弟|姐姐|reply)\s*[:：]\s*",
     re.IGNORECASE,
 )
+LEADING_VOICE_REPLY_LABEL_RE = re.compile(r"^\s*\[语音\]\s*")
 META_REPLY_MARKERS = (
     re.compile(r"作为\s*(?:一个)?\s*ai\b", re.IGNORECASE),
     re.compile(r"as\s+an?\s+ai\b", re.IGNORECASE),
@@ -242,6 +243,7 @@ def clean_ai_reply_text(text):
 
     cleaned = LEADING_TIMESTAMP_RE.sub("", cleaned, count=1)
     cleaned = LEADING_REPLY_LABEL_RE.sub("", cleaned, count=1)
+    cleaned = LEADING_VOICE_REPLY_LABEL_RE.sub("", cleaned, count=1)
     cleaned = _strip_stage_direction_lines(cleaned)
     cleaned = _strip_inline_stage_direction_spans(cleaned)
     lines = [line.rstrip() for line in cleaned.splitlines()]
