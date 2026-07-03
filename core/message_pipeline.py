@@ -18,6 +18,8 @@ MESSAGE_TYPE_LABELS = {
     "miniapp": "小程序",
     "personal_card": "个人名片",
     "note": "笔记",
+    "location": "位置",
+    "merge": "聊天记录",
     "video": "视频",
     "file": "文件",
 }
@@ -26,6 +28,8 @@ MESSAGE_TYPE_PREFIX_PATTERNS = {
     "miniapp": re.compile(r'^\s*(?:\[(?:小程序|小程序卡片)\]|小程序)\s*'),
     "personal_card": re.compile(r'^\s*(?:\[(?:个人名片|名片)\]|个人名片|名片|好友名片)\s*'),
     "note": re.compile(r'^\s*(?:\[(?:笔记)\]|笔记)\s*'),
+    "location": re.compile(r'^\s*(?:\[(?:位置)\]|位置)\s*'),
+    "merge": re.compile(r'^\s*(?:\[(?:聊天记录|合并转发)\]|聊天记录|合并转发)\s*'),
     "video": re.compile(r'^\s*(?:\[(?:视频|视频号)\]|视频号|视频)\s*'),
 }
 VIDEO_DURATION_SUFFIX_RE = re.compile(r'\s*(\d+:\d+)\s*$')
@@ -104,7 +108,7 @@ def format_message_semantic_text(message, *, compact=False):
     msg_type = str(item.get("type", "") or getattr(message, "type", "") or "").strip().lower()
     raw = str(item.get("content", "") or getattr(message, "content", "") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     label = message_type_label(msg_type)
-    if msg_type in {"voice", "emotion", "image", "file", "link", "miniapp", "personal_card", "note", "video"}:
+    if msg_type in {"voice", "emotion", "image", "file", "link", "miniapp", "personal_card", "note", "location", "merge", "video"}:
         body = strip_message_shell(raw, msg_type)
         if body:
             return f"[{label}]{body}"

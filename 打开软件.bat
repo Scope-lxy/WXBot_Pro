@@ -6,8 +6,14 @@ set "LOCAL_FFMPEG_ROOT=%CD%\venv\tools\ffmpeg"
 set "LOCAL_FFMPEG_BIN=%LOCAL_FFMPEG_ROOT%\bin"
 set "LOCAL_FFMPEG_EXE=%CD%\venv\tools\ffmpeg\bin\ffmpeg.exe"
 set "LOCAL_FFPROBE_EXE=%CD%\venv\tools\ffmpeg\bin\ffprobe.exe"
+set "LOCAL_WECHAT_CLI_ROOT=%CD%\venv\tools\wechat-cli"
+set "LOCAL_WECHAT_CLI_EXE=%LOCAL_WECHAT_CLI_ROOT%\wechat-cli.exe"
+set "LOCAL_WECHAT_CLI_BIN_EXE=%LOCAL_WECHAT_CLI_ROOT%\bin\wechat-cli.exe"
+set "LOCAL_WECHAT_CLI_PYENV_EXE=%LOCAL_WECHAT_CLI_ROOT%\pyenv\Scripts\wechat-cli.exe"
 set "FFMPEG_RELEASE_PATH=https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
 set PIP_DEPENDENCIES="flask" "pywin32" "openai" "requests" "schedule" "wxautox4>=40.1.14" "cozepy" "websockets" "Pillow"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 
 if /i "%~1"=="--create-venv-only" (
     call :create_venv
@@ -57,6 +63,8 @@ if errorlevel 1 (
     echo [WARNING] Failed to prepare ffmpeg/ffprobe. Voice replies may fall back to text.
 )
 
+call :ensure_wechat_cli
+
 echo Starting WXBot Pro...
 echo Working directory: %cd%
 
@@ -65,6 +73,96 @@ echo Working directory: %cd%
 echo.
 echo WXBot Pro has stopped.
 pause
+exit /b 0
+
+:ensure_wechat_cli
+if exist "%LOCAL_WECHAT_CLI_EXE%" (
+    set "WXBOT_WECHAT_CLI_EXE=%LOCAL_WECHAT_CLI_EXE%"
+    echo Using project-local wechat-cli: %LOCAL_WECHAT_CLI_EXE%
+    goto wechat_cli_config_check
+)
+if exist "%LOCAL_WECHAT_CLI_BIN_EXE%" (
+    set "WXBOT_WECHAT_CLI_EXE=%LOCAL_WECHAT_CLI_BIN_EXE%"
+    echo Using project-local wechat-cli: %LOCAL_WECHAT_CLI_BIN_EXE%
+    goto wechat_cli_config_check
+)
+if exist "%LOCAL_WECHAT_CLI_PYENV_EXE%" (
+    set "WXBOT_WECHAT_CLI_EXE=%LOCAL_WECHAT_CLI_PYENV_EXE%"
+    echo Using project-local wechat-cli: %LOCAL_WECHAT_CLI_PYENV_EXE%
+    goto wechat_cli_config_check
+)
+call :install_wechat_cli
+if errorlevel 1 (
+    echo [WARNING] Failed to prepare project-local wechat-cli. Trying system wechat-cli as fallback...
+    where wechat-cli >nul 2>nul
+    if not errorlevel 1 (
+        set "WXBOT_WECHAT_CLI_EXE=wechat-cli"
+        echo Detected system wechat-cli. WXBot will use it as optional local reader.
+        goto wechat_cli_config_check
+    )
+    echo [WARNING] Failed to prepare wechat-cli. Local fast contact/history reader will be skipped.
+    exit /b 0
+)
+if exist "%LOCAL_WECHAT_CLI_PYENV_EXE%" (
+    set "WXBOT_WECHAT_CLI_EXE=%LOCAL_WECHAT_CLI_PYENV_EXE%"
+    echo wechat-cli has been installed into: %LOCAL_WECHAT_CLI_ROOT%\pyenv
+    goto wechat_cli_config_check
+)
+echo [WARNING] wechat-cli installation finished but executable was not found.
+exit /b 0
+
+:wechat_cli_config_check
+if not exist "%USERPROFILE%\.wechat-cli\config.json" (
+    goto wechat_cli_init
+)
+if not exist "%USERPROFILE%\.wechat-cli\all_keys.json" (
+    goto wechat_cli_init
+)
+echo wechat-cli config detected. Dashboard will verify read capability after startup.
+exit /b 0
+
+:wechat_cli_init
+echo wechat-cli is installed but not initialized. Trying automatic initialization...
+"%WXBOT_WECHAT_CLI_EXE%" init
+if not errorlevel 1 (
+    echo wechat-cli initialized successfully.
+    exit /b 0
+)
+echo [WARNING] wechat-cli automatic detection failed. Trying common Windows WeChat 4.x data directories...
+set "WECHAT_CLI_DB_CANDIDATE="
+for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$roots=@((Join-Path $env:USERPROFILE 'Documents\xwechat_files'),(Join-Path $env:USERPROFILE 'Documents\WeChat Files')); $items=@(); foreach($root in $roots){ if(Test-Path -LiteralPath $root){ Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue | ForEach-Object { $candidate=Join-Path $_.FullName 'db_storage'; if(Test-Path -LiteralPath $candidate){ $items += (Get-Item -LiteralPath $candidate) } } } }; if($items.Count -eq 1){ $items[0].FullName } elseif($items.Count -gt 1){ '__MULTIPLE_DB_STORAGE__' }"`) do (
+    set "WECHAT_CLI_DB_CANDIDATE=%%D"
+)
+if "%WECHAT_CLI_DB_CANDIDATE%"=="__MULTIPLE_DB_STORAGE__" (
+    echo [WARNING] Multiple WeChat data directories found. Skip automatic wechat-cli init to avoid binding the wrong account.
+    echo [WARNING] Start the robot and use the dashboard status card to complete live account verification.
+    exit /b 0
+)
+if defined WECHAT_CLI_DB_CANDIDATE (
+    echo Trying wechat-cli init with db-dir: %WECHAT_CLI_DB_CANDIDATE%
+    "%WXBOT_WECHAT_CLI_EXE%" init --db-dir "%WECHAT_CLI_DB_CANDIDATE%"
+    if not errorlevel 1 (
+        echo wechat-cli initialized successfully.
+        exit /b 0
+    )
+)
+echo [WARNING] wechat-cli initialization failed. WXBot will still start and fall back to wxautox4.
+exit /b 0
+
+:install_wechat_cli
+echo wechat-cli not found. Installing project-local wechat-cli...
+if not exist "%LOCAL_WECHAT_CLI_ROOT%" mkdir "%LOCAL_WECHAT_CLI_ROOT%"
+if not exist "%LOCAL_WECHAT_CLI_ROOT%\pyenv\Scripts\python.exe" (
+    "venv\Scripts\python.exe" -m venv "%LOCAL_WECHAT_CLI_ROOT%\pyenv"
+    if errorlevel 1 exit /b 1
+)
+"%LOCAL_WECHAT_CLI_ROOT%\pyenv\Scripts\python.exe" -m pip install --upgrade pip
+if errorlevel 1 exit /b 1
+"%LOCAL_WECHAT_CLI_ROOT%\pyenv\Scripts\python.exe" -m pip install --upgrade "git+https://github.com/huohuoer/wechat-cli.git"
+if errorlevel 1 (
+    "%LOCAL_WECHAT_CLI_ROOT%\pyenv\Scripts\python.exe" -m pip install --upgrade "wechat-cli @ https://github.com/huohuoer/wechat-cli/archive/refs/heads/main.zip"
+    if errorlevel 1 exit /b 1
+)
 exit /b 0
 
 :create_venv

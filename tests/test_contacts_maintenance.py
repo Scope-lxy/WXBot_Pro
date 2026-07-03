@@ -222,6 +222,37 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(success_updates["auto_cycle_next_start_name"], "B")
         self.assertEqual(success_updates["auto_cycle_backup_start_name"], "A")
 
+    def test_auto_maintenance_local_snapshot_skips_batch_cursor_and_wechat_lock(self):
+        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot._local_wechat_reader_enabled = True
+        saved = []
+        local_contacts = [
+            {
+                "微信号": "aying2",
+                "wxid": "wxid_aying2",
+                "昵称": "阿英2",
+                "备注": "A0-阿英2",
+                "wechat_id": "aying2",
+                "nickname": "阿英2",
+                "remark": "A0-阿英2",
+            }
+        ]
+
+        bot._save_contact_profiles_directory = lambda directory: saved.append(directory)
+        with (
+            patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True),
+            patch("feature.contacts.read_local_contacts_with_status") as read_local,
+            patch("feature.contacts.save_contact_directory"),
+            patch("feature.contacts.load_contact_directory", return_value={"subjects": [], "maintenance": {}}),
+        ):
+            read_local.return_value = SimpleNamespace(ok=True, items=local_contacts, error="")
+            result = check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+
+        self.assertTrue(result)
+        self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
+        self.assertFalse(any(call == ("lock_acquire", False) for call in bot.calls))
+        self.assertEqual(saved[-1]["maintenance"]["auto_cycle_status"], "completed")
+
     def test_auto_maintenance_waits_for_active_private_pipeline(self):
         bot = self._auto_maintenance_bot(pending_queue=False)
         bot._private_message_pipelines = {
@@ -1003,6 +1034,65 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         get_calls = [call for call in calls if call[0] == "GetFriendDetails"]
         self.assertEqual(get_calls[0][1]["timeout"], 600)
+
+    def test_single_batch_prefers_local_contacts_without_wechat_ui(self):
+        calls = []
+
+        class FakeLock:
+            def acquire(self, blocking=True):
+                calls.append(("lock_acquire", blocking))
+                return False
+
+            def release(self):
+                calls.append(("lock_release",))
+
+        class FakeWeChat:
+            def GetFriendDetails(self, **kwargs):
+                calls.append(("GetFriendDetails", kwargs))
+                return []
+
+            def SwitchToChat(self):
+                calls.append(("SwitchToChat",))
+
+        class FakeBot:
+            wx = FakeWeChat()
+            _local_wechat_reader_enabled = True
+
+            def _get_wechat_action_lock(self):
+                return FakeLock()
+
+            def _load_contact_profiles_directory(self):
+                return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
+
+            def _prepare_contact_directory_window(self):
+                calls.append(("prepare",))
+
+        local_contacts = [
+            {
+                "微信号": "aying2",
+                "wxid": "wxid_aying2",
+                "昵称": "阿英2",
+                "备注": "A0-阿英2",
+                "wechat_id": "aying2",
+                "nickname": "阿英2",
+                "remark": "A0-阿英2",
+            }
+        ]
+
+        with (
+            patch("feature.contacts.read_local_contacts_with_status") as read_local,
+            patch("feature.contacts.save_contact_directory"),
+            patch("feature.contacts.load_contact_directory", return_value={"subjects": [], "maintenance": {}}),
+        ):
+            read_local.return_value = SimpleNamespace(ok=True, items=local_contacts, error="")
+            result = refresh_contact_profiles_single_batch(FakeBot(), mode="standard")
+
+        self.assertTrue(result["completed"])
+        self.assertEqual(result["analysis"]["outcome"], "local_full_scan_complete")
+        self.assertEqual(result["next_start_name"], "")
+        self.assertEqual([call[0] for call in calls], [])
+        raw_detail = result["directory"]["subjects"][0]["raw_detail"]
+        self.assertNotIn("source", raw_detail)
 
     def test_contact_read_logs_from_callback_without_duplicate_result_logs(self):
         log_messages = []

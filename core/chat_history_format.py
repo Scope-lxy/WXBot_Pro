@@ -16,7 +16,7 @@ _EMPTY_VISIBLE_TEXT = "未提取到明确文字。"
 _EMPTY_KEY_DETAILS = "未提取到稳定细节。"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v"}
-_SEMANTIC_MESSAGE_TYPES = {"voice", "emotion", "link", "miniapp", "personal_card", "note", "video"}
+_SEMANTIC_MESSAGE_TYPES = {"voice", "emotion", "link", "miniapp", "personal_card", "note", "location", "merge", "video"}
 _TIME_SEPARATOR_RE = re.compile(
     r"^(?:"
     r"\d{1,2}:\d{2}"

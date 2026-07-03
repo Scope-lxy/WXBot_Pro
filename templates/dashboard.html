@@ -267,6 +267,52 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
 
+    <!-- wechat-cli 本地读取状态卡片 -->
+    <div class="cfg-card" id="wechat-cli-card">
+      <div class="ui-head ui-head--page">
+        <i class="bi bi-database-check"></i>
+        <h5>wechat-cli 当前状态</h5>
+        <div class="ui-head__actions">
+          <button type="button" id="btn-check-wechat-cli-update" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2 ui-btn--push">
+            检查更新
+          </button>
+        </div>
+      </div>
+      <div class="cfg-flow">
+        <div id="wechat-cli-checking" style="display:none;color:var(--muted);font-size:13px;padding:4px 0;">
+          <i class="bi bi-hourglass-split"></i> 正在检测本地读取能力...
+        </div>
+        <div id="wechat-cli-ok" class="page-inline-notice page-inline-notice--success" style="display:none;">
+          <i class="bi bi-database-check page-inline-notice__icon"></i>
+          <div class="page-inline-notice__content">
+            <div class="page-inline-notice__title" id="wechat-cli-ok-title">wechat-cli 本地读取可用</div>
+            <div><span id="wechat-cli-ok-message">通讯录维护和聊天记录自动补全等功能将会优先使用该插件。</span><span id="wechat-cli-version-ok" style="margin-left:10px;"></span></div>
+          </div>
+        </div>
+        <div id="wechat-cli-fail" style="display:none;">
+          <div class="page-inline-notice page-inline-notice--danger">
+            <i class="bi bi-database-exclamation page-inline-notice__icon"></i>
+            <div class="page-inline-notice__content">
+              <div class="page-inline-notice__title" id="wechat-cli-fail-title">wechat-cli 本地读取不可用</div>
+              <div><span id="wechat-cli-fail-message">机器人已自动回退微信界面读取。</span><span id="wechat-cli-version-fail" style="margin-left:10px;"></span></div>
+              <div id="wechat-cli-fail-detail" style="display:none;margin-top:4px;color:inherit;"></div>
+            </div>
+          </div>
+        </div>
+        <div id="wechat-cli-error" style="display:none;color:var(--muted);font-size:13px;padding:4px 0;">
+          <i class="bi bi-wifi-off"></i> 检测失败，请查看日志后重试
+        </div>
+        <div class="cfg-action-row">
+          <button type="button" id="btn-check-wechat-cli" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2">
+            <i class="bi bi-arrow-repeat"></i> 重新检测
+          </button>
+          <button type="button" id="btn-repair-wechat-cli" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2" style="display:none;">
+            <i class="bi bi-tools"></i> 尝试修复
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div class="cfg-card" id="status-main-card">
       <div class="ui-head ui-head--page"><i class="bi bi-speedometer2"></i><h5>运行状态</h5><span class="desc" id="status-refresh-hint">每5秒自动刷新</span></div>
       <!-- 运行状态总览 -->
@@ -292,33 +338,6 @@ html.icons-pref-local [class*=" bi-"]::before {
               <div class="status-meta-value" id="status-uptime">-</div>
             </div>
           </div>
-      </div>
-      <div class="status-section-title">关键统计</div>
-      <div class="status-key-stats-grid">
-        <div class="stat-card" id="sc-received">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-inbox"></i></div><div class="stat-title">收到消息</div></div>
-          <div class="stat-val" id="sv-received">-</div>
-        </div>
-        <div class="stat-card" id="sc-replied">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-reply"></i></div><div class="stat-title">回复消息</div></div>
-          <div class="stat-val" id="sv-replied">-</div>
-        </div>
-        <div class="stat-card" id="sc-api-requests">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-cpu"></i></div><div class="stat-title">API请求数</div></div>
-          <div class="stat-val" id="sv-api-requests">-</div>
-        </div>
-        <div class="stat-card" id="sc-chat-api-requests">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-chat-dots"></i></div><div class="stat-title">聊天请求</div></div>
-          <div class="stat-val" id="sv-chat-api-requests">-</div>
-        </div>
-        <div class="stat-card" id="sc-listen-friends">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-person-check"></i></div><div class="stat-title">监听好友</div></div>
-          <div class="stat-val" id="sv-listen-friends">-</div>
-        </div>
-        <div class="stat-card" id="sc-group">
-          <div class="stat-head"><div class="stat-icon"><i class="bi bi-people"></i></div><div class="stat-title">监听群组</div></div>
-          <div class="stat-val" id="sv-group">-</div>
-        </div>
       </div>
       <div class="status-section-title">功能状态</div>
       <div id="function-status-grid" class="function-status-grid">
@@ -347,10 +366,12 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
         </div>
         <div class="runtime-metrics-summary">
-          <div class="runtime-metric-tile"><span>API 调用次数</span><strong id="metric-today-api">0</strong></div>
-          <div class="runtime-metric-tile"><span>回复成功次数</span><strong id="metric-today-reply">0</strong></div>
-          <div class="runtime-metric-tile"><span>私聊活跃人数</span><strong id="metric-today-private">0</strong></div>
-          <div class="runtime-metric-tile"><span>群聊活跃个数</span><strong id="metric-today-group">0</strong></div>
+          <div class="runtime-metric-tile"><span>全部API调用</span><strong id="metric-today-api">0</strong></div>
+          <div class="runtime-metric-tile"><span>聊天API调用</span><strong id="metric-today-chat-api">0</strong></div>
+          <div class="runtime-metric-tile"><span>收到消息</span><strong id="metric-today-received">0</strong></div>
+          <div class="runtime-metric-tile"><span>回复消息</span><strong id="metric-today-reply">0</strong></div>
+          <div class="runtime-metric-tile"><span>活跃好友</span><strong id="metric-today-private">0</strong></div>
+          <div class="runtime-metric-tile"><span>活跃群聊</span><strong id="metric-today-group">0</strong></div>
         </div>
         <div class="runtime-chart-wrap">
           <canvas id="runtime-metrics-chart" width="960" height="300"></canvas>
@@ -3645,7 +3666,7 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="cfg-inline-combo cfg-inline-combo--memory-context">
             <div class="cfg-inline-combo__field">
               <span class="cfg-inline-combo__prefix">最近</span>
-              <input type="number" class="form-control cfg-inline-combo__input" id="memory_context_count" min="1" max="100"
+              <input type="number" class="form-control cfg-inline-combo__input" id="memory_context_count" min="1" max="200"
                       value="{{ config.get('memory_context_count', 50) }}" placeholder="50">
               <span class="cfg-inline-combo__suffix">条</span>
             </div>
@@ -11933,7 +11954,7 @@ $(function(){
       memory_max_count:Math.max(100,Math.min(5000,parseInt($('#memory_max_count').val())||5000)),
       memory_context_count:(function(){
         var v=parseInt($('#memory_context_count').val(), 10);
-        return isNaN(v) ? 50 : Math.max(1, Math.min(100, v));
+        return isNaN(v) ? 50 : Math.max(1, Math.min(200, v));
       })(),
       memory_context_repair_low_risk_switch:$('#memory_context_repair_low_risk_switch').is(':checked'),
       memory_context_repair_high_risk_switch:$('#memory_context_repair_high_risk_switch').is(':checked'),
@@ -12715,10 +12736,12 @@ $(function(){
     overview: {
       title: '总览',
       series: [
-        {key:'api_calls', label:'API 调用次数', color:'#2563EB'},
-        {key:'reply_count', label:'回复成功次数', color:'#059669'},
-        {key:'private_active_count', label:'私聊活跃人数', color:'#D97706'},
-        {key:'group_active_count', label:'群聊活跃个数', color:'#0891B2'}
+        {key:'api_calls', label:'全部API调用', color:'#2563EB'},
+        {key:'chat_api_calls', label:'聊天API调用', color:'#7C3AED'},
+        {key:'received_messages', label:'收到消息', color:'#D97706'},
+        {key:'reply_count', label:'回复消息', color:'#059669'},
+        {key:'private_active_count', label:'活跃好友', color:'#DB2777'},
+        {key:'group_active_count', label:'活跃群聊', color:'#0891B2'}
       ]
     },
     keyword: {
@@ -12808,6 +12831,8 @@ $(function(){
     var payload = runtimeMetricsState.payload || {};
     var today = payload.today || {};
     runtimeMetricSetText('#metric-today-api', today.api_calls);
+    runtimeMetricSetText('#metric-today-chat-api', today.chat_api_calls);
+    runtimeMetricSetText('#metric-today-received', today.received_messages);
     runtimeMetricSetText('#metric-today-reply', today.reply_count);
     runtimeMetricSetText('#metric-today-private', today.private_active_count);
     runtimeMetricSetText('#metric-today-group', today.group_active_count);
@@ -13044,13 +13069,6 @@ $(function(){
       $('#status-meta-wx').text(d.wx_nickname || '-');
       $('#status-meta-model').text(d.current_interface || '未连接');
       $('#status-uptime').text(d.uptime || '-');
-
-      $('#sv-received').text(statusValueOrDash(d.msg_received));
-      $('#sv-replied').text(statusValueOrDash(d.msg_replied));
-      $('#sv-api-requests').text(statusValueOrDash(d.api_request_count));
-      $('#sv-chat-api-requests').text(statusValueOrDash(d.chat_api_requests));
-      $('#sv-listen-friends').text(statusValueOrDash(d.listen_count));
-      $('#sv-group').text(statusValueOrDash(d.group_count));
 
       $('#sv-delay').text(statusEnabledText(!!d.reply_delay_switch));
       $('#sv-default-prompt').text(statusValueOrDash(d.default_prompt));
@@ -13894,6 +13912,120 @@ $(function(){
     $('#activate-version-ok, #activate-version-fail').text(text);
   }
 
+  function renderWechatCliVersion(version) {
+    var text = version ? '当前版本：' + version : '当前版本：未检测到';
+    $('#wechat-cli-version-ok, #wechat-cli-version-fail').text(text);
+  }
+
+  function renderWechatCliStatus(data) {
+    data = data || {};
+    $('#wechat-cli-checking, #wechat-cli-ok, #wechat-cli-fail, #wechat-cli-error').hide();
+    renderWechatCliVersion(data.version || '');
+    if (data.checking || data.state === 'checking') {
+      $('#wechat-cli-checking').show();
+      $('#btn-repair-wechat-cli').hide();
+      return;
+    }
+    if (data.available) {
+      $('#wechat-cli-ok-title').text(data.title || 'wechat-cli 本地读取可用');
+      $('#wechat-cli-ok-message').text(data.message || '通讯录维护和聊天记录自动补全等功能将会优先使用该插件。');
+      $('#wechat-cli-ok').css('display', 'grid');
+      $('#btn-repair-wechat-cli').hide();
+      return;
+    }
+    $('#wechat-cli-fail-title').text(data.title || 'wechat-cli 本地读取不可用');
+    $('#wechat-cli-fail-message').text(data.message || '机器人已自动回退微信界面读取。');
+    if (data.detail) {
+      $('#wechat-cli-fail-detail').text(data.detail).show();
+    } else {
+      $('#wechat-cli-fail-detail').hide().text('');
+    }
+    $('#wechat-cli-fail').show();
+    $('#btn-repair-wechat-cli').show();
+  }
+
+  window.checkWechatCliStatus = function(manual) {
+    var $btn = $('#btn-check-wechat-cli');
+    if (manual) $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 检测中...');
+    $('#wechat-cli-checking').show();
+    $('#wechat-cli-ok, #wechat-cli-fail, #wechat-cli-error').hide();
+    $.ajax({
+      url: '/check_wechat_cli_status' + (manual ? '?force=1' : ''),
+      method: 'GET',
+      dataType: 'json',
+      timeout: 60000,
+      success: function(res) {
+        if (res.status !== 'success') {
+          $('#wechat-cli-checking').hide();
+          $('#wechat-cli-error').show();
+          return;
+        }
+        renderWechatCliStatus(res.data || {});
+      },
+      error: function() {
+        $('#wechat-cli-checking').hide();
+        $('#wechat-cli-error').show();
+      },
+      complete: function() {
+        if (manual) $btn.prop('disabled', false).html('<i class="bi bi-arrow-repeat"></i> 重新检测');
+      }
+    });
+  }
+
+  $('#btn-check-wechat-cli').on('click', function() { checkWechatCliStatus(true); });
+  $('#btn-check-wechat-cli-update').on('click', function() {
+    var $btn = $('#btn-check-wechat-cli-update');
+    $btn.prop('disabled', true).text('检查中...');
+    $.ajax({
+      url: '/check_wechat_cli_update',
+      method: 'GET',
+      dataType: 'json',
+      timeout: 60000,
+      success: function(res) {
+        if ((res || {}).status !== 'success') {
+          svModal.error('wechat-cli 更新检查失败：' + escapeHtml((res || {}).message || '未知错误'));
+          return;
+        }
+        var data = res.data || {};
+        var rows = [];
+        if (data.local_version) rows.push('当前版本：' + escapeHtml(data.local_version));
+        if (data.local_commit) rows.push('本地提交：' + escapeHtml(data.local_commit));
+        if (data.remote_commit) rows.push('远端提交：' + escapeHtml(data.remote_commit));
+        var body = escapeHtml(data.message || data.title || '更新检查完成。');
+        if (rows.length) body += '<div style="margin-top:10px;color:#64748b;font-size:12.5px;line-height:1.8;">' + rows.join('<br>') + '</div>';
+        svModal.alert(body, data.update_available ? '发现 wechat-cli 更新' : 'wechat-cli 更新检查');
+      },
+      error: function(xhr) {
+        svModal.error('wechat-cli 更新检查请求失败：' + (xhr.responseText || xhr.status));
+      },
+      complete: function() {
+        $btn.prop('disabled', false).text('检查更新');
+      }
+    });
+  });
+  $('#btn-repair-wechat-cli').on('click', function() {
+    var $btn = $('#btn-repair-wechat-cli');
+    $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 检查中...');
+    $.ajax({
+      url: '/repair_wechat_cli_status',
+      method: 'POST',
+      dataType: 'json',
+      timeout: 60000,
+      success: function(res) {
+        renderWechatCliStatus((res || {}).data || {});
+        var data = (res || {}).data || {};
+        var title = data.available ? 'wechat-cli 已可用' : 'wechat-cli 修复建议';
+        svModal.alert(escapeHtml((res || {}).message || '已重新检测 wechat-cli 状态。'), title);
+      },
+      error: function(xhr) {
+        svModal.error('wechat-cli 修复检查失败：' + (xhr.responseText || xhr.status));
+      },
+      complete: function() {
+        $btn.prop('disabled', false).html('<i class="bi bi-tools"></i> 尝试修复');
+      }
+    });
+  });
+
   window.checkActivate = function(manual) {
     if (manual) $('#btn-check-activate').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 检测中...');
     $('#activate-card').show();
@@ -13956,6 +14088,7 @@ $(function(){
     });
   });
   checkActivate(false);
+  checkWechatCliStatus(false);
 
 });
 </script>

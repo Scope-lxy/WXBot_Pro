@@ -983,7 +983,7 @@ class WXBotConfig:
             self.config.get('memory_max_count', 5000), 5000, 100, 5000
         )
         self.memory_context_count = self._coerce_int_range(
-            self.config.get('memory_context_count', 50), 50, 1, 100
+            self.config.get('memory_context_count', 50), 50, 1, 200
         )
         if self.memory_context_count > self.memory_max_count:
             self.memory_context_count = self.memory_max_count

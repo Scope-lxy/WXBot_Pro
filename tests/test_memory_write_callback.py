@@ -246,6 +246,8 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(format_message_semantic_text({"type": "miniapp", "content": "小程序冷亦文集有一种执念，生命不老，此情不变"}), "[小程序]冷亦文集有一种执念，生命不老，此情不变")
         self.assertEqual(format_message_semantic_text({"type": "video", "content": "视频 下载0:09"}), "[视频]0:09")
         self.assertEqual(format_message_semantic_text({"type": "personal_card", "content": "名片张三"}), "[个人名片]张三")
+        self.assertEqual(format_message_semantic_text({"type": "location", "content": "[位置] 福建省福州市鼓楼区"}), "[位置]福建省福州市鼓楼区")
+        self.assertEqual(format_message_semantic_text({"type": "merge", "content": "[聊天记录] A与B的聊天记录"}), "[聊天记录]A与B的聊天记录")
         self.assertEqual(format_message_semantic_text({"type": "image", "content": "C:/temp/a.png"}), "[图片]")
 
     def test_image_history_preserves_image_shell_and_summary(self):

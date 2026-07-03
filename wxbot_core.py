@@ -101,6 +101,7 @@ from core.memory_context_repair import (
     current_message_found_near_tail,
     normalize_wechat_message,
 )
+from core.local_wechat_reader import read_local_history_messages_with_status
 from core.reply_count_store import ReplyCountStore
 from core.wechat_window import run_with_wechat_rebind_retry
 from core.runtime_metrics import RuntimeMetricsStore
@@ -180,6 +181,9 @@ from feature import admin_forward_flow, admin_moments_flow
 
 
 PENDING_VISUAL_CONTEXT_TTL_SECONDS = 600
+LOCAL_CONTEXT_REPAIR_MIN_LIMIT = 50
+LOCAL_CONTEXT_REPAIR_MAX_LIMIT = 200
+LOCAL_CONTEXT_REPAIR_ANCHOR_BUFFER = 10
 PENDING_VISUAL_DIRECT_REFERENCE_RE = re.compile(
     r"("
     r"图|照|相|截|屏|画|码|表情|菜单|票|单|"
@@ -5433,6 +5437,14 @@ class WXBot:
             "history_limit": DEFAULT_HISTORY_LIMIT,
         }
 
+    def _local_context_repair_limit(self):
+        try:
+            context_count = int(getattr(getattr(self, "config", None), "memory_context_count", 50) or 50)
+        except Exception:
+            context_count = 50
+        normalized_count = max(LOCAL_CONTEXT_REPAIR_MIN_LIMIT, min(LOCAL_CONTEXT_REPAIR_MAX_LIMIT, context_count))
+        return normalized_count + LOCAL_CONTEXT_REPAIR_ANCHOR_BUFFER
+
     def _mark_context_repair_needed_after_restore(self, chat_name):
         chat_name = str(chat_name or "").strip()
         if not chat_name:
@@ -5504,6 +5516,28 @@ class WXBot:
         limit = max(1, min(50, int(limit or DEFAULT_VISIBLE_LIMIT)))
         return messages[-limit:] if len(messages) > limit else messages
 
+    def _read_local_context_messages(self, chat_name, limit):
+        if getattr(self, "_local_wechat_reader_enabled", True) is False:
+            return []
+        max_limit = LOCAL_CONTEXT_REPAIR_MAX_LIMIT + LOCAL_CONTEXT_REPAIR_ANCHOR_BUFFER
+        result = read_local_history_messages_with_status(
+            chat_name,
+            limit=max(1, min(max_limit, int(limit or max_limit))),
+            expected_wx_id=(
+                getattr(self, "wx_id", "")
+                or getattr(getattr(self, "config", None), "current_account_wx_id", "")
+            ),
+        )
+        if result.ok and result.items:
+            log(message=f"私聊 {chat_name}：已从本地微信数据库读取上下文 {len(result.items)} 条")
+            return list(result.items)
+        if not result.ok:
+            log(
+                level="WARNING",
+                message=f"私聊 {chat_name}：本地微信数据库读取上下文失败，已回退微信界面读取：{result.error}",
+            )
+        return []
+
     def _read_high_risk_context_messages(self, chat, limit):
         get_history, strategy = self._material_history_reader(
             chat,
@@ -5553,20 +5587,26 @@ class WXBot:
         if not self._context_repair_cooldown_allows(chat_name, "low", cfg["low_cooldown"]):
             return False
 
-        lock = self._get_wechat_action_lock()
-        if not lock.acquire(blocking=False):
-            with self._memory_context_repair_lock:
-                self._memory_context_repair_last_low_risk_at.pop(chat_name, None)
-            return False
-
         try:
             local_history = self.memory_manager.get_messages(memory_chat_name, cfg["history_limit"]) or []
-            visible_messages = self._read_low_risk_context_messages(chat, cfg["visible_limit"])
+            visible_messages = self._read_local_context_messages(
+                chat_name,
+                self._local_context_repair_limit(),
+            )
+            local_context_source = bool(visible_messages)
+            if not visible_messages:
+                lock = self._get_wechat_action_lock()
+                if not lock.acquire(blocking=False):
+                    with self._memory_context_repair_lock:
+                        self._memory_context_repair_last_low_risk_at.pop(chat_name, None)
+                    return False
+                try:
+                    visible_messages = self._read_low_risk_context_messages(chat, cfg["visible_limit"])
+                finally:
+                    lock.release()
         except Exception as exc:
             log(level="WARNING", message=f"私聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")
             return False
-        finally:
-            lock.release()
 
         try:
             visible_entries = [
@@ -5607,9 +5647,10 @@ class WXBot:
                                 history_entries,
                                 anchor_recent_count=cfg["anchor_count"],
                             )
+                            low_risk_messages = [] if local_context_source else plan.messages_to_append
                             result = self._append_context_repair_messages(
                                 memory_chat_name,
-                                history_plan.messages_to_append + plan.messages_to_append,
+                                history_plan.messages_to_append + low_risk_messages,
                             )
                             if int(result.get("added", 0) or 0) > 0:
                                 log(

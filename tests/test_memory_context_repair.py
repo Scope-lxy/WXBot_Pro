@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from core.memory import MemoryManager
 from core.memory_context_repair import (
@@ -174,12 +175,13 @@ class FailingHistoryChat(FakeChat):
 
 
 class WXBotContextRepairTests(unittest.TestCase):
-    def make_bot(self, tmp, *, high_enabled=False, lock=None):
+    def make_bot(self, tmp, *, high_enabled=False, lock=None, local_reader_enabled=False, memory_context_count=50):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             memory_switch=True,
             memory_context_switch=True,
             memory_max_count=100,
+            memory_context_count=memory_context_count,
             memory_context_repair_low_risk_switch=True,
             memory_context_repair_high_risk_switch=high_enabled,
         )
@@ -189,6 +191,7 @@ class WXBotContextRepairTests(unittest.TestCase):
         bot.is_stop_requested = lambda: False
         bot._wechat_action_lock = lock or FakeLock()
         bot._get_wechat_action_lock = lambda: bot._wechat_action_lock
+        bot._local_wechat_reader_enabled = local_reader_enabled
         bot._incoming_seen_lock = None
         bot._ensure_message_runtime_state()
         return bot
@@ -215,6 +218,75 @@ class WXBotContextRepairTests(unittest.TestCase):
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
                 ["早", "早呀", "新内容"],
+            )
+
+    def test_low_risk_prefers_local_history_without_wechat_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = FakeLock(acquired=False)
+            bot = self.make_bot(tmp, lock=lock, local_reader_enabled=True)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "早"}],
+                100,
+            )
+            chat = FakeChat(visible=[msg("微信界面消息", time="3")])
+            local_messages = [
+                SimpleNamespace(type="text", attr="friend", sender="张三", content="早", time="1"),
+                SimpleNamespace(type="voice", attr="friend", sender="张三", content="一条语音消息（未识别出文字）", time="2"),
+            ]
+
+            with patch("wxbot_core.read_local_history_messages_with_status") as read_local:
+                read_local.return_value = SimpleNamespace(ok=True, items=local_messages, error="")
+                repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
+
+            self.assertTrue(repaired)
+            self.assertEqual(read_local.call_args.kwargs["limit"], 60)
+            self.assertEqual(lock.acquire_calls, [])
+            self.assertEqual(chat.get_all_calls, 0)
+            self.assertEqual(
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                ["早", "一条语音消息（未识别出文字）"],
+            )
+
+    def test_local_context_repair_limit_follows_context_count_bounds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            low = self.make_bot(tmp, local_reader_enabled=True, memory_context_count=10)
+            default = self.make_bot(tmp, local_reader_enabled=True, memory_context_count=50)
+            high = self.make_bot(tmp, local_reader_enabled=True, memory_context_count=190)
+            maxed = self.make_bot(tmp, local_reader_enabled=True, memory_context_count=200)
+
+            self.assertEqual(low._local_context_repair_limit(), 60)
+            self.assertEqual(default._local_context_repair_limit(), 60)
+            self.assertEqual(high._local_context_repair_limit(), 200)
+            self.assertEqual(maxed._local_context_repair_limit(), 210)
+
+    def test_local_history_without_anchor_still_allows_high_risk_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = FakeLock()
+            bot = self.make_bot(tmp, high_enabled=True, lock=lock, local_reader_enabled=True)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FakeChat(
+                visible=[msg("微信界面消息", time="3")],
+                history=[msg("旧锚点", time="1"), msg("中间", time="2"), msg("新内容", time="3")],
+            )
+            local_messages = [
+                SimpleNamespace(type="text", attr="friend", sender="张三", content="另一个聊天窗口", time="9"),
+            ]
+
+            with patch("wxbot_core.read_local_history_messages_with_status") as read_local:
+                read_local.return_value = SimpleNamespace(ok=True, items=local_messages, error="")
+                repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
+
+            self.assertTrue(repaired)
+            self.assertEqual(chat.history_args["limit"], 50)
+            self.assertEqual(lock.acquire_calls, [False])
+            self.assertEqual(
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                ["旧锚点", "中间", "新内容"],
             )
 
     def test_high_risk_reads_history_when_enabled_and_low_risk_has_no_anchor(self):

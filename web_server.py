@@ -77,6 +77,7 @@ from core.contact_profiles import (
     repair_candidates as contact_repair_candidates,
     save_directory as save_contact_directory,
 )
+from core.local_wechat_reader import check_wechat_cli_status, check_wechat_cli_update
 from core.sending import clean_ai_reply_text, sanitize_ai_output_text
 from core.tts import TTSConfigError, create_tts_client, make_tts_cache_path
 from feature.voice_reply import DEFAULT_CHAT_VOICE_REPLY_KEYWORDS, DEFAULT_GROUP_VOICE_REPLY_KEYWORDS
@@ -3430,7 +3431,7 @@ def _coerce_int_range_fields(merged_config):
         'new_friend_check_min': (60, 3600, 60),
         'new_friend_check_max': (60, 3600, 300),
         'memory_max_count': (100, 5000, 5000),
-        'memory_context_count': (1, 100, 50),
+        'memory_context_count': (1, 200, 50),
         'text_reply_limit_count': (0, 99999, 99),
         'text_reply_limit_hours': (0, 720, 24),
         'chat_memory_message_threshold': (10, 200, 100),
@@ -4446,6 +4447,17 @@ bot_startup_state = {
     'status': 'idle',
     'message': '机器人未启动',
 }
+wechat_cli_status_lock = threading.Lock()
+wechat_cli_status_checking = False
+wechat_cli_status_cache = {
+    'available': False,
+    'state': 'unknown',
+    'title': '尚未检测',
+    'message': '正在等待状态检测。',
+    'detail': '',
+    'checked_at': '',
+    'version': '',
+}
 
 # ============================================================
 # 防锁屏 / 防睡眠工具函数（Windows SetThreadExecutionState）
@@ -4510,6 +4522,162 @@ def _get_bot_startup_state_snapshot():
     with bot_startup_state_lock:
         snapshot = dict(bot_startup_state)
     return _normalize_bot_startup_state(snapshot.get('status'), snapshot.get('message'))
+
+
+def _wechat_cli_status_snapshot():
+    with wechat_cli_status_lock:
+        snapshot = dict(wechat_cli_status_cache)
+        checking = bool(wechat_cli_status_checking)
+    if checking:
+        snapshot['checking'] = True
+        if snapshot.get('state') in {'unknown', 'checking'}:
+            snapshot.update({
+                'available': False,
+                'state': 'checking',
+                'title': '正在检测 wechat-cli',
+                'message': '正在确认本地高速读取是否可用。',
+            })
+    else:
+        snapshot['checking'] = False
+    return snapshot
+
+
+def _set_wechat_cli_status(snapshot):
+    normalized = dict(snapshot or {})
+    normalized.setdefault('available', False)
+    normalized.setdefault('state', 'unknown')
+    normalized.setdefault('title', '检测结果未知')
+    normalized.setdefault('message', '暂时无法确认 wechat-cli 当前状态。')
+    normalized.setdefault('detail', '')
+    normalized.setdefault('checked_at', '')
+    normalized.setdefault('version', '')
+    normalized['checking'] = False
+    with wechat_cli_status_lock:
+        wechat_cli_status_cache.clear()
+        wechat_cli_status_cache.update(normalized)
+    return dict(normalized)
+
+
+def _send_wechat_cli_live_check_message(message):
+    current_bot = bot
+    wx_client = getattr(current_bot, 'wx', None)
+    if not wx_client:
+        raise RuntimeError('机器人尚未连接微信，无法完成账号活体校验')
+    try:
+        chat_with = getattr(wx_client, 'ChatWith', None)
+        if callable(chat_with):
+            try:
+                chat_result = chat_with('文件传输助手', exact=True)
+            except TypeError:
+                chat_result = chat_with(who='文件传输助手')
+            if chat_result is False:
+                raise RuntimeError('未能切换到文件传输助手')
+            if isinstance(chat_result, dict):
+                status = str(chat_result.get('status') or '').strip()
+                if status and status not in {'成功', 'success', 'ok', 'OK'}:
+                    raise RuntimeError(chat_result.get('message') or status)
+        send_msg = getattr(wx_client, 'SendMsg', None)
+        if not callable(send_msg):
+            raise RuntimeError('当前 wxauto 客户端不支持发送校验消息')
+        result = send_msg(str(message or ''))
+        if isinstance(result, dict):
+            status = str(result.get('status') or '').strip()
+            if status and status not in {'成功', 'success', 'ok', 'OK'}:
+                raise RuntimeError(result.get('message') or status)
+        return True
+    except Exception as exc:
+        raise RuntimeError(f'发送文件传输助手校验消息失败：{exc}')
+
+
+def _current_wechat_cli_expected_account():
+    try:
+        return _running_wx_id()
+    except Exception:
+        return ''
+
+
+def _check_wechat_cli_status_for_current_account():
+    expected_wx_id = _current_wechat_cli_expected_account()
+    return check_wechat_cli_status(
+        expected_wx_id=expected_wx_id,
+        live_check_sender=_send_wechat_cli_live_check_message if expected_wx_id else None,
+    )
+
+
+def _run_wechat_cli_status_check(*, reason='manual', log_result=False):
+    global wechat_cli_status_checking
+    with wechat_cli_status_lock:
+        wechat_cli_status_checking = True
+    try:
+        snapshot = _check_wechat_cli_status_for_current_account()
+        if log_result:
+            if snapshot.get('available'):
+                log('INFO', f"wechat-cli 状态检测通过：{snapshot.get('title')}")
+            else:
+                detail = str(snapshot.get('detail') or '').strip()
+                suffix = f"：{detail}" if detail else ''
+                log('WARNING', f"wechat-cli 状态检测未通过，已保持 wxautox4 回退：{snapshot.get('title')}{suffix}")
+        return _set_wechat_cli_status(snapshot)
+    except Exception as e:
+        snapshot = {
+            'available': False,
+            'state': 'error',
+            'title': '状态检测异常',
+            'message': '本地高速读取暂不可用，机器人会自动回退微信界面读取。',
+            'detail': str(e)[:300],
+            'checked_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'version': '',
+        }
+        if log_result:
+            log('WARNING', f"wechat-cli 状态检测异常，已保持 wxautox4 回退：{e}")
+        return _set_wechat_cli_status(snapshot)
+    finally:
+        with wechat_cli_status_lock:
+            wechat_cli_status_checking = False
+
+
+def _start_wechat_cli_status_check_async(*, reason='startup'):
+    global wechat_cli_status_checking
+    with wechat_cli_status_lock:
+        if wechat_cli_status_checking:
+            return False
+        wechat_cli_status_checking = True
+        wechat_cli_status_cache.update({
+            'available': False,
+            'state': 'checking',
+            'title': '正在检测 wechat-cli',
+            'message': '正在确认本地高速读取是否可用。',
+            'detail': '',
+        })
+
+    def worker():
+        global wechat_cli_status_checking
+        try:
+            snapshot = _check_wechat_cli_status_for_current_account()
+            if snapshot.get('available'):
+                log('INFO', f"wechat-cli 状态检测通过：{snapshot.get('title')}")
+            else:
+                detail = str(snapshot.get('detail') or '').strip()
+                suffix = f"：{detail}" if detail else ''
+                log('WARNING', f"wechat-cli 状态检测未通过，已保持 wxautox4 回退：{snapshot.get('title')}{suffix}")
+            _set_wechat_cli_status(snapshot)
+        except Exception as e:
+            _set_wechat_cli_status({
+                'available': False,
+                'state': 'error',
+                'title': '状态检测异常',
+                'message': '本地高速读取暂不可用，机器人会自动回退微信界面读取。',
+                'detail': str(e)[:300],
+                'checked_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'version': '',
+            })
+            log('WARNING', f"wechat-cli 状态检测异常，已保持 wxautox4 回退：{e}")
+        finally:
+            with wechat_cli_status_lock:
+                wechat_cli_status_checking = False
+
+    threading.Thread(target=worker, name=f"wechat-cli-status-{reason}", daemon=True).start()
+    return True
 
 
 def _report_bot_startup_state(success, message, event=None, state=None):
@@ -4629,6 +4797,13 @@ def _stop_running_bot_and_wait(wait_timeout=BOT_STOP_WAIT_TIMEOUT_SECONDS):
 def _startup_status_callback(event, state):
     def mark(success, message):
         _report_bot_startup_state(success, message, event, state)
+        if success:
+            def delayed_check():
+                for _attempt in range(3):
+                    if _start_wechat_cli_status_check_async(reason='bot-ready'):
+                        return
+                    time.sleep(1)
+            threading.Thread(target=delayed_check, name='wechat-cli-status-after-bot-ready', daemon=True).start()
     return mark
 
 @app.route('/start_bot', methods=['POST'])
@@ -4682,6 +4857,60 @@ def check_activate():
             'wxautox4_version': _get_wxautox_version(),
         }})
     except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
+
+
+def _wechat_cli_repair_advice(snapshot):
+    state = str((snapshot or {}).get('state') or '').strip()
+    if state == 'available':
+        return 'wechat-cli 当前可用，不需要修复。'
+    if state == 'missing_tool':
+        return '未找到 wechat-cli。请确认工具已安装在 venv/tools/wechat-cli/，或设置 WXBOT_WECHAT_CLI_EXE 后重新检测。'
+    if state == 'need_init':
+        return '工具已安装但未初始化。请确认当前登录的微信账号后，手动完成 wechat-cli 初始化，再重新检测。'
+    if state in {'read_failed', 'invalid_output'}:
+        return '工具已安装但读取失败。常见原因是切换了微信账号、数据库目录变化或密钥失效；请重新确认当前账号的数据目录并初始化。'
+    if state == 'account_unverified':
+        return '当前微信账号尚未和 wechat-cli 数据目录完成绑定。请先启动机器人并确保 wxautox4 授权可用，系统会向文件传输助手发送一条简短校验消息后自动绑定。'
+    return '暂时无法自动修复。请先查看日志里的 wechat-cli 状态检测原因，然后重新检测。'
+
+
+@app.route('/check_wechat_cli_status')
+@login_required
+def check_wechat_cli_status_route():
+    force = str(request.args.get('force', '') or '').strip().lower() in {'1', 'true', 'yes'}
+    if force:
+        return jsonify({'status': 'success', 'data': _run_wechat_cli_status_check(reason='manual', log_result=True)})
+    snapshot = _wechat_cli_status_snapshot()
+    if snapshot.get('state') == 'unknown' and not snapshot.get('checking'):
+        _start_wechat_cli_status_check_async(reason='dashboard')
+        snapshot = _wechat_cli_status_snapshot()
+    return jsonify({'status': 'success', 'data': snapshot})
+
+
+@app.route('/repair_wechat_cli_status', methods=['POST'])
+@login_required
+def repair_wechat_cli_status_route():
+    snapshot = _run_wechat_cli_status_check(reason='repair', log_result=True)
+    return jsonify({
+        'status': 'success',
+        'message': _wechat_cli_repair_advice(snapshot),
+        'data': snapshot,
+    })
+
+
+@app.route('/check_wechat_cli_update')
+@login_required
+def check_wechat_cli_update_route():
+    try:
+        result = check_wechat_cli_update()
+        if result.get('ok'):
+            log('INFO', f"wechat-cli 更新检查完成：{result.get('title')}")
+        else:
+            log('WARNING', f"wechat-cli 更新检查未完成：{result.get('title')} - {result.get('message')}")
+        return jsonify({'status': 'success', 'data': result})
+    except Exception as e:
+        log('WARNING', f'wechat-cli 更新检查异常：{e}')
         return jsonify({'status': 'error', 'message': str(e)})
 
 
