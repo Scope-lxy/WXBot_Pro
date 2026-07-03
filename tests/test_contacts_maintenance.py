@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from feature.contacts import analyze_refresh_batch
+from feature.contacts import auto_maintenance_is_due
+from feature.contacts import contact_auto_maintenance_read_timeout_seconds
 from feature.contacts import check_contact_directory_auto_maintenance
 from feature.contacts import edit_friend_info_via_chat_profile
 from feature.contacts import modify_friend_tags_via_chat_profile
@@ -226,6 +228,72 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertIn(("flush_lightweight",), bot.calls)
         self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
+
+    def test_auto_maintenance_holds_wechat_lock_through_batch(self):
+        calls = []
+
+        class GuardLock:
+            held = False
+
+            def acquire(self, blocking=True):
+                calls.append(("lock_acquire", blocking))
+                if self.held:
+                    return False
+                self.held = True
+                return True
+
+            def release(self):
+                calls.append(("lock_release",))
+                self.held = False
+
+        lock = GuardLock()
+
+        class FakeBot:
+            wx = object()
+            start_time = "2026-06-10 20:00:00"
+            contact_directory_auto_maintenance_switch = True
+            contact_directory_auto_maintenance_interval_minutes = 5
+            contact_directory_auto_maintenance_full_scan_interval_days = 1
+            contact_directory_auto_maintenance_window_start = "00:00"
+            contact_directory_auto_maintenance_window_end = "23:59"
+            contact_directory_auto_maintenance_batch_size = 50
+
+            def _load_contact_profiles_directory(self):
+                return {"maintenance": {}}, "ignored.json", "scope_rui"
+
+            def _get_wechat_action_lock(self):
+                return lock
+
+            def _flush_lightweight_send_queue(self):
+                return True
+
+            def _has_pending_lightweight_send_queue(self):
+                return False
+
+            def _write_contact_directory_auto_cycle_state(self, directory, **updates):
+                directory = dict(directory or {})
+                directory.setdefault("maintenance", {}).update(updates)
+                return directory
+
+            def _save_contact_profiles_directory(self, _directory):
+                pass
+
+            def refresh_contact_profiles_batch(self, **kwargs):
+                calls.append(("batch_lock_held", lock.held))
+                return {
+                    "directory": {"maintenance": {}},
+                    "analysis": {"outcome": "advanced"},
+                    "next_start_name": "B",
+                    "backup_start_name": "A",
+                    "completed": False,
+                }
+
+        with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
+            self.assertTrue(check_contact_directory_auto_maintenance(FakeBot(), now=datetime(2026, 6, 10, 21, 0, 0)))
+
+        self.assertIn(("batch_lock_held", True), calls)
+        self.assertEqual(calls[0], ("lock_acquire", False))
+        self.assertEqual(calls[-1], ("lock_release",))
 
     def test_auto_maintenance_falls_back_to_backup_cursor_after_primary_stalls(self):
         calls = []
@@ -790,6 +858,28 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(normalize_auto_maintenance_batch_size(10), 50)
         self.assertEqual(normalize_auto_maintenance_batch_size("bad"), 50)
 
+    def test_auto_maintenance_due_prefers_finished_time(self):
+        directory = {
+            "maintenance": {
+                "last_attempted_at": "2026-06-10 20:00:00",
+                "last_batch_finished_at": "2026-06-10 20:59:00",
+            }
+        }
+
+        self.assertFalse(auto_maintenance_is_due(
+            directory,
+            interval_minutes=30,
+            now=datetime(2026, 6, 10, 21, 10, 0),
+        ))
+        self.assertTrue(auto_maintenance_is_due(
+            directory,
+            interval_minutes=30,
+            now=datetime(2026, 6, 10, 21, 30, 0),
+        ))
+
+    def test_auto_maintenance_read_timeout_is_ten_minutes(self):
+        self.assertEqual(contact_auto_maintenance_read_timeout_seconds(50), 600)
+
     def test_contact_summary_continue_start_uses_existing_contact_tail(self):
         summary = _contact_profiles_summary({
             "maintenance": {"next_start_name": "旧游标"},
@@ -848,6 +938,47 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertIn("callback", get_calls[0][1])
         self.assertTrue(result["completed"])
         self.assertEqual(result["analysis"]["outcome"], "full_scan_complete")
+
+    def test_auto_maintenance_single_batch_uses_ten_minute_timeout(self):
+        calls = []
+
+        class FakeLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeWeChat:
+            def GetFriendDetails(self, **kwargs):
+                calls.append(("GetFriendDetails", kwargs))
+                detail = {"备注": "阿英2"}
+                kwargs["callback"](detail)
+                return [detail]
+
+            def SwitchToChat(self):
+                pass
+
+        class FakeBot:
+            wx = FakeWeChat()
+
+            def _get_wechat_action_lock(self):
+                return FakeLock()
+
+            def _load_contact_profiles_directory(self):
+                return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
+
+            def _prepare_contact_directory_window(self):
+                pass
+
+        with (
+            patch("feature.contacts.save_contact_directory"),
+            patch("feature.contacts.load_contact_directory", return_value={"subjects": [], "maintenance": {}}),
+        ):
+            refresh_contact_profiles_single_batch(FakeBot(), mode="standard", run_kind="auto_maintenance")
+
+        get_calls = [call for call in calls if call[0] == "GetFriendDetails"]
+        self.assertEqual(get_calls[0][1]["timeout"], 600)
 
     def test_contact_read_logs_from_callback_without_duplicate_result_logs(self):
         log_messages = []

@@ -89,7 +89,6 @@ from core.account_storage import (
 from core import runtime_chat_state
 from core.chat_history_format import (
     build_model_visible_history,
-    filter_model_visible_history,
     format_history_message,
 )
 from core.memory_context_repair import (
@@ -108,6 +107,7 @@ from core.runtime_metrics import RuntimeMetricsStore
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.prompting import (
     IMAGE_DESCRIPTION_SYSTEM_PROMPT,
+    build_current_turn_user_message,
     build_image_description_prompt,
     build_image_recognition_message,
     build_image_user_message,
@@ -1261,8 +1261,6 @@ class WXBot:
     def _build_prompt_with_context(
         self,
         chat_name,
-        history,
-        message,
         *,
         base_prompt=None,
         chat_type='private',
@@ -1275,8 +1273,6 @@ class WXBot:
             system = self._init_prompt_system()
         return system.build_prompt(
             chat_name,
-            history,
-            message,
             base_prompt=base_prompt,
             chat_type=chat_type,
             image_parse_block=image_parse_block,
@@ -3875,12 +3871,11 @@ class WXBot:
                                     self._clear_ai_detection_target_if_snapshot(chat.who, detection_record)
                 _effective_prompt = self._build_prompt_with_context(
                     chat.who,
-                    history,
-                    message_semantic_text,
                     base_prompt=None,
                     chat_type='private',
                 )
                 message_content = message_semantic_text
+                model_user_message = build_current_turn_user_message(message_semantic_text)
                 fallback_image_path = ""
                 quoted_text = ""
                 quoted_image_paths = []
@@ -3922,11 +3917,11 @@ class WXBot:
                         image_reply_context_used = True
                     else:
                         reply = self._get_chat_api(chat.who).chat(
-                            message_semantic_text, prompt=_effective_prompt, history=history
+                            model_user_message, prompt=_effective_prompt, history=history
                         )
                 else:
                     reply = self._get_chat_api(chat.who).chat(
-                        message_semantic_text, prompt=_effective_prompt, history=history
+                        model_user_message, prompt=_effective_prompt, history=history
                     )
         except Exception as e:
             print(traceback.format_exc())
@@ -4233,6 +4228,7 @@ class WXBot:
             content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
             log(message=f"群组 {chat.who}：触发 AI 回复，内容：{content_without_at}")
             content_with_sender = f"{message.sender}: {format_message_semantic_text({'type': getattr(message, 'type', ''), 'content': content_without_at})}"
+            model_group_user_message = build_current_turn_user_message(content_with_sender)
             group_voice_candidate_hit = False
             group_meta_reply_should_mark = False
             try:
@@ -4243,8 +4239,6 @@ class WXBot:
                 group_voice_candidate_hit = group_voice_candidate(self.config, message)
                 _effective_group_prompt = self._build_prompt_with_context(
                     chat.who,
-                    history,
-                    content_with_sender,
                     chat_type='group',
                 )
                 if self.config.group_image_recognition_switch and message.type == 'image':
@@ -4279,10 +4273,10 @@ class WXBot:
                         group_image_reply_context_used = True
                     else:
                         group_api = self._get_group_api(chat.who)
-                        reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+                        reply = group_api.chat(model_group_user_message, prompt=_effective_group_prompt, history=history)
                 else:
                     group_api = self._get_group_api(chat.who)
-                    reply = group_api.chat(content_with_sender, prompt=_effective_group_prompt, history=history)
+                    reply = group_api.chat(model_group_user_message, prompt=_effective_group_prompt, history=history)
             except Exception as e:
                 print(traceback.format_exc())
                 log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
@@ -5554,9 +5548,23 @@ class WXBot:
             log(message=f"私聊 {chat_name}：上下文补洞已在冷却中，跳过本轮")
             return False
 
+        lock = self._get_wechat_action_lock()
+        if not lock.acquire(blocking=False):
+            log(level="WARNING", message=f"私聊 {chat_name}：低风险上下文补洞需要微信操作锁，当前繁忙，已跳过")
+            with self._memory_context_repair_lock:
+                self._memory_context_repair_last_low_risk_at.pop(chat_name, None)
+            return False
+
         try:
             local_history = self.memory_manager.get_messages(memory_chat_name, cfg["history_limit"]) or []
             visible_messages = self._read_low_risk_context_messages(chat, cfg["visible_limit"])
+        except Exception as exc:
+            log(level="WARNING", message=f"私聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")
+            return False
+        finally:
+            lock.release()
+
+        try:
             visible_entries = [
                 normalize_wechat_message(item, source="wechat_context_repair_low")
                 for item in visible_messages
@@ -6568,6 +6576,17 @@ class WXBot:
         """获取私聊用户的回复轮数上限；当前统一使用全局配置。"""
         return self.config.text_reply_limit_count
 
+    def _memory_context_raw_limit(self, message_limit):
+        try:
+            max_count = int(getattr(self.config, "memory_max_count", 5000) or 5000)
+        except Exception:
+            max_count = 5000
+        try:
+            message_limit = int(message_limit)
+        except Exception:
+            message_limit = 0
+        return max(max_count, message_limit, 0)
+
     def _get_model_context_history(self, chat_who):
         try:
             count = max(0, int(getattr(self.config, 'memory_context_count', 0) or 0))
@@ -6578,23 +6597,14 @@ class WXBot:
         try:
             raw_history = []
             if self.memory_manager:
-                raw_history = self.memory_manager.get_messages(chat_who, count) or []
+                raw_limit = self._memory_context_raw_limit(count)
+                raw_history = self.memory_manager.get_messages(chat_who, raw_limit) or []
             runtime_history = self._runtime_private_reply_history(chat_who)
             merged_history = list(raw_history) + runtime_history
-            if len(merged_history) > count:
-                merged_history = merged_history[-count:]
-            history, skipped = build_model_visible_history(
+            history = build_model_visible_history(
                 merged_history,
-                assistant_limit=getattr(self.config, 'memory_context_assistant_count', 10),
+                message_limit=count,
             )
-            skipped_by_chat = getattr(self, "_model_context_skipped_by_chat", None)
-            if not isinstance(skipped_by_chat, dict):
-                skipped_by_chat = {}
-                self._model_context_skipped_by_chat = skipped_by_chat
-            if skipped:
-                skipped_by_chat[chat_who] = skipped
-            else:
-                skipped_by_chat.pop(chat_who, None)
             return history
         except Exception as e:
             log(level="WARNING", message=f"读取AI上下文失败: {e}")
@@ -6610,10 +6620,11 @@ class WXBot:
         if count <= 0:
             return []
         try:
-            raw_history = self.memory_manager.get_messages(chat_who, count) or []
-            history, _ = build_model_visible_history(
+            raw_limit = self._memory_context_raw_limit(count)
+            raw_history = self.memory_manager.get_messages(chat_who, raw_limit) or []
+            history = build_model_visible_history(
                 raw_history,
-                assistant_limit=getattr(self.config, 'memory_context_assistant_count', 10),
+                message_limit=count,
             )
             return history
         except Exception as e:
@@ -6919,10 +6930,12 @@ class WXBot:
         memory_manager = getattr(self, "memory_manager", None)
         if memory_manager is not None and hasattr(memory_manager, "get_messages"):
             try:
-                raw_history = list(memory_manager.get_messages(target, getattr(self.config, "memory_context_count", 20)) or [])
-                history, _ = build_model_visible_history(
+                count = max(0, int(getattr(self.config, "memory_context_count", 20) or 0))
+                raw_limit = self._memory_context_raw_limit(count)
+                raw_history = list(memory_manager.get_messages(target, raw_limit) or [])
+                history = build_model_visible_history(
                     raw_history,
-                    assistant_limit=getattr(self.config, 'memory_context_assistant_count', 10),
+                    message_limit=count,
                 )
             except Exception:
                 history = []
@@ -7087,10 +7100,12 @@ class WXBot:
         memory_manager = getattr(self, "memory_manager", None)
         if memory_manager is not None and hasattr(memory_manager, "get_messages"):
             try:
-                raw_history = list(memory_manager.get_messages(target, getattr(self.config, "memory_context_count", 20)) or [])
-                history, _ = build_model_visible_history(
+                count = max(0, int(getattr(self.config, "memory_context_count", 20) or 0))
+                raw_limit = self._memory_context_raw_limit(count)
+                raw_history = list(memory_manager.get_messages(target, raw_limit) or [])
+                history = build_model_visible_history(
                     raw_history,
-                    assistant_limit=getattr(self.config, 'memory_context_assistant_count', 10),
+                    message_limit=count,
                 )
             except Exception:
                 history = []
@@ -8000,7 +8015,6 @@ class WXBot:
             "memory_switch":         getattr(self.config, "memory_switch", True),
             "memory_context_switch": getattr(self.config, "memory_context_switch", True),
             "memory_context_count":  getattr(self.config, "memory_context_count", 50),
-            "memory_context_assistant_count": getattr(self.config, "memory_context_assistant_count", 10),
             "reply_delay_switch":    getattr(self.config, "reply_delay_switch", True),
             "reply_delay_first_min": getattr(self.config, "reply_delay_first_min", 1),
             "reply_delay_first_max": getattr(self.config, "reply_delay_first_max", 5),

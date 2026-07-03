@@ -61,6 +61,7 @@ STOP_RETURN_TIMER_ATTR = "_contact_profiles_stop_return_timer"
 CONTACT_PROFILES_READING_ATTR = "_contact_profiles_reading_active"
 CONTACT_CURSOR_MATCH_SETTLE_SECONDS = 1.0
 CONTACT_READ_PROGRESS_LOG_INTERVAL = 20
+AUTO_MAINTENANCE_READ_TIMEOUT_SECONDS = 600
 
 
 def _clean_text(value: Any) -> str:
@@ -75,6 +76,22 @@ def _bot_log(bot, *args, **kwargs) -> None:
 
 def _should_log_contact_read_progress(count: int) -> bool:
     return count > 0 and count % CONTACT_READ_PROGRESS_LOG_INTERVAL == 0
+
+
+def _acquire_wechat_action_lock(lock: Any, *, blocking: bool = True):
+    acquire = getattr(lock, "acquire", None)
+    if callable(acquire):
+        if acquire(blocking=bool(blocking)):
+            return lambda: lock.release()
+        return None
+    if not blocking:
+        return None
+    enter = getattr(lock, "__enter__", None)
+    exit_ = getattr(lock, "__exit__", None)
+    if callable(enter) and callable(exit_):
+        enter()
+        return lambda: exit_(None, None, None)
+    raise RuntimeError("微信操作锁不可用")
 
 
 def friend_info_edit_noop(response: Any) -> bool:
@@ -132,6 +149,10 @@ def contact_read_timeout_seconds(count: Any) -> int:
     except (TypeError, ValueError):
         count = 50
     return max(120, count * 3)
+
+
+def contact_auto_maintenance_read_timeout_seconds(count: Any) -> int:
+    return AUTO_MAINTENANCE_READ_TIMEOUT_SECONDS
 
 
 def is_full_contact_refresh(settings: dict[str, Any]) -> bool:
@@ -586,7 +607,7 @@ def auto_maintenance_is_due(
     interval = coerce_auto_maintenance_interval_minutes(interval_minutes)
     current = now if isinstance(now, datetime) else _parse_maintenance_time(now) or datetime.now()
     last_attempt = _parse_maintenance_time(
-        maintenance.get("last_attempted_at") or maintenance.get("last_batch_finished_at")
+        maintenance.get("last_batch_finished_at") or maintenance.get("last_attempted_at")
     )
     start_gate = _parse_maintenance_time(not_before)
     if start_gate is not None and current < start_gate + timedelta(minutes=interval):
@@ -1055,6 +1076,7 @@ def refresh_contact_profiles_single_batch(
     run_kind="manual_standard",
     logical_start_name=None,
     switch_back_to_chat=True,
+    block_on_wechat_lock=True,
 ):
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化，请先启动机器人并保持微信主窗口可用。")
@@ -1158,54 +1180,66 @@ def refresh_contact_profiles_single_batch(
                 time.sleep(CONTACT_CURSOR_MATCH_SETTLE_SECONDS)
         return matched
 
+    release_wechat_lock = _acquire_wechat_action_lock(
+        bot._get_wechat_action_lock(),
+        blocking=bool(block_on_wechat_lock),
+    )
+    if not release_wechat_lock:
+        raise RuntimeError("微信操作繁忙，已跳过本次通讯录维护")
     try:
-        with bot._get_wechat_action_lock():
-            def read_friend_details():
+        def read_friend_details():
+            if pause_requested(force=True):
+                _bot_log(bot, message="[通讯录维护] 检测到停止请求，跳过本次读取")
+                return []
+            prepare_window_fn = getattr(bot, "_prepare_contact_directory_window", None)
+            if callable(prepare_window_fn):
+                prepare_window_fn()
+            else:
+                prepare_contact_directory_window(bot)
+            read_success = False
+            try:
+                with warn_slow_wechat_ui_action(f"GetFriendDetails(n={settings['count']})"):
+                    kwargs = {
+                        "n": settings["count"],
+                        "timeout": (
+                            contact_auto_maintenance_read_timeout_seconds(settings["count"])
+                            if run_kind == "auto_maintenance"
+                            else contact_read_timeout_seconds(settings["count"])
+                        ),
+                        "interval": settings["interval"],
+                        "save_head_image": False,
+                        "callback": callback,
+                    }
+                    setattr(bot, CONTACT_PROFILES_READING_ATTR, True)
+                    result = bot.wx.GetFriendDetails(**kwargs)
+                    read_success = True
+                    return result
+            except Exception:
                 if pause_requested(force=True):
-                    _bot_log(bot, message="[通讯录维护] 检测到停止请求，跳过本次读取")
+                    _bot_log(bot, message="[通讯录维护] 读取已被停止请求中断")
+                    read_success = True
                     return []
-                prepare_window_fn = getattr(bot, "_prepare_contact_directory_window", None)
-                if callable(prepare_window_fn):
-                    prepare_window_fn()
-                else:
-                    prepare_contact_directory_window(bot)
-                read_success = False
+                raise
+            finally:
                 try:
-                    with warn_slow_wechat_ui_action(f"GetFriendDetails(n={settings['count']})"):
-                        kwargs = {
-                            "n": settings["count"],
-                            "timeout": contact_read_timeout_seconds(settings["count"]),
-                            "interval": settings["interval"],
-                            "save_head_image": False,
-                            "callback": callback,
-                        }
-                        setattr(bot, CONTACT_PROFILES_READING_ATTR, True)
-                        result = bot.wx.GetFriendDetails(**kwargs)
-                        read_success = True
-                        return result
+                    setattr(bot, CONTACT_PROFILES_READING_ATTR, False)
                 except Exception:
-                    if pause_requested(force=True):
-                        _bot_log(bot, message="[通讯录维护] 读取已被停止请求中断")
-                        read_success = True
-                        return []
-                    raise
-                finally:
-                    try:
-                        setattr(bot, CONTACT_PROFILES_READING_ATTR, False)
-                    except Exception:
-                        pass
-                    if switch_back_to_chat or not read_success:
-                        switch_contact_directory_back_to_chat(bot)
-            result = run_with_wechat_rebind_retry(
+                    pass
+                if switch_back_to_chat or not read_success:
+                    switch_contact_directory_back_to_chat(bot)
+        result = run_with_wechat_rebind_retry(
+            bot,
+            read_friend_details,
+            attempts=2,
+            on_retry=lambda exc, _attempt: _bot_log(
                 bot,
-                read_friend_details,
-                attempts=2,
-                on_retry=lambda exc, _attempt: _bot_log(
-                    bot,
-                    level="WARNING",
-                    message=f"[通讯录维护] 读取好友资料失败，重新初始化微信客户端后重试：{exc}",
-                ),
-            )
+                level="WARNING",
+                message=f"[通讯录维护] 读取好友资料失败，重新初始化微信客户端后重试：{exc}",
+            ),
+        )
+    finally:
+        release_wechat_lock()
+    try:
         raw_details = coerce_detail_list(result)
         if not callback_seen_names:
             total_details = len(raw_details)
@@ -1598,10 +1632,9 @@ def check_contact_directory_auto_maintenance(bot, now=None):
     else:
         _bot_log(bot, message="[通讯录维护] 自动维护从通讯录头部开始")
 
-    lock = bot._get_wechat_action_lock()
-    if not lock.acquire(blocking=False):
+    release_wechat_lock = _acquire_wechat_action_lock(bot._get_wechat_action_lock(), blocking=False)
+    if not release_wechat_lock:
         return False
-    lock.release()
     write_cycle_fn = getattr(bot, "_write_contact_directory_auto_cycle_state", None)
     save_directory_fn = getattr(bot, "_save_contact_profiles_directory", None)
     try:
@@ -1673,7 +1706,8 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         outcome = str(analysis.get("outcome") or "").strip()
         next_start_name = str(result.get("next_start_name") or "").strip()
         backup_start_name = str(result.get("backup_start_name") or "").strip()
-        stamp = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        finished_dt = maintenance_now(None)
+        stamp = finished_dt.strftime("%Y-%m-%d %H:%M:%S")
 
         tail_confirmation_active = (
             cycle["last_outcome"] in {"short_advanced", "tail_confirm_pending"}
@@ -1691,7 +1725,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             if callable(write_cycle_fn):
                 refreshed_directory = write_cycle_fn(
                     refreshed_directory,
-                    now=now_dt,
+                    now=finished_dt,
                     auto_cycle_status="completed",
                     auto_cycle_next_start_name="",
                     auto_cycle_backup_start_name="",
@@ -1704,7 +1738,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             else:
                 refreshed_directory = write_contact_directory_auto_cycle_state(
                     refreshed_directory,
-                    now=now_dt,
+                    now=finished_dt,
                     auto_cycle_status="completed",
                     auto_cycle_next_start_name="",
                     auto_cycle_backup_start_name="",
@@ -1726,7 +1760,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             if callable(write_cycle_fn):
                 refreshed_directory = write_cycle_fn(
                     refreshed_directory,
-                    now=now_dt,
+                    now=finished_dt,
                     auto_cycle_status="running",
                     auto_cycle_next_start_name=cycle_start_name,
                     auto_cycle_backup_start_name=cycle["backup_start_name"],
@@ -1737,7 +1771,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             else:
                 refreshed_directory = write_contact_directory_auto_cycle_state(
                     refreshed_directory,
-                    now=now_dt,
+                    now=finished_dt,
                     auto_cycle_status="running",
                     auto_cycle_next_start_name=cycle_start_name,
                     auto_cycle_backup_start_name=cycle["backup_start_name"],
@@ -1757,7 +1791,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             if callable(write_cycle_fn):
                 refreshed_directory = write_cycle_fn(
                     refreshed_directory,
-                    now=now_dt,
+                    now=finished_dt,
                     auto_cycle_status="running",
                     auto_cycle_next_start_name=next_start_name,
                     auto_cycle_backup_start_name=backup_start_name,
@@ -1769,7 +1803,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             else:
                 refreshed_directory = write_contact_directory_auto_cycle_state(
                     refreshed_directory,
-                    now=now_dt,
+                    now=finished_dt,
                     auto_cycle_status="running",
                     auto_cycle_next_start_name=next_start_name,
                     auto_cycle_backup_start_name=backup_start_name,
@@ -1804,7 +1838,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             if callable(write_cycle_fn):
                 refreshed_directory = write_cycle_fn(
                     refreshed_directory,
-                    now=now_dt,
+                    now=finished_dt,
                     auto_cycle_status=fallback_status,
                     auto_cycle_next_start_name=fallback_start_name,
                     auto_cycle_backup_start_name=fallback_backup_name,
@@ -1814,7 +1848,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             else:
                 refreshed_directory = write_contact_directory_auto_cycle_state(
                     refreshed_directory,
-                    now=now_dt,
+                    now=finished_dt,
                     auto_cycle_status=fallback_status,
                     auto_cycle_next_start_name=fallback_start_name,
                     auto_cycle_backup_start_name=fallback_backup_name,
@@ -1827,6 +1861,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             save_contact_profiles_directory(bot, refreshed_directory)
         return True
     finally:
+        release_wechat_lock()
         flush_lightweight = getattr(bot, "_flush_lightweight_send_queue", None)
         if callable(flush_lightweight):
             flush_lightweight()

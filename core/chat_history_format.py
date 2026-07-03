@@ -14,7 +14,6 @@ _EMPTY_VISIBLE_TEXT = "未提取到明确文字。"
 _EMPTY_KEY_DETAILS = "未提取到稳定细节。"
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v"}
-DEFAULT_MODEL_HISTORY_MEDIA_LIMIT = 3
 _SEMANTIC_MESSAGE_TYPES = {"voice", "emotion", "link", "miniapp", "personal_card", "note", "video"}
 _TIME_SEPARATOR_RE = re.compile(
     r"^(?:"
@@ -190,19 +189,6 @@ def _render_record_content(item, *, speaker_role="user", compact=False):
     return raw
 
 
-def _is_media_record(item):
-    if not isinstance(item, dict):
-        return False
-    msg_type = str(item.get("type", "") or "").strip().lower()
-    if msg_type in {"image", "video", "file"}:
-        return True
-    raw = _clean_text(item.get("content"))
-    if not raw:
-        return False
-    _text_part, image_paths = split_quoted_image_message(raw)
-    return bool(image_paths)
-
-
 def _is_time_separator_record(item):
     if not isinstance(item, dict):
         return False
@@ -240,34 +226,22 @@ def _attach_time_separators(history):
     return visible
 
 
-def limit_recent_media_records(history, media_limit=DEFAULT_MODEL_HISTORY_MEDIA_LIMIT):
-    try:
-        media_limit = int(media_limit)
-    except (TypeError, ValueError):
-        media_limit = DEFAULT_MODEL_HISTORY_MEDIA_LIMIT
-    if media_limit < 0:
+def limit_recent_visible_records(history, message_limit=None):
+    if message_limit is None:
         return list(history or [])
-    kept_reversed = []
-    media_seen = 0
-    for item in reversed(list(history or [])):
-        if _is_media_record(item):
-            if media_seen >= media_limit:
-                continue
-            media_seen += 1
-        kept_reversed.append(item)
-    return list(reversed(kept_reversed))
+    try:
+        message_limit = int(message_limit)
+    except (TypeError, ValueError):
+        message_limit = 0
+    if message_limit <= 0:
+        return []
+    return list(history or [])[-message_limit:]
 
 
-def build_model_visible_history(history, *, assistant_limit=None, media_limit=DEFAULT_MODEL_HISTORY_MEDIA_LIMIT):
+def build_model_visible_history(history, *, message_limit=None):
     visible_history = _attach_time_separators(history)
-    visible_history = limit_recent_media_records(visible_history, media_limit=media_limit)
-    skipped_assistant = 0
-    if assistant_limit is not None:
-        visible_history, skipped_assistant = filter_model_visible_history(
-            visible_history,
-            assistant_limit=assistant_limit,
-        )
-    return [format_history_message(item) for item in visible_history], skipped_assistant
+    visible_history = limit_recent_visible_records(visible_history, message_limit=message_limit)
+    return [format_history_message(item) for item in visible_history]
 
 
 def format_memory_record_for_display(item):
@@ -297,29 +271,3 @@ def format_history_message(h):
     if history_time:
         content = f"发送时间：{history_time}\n{content}"
     return {"role": role, "content": content}
-
-
-def filter_model_visible_history(history, assistant_limit=3):
-    """Keep user history intact while limiting old assistant replies used as examples."""
-    try:
-        assistant_limit = max(0, int(assistant_limit))
-    except Exception:
-        assistant_limit = 3
-    messages = list(history or [])
-    kept_reversed = []
-    assistant_seen = 0
-    skipped_assistant = 0
-    for item in reversed(messages):
-        if not isinstance(item, dict):
-            kept_reversed.append(item)
-            continue
-        is_assistant = item.get("attr") == "self" or item.get("role") == "assistant"
-        if is_assistant:
-            if assistant_seen < assistant_limit:
-                kept_reversed.append(item)
-                assistant_seen += 1
-            else:
-                skipped_assistant += 1
-            continue
-        kept_reversed.append(item)
-    return list(reversed(kept_reversed)), skipped_assistant

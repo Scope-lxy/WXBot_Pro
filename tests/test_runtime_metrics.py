@@ -114,8 +114,7 @@ class RuntimeMetricsBotTests(unittest.TestCase):
         calls = []
         bot._metric_increment = lambda key, amount=1, now=None: calls.append((key, amount))
         bot._metric_add_unique = lambda *_args, **_kwargs: None
-        bot._model_context_skipped_notice = lambda _target: ""
-        bot.config = SimpleNamespace(memory_context_count=20, memory_context_assistant_count=10)
+        bot.config = SimpleNamespace(memory_context_count=20)
         bot.memory_manager = None
         bot._build_material_outreach_preface_prompt = lambda *_args, **_kwargs: "prompt"
         bot._get_other_api = lambda: bot._wrap_api_request_counter(

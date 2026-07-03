@@ -1,9 +1,13 @@
 """Prompt text builders."""
 
+from datetime import datetime
+
 from core.vision_bridge import VisionNote
 
 PRIVATE_IMAGE_MESSAGE = "[这是单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]"
 GROUP_IMAGE_MESSAGE_TEMPLATE = "{sender}: [这是 {sender} 单独发送的一条图片消息，请根据上下文语境分析这张图片和发送者发送的意图进行回复]"
+CURRENT_TURN_CONTEXT_HEADER = "[运行信息]"
+CURRENT_TURN_MESSAGE_HEADER = "[用户消息]"
 
 IMAGE_DESCRIPTION_SYSTEM_PROMPT = (
     "你是辅助视觉分析器，只看图片本身。\n"
@@ -25,6 +29,35 @@ def build_image_recognition_message(chat_type="private", sender=""):
         sender = str(sender or "").strip()
         return GROUP_IMAGE_MESSAGE_TEMPLATE.format(sender=sender)
     return PRIVATE_IMAGE_MESSAGE
+
+
+def _coerce_datetime(value=None):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
+            try:
+                return datetime.strptime(text, fmt)
+            except Exception:
+                pass
+    return datetime.now()
+
+
+def build_current_turn_user_message(message, *, now=None):
+    """Attach volatile runtime facts to the final user turn."""
+    dt = _coerce_datetime(now)
+    lines = [
+        CURRENT_TURN_CONTEXT_HEADER,
+        f"处理时间：{dt.strftime('%Y-%m-%d %H:%M')}",
+        "这是软件处理消息的时间，不是好友发送消息的时间。可结合发送时间判断对话场景和时效性；不要在回复里输出时间标签，除非自然需要。",
+    ]
+    lines.extend([
+        "",
+        CURRENT_TURN_MESSAGE_HEADER,
+        str(message or "").strip(),
+    ])
+    return "\n".join(lines).strip()
 
 
 _EMPTY_VISIBLE_TEXT = "未提取到明确文字。"
@@ -81,7 +114,7 @@ def build_image_user_message(chat_type="private", sender="", attached_text="", i
             lines.append(f"附带文字：{attached_text}")
         else:
             lines.append(f"消息内容：{attached_text}")
-    return "\n".join(lines)
+    return build_current_turn_user_message("\n".join(lines))
 
 
 def build_image_description_prompt(chat_type="private", sender="", attached_text=""):

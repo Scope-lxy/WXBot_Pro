@@ -912,18 +912,14 @@ class PromptBuilder:
         chat_name,
         base_prompt,
         state,
-        current_message="",
-        now=None,
         image_parse_block="",
         persona_status_block="",
     ):
-        now = now or datetime.now().strftime("%Y-%m-%d %H:%M")
         chat_memory_section = self.build_chat_memory_section(state)
         return self.prompt_store.render(
             self.FINAL_PROMPT_FILE,
             {
                 "base_prompt": str(base_prompt or "").strip(),
-                "now": now,
                 "chat_name": chat_name,
                 "chat_memory_section": chat_memory_section,
                 "persona_status_block": str(persona_status_block or "").strip(),
@@ -931,7 +927,6 @@ class PromptBuilder:
             },
             required_placeholders=(
                 "{{base_prompt}}",
-                "{{now}}",
                 "{{chat_memory_section}}",
                 "{{persona_status_block}}",
                 "{{image_parse_block}}",
@@ -1104,7 +1099,7 @@ class ChatMemoryExtractor:
 
     def extract_proposal(self, api, state, new_messages):
         prompt = self.build_extraction_prompt(state)
-        history, _skipped = build_model_visible_history(new_messages or [], assistant_limit=None)
+        history = build_model_visible_history(new_messages or [])
         reply = api.chat(self.EXTRACTION_TASK_MESSAGE, prompt=prompt, history=history, stream=False)
         return self.parse_proposal_response(reply)
 
@@ -1483,12 +1478,9 @@ class PromptSystem:
     def build_prompt(
         self,
         chat_name,
-        history,
-        message,
         *,
         base_prompt=None,
         chat_type="private",
-        now=None,
         image_parse_block="",
         prompt_extra="",
     ):
@@ -1512,8 +1504,6 @@ class PromptSystem:
             display_chat_name,
             resolved_base_prompt,
             state,
-            current_message=message,
-            now=now,
             image_parse_block=image_parse_block,
             persona_status_block=persona_status_block,
         )

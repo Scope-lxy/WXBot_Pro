@@ -158,8 +158,7 @@ class WXBotConfig:
         self.memory_switch        = True      # 记忆开关（默认开启）
         self.memory_context_switch = True     # 是否把最近聊天记录带入 AI 上下文
         self.memory_max_count     = 5000     # 单窗口最多存储条数（上限 5000）
-        self.memory_context_count = 50       # AI 请求时带入条数
-        self.memory_context_assistant_count = 10  # AI 请求时保留的机器人历史回复条数
+        self.memory_context_count = 50       # AI 请求时带入最近聊天记录条数
         self.memory_context_repair_low_risk_switch = True
         self.memory_context_repair_high_risk_switch = False
 
@@ -307,7 +306,6 @@ class WXBotConfig:
                     "memory_context_switch": True,
                     "memory_max_count": 5000,
                     "memory_context_count": 50,
-                    "memory_context_assistant_count": 10,
                     "memory_context_repair_low_risk_switch": True,
                     "memory_context_repair_high_risk_switch": False,
                     "reply_delay_switch": True,
@@ -989,11 +987,6 @@ class WXBotConfig:
         )
         if self.memory_context_count > self.memory_max_count:
             self.memory_context_count = self.memory_max_count
-        self.memory_context_assistant_count = self._coerce_int_range(
-            self.config.get('memory_context_assistant_count', 10), 10, 0, 100
-        )
-        if self.memory_context_assistant_count > self.memory_context_count:
-            self.memory_context_assistant_count = self.memory_context_count
         repair_defaults = {
             "memory_context_repair_low_risk_switch": True,
             "memory_context_repair_high_risk_switch": False,

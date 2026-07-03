@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from core.api import API_ERROR_REPLY_TEXT, DusAPI, OpenAIAPI, build_api_config_snapshot
-from core.prompting import build_image_user_message
+from core.prompting import build_current_turn_user_message, build_image_user_message
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.reply_count_store import ReplyCountStore
 from core.vision_bridge import VisionNote
@@ -190,6 +190,13 @@ class ApiBehaviorTests(unittest.TestCase):
 
 
 class MessageBehaviorTests(unittest.TestCase):
+    def test_current_turn_user_message_places_runtime_time_next_to_message(self):
+        result = build_current_turn_user_message("早，姐姐", now="2026-07-03 13:57")
+
+        self.assertIn("[运行信息]", result)
+        self.assertIn("处理时间：2026-07-03 13:57", result)
+        self.assertIn("[用户消息]\n早，姐姐", result)
+
     def test_two_stage_image_reply_places_visual_note_in_current_user_message(self):
         captured = {}
 
@@ -230,6 +237,7 @@ class MessageBehaviorTests(unittest.TestCase):
         ))
 
         self.assertEqual(result, "最终回复")
+        self.assertIn("[运行信息]", captured["message"])
         self.assertIn("本轮消息包含图片：", captured["message"])
         self.assertIn("[图片]一张蓝色会标。", captured["message"])
         self.assertIn("可见文字：ERC 博济全球慈善互助会", captured["message"])
@@ -781,6 +789,57 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(timer_calls[0][0], 5)
         self.assertEqual(enqueued, [("张三", '语音2"秒你好')])
 
+    def test_private_text_reply_sends_current_turn_context_to_api(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_keyword_switch=False,
+            keyword_dict={},
+            memory_switch=False,
+            memory_context_switch=False,
+            chat_image_recognition_switch=False,
+            chat_split_reply_switch=False,
+            chat_split_max_count=4,
+            chat_split_max_chars=100,
+            clean_ai_reply_switch=False,
+            meta_reply_blocked_reply="",
+            meta_reply_blocked_reply_once=False,
+            api_error_reply_once=False,
+            text_reply_limit_switch=False,
+            text_reply_limit_hours=24,
+            chat_voice_reply_switch=False,
+            cmd="文件传输助手",
+            split_long_text=lambda text: [text],
+        )
+        bot.reply_count_store = ReplyCountStore("")
+        bot.memory_manager = None
+        bot._voice_reply_state = {}
+        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
+        bot._current_ai_material_outreach_config = lambda: {"ai_material_outreach_switch": False}
+        bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+        captured_messages = []
+        bot._get_chat_api = lambda _user: SimpleNamespace(
+            chat=lambda message, **_kwargs: captured_messages.append(message) or "正常回复"
+        )
+        bot._verified_send_chat = lambda _target, chat: chat
+        bot._ensure_target_listen_chat_for_send = lambda _target: None
+        bot._get_chat_send_lock = lambda _name: threading.Lock()
+        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+        bot._begin_private_reply_runtime_turn = lambda _name: []
+        bot._finish_private_reply_runtime_turn = lambda *_args, **_kwargs: None
+        bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
+        bot._record_replied_message_success = lambda: None
+
+        sent = []
+        chat = SimpleNamespace(who="张三", SendMsg=lambda text: sent.append(text) or True)
+        message = SimpleNamespace(type="text", attr="friend", sender="张三", content="测试", id="1")
+
+        with mock.patch("wxbot_core.build_current_turn_user_message", return_value="WRAPPED_CURRENT_TURN") as wrapped:
+            self.assertTrue(bot.wx_send_ai(chat, message))
+
+        wrapped.assert_called_once_with("测试")
+        self.assertEqual(captured_messages, ["WRAPPED_CURRENT_TURN"])
+        self.assertEqual(sent, ["正常回复"])
+
     def test_meta_reply_blocked_reply_once_resets_with_reply_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
@@ -1008,6 +1067,70 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertEqual(attempts, [("换个说法吧", None), ("换个说法吧", None)])
             user_data = bot.reply_count_store.get_user("group:测试群:张三")
             self.assertFalse(user_data.get("meta_reply_blocked_notified"))
+
+    def test_group_text_reply_sends_current_turn_context_to_api(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AtMe="",
+            cmd="文件传输助手",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=False,
+            group_listen_only=False,
+            group_image_recognition_switch=False,
+            group_split_reply_switch=False,
+            group_split_max_count=4,
+            group_split_max_chars=100,
+            group_reply_at_msg=False,
+            group_reply_quote=False,
+            memory_switch=False,
+            memory_context_switch=False,
+            clean_ai_reply_switch=False,
+            meta_reply_blocked_reply="",
+            meta_reply_blocked_reply_once=False,
+            text_reply_limit_hours=24,
+            group_voice_reply_switch=False,
+            split_long_text=lambda text: [text],
+        )
+        bot.reply_count_store = ReplyCountStore("")
+        bot.memory_manager = None
+        bot._pause_group_reply = False
+        bot.is_stop_requested = lambda: False
+        captured_messages = []
+        bot._get_group_api = lambda _group: SimpleNamespace(
+            chat=lambda message, **_kwargs: captured_messages.append(message) or "群回复"
+        )
+        bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+        bot._get_chat_send_lock = lambda _name: threading.Lock()
+        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+        bot._record_replied_message_success = lambda: None
+
+        sent = []
+        chat = SimpleNamespace(
+            who="测试群",
+            chat_type="group",
+            SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
+        )
+        message = SimpleNamespace(
+            type="text",
+            attr="group",
+            sender="张三",
+            content="测试",
+            quote=lambda text, at=None: sent.append((text, at)) or True,
+        )
+
+        with mock.patch("wxbot_core.build_current_turn_user_message", return_value="WRAPPED_GROUP_TURN") as wrapped:
+            self.assertTrue(bot.process_message(chat, message))
+
+        wrapped.assert_called_once_with("张三: 测试")
+        self.assertEqual(captured_messages, ["WRAPPED_GROUP_TURN"])
+        self.assertEqual(sent, [("群回复", None)])
 
     def test_group_api_error_reply_once_resets_with_reply_window(self):
         with tempfile.TemporaryDirectory() as tmp:

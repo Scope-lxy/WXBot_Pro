@@ -161,9 +161,8 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             {"time": "2026/07/02 05:10:10", "type": "text", "attr": "friend", "sender": "张三", "content": "知道了"},
         ]
 
-        visible, skipped = build_model_visible_history(history)
+        visible = build_model_visible_history(history)
 
-        self.assertEqual(skipped, 0)
         self.assertEqual(
             visible,
             [
@@ -181,14 +180,33 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             {"time": "2026/07/02 05:07:30", "type": "text", "attr": "friend", "sender": "张三", "content": "没事"},
         ]
 
-        visible, skipped = build_model_visible_history(history)
+        visible = build_model_visible_history(history)
 
-        self.assertEqual(skipped, 0)
         self.assertEqual(
             visible,
             [
                 {"role": "user", "content": "发送时间：05:05\n张三: 什么意思"},
                 {"role": "user", "content": "张三: 没事"},
+            ],
+        )
+
+    def test_message_limit_counts_real_messages_not_time_separators(self):
+        history = [
+            {"time": "2026/07/02 05:00:00", "type": "time", "attr": "system", "sender": "system", "content": "05:00"},
+            {"time": "2026/07/02 05:00:10", "type": "text", "attr": "friend", "sender": "张三", "content": "第一句"},
+            {"time": "2026/07/02 05:01:00", "type": "time", "attr": "system", "sender": "system", "content": "05:01"},
+            {"time": "2026/07/02 05:01:10", "type": "text", "attr": "self", "sender": "self", "content": "第二句"},
+            {"time": "2026/07/02 05:02:00", "type": "time", "attr": "system", "sender": "system", "content": "05:02"},
+            {"time": "2026/07/02 05:02:10", "type": "text", "attr": "friend", "sender": "张三", "content": "第三句"},
+        ]
+
+        visible = build_model_visible_history(history, message_limit=2)
+
+        self.assertEqual(
+            visible,
+            [
+                {"role": "assistant", "content": "发送时间：05:01\n第二句"},
+                {"role": "user", "content": "发送时间：05:02\n张三: 第三句"},
             ],
         )
 
@@ -219,6 +237,35 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(
             format_history_message(record),
             {"role": "user", "content": "张三: [图片]\n一张聊天截图。\n可见文字：有。\n关键细节：像是在讨论出发时间。"},
+        )
+
+    def test_image_history_does_not_drop_older_media_records(self):
+        history = [
+            {
+                "time": f"2026/07/02 05:0{index}:00",
+                "type": "image",
+                "attr": "friend",
+                "sender": "张三",
+                "content": "[图片]",
+                "image_paths": [fr"C:\tmp\{index}.png"],
+                "visual_notes": [
+                    f"图片概览：第{index}张图。\n可见文字：无。\n关键细节：测试图片{index}。\n不确定项：无。",
+                ],
+            }
+            for index in range(1, 5)
+        ]
+
+        visible = build_model_visible_history(history, message_limit=4)
+
+        self.assertEqual(len(visible), 4)
+        self.assertEqual(
+            [item["content"] for item in visible],
+            [
+                "张三: [图片]\n第1张图。\n可见文字：无。\n关键细节：测试图片1。",
+                "张三: [图片]\n第2张图。\n可见文字：无。\n关键细节：测试图片2。",
+                "张三: [图片]\n第3张图。\n可见文字：无。\n关键细节：测试图片3。",
+                "张三: [图片]\n第4张图。\n可见文字：无。\n关键细节：测试图片4。",
+            ],
         )
 
     def test_group_voice_text_without_at_is_saved_but_not_replied(self):

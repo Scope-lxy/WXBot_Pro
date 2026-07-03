@@ -2212,7 +2212,6 @@ def dashboard():
     config.setdefault('memory_context_switch', config.get('memory_switch', True))
     config.setdefault('memory_max_count', 5000)
     config.setdefault('memory_context_count', 50)
-    config.setdefault('memory_context_assistant_count', 10)
     config.setdefault('memory_context_repair_low_risk_switch', True)
     config.setdefault('memory_context_repair_high_risk_switch', False)
     config.setdefault('reply_delay_switch', True)
@@ -2493,7 +2492,6 @@ def _dashboard_config_status_snapshot(cfg):
         'memory_switch': bool(cfg.get('memory_switch', True)),
         'memory_context_switch': bool(cfg.get('memory_context_switch', cfg.get('memory_switch', True))),
         'memory_context_count': cfg.get('memory_context_count', 50),
-        'memory_context_assistant_count': cfg.get('memory_context_assistant_count', 10),
         'reply_delay_switch': bool(cfg.get('reply_delay_switch', False)),
         'reply_delay_first_min': cfg.get('reply_delay_first_min', 0),
         'reply_delay_first_max': cfg.get('reply_delay_first_max', 0),
@@ -3433,7 +3431,6 @@ def _coerce_int_range_fields(merged_config):
         'new_friend_check_max': (60, 3600, 300),
         'memory_max_count': (100, 5000, 5000),
         'memory_context_count': (1, 100, 50),
-        'memory_context_assistant_count': (0, 100, 10),
         'text_reply_limit_count': (0, 99999, 99),
         'text_reply_limit_hours': (0, 720, 24),
         'chat_memory_message_threshold': (10, 200, 100),
@@ -3466,9 +3463,6 @@ def _coerce_int_range_fields(merged_config):
     if 'memory_max_count' in merged_config and 'memory_context_count' in merged_config:
         if merged_config['memory_context_count'] > merged_config['memory_max_count']:
             merged_config['memory_context_count'] = merged_config['memory_max_count']
-    if 'memory_context_count' in merged_config and 'memory_context_assistant_count' in merged_config:
-        if merged_config['memory_context_assistant_count'] > merged_config['memory_context_count']:
-            merged_config['memory_context_assistant_count'] = merged_config['memory_context_count']
 
     reply_delay_first_min = merged_config.get('reply_delay_first_min', 1)
     reply_delay_first_max = merged_config.get('reply_delay_first_max', 5)
@@ -6980,7 +6974,6 @@ def prompt_preview():
     try:
         data = request.get_json() or {}
         chat_name = str(data.get('chat_name', '') or '').strip()
-        message = str(data.get('message', '') or '').strip()
         if not chat_name:
             return jsonify({'status': 'error', 'message': 'chat_name 不能为空'})
         wx_id, wx_error = _explicit_or_single_chat_memory_wx_id(data.get('wx_id', ''))
@@ -7007,7 +7000,7 @@ def prompt_preview():
                 base_prompt = f.read()
         state_dir = _account_chat_memory_dir(wx_id, create=True)
         system = PromptSystem(config, state_dir=state_dir, prompt_dir=PROMPT_DIR)
-        prompt = system.build_prompt(chat_name, [], message, base_prompt=base_prompt)
+        prompt = system.build_prompt(chat_name, base_prompt=base_prompt)
         return jsonify({'status': 'success', 'prompt': prompt, 'prompt_name': prompt_name, 'wx_id': wx_id})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
@@ -7331,7 +7324,6 @@ def main():
                 "memory_context_switch": True,
                 "memory_max_count": 5000,
                 "memory_context_count": 50,
-                "memory_context_assistant_count": 10,
                 "memory_context_repair_low_risk_switch": True,
                 "memory_context_repair_high_risk_switch": False,
                 "reply_delay_switch": True,

@@ -841,10 +841,6 @@ html.icons-pref-local [class*=" bi-"]::before {
           <input type="text" class="form-control" id="prompt-preview-chat-name" placeholder="输入好友昵称">
           <div class="cfg-hint">会按私聊监听中的全局人设、例外好友和该会话记忆生成最终 Prompt</div>
         </div>
-        <div class="col-12 col-md-7">
-          <label class="cfg-label" for="prompt-preview-message">预览消息</label>
-          <input type="text" class="form-control" id="prompt-preview-message" placeholder="输入一条好友消息，用来预览最终 Prompt">
-        </div>
       </div>
       <div id="prompt-preview-msg" class="cfg-feedback"></div>
       <div class="cfg-action-row">
@@ -3645,23 +3641,16 @@ html.icons-pref-local [class*=" bi-"]::before {
             <label class="form-check-label" for="memory_context_switch">带入最近聊天</label>
             <span class="switch-desc">把最近的聊天作为上下文发给 AI ，优化 AI 回复效果</span>
           </div>
-          <label class="cfg-label">带入最近聊天条数</label>
+          <label class="cfg-label" for="memory_context_count">带入最近聊天记录</label>
           <div class="cfg-inline-combo cfg-inline-combo--memory-context">
             <div class="cfg-inline-combo__field">
-              <span class="cfg-inline-combo__prefix">好友</span>
+              <span class="cfg-inline-combo__prefix">最近</span>
               <input type="number" class="form-control cfg-inline-combo__input" id="memory_context_count" min="1" max="100"
                       value="{{ config.get('memory_context_count', 50) }}" placeholder="50">
               <span class="cfg-inline-combo__suffix">条</span>
             </div>
-            <span class="cfg-inline-combo__separator">加</span>
-            <div class="cfg-inline-combo__field">
-              <span class="cfg-inline-combo__prefix">AI</span>
-              <input type="number" class="form-control cfg-inline-combo__input" id="memory_context_assistant_count" min="0" max="100"
-                      value="{{ config.get('memory_context_assistant_count', 10) }}" placeholder="10">
-              <span class="cfg-inline-combo__suffix">条</span>
-            </div>
           </div>
-          <div class="cfg-hint">从最近聊天历史中带入好友消息和 AI 历史回复作为上下文</div>
+          <div class="cfg-hint">按真实聊天顺序带入最近消息；微信时间分隔线只作为消息时间，不占条数</div>
         </div>
         <div class="memory-config-section memory-repair-section">
           <div class="switch-row">
@@ -9247,7 +9236,6 @@ $(function(){
       contentType:'application/json',
       data:JSON.stringify({
         chat_name:chatName,
-        message:$('#prompt-preview-message').val(),
         wx_id:getPromptPreviewWxId(),
         config_overrides:{
           default_prompt:$('#default_prompt_select').val()||'默认',
@@ -11946,10 +11934,6 @@ $(function(){
       memory_context_count:(function(){
         var v=parseInt($('#memory_context_count').val(), 10);
         return isNaN(v) ? 50 : Math.max(1, Math.min(100, v));
-      })(),
-      memory_context_assistant_count:(function(){
-        var v=parseInt($('#memory_context_assistant_count').val(), 10);
-        return isNaN(v) ? 10 : Math.max(0, Math.min(100, v));
       })(),
       memory_context_repair_low_risk_switch:$('#memory_context_repair_low_risk_switch').is(':checked'),
       memory_context_repair_high_risk_switch:$('#memory_context_repair_high_risk_switch').is(':checked'),
