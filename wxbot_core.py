@@ -529,6 +529,7 @@ class WXBot:
         self._chat_send_locks = {}
         self._material_source_read_locks = {}
         self._material_source_read_locks_guard = threading.Lock()
+        self._last_incoming_message_at = 0.0
         self._private_message_pipelines = {}
         self._private_message_sequence_by_chat = {}
         self._memory_context_repair_startup_done = set()
@@ -3641,6 +3642,7 @@ class WXBot:
             return True
         try:
             received_at = datetime.now()
+            self._last_incoming_message_at = time.time()
             setattr(msg, "_wxbot_ingress_source", "subwindow")
             setattr(msg, "_wxbot_received_at", received_at)
             if takeover_runtime.consume_admin_chat_echo_message(self, chat, msg):

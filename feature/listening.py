@@ -1170,6 +1170,10 @@ def alllisten_mode(bot, last_time, timeout=10):
 
         def next_callback(msg):
             nonlocal next_callback_down_map
+            try:
+                bot._last_incoming_message_at = time.time()
+            except Exception:
+                pass
             if bot.wx.chat_type != "group":
                 _bot_log(bot, message=f"全局监听 {msg.sender}：收到私聊消息，内容：{msg.content}")
                 any_img_enabled = bot.config.chat_image_recognition_switch

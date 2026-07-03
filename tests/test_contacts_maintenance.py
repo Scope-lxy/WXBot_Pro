@@ -3,6 +3,7 @@ import json
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from feature.contacts import analyze_refresh_batch
@@ -10,6 +11,7 @@ from feature.contacts import auto_maintenance_is_due
 from feature.contacts import contact_auto_maintenance_read_timeout_seconds
 from feature.contacts import check_contact_directory_auto_maintenance
 from feature.contacts import edit_friend_info_via_chat_profile
+from feature.contacts import has_active_contact_maintenance_conflict
 from feature.contacts import modify_friend_tags_via_chat_profile
 from feature.contacts import prepare_contact_directory_window
 from feature.contacts import repair_contact_profile_remarks
@@ -219,6 +221,28 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         success_updates = [call[1] for call in bot.calls if call[0] == "write_cycle"][-1]
         self.assertEqual(success_updates["auto_cycle_next_start_name"], "B")
         self.assertEqual(success_updates["auto_cycle_backup_start_name"], "A")
+
+    def test_auto_maintenance_waits_for_active_private_pipeline(self):
+        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot._private_message_pipelines = {
+            "张三": {
+                "open_messages": [object()],
+                "queued_batches": [],
+                "worker_running": False,
+            }
+        }
+
+        with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
+            result = check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+
+        self.assertFalse(result)
+        self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
+
+    def test_active_contact_maintenance_conflict_uses_runtime_ingress_timestamp(self):
+        bot = SimpleNamespace(_last_incoming_message_at=1000.0)
+
+        self.assertTrue(has_active_contact_maintenance_conflict(bot, now_ts=1008.0))
+        self.assertFalse(has_active_contact_maintenance_conflict(bot, now_ts=1011.0))
 
     def test_auto_maintenance_waits_for_pending_lightweight_queue(self):
         bot = self._auto_maintenance_bot(pending_queue=True)

@@ -62,6 +62,7 @@ CONTACT_PROFILES_READING_ATTR = "_contact_profiles_reading_active"
 CONTACT_CURSOR_MATCH_SETTLE_SECONDS = 1.0
 CONTACT_READ_PROGRESS_LOG_INTERVAL = 20
 AUTO_MAINTENANCE_READ_TIMEOUT_SECONDS = 600
+AUTO_MAINTENANCE_ACTIVITY_GRACE_SECONDS = 10
 
 
 def _clean_text(value: Any) -> str:
@@ -943,6 +944,35 @@ def is_contact_directory_auto_maintenance_idle(bot):
     return mode == takeover_runtime.IDLE_MODE
 
 
+def has_active_contact_maintenance_conflict(bot, *, now_ts: float | None = None) -> bool:
+    now_ts = time.time() if now_ts is None else float(now_ts or 0)
+    try:
+        last_incoming_at = float(getattr(bot, "_last_incoming_message_at", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        last_incoming_at = 0.0
+    if last_incoming_at > 0 and now_ts - last_incoming_at < AUTO_MAINTENANCE_ACTIVITY_GRACE_SECONDS:
+        return True
+
+    pipelines = getattr(bot, "_private_message_pipelines", {}) or {}
+    if isinstance(pipelines, dict):
+        for pipeline in pipelines.values():
+            if not isinstance(pipeline, dict):
+                continue
+            if (
+                pipeline.get("open_messages")
+                or pipeline.get("queued_batches")
+                or bool(pipeline.get("worker_running"))
+            ):
+                return True
+
+    pending_voice = getattr(bot, "_pending_private_voice_transcription", {}) or {}
+    if isinstance(pending_voice, dict) and pending_voice:
+        return True
+
+    delayed_listen = getattr(bot, "_lightweight_delayed_listen_tasks", {}) or {}
+    return isinstance(delayed_listen, dict) and bool(delayed_listen)
+
+
 def contact_directory_auto_cycle_state(directory):
     maintenance = ((directory or {}).get("maintenance") or {}) if isinstance(directory, dict) else {}
     if not isinstance(maintenance, dict):
@@ -1593,6 +1623,8 @@ def check_contact_directory_auto_maintenance(bot, now=None):
     else:
         is_idle = is_contact_directory_auto_maintenance_idle(bot)
     if not is_idle:
+        return False
+    if has_active_contact_maintenance_conflict(bot):
         return False
     flush_lightweight = getattr(bot, "_flush_lightweight_send_queue", None)
     if callable(flush_lightweight):
