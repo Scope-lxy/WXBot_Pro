@@ -2,6 +2,7 @@ import unittest
 import tempfile
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from feature.relationship_scan import (
     STATUS_BLOCKED,
@@ -10,6 +11,7 @@ from feature.relationship_scan import (
     SYNC_PENDING,
     TAG_BLOCKED,
     TAG_DELETED,
+    check_auto_scan,
     clear_state,
     due_for_auto_scan,
     due_for_wechat_tag_sync,
@@ -19,6 +21,7 @@ from feature.relationship_scan import (
     process_pending_wechat_tag_sync,
     relationship_scan_summary,
     relationship_status_from_preview,
+    scan_current_sessions,
     save_state,
     scan_full_sessions,
     update_state_from_sessions,
@@ -59,6 +62,47 @@ class RelationshipScanTests(unittest.TestCase):
         self.assertEqual(record["status"], STATUS_NORMAL)
         self.assertEqual(record["wechat_sync_status"], SYNC_PENDING)
         self.assertEqual(updated["events"][0]["type"], "recovered")
+
+    def test_current_scan_uses_local_sessions_without_wechat_lock(self):
+        calls = []
+
+        class FakeLock:
+            def __enter__(self):
+                calls.append("lock_enter")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                calls.append("lock_exit")
+
+        class FakeWeChat:
+            def GetSession(self):
+                calls.append("get_session")
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = SimpleNamespace(
+                wx=FakeWeChat(),
+                wx_id="wxid_test",
+                config=SimpleNamespace(DATA_DIR=tmp),
+                _get_wechat_action_lock=lambda: FakeLock(),
+            )
+            local_sessions = [{
+                "name": "阿英2",
+                "content": "消息已发出，但被对方拒收了。",
+                "time": "07-04 07:52",
+                "info": "系统",
+            }]
+
+            with patch("feature.relationship_scan._read_local_sessions", return_value=local_sessions) as read_local:
+                result = scan_current_sessions(bot)
+
+        self.assertNotIn("lock_enter", calls)
+        self.assertNotIn("get_session", calls)
+        self.assertEqual(read_local.call_args.kwargs, {})
+        record = result["state"]["records"][0]
+        self.assertEqual(record["name"], "阿英2")
+        self.assertEqual(record["status"], STATUS_BLOCKED)
+        self.assertEqual(record["source"], "session_preview")
 
     def test_missing_from_scan_does_not_recover(self):
         state = {
@@ -247,6 +291,78 @@ class RelationshipScanTests(unittest.TestCase):
         state["runtime"]["last_auto_scan_at"] = (now - timedelta(seconds=5)).isoformat()
         self.assertFalse(due_for_auto_scan(state, now=now))
 
+    def test_auto_scan_uses_cli_interval_and_skips_ui_fallback(self):
+        calls = []
+
+        class FakeLock:
+            def acquire(self, blocking=True):
+                calls.append("lock_acquire")
+                return True
+
+            def release(self):
+                calls.append("lock_release")
+
+        class FakeWeChat:
+            def GetSession(self):
+                calls.append("get_session")
+                return [{"name": "阿英2", "content": "普通消息"}]
+
+        now = datetime(2026, 6, 11, 10, 0, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            state = {
+                "wx_id": "wxid_test",
+                "settings": {"auto_scan_enabled": True, "auto_sync_wechat_tags": False, "scan_interval_seconds": 10},
+                "runtime": {"last_cli_auto_scan_at": (now - timedelta(seconds=5999)).isoformat()},
+            }
+            save_state(tmp, state)
+            bot = SimpleNamespace(
+                wx=FakeWeChat(),
+                wx_id="wxid_test",
+                config=SimpleNamespace(DATA_DIR=tmp),
+                _get_wechat_action_lock=lambda: FakeLock(),
+            )
+
+            with patch("feature.relationship_scan._read_local_sessions", return_value=None):
+                result = check_auto_scan(bot, now=now)
+
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+
+    def test_auto_scan_runs_cli_every_6000_seconds(self):
+        calls = []
+
+        class FakeLock:
+            def acquire(self, blocking=True):
+                calls.append("lock_acquire")
+                return True
+
+            def release(self):
+                calls.append("lock_release")
+
+        now = datetime(2026, 6, 11, 10, 0, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            state = {
+                "wx_id": "wxid_test",
+                "settings": {"auto_scan_enabled": True, "auto_sync_wechat_tags": False, "scan_interval_seconds": 10},
+                "runtime": {"last_cli_auto_scan_at": (now - timedelta(seconds=6000)).isoformat()},
+            }
+            save_state(tmp, state)
+            bot = SimpleNamespace(
+                wx=SimpleNamespace(),
+                wx_id="wxid_test",
+                config=SimpleNamespace(DATA_DIR=tmp),
+                _get_wechat_action_lock=lambda: FakeLock(),
+            )
+            local_sessions = [{"name": "阿英2", "content": "消息已发出，但被对方拒收了。"}]
+
+            with patch("feature.relationship_scan._read_local_sessions", return_value=local_sessions) as read_local:
+                result = check_auto_scan(bot, now=now)
+
+        self.assertTrue(result)
+        read_local.assert_called_once()
+        self.assertEqual(read_local.call_args.kwargs["limit"], 1000)
+        self.assertEqual(calls, [])
+
     def test_default_wechat_tag_sync_interval_is_ten_minutes(self):
         self.assertEqual(normalize_settings({})["sync_interval_minutes"], 10)
 
@@ -343,7 +459,8 @@ class RelationshipScanTests(unittest.TestCase):
                 _get_wechat_action_lock=lambda: FakeLock(),
             )
 
-            result = scan_full_sessions(bot, max_scrolls=1)
+            with patch("feature.relationship_scan._read_local_sessions", return_value=None):
+                result = scan_full_sessions(bot, max_scrolls=1)
 
         self.assertEqual([item for item in calls if item == "go_top"], ["go_top", "go_top"])
         self.assertLess(calls.index("get_session"), len(calls) - 1)
@@ -351,6 +468,55 @@ class RelationshipScanTests(unittest.TestCase):
         progress = result["payload"]["summary"]["full_scan_progress"]
         self.assertEqual(progress["status"], "completed")
         self.assertEqual(progress["unique_count"], 1)
+
+    def test_full_scan_uses_local_sessions_without_scrolling(self):
+        calls = []
+
+        class FakeLock:
+            def __enter__(self):
+                calls.append("lock_enter")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                calls.append("lock_exit")
+
+        class FakeSessionBox:
+            def go_top(self):
+                calls.append("go_top")
+
+            def roll_down(self):
+                calls.append("roll_down")
+
+        class FakeWeChat:
+            SessionBox = FakeSessionBox()
+
+            def GetSession(self):
+                calls.append("get_session")
+                return []
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = SimpleNamespace(
+                wx=FakeWeChat(),
+                wx_id="wxid_test",
+                config=SimpleNamespace(DATA_DIR=tmp),
+                _get_wechat_action_lock=lambda: FakeLock(),
+            )
+            local_sessions = [{
+                "name": "阿英2",
+                "content": "阿英2开启了朋友验证，你还不是他朋友。",
+                "time": "07-04 07:52",
+                "info": "系统",
+            }]
+
+            with patch("feature.relationship_scan._read_local_sessions", return_value=local_sessions) as read_local:
+                result = scan_full_sessions(bot, max_scrolls=10)
+
+        self.assertEqual(calls, [])
+        self.assertEqual(read_local.call_args.kwargs["limit"], 10000)
+        self.assertEqual(result["payload"]["summary"]["last_scan_mode"], "full")
+        self.assertEqual(result["payload"]["summary"]["last_scan_count"], 1)
+        self.assertEqual(result["state"]["records"][0]["status"], STATUS_DELETED)
+        self.assertEqual(result["payload"]["summary"]["full_scan_progress"]["scrolled_rounds"], 0)
 
     def test_full_scan_keeps_result_when_final_go_top_fails(self):
         calls = []
@@ -389,7 +555,8 @@ class RelationshipScanTests(unittest.TestCase):
                 _get_wechat_action_lock=lambda: FakeLock(),
             )
 
-            result = scan_full_sessions(bot, max_scrolls=1)
+            with patch("feature.relationship_scan._read_local_sessions", return_value=None):
+                result = scan_full_sessions(bot, max_scrolls=1)
 
         self.assertEqual(result["payload"]["summary"]["last_scan_mode"], "full")
         self.assertEqual(result["payload"]["summary"]["last_scan_count"], 1)
@@ -438,7 +605,8 @@ class RelationshipScanTests(unittest.TestCase):
             relationship_scan.FULL_SCAN_SCROLL_SETTLE_SECONDS = 0
             relationship_scan.FULL_SCAN_LOCK_RELEASE_SETTLE_SECONDS = 0
             try:
-                result = scan_full_sessions(bot, max_scrolls=3)
+                with patch("feature.relationship_scan._read_local_sessions", return_value=None):
+                    result = scan_full_sessions(bot, max_scrolls=3)
             finally:
                 relationship_scan.FULL_SCAN_LOCK_SLICE_SCROLLS = old_slice
                 relationship_scan.FULL_SCAN_SCROLL_SETTLE_SECONDS = old_wait
@@ -482,8 +650,9 @@ class RelationshipScanTests(unittest.TestCase):
                 _get_wechat_action_lock=lambda: FakeLock(),
             )
 
-            blocked = scan_full_sessions(bot, max_scrolls=1)
-            result = scan_full_sessions(bot, max_scrolls=1, allow_running=True)
+            with patch("feature.relationship_scan._read_local_sessions", return_value=None):
+                blocked = scan_full_sessions(bot, max_scrolls=1)
+                result = scan_full_sessions(bot, max_scrolls=1, allow_running=True)
 
         self.assertTrue(blocked["already_running"])
         self.assertEqual(result["payload"]["summary"]["last_scan_count"], 1)

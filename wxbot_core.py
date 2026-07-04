@@ -5516,7 +5516,7 @@ class WXBot:
         limit = max(1, min(50, int(limit or DEFAULT_VISIBLE_LIMIT)))
         return messages[-limit:] if len(messages) > limit else messages
 
-    def _read_local_context_messages(self, chat_name, limit):
+    def _read_local_context_messages(self, chat_name, limit, *, anchor_messages=None):
         if getattr(self, "_local_wechat_reader_enabled", True) is False:
             return []
         max_limit = LOCAL_CONTEXT_REPAIR_MAX_LIMIT + LOCAL_CONTEXT_REPAIR_ANCHOR_BUFFER
@@ -5527,6 +5527,7 @@ class WXBot:
                 getattr(self, "wx_id", "")
                 or getattr(getattr(self, "config", None), "current_account_wx_id", "")
             ),
+            anchor_messages=anchor_messages,
         )
         if result.ok and result.items:
             log(message=f"私聊 {chat_name}：已从本地微信数据库读取上下文 {len(result.items)} 条")
@@ -5589,9 +5590,13 @@ class WXBot:
 
         try:
             local_history = self.memory_manager.get_messages(memory_chat_name, cfg["history_limit"]) or []
+            anchor_messages = list(local_history or [])
+            if not current_message_found_near_tail(anchor_messages, message, tail_count=8):
+                anchor_messages.append(normalize_wechat_message(message, source="wechat_context_repair_anchor"))
             visible_messages = self._read_local_context_messages(
                 chat_name,
                 self._local_context_repair_limit(),
+                anchor_messages=anchor_messages,
             )
             local_context_source = bool(visible_messages)
             if not visible_messages:

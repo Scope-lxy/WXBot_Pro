@@ -64,7 +64,8 @@ CONTACT_CURSOR_MATCH_SETTLE_SECONDS = 1.0
 CONTACT_READ_PROGRESS_LOG_INTERVAL = 20
 AUTO_MAINTENANCE_READ_TIMEOUT_SECONDS = 600
 AUTO_MAINTENANCE_ACTIVITY_GRACE_SECONDS = 10
-LOCAL_CONTACT_READ_LIMIT = 5000
+LOCAL_CONTACT_READ_LIMIT = 10000
+LOCAL_CONTACT_AUTO_MAINTENANCE_INTERVAL_SECONDS = 6000
 
 
 def _clean_text(value: Any) -> str:
@@ -648,6 +649,21 @@ def auto_maintenance_full_scan_is_due(
     return current >= last_full_scan + timedelta(days=interval)
 
 
+def local_contact_auto_maintenance_is_due(directory: dict[str, Any] | None, *, now: Any = None) -> bool:
+    maintenance = (directory or {}).get("maintenance") if isinstance(directory, dict) else {}
+    if not isinstance(maintenance, dict):
+        maintenance = {}
+    if maintenance.get("status") == "running":
+        return False
+    if bool(maintenance.get("paused", False)):
+        return False
+    last_run = _parse_maintenance_time(maintenance.get("last_local_snapshot_completed_at"))
+    if last_run is None:
+        return True
+    current = now if isinstance(now, datetime) else _parse_maintenance_time(now) or datetime.now()
+    return current >= last_run + timedelta(seconds=LOCAL_CONTACT_AUTO_MAINTENANCE_INTERVAL_SECONDS)
+
+
 def effective_start_name(
     directory: dict[str, Any] | None,
     start_name: Any = "",
@@ -1144,12 +1160,12 @@ def refresh_contact_profiles_local_snapshot(
         _bot_log(
             bot,
             level="WARNING",
-            message=f"[通讯录维护] 本地微信数据库读取失败，已回退微信界面读取：{local_result.error}",
+            message=f"[通讯录维护] 本地微信数据库读取失败：{local_result.error}",
         )
         return None
     raw_details = coerce_detail_list(local_result.items)
     if not raw_details:
-        _bot_log(bot, level="WARNING", message="[通讯录维护] 本地微信数据库未返回联系人，已回退微信界面读取")
+        _bot_log(bot, level="WARNING", message="[通讯录维护] 本地微信数据库未返回联系人")
         return None
 
     if log_start_finish:
@@ -1202,6 +1218,8 @@ def refresh_contact_profiles_local_snapshot(
         finished_maintenance["last_batch_repeat_count"] = 0
         finished_maintenance["last_batch_outcome"] = analysis["outcome"]
         finished_maintenance["retry_count"] = 0
+        if automatic and not externally_paused:
+            finished_maintenance["last_local_snapshot_completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if not externally_paused:
             finished_maintenance["last_full_scan_completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if automatic and not externally_paused:
@@ -1527,6 +1545,7 @@ def refresh_contact_profiles_single_batch(
         finished_maintenance["retry_count"] = 0
         if local_contact_source and not externally_paused:
             finished_maintenance["last_full_scan_completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            finished_maintenance["last_local_snapshot_completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         save_contact_directory(directory_file, finished)
         sync_identity_fn = getattr(bot, "_sync_identity_index_from_contact_directory", None)
         if callable(sync_identity_fn):
@@ -1807,6 +1826,46 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         else:
             save_contact_profiles_directory(bot, directory)
         _bot_log(bot, level="WARNING", message="[通讯录维护] 检测到旧版短批次误完成状态，已重置并等待重新维护")
+
+    if local_wechat_reader_enabled(bot):
+        if not local_contact_auto_maintenance_is_due(directory, now=now_dt):
+            return False
+        idle_fn = getattr(bot, "_is_contact_directory_auto_maintenance_idle", None)
+        if callable(idle_fn):
+            is_idle = idle_fn()
+        else:
+            is_idle = is_contact_directory_auto_maintenance_idle(bot)
+        if not is_idle:
+            return False
+        if has_active_contact_maintenance_conflict(bot):
+            return False
+        flush_lightweight = getattr(bot, "_flush_lightweight_send_queue", None)
+        if callable(flush_lightweight):
+            flush_lightweight()
+        pending_queue_fn = getattr(bot, "_has_pending_lightweight_send_queue", None)
+        if callable(pending_queue_fn):
+            has_pending_queue = pending_queue_fn()
+        else:
+            has_pending_queue = has_pending_lightweight_send_queue(bot)
+        if has_pending_queue:
+            return False
+        local_snapshot_result = refresh_contact_profiles_local_snapshot(
+            bot,
+            mode="standard",
+            run_kind="auto_maintenance",
+            automatic=True,
+            log_start_finish=False,
+        )
+        if local_snapshot_result:
+            _bot_log(
+                bot,
+                level="SUCCESS",
+                message=f"[通讯录维护] 自动维护完成，本地快照校准 {local_snapshot_result.get('count_returned', 0)} 个好友",
+            )
+            return True
+        _bot_log(bot, level="WARNING", message="[通讯录维护] 自动维护未使用微信界面回退，本轮跳过")
+        return False
+
     interval_minutes_fn = getattr(bot, "_contact_directory_auto_maintenance_interval_minutes_value", None)
     if callable(interval_minutes_fn):
         interval_minutes = interval_minutes_fn()
@@ -1845,21 +1904,6 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         has_pending_queue = has_pending_lightweight_send_queue(bot)
     if has_pending_queue:
         return False
-
-    local_snapshot_result = refresh_contact_profiles_local_snapshot(
-        bot,
-        mode="standard",
-        run_kind="auto_maintenance",
-        automatic=True,
-        log_start_finish=False,
-    )
-    if local_snapshot_result:
-        _bot_log(
-            bot,
-            level="SUCCESS",
-            message=f"[通讯录维护] 自动维护完成，本地快照校准 {local_snapshot_result.get('count_returned', 0)} 个好友",
-        )
-        return True
 
     cycle_state_fn = getattr(bot, "_contact_directory_auto_cycle_state", None)
     if callable(cycle_state_fn):

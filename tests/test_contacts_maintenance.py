@@ -249,9 +249,41 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             result = check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
 
         self.assertTrue(result)
+        self.assertEqual(read_local.call_args.kwargs["limit"], 10000)
         self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
         self.assertFalse(any(call == ("lock_acquire", False) for call in bot.calls))
         self.assertEqual(saved[-1]["maintenance"]["auto_cycle_status"], "completed")
+
+    def test_auto_maintenance_local_snapshot_uses_6000_second_interval(self):
+        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot._local_wechat_reader_enabled = True
+        bot._load_contact_profiles_directory = lambda: (
+            {"maintenance": {"last_local_snapshot_completed_at": "2026-06-10 20:00:01"}},
+            "ignored.json",
+            "scope_rui",
+        )
+
+        with patch("feature.contacts.read_local_contacts_with_status") as read_local:
+            result = check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 40, 0))
+
+        self.assertFalse(result)
+        read_local.assert_not_called()
+        self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
+
+    def test_auto_maintenance_local_snapshot_failure_does_not_fallback_to_ui(self):
+        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot._local_wechat_reader_enabled = True
+
+        with (
+            patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True),
+            patch("feature.contacts.read_local_contacts_with_status") as read_local,
+        ):
+            read_local.return_value = SimpleNamespace(ok=False, items=[], error="cli boom")
+            result = check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+
+        self.assertFalse(result)
+        self.assertFalse(any(call == ("lock_acquire", False) for call in bot.calls))
+        self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
 
     def test_auto_maintenance_waits_for_active_private_pipeline(self):
         bot = self._auto_maintenance_bot(pending_queue=False)
@@ -1088,6 +1120,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             result = refresh_contact_profiles_single_batch(FakeBot(), mode="standard")
 
         self.assertTrue(result["completed"])
+        self.assertEqual(read_local.call_args.kwargs["limit"], 10000)
         self.assertEqual(result["analysis"]["outcome"], "local_full_scan_complete")
         self.assertEqual(result["next_start_name"], "")
         self.assertEqual([call[0] for call in calls], [])

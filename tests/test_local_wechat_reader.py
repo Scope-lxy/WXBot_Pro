@@ -12,6 +12,7 @@ from core.local_wechat_reader import (
     parse_wechat_cli_history_line,
     read_local_contacts_with_status,
     read_local_history_messages_with_status,
+    read_local_sessions_with_status,
     save_wechat_cli_account_binding,
     verify_wechat_cli_live_binding,
     wechat_cli_account_matches,
@@ -140,6 +141,44 @@ class LocalWechatReaderTests(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertEqual(result.items, [])
         self.assertIn("boom", result.error)
+
+    def test_contacts_reader_fetches_extra_raw_rows_for_10000_friend_limit(self):
+        with patch("core.local_wechat_reader.run_wechat_cli_json") as run:
+            run.return_value = LocalWechatCommandResult(True, data=[])
+
+            result = read_local_contacts_with_status(limit=10000)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(run.call_args.args[0], ["contacts", "--limit", "30000"])
+
+    def test_read_local_sessions_maps_last_message_and_filters_groups(self):
+        with patch("core.local_wechat_reader.run_wechat_cli_json") as run:
+            run.return_value = LocalWechatCommandResult(True, data=[
+                {
+                    "chat": "阿英2",
+                    "username": "wxid_abc",
+                    "is_group": False,
+                    "last_message": "消息已发出，但被对方拒收了。",
+                    "msg_type": "系统",
+                    "time": "07-04 07:52",
+                },
+                {
+                    "chat": "测试群",
+                    "username": "123@chatroom",
+                    "is_group": True,
+                    "last_message": "普通消息",
+                    "msg_type": "文本",
+                    "time": "07-04 07:53",
+                },
+            ])
+
+            result = read_local_sessions_with_status(limit=10)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.items), 1)
+        self.assertEqual(result.items[0]["name"], "阿英2")
+        self.assertEqual(result.items[0]["content"], "消息已发出，但被对方拒收了。")
+        self.assertEqual(result.items[0]["info"], "系统")
 
     def test_account_match_rejects_non_wxid_namespace(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -289,6 +328,156 @@ class LocalWechatReaderTests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertEqual([item.content for item in result.items], ["第一条", "第二条"])
+
+    def test_history_with_expected_account_uses_unique_contact_username(self):
+        def fake_run(args, **_kwargs):
+            if args[:2] == ["contacts", "--query"]:
+                return LocalWechatCommandResult(True, data=[
+                    {"username": "wxid_abc", "nick_name": "张三", "remark": "客户张三", "alias": ""}
+                ])
+            if args and args[0] == "history":
+                self.assertEqual(args[1], "wxid_abc")
+                return LocalWechatCommandResult(True, data={
+                    "messages": ["[2026-07-04 04:34] 张三: 测试"]
+                })
+            return LocalWechatCommandResult(False, error="unexpected")
+
+        with (
+            patch("core.local_wechat_reader.ensure_wechat_cli_account_ready", return_value=(True, "")),
+            patch("core.local_wechat_reader.run_wechat_cli_json", side_effect=fake_run),
+        ):
+            result = read_local_history_messages_with_status(
+                "客户张三",
+                limit=10,
+                expected_wx_id="wxid_current",
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.items[0].content, "测试")
+
+    def test_history_with_expected_account_rejects_ambiguous_contact_name(self):
+        with (
+            patch("core.local_wechat_reader.ensure_wechat_cli_account_ready", return_value=(True, "")),
+            patch("core.local_wechat_reader.run_wechat_cli_json") as run,
+        ):
+            run.return_value = LocalWechatCommandResult(True, data=[
+                {"username": "wxid_a", "nick_name": "张三", "remark": "", "alias": ""},
+                {"username": "wxid_b", "nick_name": "张三", "remark": "", "alias": ""},
+            ])
+
+            result = read_local_history_messages_with_status(
+                "张三",
+                limit=10,
+                expected_wx_id="wxid_current",
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("ambiguous", result.error)
+        self.assertEqual(run.call_count, 2)
+
+    def test_history_with_expected_account_disambiguates_with_five_anchors(self):
+        anchor_messages = [
+            {"type": "text", "attr": "friend", "content": f"锚点{index}"}
+            for index in range(1, 6)
+        ]
+
+        def fake_run(args, **_kwargs):
+            if args[:2] == ["contacts", "--query"]:
+                return LocalWechatCommandResult(True, data=[
+                    {"username": "wxid_a", "nick_name": "张三", "remark": "", "alias": ""},
+                    {"username": "wxid_b", "nick_name": "张三", "remark": "", "alias": ""},
+                ])
+            if args and args[0] == "sessions":
+                return LocalWechatCommandResult(True, data=[
+                    {"chat": "张三", "username": "wxid_a", "last_message": "普通消息"},
+                    {"chat": "张三", "username": "wxid_b", "last_message": "普通消息"},
+                ])
+            if args[:2] == ["history", "wxid_a"]:
+                return LocalWechatCommandResult(True, data={
+                    "messages": [
+                        f"[2026-07-04 04:3{index}] 张三: 锚点{index + 1}"
+                        for index in range(5)
+                    ]
+                })
+            if args[:2] == ["history", "wxid_b"]:
+                return LocalWechatCommandResult(True, data={
+                    "messages": ["[2026-07-04 04:34] 张三: 另一个人"]
+                })
+            return LocalWechatCommandResult(False, error="unexpected")
+
+        with (
+            patch("core.local_wechat_reader.ensure_wechat_cli_account_ready", return_value=(True, "")),
+            patch("core.local_wechat_reader.run_wechat_cli_json", side_effect=fake_run),
+        ):
+            result = read_local_history_messages_with_status(
+                "张三",
+                limit=10,
+                expected_wx_id="wxid_current",
+                anchor_messages=anchor_messages,
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual([item.content for item in result.items], [f"锚点{index}" for index in range(1, 6)])
+
+    def test_history_with_expected_account_requires_five_anchors_to_disambiguate(self):
+        anchor_messages = [
+            {"type": "text", "attr": "friend", "content": f"锚点{index}"}
+            for index in range(1, 5)
+        ]
+
+        with (
+            patch("core.local_wechat_reader.ensure_wechat_cli_account_ready", return_value=(True, "")),
+            patch("core.local_wechat_reader.run_wechat_cli_json") as run,
+        ):
+            run.side_effect = [
+                LocalWechatCommandResult(True, data=[
+                    {"username": "wxid_a", "nick_name": "张三", "remark": "", "alias": ""},
+                    {"username": "wxid_b", "nick_name": "张三", "remark": "", "alias": ""},
+                ]),
+                LocalWechatCommandResult(True, data=[]),
+            ]
+
+            result = read_local_history_messages_with_status(
+                "张三",
+                limit=10,
+                expected_wx_id="wxid_current",
+                anchor_messages=anchor_messages,
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("ambiguous", result.error)
+        self.assertEqual(run.call_count, 2)
+
+    def test_history_disambiguation_does_not_trust_single_session_without_five_anchors(self):
+        anchor_messages = [
+            {"type": "text", "attr": "friend", "content": f"锚点{index}"}
+            for index in range(1, 5)
+        ]
+
+        with (
+            patch("core.local_wechat_reader.ensure_wechat_cli_account_ready", return_value=(True, "")),
+            patch("core.local_wechat_reader.run_wechat_cli_json") as run,
+        ):
+            run.side_effect = [
+                LocalWechatCommandResult(True, data=[
+                    {"username": "wxid_a", "nick_name": "张三", "remark": "", "alias": ""},
+                    {"username": "wxid_b", "nick_name": "张三", "remark": "", "alias": ""},
+                ]),
+                LocalWechatCommandResult(True, data=[
+                    {"chat": "张三", "username": "wxid_a", "last_message": "锚点4"},
+                ]),
+            ]
+
+            result = read_local_history_messages_with_status(
+                "张三",
+                limit=10,
+                expected_wx_id="wxid_current",
+                anchor_messages=anchor_messages,
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("ambiguous", result.error)
+        self.assertEqual(run.call_count, 2)
 
     def test_check_status_reports_missing_tool(self):
         with patch("core.local_wechat_reader.find_wechat_cli_executable", return_value=""):

@@ -17,6 +17,7 @@ from core.contact_profiles import (
     save_directory as save_contact_directory,
 )
 from core.logger import log
+from core.local_wechat_reader import read_local_sessions_with_status
 from core.wechat_observability import warn_slow_wechat_ui_action
 from feature.contacts import modify_friend_tags_via_chat_profile
 
@@ -38,6 +39,9 @@ TAG_DELETED = "删除我的人"
 RELATION_TAGS = (TAG_BLOCKED, TAG_DELETED)
 
 FULL_SCAN_MAX_SCROLLS = 1000
+CLI_SESSION_SCAN_LIMIT = 1000
+CLI_FULL_SESSION_SCAN_LIMIT = 10000
+CLI_AUTO_SCAN_INTERVAL_SECONDS = 6000
 FULL_SCAN_LOCK_SLICE_SCROLLS = 200
 FULL_SCAN_STALE_ROUNDS = 8
 FULL_SCAN_SCROLL_SETTLE_SECONDS = 1.0
@@ -56,6 +60,7 @@ DEFAULT_SETTINGS = {
     "sync_interval_minutes": 10,
     "scan_interval_seconds": 10,
 }
+_last_local_session_warning_at = 0.0
 
 
 def _clean_text(value: Any) -> str:
@@ -550,7 +555,31 @@ def apply_state_to_local_contacts(bot, state: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def _read_sessions(bot) -> list[dict[str, str]]:
+def _expected_wx_id(bot) -> str:
+    return _clean_text(getattr(bot, "wx_id", "") or getattr(getattr(bot, "config", None), "current_account_wx_id", ""))
+
+
+def _read_local_sessions(bot, *, limit: int = CLI_SESSION_SCAN_LIMIT) -> list[dict[str, str]] | None:
+    local_result = read_local_sessions_with_status(
+        limit=limit,
+        expected_wx_id=_expected_wx_id(bot),
+    )
+    if local_result.ok:
+        log(message=f"[关系扫描] 已从本地微信数据库读取会话 {len(local_result.items)} 个")
+        return normalize_session_items(local_result.items)
+    global _last_local_session_warning_at
+    now = time.time()
+    if now - _last_local_session_warning_at >= 300:
+        _last_local_session_warning_at = now
+        log(level="WARNING", message=f"[关系扫描] 本地微信数据库读取会话失败：{local_result.error}")
+    return None
+
+
+def _read_sessions(bot, *, prefer_local: bool = True) -> list[dict[str, str]]:
+    if prefer_local:
+        local_sessions = _read_local_sessions(bot)
+        if local_sessions is not None:
+            return local_sessions
     get_session = getattr(getattr(bot, "wx", None), "GetSession", None)
     if not callable(get_session):
         return []
@@ -561,12 +590,15 @@ def _read_sessions(bot) -> list[dict[str, str]]:
 def scan_current_sessions(bot, *, mode: str = "manual", acquire_lock: bool = True) -> dict[str, Any]:
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化")
-    lock = bot._get_wechat_action_lock()
-    if acquire_lock:
-        with lock:
-            sessions = _read_sessions(bot)
-    else:
+    if not acquire_lock:
         sessions = _read_sessions(bot)
+    else:
+        sessions = _read_local_sessions(bot)
+        if sessions is None:
+            log(level="WARNING", message="[关系扫描] 手动扫描回退微信界面读取会话")
+            lock = bot._get_wechat_action_lock()
+            with lock:
+                sessions = _read_sessions(bot, prefer_local=False)
     state = _load_bot_state(bot)
     state = update_state_from_sessions(state, sessions, source="session_preview")
     state = apply_state_to_local_contacts(bot, state)
@@ -648,6 +680,30 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_r
     }
     _save_bot_state(bot, state)
 
+    local_sessions = _read_local_sessions(bot, limit=CLI_FULL_SESSION_SCAN_LIMIT)
+    if local_sessions is not None:
+        state = _load_bot_state(bot)
+        state = update_state_from_sessions(state, local_sessions, source="session_preview_full")
+        state = apply_state_to_local_contacts(bot, state)
+        runtime = state.setdefault("runtime", {})
+        runtime["full_scan_running"] = False
+        runtime["stop_requested"] = False
+        runtime["last_scan_at"] = _iso_timestamp()
+        runtime["last_scan_mode"] = "full"
+        runtime["last_scan_count"] = len(local_sessions)
+        runtime["full_scan_progress"] = {
+            "status": "completed",
+            "started_at": _clean_text(((state.get("runtime") or {}).get("full_scan_progress") or {}).get("started_at")),
+            "updated_at": _iso_timestamp(),
+            "scrolled_rounds": 0,
+            "max_scrolls": max(1, int(max_scrolls or 1)),
+            "unique_count": len(local_sessions),
+            "last_name": _clean_text((local_sessions[-1] or {}).get("name")) if local_sessions else "",
+            "message": f"全量扫描完成，读取 {len(local_sessions)} 个会话",
+        }
+        state = _save_bot_state(bot, state)
+        return {"sessions": local_sessions, "state": state, "payload": relationship_scan_payload(state)}
+
     sessions_by_name: dict[str, dict[str, str]] = {}
     stale_rounds = 0
     scrolled_rounds = 0
@@ -655,6 +711,7 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_r
     finished = False
     lock = bot._get_wechat_action_lock()
     try:
+        log(level="WARNING", message="[关系扫描] 全量扫描回退微信界面滚动读取会话")
         max_rounds = max(1, int(max_scrolls or 1))
         slice_rounds = max(1, min(FULL_SCAN_LOCK_SLICE_SCROLLS, max_rounds))
         while not finished and scrolled_rounds < max_rounds:
@@ -668,7 +725,7 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_r
                     if stop_requested(bot):
                         finished = True
                         break
-                    batch = _read_sessions(bot)
+                    batch = _read_sessions(bot, prefer_local=False)
                     before_count = len(sessions_by_name)
                     for session in batch:
                         name = session["name"]
@@ -750,32 +807,52 @@ def due_for_auto_scan(state: dict[str, Any], *, now: Any = None) -> bool:
     settings = normalize_settings((state or {}).get("settings"))
     if not settings["auto_scan_enabled"]:
         return False
+    return _due_for_auto_scan_interval(
+        state,
+        settings["scan_interval_seconds"],
+        now=now,
+    )
+
+
+def _due_for_auto_scan_interval(state: dict[str, Any], interval_seconds: int, *, now: Any = None, timestamp_field: str = "last_auto_scan_at") -> bool:
     runtime = (state or {}).get("runtime") or {}
-    last_scan = _parse_time(runtime.get("last_auto_scan_at"))
+    last_scan = _parse_time(runtime.get(timestamp_field))
     if not last_scan:
         return True
     current = now if isinstance(now, datetime) else _parse_time(now) or datetime.now()
-    return current - last_scan >= timedelta(seconds=settings["scan_interval_seconds"])
+    return current - last_scan >= timedelta(seconds=max(1, int(interval_seconds or 1)))
 
 
 def check_auto_scan(bot, *, now: Any = None) -> bool:
     if not getattr(bot, "wx", None):
         return False
     state = _load_bot_state(bot)
-    if not due_for_auto_scan(state, now=now):
+    settings = normalize_settings(state.get("settings"))
+    if not settings["auto_scan_enabled"]:
         process_pending_wechat_tag_sync(bot, now=now)
         return False
-    lock = bot._get_wechat_action_lock()
-    if not lock.acquire(blocking=False):
+
+    cli_due = _due_for_auto_scan_interval(
+        state,
+        CLI_AUTO_SCAN_INTERVAL_SECONDS,
+        now=now,
+        timestamp_field="last_cli_auto_scan_at",
+    )
+    if not cli_due:
+        process_pending_wechat_tag_sync(bot, now=now)
         return False
-    try:
-        sessions = _read_sessions(bot)
-    finally:
-        lock.release()
+
+    sessions = _read_local_sessions(bot, limit=CLI_SESSION_SCAN_LIMIT)
+    if sessions is None:
+        log(level="WARNING", message="[关系扫描] 自动扫描未使用微信界面回退，本轮跳过")
+        process_pending_wechat_tag_sync(bot, now=now)
+        return False
     state = update_state_from_sessions(state, sessions, source="session_preview")
     state = apply_state_to_local_contacts(bot, state)
     runtime = state.setdefault("runtime", {})
     runtime["last_auto_scan_at"] = _iso_timestamp(now)
+    runtime["last_auto_scan_source"] = "wechat_cli"
+    runtime["last_cli_auto_scan_at"] = runtime["last_auto_scan_at"]
     runtime["last_scan_at"] = runtime["last_auto_scan_at"]
     runtime["last_scan_mode"] = "auto"
     runtime["last_scan_count"] = len(sessions)
