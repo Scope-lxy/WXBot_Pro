@@ -375,6 +375,40 @@ class LocalWechatReaderTests(unittest.TestCase):
         self.assertIn("ambiguous", result.error)
         self.assertEqual(run.call_count, 2)
 
+    def test_history_contact_resolution_queries_reasonable_window_to_avoid_false_unique(self):
+        with (
+            patch("core.local_wechat_reader.ensure_wechat_cli_account_ready", return_value=(True, "")),
+            patch("core.local_wechat_reader.run_wechat_cli_json") as run,
+        ):
+            run.side_effect = [
+                LocalWechatCommandResult(True, data=[
+                    {"username": f"wxid_noise_{index}", "nick_name": "张三客户", "remark": "", "alias": ""}
+                    for index in range(1, 21)
+                ] + [
+                    {"username": "wxid_a", "nick_name": "张三", "remark": "", "alias": ""},
+                    {"username": "wxid_b", "nick_name": "张三", "remark": "", "alias": ""},
+                ]),
+                LocalWechatCommandResult(True, data=[]),
+            ]
+
+            result = read_local_history_messages_with_status(
+                "张三",
+                limit=10,
+                expected_wx_id="wxid_current",
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(run.call_args_list[0].args[0], [
+            "contacts",
+            "--query",
+            "张三",
+            "--limit",
+            "100",
+            "--format",
+            "json",
+        ])
+        self.assertIn("ambiguous", result.error)
+
     def test_history_with_expected_account_disambiguates_with_five_anchors(self):
         anchor_messages = [
             {"type": "text", "attr": "friend", "content": f"锚点{index}"}
@@ -477,6 +511,35 @@ class LocalWechatReaderTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertIn("ambiguous", result.error)
+        self.assertEqual(run.call_count, 2)
+
+    def test_history_disambiguation_skips_too_many_candidates_before_history_reads(self):
+        anchor_messages = [
+            {"type": "text", "attr": "friend", "content": f"锚点{index}"}
+            for index in range(1, 6)
+        ]
+
+        with (
+            patch("core.local_wechat_reader.ensure_wechat_cli_account_ready", return_value=(True, "")),
+            patch("core.local_wechat_reader.run_wechat_cli_json") as run,
+        ):
+            run.side_effect = [
+                LocalWechatCommandResult(True, data=[
+                    {"username": f"wxid_{index}", "nick_name": "张三", "remark": "", "alias": ""}
+                    for index in range(1, 7)
+                ]),
+                LocalWechatCommandResult(True, data=[]),
+            ]
+
+            result = read_local_history_messages_with_status(
+                "张三",
+                limit=10,
+                expected_wx_id="wxid_current",
+                anchor_messages=anchor_messages,
+            )
+
+        self.assertFalse(result.ok)
+        self.assertIn("too many", result.error)
         self.assertEqual(run.call_count, 2)
 
     def test_check_status_reports_missing_tool(self):

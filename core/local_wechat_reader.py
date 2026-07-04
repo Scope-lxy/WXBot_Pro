@@ -25,8 +25,10 @@ STATUS_CHECK_TIMEOUT_SECONDS = 10
 UPDATE_CHECK_TIMEOUT_SECONDS = 45
 MAX_CONTACT_FETCH_LIMIT = 30000
 HISTORY_TARGET_DISAMBIGUATION_SESSION_LIMIT = 100
+HISTORY_TARGET_DISAMBIGUATION_CONTACT_LIMIT = 100
 HISTORY_TARGET_DISAMBIGUATION_HISTORY_LIMIT = 50
 HISTORY_TARGET_DISAMBIGUATION_ANCHOR_COUNT = 5
+HISTORY_TARGET_DISAMBIGUATION_MAX_CANDIDATES = 5
 LIVE_CHECK_CHAT_NAME = "文件传输助手"
 LIVE_CHECK_MESSAGE_PREFIX = "校验时间"
 ACCOUNT_BINDINGS_FILENAME = "wechat_cli_account_bindings.json"
@@ -973,6 +975,8 @@ def _resolve_ambiguous_history_target(
         unique_session_matches = sorted(set(session_matches))
         if unique_session_matches:
             candidate_pool = unique_session_matches
+    if len(candidate_pool) > HISTORY_TARGET_DISAMBIGUATION_MAX_CANDIDATES:
+        return "", "wechat-cli history target has too many ambiguous candidates"
 
     anchor_fps = _recent_anchor_fingerprints(
         anchor_messages,
@@ -1026,7 +1030,15 @@ def _resolve_history_target_from_contacts(
     if chat_name.lower().startswith("wxid_") or chat_name == "filehelper":
         return chat_name, ""
     result = run_wechat_cli_json(
-        ["contacts", "--query", chat_name, "--limit", "20", "--format", "json"],
+        [
+            "contacts",
+            "--query",
+            chat_name,
+            "--limit",
+            str(HISTORY_TARGET_DISAMBIGUATION_CONTACT_LIMIT),
+            "--format",
+            "json",
+        ],
         executable=executable,
     )
     if not result.ok:

@@ -1282,7 +1282,7 @@ def refresh_contact_profiles_local_snapshot(
             callback_names=[],
         )
         save_snapshot_directory(failed)
-        _bot_log(bot, level="ERROR", message=f"[通讯录维护] 本地微信数据库校准失败，已回退微信界面读取：{exc}")
+        _bot_log(bot, level="ERROR", message=f"[通讯录维护] 本地微信数据库校准失败，本轮未使用微信界面回退：{exc}")
         return None
 
 

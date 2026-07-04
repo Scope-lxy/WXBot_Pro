@@ -12355,6 +12355,9 @@ $(function(){
     if(status === 'success'){
       clearBotStartupPolling();
       svModal.success(message || '机器人已启动', '启动成功');
+      if (typeof window.checkWechatCliStatus === 'function') {
+        setTimeout(function(){ window.checkWechatCliStatus(false); }, 1200);
+      }
       return;
     }
     if(status === 'error'){
@@ -12999,8 +13002,12 @@ $(function(){
     var tooltipWidth = tooltip.outerWidth() || 180;
     var tooltipHeight = tooltip.outerHeight() || 120;
     var left = Math.min(Math.max(8, nearest.point.x - tooltipWidth / 2), Math.max(8, rect.width - tooltipWidth - 8));
-    var top = event.clientY - rect.top - tooltipHeight - 12;
-    if(top < 8) top = event.clientY - rect.top + 12;
+    var anchorValues = (nearest.point.values || []).filter(function(item){ return runtimeMetricNumber(item.value) > 0; });
+    if(!anchorValues.length) anchorValues = nearest.point.values || [];
+    var anchorY = anchorValues.reduce(function(minY, item){ return Math.min(minY, item.y); }, event.clientY - rect.top);
+    var top = anchorY - tooltipHeight - 12;
+    if(top < 8) top = anchorY + 12;
+    top = Math.min(Math.max(8, top), Math.max(8, rect.height - tooltipHeight - 8));
     tooltip.css({left: left + 'px', top: top + 'px'}).prop('hidden', false);
   }
   function renderRuntimeMetrics(){
@@ -13944,9 +13951,24 @@ $(function(){
     $('#btn-repair-wechat-cli').show();
   }
 
+  var _wechatCliStatusPollTimer = null;
+  var _wechatCliStatusPollCount = 0;
+  function clearWechatCliStatusPolling() {
+    if (_wechatCliStatusPollTimer) {
+      clearTimeout(_wechatCliStatusPollTimer);
+      _wechatCliStatusPollTimer = null;
+    }
+  }
+
   window.checkWechatCliStatus = function(manual) {
     var $btn = $('#btn-check-wechat-cli');
-    if (manual) $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 检测中...');
+    if (manual) {
+      clearWechatCliStatusPolling();
+      _wechatCliStatusPollCount = 0;
+      $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 检测中...');
+    } else {
+      clearWechatCliStatusPolling();
+    }
     $('#wechat-cli-checking').show();
     $('#wechat-cli-ok, #wechat-cli-fail, #wechat-cli-error').hide();
     $.ajax({
@@ -13960,9 +13982,25 @@ $(function(){
           $('#wechat-cli-error').show();
           return;
         }
-        renderWechatCliStatus(res.data || {});
+        var data = res.data || {};
+        renderWechatCliStatus(data);
+        if (!manual && (data.checking || data.state === 'checking') && _wechatCliStatusPollCount < 40) {
+          clearWechatCliStatusPolling();
+          _wechatCliStatusPollCount += 1;
+          _wechatCliStatusPollTimer = setTimeout(function(){ window.checkWechatCliStatus(false); }, 1500);
+        } else if (!manual && (data.checking || data.state === 'checking')) {
+          clearWechatCliStatusPolling();
+          $('#wechat-cli-checking').hide();
+          $('#wechat-cli-error').show();
+          _wechatCliStatusPollCount = 0;
+        } else if (!(data.checking || data.state === 'checking')) {
+          clearWechatCliStatusPolling();
+          _wechatCliStatusPollCount = 0;
+        }
       },
       error: function() {
+        clearWechatCliStatusPolling();
+        _wechatCliStatusPollCount = 0;
         $('#wechat-cli-checking').hide();
         $('#wechat-cli-error').show();
       },

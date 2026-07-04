@@ -285,6 +285,34 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertFalse(any(call == ("lock_acquire", False) for call in bot.calls))
         self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
 
+    def test_local_snapshot_exception_log_does_not_claim_ui_fallback(self):
+        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot._local_wechat_reader_enabled = True
+        log_messages = []
+
+        local_contacts = [{
+            "微信号": "aying2",
+            "wxid": "wxid_aying2",
+            "昵称": "阿英2",
+            "备注": "A0-阿英2",
+            "wechat_id": "aying2",
+            "nickname": "阿英2",
+            "remark": "A0-阿英2",
+        }]
+
+        with (
+            patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True),
+            patch("feature.contacts.read_local_contacts_with_status", return_value=SimpleNamespace(ok=True, items=local_contacts, error="")),
+            patch("feature.contacts.merge_contact_directory", side_effect=RuntimeError("merge boom")),
+            patch("feature.contacts.log", side_effect=lambda **kwargs: log_messages.append(kwargs.get("message", ""))),
+        ):
+            result = check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+
+        self.assertFalse(result)
+        joined = "\n".join(log_messages)
+        self.assertIn("本轮未使用微信界面回退", joined)
+        self.assertNotIn("已回退微信界面读取", joined)
+
     def test_auto_maintenance_waits_for_active_private_pipeline(self):
         bot = self._auto_maintenance_bot(pending_queue=False)
         bot._private_message_pipelines = {
