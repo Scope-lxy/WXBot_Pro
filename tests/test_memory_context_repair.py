@@ -51,6 +51,205 @@ class MemoryContextRepairCoreTests(unittest.TestCase):
             ["手机发的第一条", "手机发的第二条"],
         )
 
+    def test_anchor_matching_tolerates_self_sender_format_mismatch(self):
+        local = [
+            {"time": "2026/07/04 08:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "早"},
+            {"time": "2026/07/04 08:01:00", "attr": "self", "sender": "self", "type": "text", "content": "早呀"},
+        ]
+        remote = [
+            {"time": "2026/07/04 08:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "早"},
+            {"time": "2026/07/04 08:01:02", "attr": "self", "sender": "me", "type": "text", "content": "早呀"},
+            {"time": "2026/07/04 08:02:00", "attr": "friend", "sender": "张三", "type": "text", "content": "那就好"},
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5)
+
+        self.assertTrue(plan.anchor_found)
+        self.assertEqual([item["content"] for item in plan.messages_to_append], ["那就好"])
+
+    def test_anchor_matching_skips_voice_messages_as_unstable_anchors(self):
+        local = [
+            {"time": "2026/07/04 08:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "第一句"},
+            {"time": "2026/07/04 08:01:00", "attr": "self", "sender": "self", "type": "text", "content": "第二句"},
+            {"time": "2026/07/04 08:02:00", "attr": "friend", "sender": "张三", "type": "voice", "content": "微信转写内容一"},
+            {"time": "2026/07/04 08:03:00", "attr": "self", "sender": "self", "type": "voice", "content": "微信转写内容二"},
+            {"time": "2026/07/04 08:04:00", "attr": "friend", "sender": "张三", "type": "voice", "content": "微信转写内容三"},
+            {"time": "2026/07/04 08:05:00", "attr": "self", "sender": "self", "type": "voice", "content": "微信转写内容四"},
+            {"time": "2026/07/04 08:06:00", "attr": "friend", "sender": "张三", "type": "voice", "content": "微信转写内容五"},
+        ]
+        remote = [
+            {"time": "2026/07/04 08:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "第一句"},
+            {"time": "2026/07/04 08:01:02", "attr": "self", "sender": "me", "type": "text", "content": "第二句"},
+            {"time": "2026/07/04 08:02:00", "attr": "friend", "sender": "张三", "type": "voice", "content": "一条语音消息（未识别出文字）"},
+            {"time": "2026/07/04 08:03:00", "attr": "self", "sender": "me", "type": "voice", "content": "一条语音消息（未识别出文字）"},
+            {"time": "2026/07/04 08:04:00", "attr": "friend", "sender": "张三", "type": "voice", "content": "一条语音消息（未识别出文字）"},
+            {"time": "2026/07/04 08:05:00", "attr": "self", "sender": "me", "type": "voice", "content": "一条语音消息（未识别出文字）"},
+            {"time": "2026/07/04 08:06:00", "attr": "friend", "sender": "张三", "type": "voice", "content": "一条语音消息（未识别出文字）"},
+            {"time": "2026/07/04 08:07:00", "attr": "friend", "sender": "张三", "type": "text", "content": "新内容"},
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5)
+
+        self.assertTrue(plan.anchor_found)
+        self.assertEqual([item["content"] for item in plan.messages_to_append], ["新内容"])
+
+    def test_build_repair_plan_skips_self_unrecognized_voice_placeholder(self):
+        local = [
+            {
+                "time": "2026/07/04 17:12:31",
+                "attr": "self",
+                "sender": "self",
+                "type": "voice",
+                "content": "梅姐，你赢的钱自己留着用，我有饭吃的。",
+            },
+        ]
+        remote = [
+            {
+                "time": "2026/07/04 17:12:00",
+                "attr": "self",
+                "sender": "me",
+                "type": "voice",
+                "content": "一条语音消息（未识别出文字）",
+            },
+            {
+                "time": "2026/07/04 17:12:36",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": "你真好。",
+            },
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5)
+
+        self.assertEqual([item["content"] for item in plan.messages_to_append], ["你真好。"])
+
+    def test_build_repair_plan_skips_nearby_duplicate_from_cli(self):
+        local = [
+            {
+                "time": "2026/07/04 17:13:02",
+                "attr": "self",
+                "sender": "self",
+                "type": "text",
+                "content": "梅姐，我知道你是真心的，但你赚钱辛苦，我不能要你的钱。",
+            },
+        ]
+        remote = [
+            {
+                "time": "2026/07/04 17:13:00",
+                "attr": "self",
+                "sender": "me",
+                "type": "text",
+                "content": "梅姐，我知道你是真心的，但你赚钱辛苦，我不能要你的钱。",
+            },
+            {
+                "time": "2026/07/04 17:13:03",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": "你那么关心我啊。",
+            },
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5)
+
+        self.assertEqual([item["content"] for item in plan.messages_to_append], ["你那么关心我啊。"])
+
+    def test_build_repair_plan_skips_nearby_friend_duplicate_from_cli(self):
+        local = [
+            {
+                "time": "2026/07/04 17:11:57",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": "那你怎么不收钱啊？快点收吧。",
+            },
+        ]
+        remote = [
+            {
+                "time": "2026/07/04 17:12:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": "那你怎么不收钱啊？快点收吧。",
+            },
+            {
+                "time": "2026/07/04 17:12:36",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": "你真好。",
+            },
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5)
+
+        self.assertEqual([item["content"] for item in plan.messages_to_append], ["你真好。"])
+
+    def test_build_repair_plan_keeps_same_content_after_duplicate_window(self):
+        local = [
+            {
+                "time": "2026/07/04 17:00:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "text",
+                "content": "你在吗",
+            },
+        ]
+        remote = [
+            {
+                "time": "2026/07/04 17:11:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "text",
+                "content": "你在吗",
+            },
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5)
+
+        self.assertEqual([item["content"] for item in plan.messages_to_append], ["你在吗"])
+
+    def test_group_anchor_matching_keeps_sender_identity(self):
+        local = [
+            {"time": "2026/07/04 08:00:00", "attr": "group", "sender": "A", "type": "text", "content": "收到"},
+            {"time": "2026/07/04 08:01:00", "attr": "group", "sender": "B", "type": "text", "content": "收到"},
+        ]
+        remote = [
+            {"time": "2026/07/04 08:00:00", "attr": "friend", "sender": "A", "type": "text", "content": "收到"},
+            {"time": "2026/07/04 08:01:00", "attr": "friend", "sender": "B", "type": "text", "content": "收到"},
+            {"time": "2026/07/04 08:02:00", "attr": "friend", "sender": "C", "type": "text", "content": "新内容"},
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5, chat_type="group")
+
+        self.assertTrue(plan.anchor_found)
+        self.assertEqual([(item["sender"], item["content"]) for item in plan.messages_to_append], [("C", "新内容")])
+
+    def test_group_repair_does_not_dedupe_same_content_from_different_members(self):
+        local = [
+            {
+                "time": "2026/07/04 17:00:00",
+                "attr": "group",
+                "sender": "A",
+                "type": "text",
+                "content": "好的",
+            },
+        ]
+        remote = [
+            {
+                "time": "2026/07/04 17:01:00",
+                "attr": "friend",
+                "sender": "B",
+                "type": "text",
+                "content": "好的",
+            },
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5, chat_type="group")
+
+        self.assertEqual([(item["sender"], item["content"]) for item in plan.messages_to_append], [("B", "好的")])
+
     def test_repeated_short_text_without_sequence_anchor_is_conservative(self):
         local = [
             {"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "好"},
@@ -220,7 +419,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                 ["早", "早呀", "新内容"],
             )
 
-    def test_low_risk_prefers_local_history_without_wechat_lock(self):
+    def test_low_risk_prefers_local_history_without_wechat_lock_and_skips_unrecognized_voice(self):
         with tempfile.TemporaryDirectory() as tmp:
             lock = FakeLock(acquired=False)
             bot = self.make_bot(tmp, lock=lock, local_reader_enabled=True)
@@ -245,7 +444,7 @@ class WXBotContextRepairTests(unittest.TestCase):
             self.assertEqual(chat.get_all_calls, 0)
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
-                ["早", "一条语音消息（未识别出文字）"],
+                ["早"],
             )
 
     def test_local_context_repair_limit_follows_context_count_bounds(self):
@@ -477,6 +676,80 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             self.assertFalse(repaired)
             self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("未配置群", 10)], ["旧锚点"])
+
+    def test_group_context_repair_uses_local_history_with_sender_anchors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = FakeLock(acquired=False)
+            bot = self.make_bot(tmp, lock=lock, local_reader_enabled=True)
+            bot.config.group = ["测试群"]
+            bot.memory_manager.append_missing_messages(
+                "测试群",
+                [
+                    {
+                        "time": "2026/07/04 08:00:00",
+                        "attr": "group",
+                        "sender": "A",
+                        "type": "text",
+                        "content": "收到",
+                    },
+                    {
+                        "time": "2026/07/04 08:01:00",
+                        "attr": "group",
+                        "sender": "B",
+                        "type": "text",
+                        "content": "明白",
+                    },
+                ],
+                100,
+            )
+            chat = FakeChat()
+            chat.who = "测试群"
+            chat.chat_type = "group"
+            current = msg("新问题", attr="group", sender="C", time="2026/07/04 08:03:00")
+            local_messages = [
+                SimpleNamespace(type="text", attr="friend", sender="A", content="收到", time="2026/07/04 08:00:00"),
+                SimpleNamespace(type="text", attr="friend", sender="B", content="明白", time="2026/07/04 08:01:00"),
+                SimpleNamespace(type="text", attr="friend", sender="C", content="新问题", time="2026/07/04 08:03:00"),
+            ]
+
+            with patch("wxbot_core.read_local_history_messages_with_status") as read_local:
+                read_local.return_value = SimpleNamespace(ok=True, items=local_messages, error="")
+                repaired = bot._repair_group_context_before_ai(chat, current)
+
+            self.assertTrue(repaired)
+            self.assertEqual(read_local.call_args.kwargs["chat_type"], "group")
+            self.assertEqual(lock.acquire_calls, [])
+            self.assertEqual(
+                [(item["sender"], item["content"]) for item in bot.memory_manager.get_messages("测试群", 10)],
+                [("A", "收到"), ("B", "明白"), ("C", "新问题")],
+            )
+
+    def test_group_context_repair_skips_append_without_anchor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp, local_reader_enabled=True)
+            bot.config.group = ["测试群"]
+            bot.memory_manager.append_missing_messages(
+                "测试群",
+                [{"time": "1", "attr": "group", "sender": "A", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FakeChat()
+            chat.who = "测试群"
+            chat.chat_type = "group"
+            local_messages = [
+                SimpleNamespace(type="text", attr="friend", sender="X", content="另一个群", time="9"),
+                SimpleNamespace(type="text", attr="friend", sender="Y", content="新内容", time="10"),
+            ]
+
+            with patch("wxbot_core.read_local_history_messages_with_status") as read_local:
+                read_local.return_value = SimpleNamespace(ok=True, items=local_messages, error="")
+                repaired = bot._repair_group_context_before_ai(chat, msg("新内容", attr="group", sender="Y", time="10"))
+
+            self.assertFalse(repaired)
+            self.assertEqual(
+                [(item["sender"], item["content"]) for item in bot.memory_manager.get_messages("测试群", 10)],
+                [("A", "旧锚点")],
+            )
 
 
 if __name__ == "__main__":

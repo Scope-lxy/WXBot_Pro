@@ -4242,6 +4242,7 @@ class WXBot:
             try:
                 history = []
                 if self.config.memory_switch and self.config.memory_context_switch and self.memory_manager:
+                    self._repair_group_context_before_ai(chat, message)
                     history = self._get_model_context_history(chat.who)
                 # 构建有效 prompt；拆分改为发送前本地处理，不再注入模型格式要求
                 group_voice_candidate_hit = group_voice_candidate(self.config, message)
@@ -5509,14 +5510,13 @@ class WXBot:
             raise RuntimeError("当前私聊子窗口不支持 GetAllMessage")
         with warn_slow_wechat_ui_action(
             f"上下文补洞 GetAllMessage({getattr(chat, 'who', '')})",
-            threshold=10.0,
             level="WARNING",
         ):
             messages = list(get_all() or [])
         limit = max(1, min(50, int(limit or DEFAULT_VISIBLE_LIMIT)))
         return messages[-limit:] if len(messages) > limit else messages
 
-    def _read_local_context_messages(self, chat_name, limit, *, anchor_messages=None):
+    def _read_local_context_messages(self, chat_name, limit, *, anchor_messages=None, chat_type="private"):
         if getattr(self, "_local_wechat_reader_enabled", True) is False:
             return []
         max_limit = LOCAL_CONTEXT_REPAIR_MAX_LIMIT + LOCAL_CONTEXT_REPAIR_ANCHOR_BUFFER
@@ -5528,14 +5528,18 @@ class WXBot:
                 or getattr(getattr(self, "config", None), "current_account_wx_id", "")
             ),
             anchor_messages=anchor_messages,
+            chat_type=chat_type,
         )
+        label = "群聊" if str(chat_type or "").strip().lower() == "group" else "私聊"
         if result.ok and result.items:
-            log(message=f"私聊 {chat_name}：已从本地微信数据库读取上下文 {len(result.items)} 条")
+            log(message=f"{label} {chat_name}：已从本地微信数据库读取上下文 {len(result.items)} 条")
             return list(result.items)
         if not result.ok:
+            fallback_text = "已跳过本地补洞" if label == "群聊" else "已回退微信界面读取"
+            level = "INFO" if label == "群聊" else "WARNING"
             log(
-                level="WARNING",
-                message=f"私聊 {chat_name}：本地微信数据库读取上下文失败，已回退微信界面读取：{result.error}",
+                level=level,
+                message=f"{label} {chat_name}：本地微信数据库读取上下文失败，{fallback_text}：{result.error}",
             )
         return []
 
@@ -5551,7 +5555,7 @@ class WXBot:
         with warn_slow_wechat_ui_action(f"上下文补洞 {strategy}({getattr(chat, 'who', '')}, n={limit})"):
             return self._get_context_repair_history_messages(get_history, limit, goback=True)
 
-    def _append_context_repair_messages(self, memory_chat_name, entries):
+    def _append_context_repair_messages(self, memory_chat_name, entries, *, chat_type="private"):
         if not entries or not self.memory_manager:
             return {"added": 0, "total": 0}
         result = self.memory_manager.append_missing_messages(
@@ -5561,10 +5565,71 @@ class WXBot:
         )
         if int(result.get("added", 0) or 0) > 0:
             self._mark_chat_memory_dirty(
-                SimpleNamespace(who=memory_chat_name, chat_type="private"),
+                SimpleNamespace(who=memory_chat_name, chat_type=chat_type),
                 SimpleNamespace(type="text", attr="friend", content="[上下文补洞]"),
             )
         return result
+
+    def _repair_group_context_before_ai(self, chat, message):
+        chat_name = str(getattr(chat, "who", "") or "").strip()
+        if not (
+            getattr(chat, "chat_type", "private") == "group"
+            or chat_name in getattr(self.config, "group", [])
+        ):
+            return False
+        if not (
+            getattr(getattr(self, "config", None), "memory_switch", False)
+            and getattr(getattr(self, "config", None), "memory_context_switch", False)
+            and self.memory_manager
+        ):
+            return False
+        cfg = self._memory_context_repair_config()
+        if not cfg["low_enabled"] or not chat_name:
+            return False
+        cooldown_key = f"group:{chat_name}"
+        if not self._context_repair_cooldown_allows(cooldown_key, "low", cfg["low_cooldown"]):
+            return False
+
+        try:
+            local_history = self.memory_manager.get_messages(chat_name, cfg["history_limit"]) or []
+            anchor_messages = list(local_history or [])
+            if not current_message_found_near_tail(anchor_messages, message, tail_count=8):
+                anchor_messages.append(normalize_wechat_message(message, source="wechat_context_repair_group_anchor"))
+            local_messages = self._read_local_context_messages(
+                chat_name,
+                self._local_context_repair_limit(),
+                anchor_messages=anchor_messages,
+                chat_type="group",
+            )
+            if not local_messages:
+                return False
+            local_entries = [
+                normalize_wechat_message(item, source="wechat_context_repair_group")
+                for item in local_messages
+            ]
+            plan = build_repair_plan(
+                local_history,
+                local_entries,
+                anchor_recent_count=cfg["anchor_count"],
+                chat_type="group",
+            )
+            if plan.anchor_found and plan.messages_to_append:
+                result = self._append_context_repair_messages(chat_name, plan.messages_to_append, chat_type="group")
+                log(
+                    message=(
+                        f"群聊 {chat_name}：低风险上下文补洞完成，"
+                        f"读取 {len(local_entries)} 条，补入 {result.get('added', 0)} 条"
+                    )
+                )
+                return int(result.get("added", 0) or 0) > 0
+            if plan.anchor_found:
+                log(message=f"群聊 {chat_name}：低风险上下文补洞已对齐，无需补入")
+                return True
+            log(message=f"群聊 {chat_name}：低风险上下文补洞未找到锚点，已跳过补入")
+            return False
+        except Exception as exc:
+            log(level="WARNING", message=f"群聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")
+            return False
 
     def _repair_private_context_before_ai(self, chat, message):
         chat_name = str(getattr(chat, "who", "") or "").strip()
@@ -5622,6 +5687,7 @@ class WXBot:
                 local_history,
                 visible_entries,
                 anchor_recent_count=cfg["anchor_count"],
+                chat_type="private",
             )
             if plan.anchor_found and plan.messages_to_append:
                 result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
@@ -5651,6 +5717,7 @@ class WXBot:
                                 local_history,
                                 history_entries,
                                 anchor_recent_count=cfg["anchor_count"],
+                                chat_type="private",
                             )
                             low_risk_messages = [] if local_context_source else plan.messages_to_append
                             result = self._append_context_repair_messages(

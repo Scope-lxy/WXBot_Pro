@@ -7,7 +7,7 @@ import time
 
 from core.logger import log
 
-SLOW_WECHAT_UI_ACTION_SECONDS = 10.0
+SLOW_WECHAT_UI_ACTION_SECONDS = 20.0
 
 
 @contextmanager

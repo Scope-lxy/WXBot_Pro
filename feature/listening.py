@@ -495,6 +495,39 @@ def _reschedule_lightweight_delayed_listen(bot, name, task, now_ts):
     return True
 
 
+def _save_abandoned_lightweight_messages(bot, chat_name, messages):
+    if not getattr(getattr(bot, "config", None), "memory_switch", False):
+        return 0
+    memory_manager = getattr(bot, "memory_manager", None)
+    save_message = getattr(memory_manager, "save_message", None)
+    if not callable(save_message):
+        return 0
+    saved = 0
+    resolver = getattr(bot, "_resolve_identity_chat_name", None)
+    memory_chat_name = resolver(chat_name) if callable(resolver) else chat_name
+    max_count = getattr(getattr(bot, "config", None), "memory_max_count", 1000)
+    for msg in messages or []:
+        msg_type = str(getattr(msg, "type", "") or "").strip().lower()
+        if msg_type not in {"text", "voice"}:
+            continue
+        if msg_type == "voice" and voice_content_state(getattr(msg, "content", "")) != "valid":
+            continue
+        try:
+            save_message(
+                chat_name=memory_chat_name,
+                sender=getattr(msg, "sender", ""),
+                content=strip_voice_duration_metadata(getattr(msg, "content", "")) if msg_type == "voice" else getattr(msg, "content", ""),
+                msg_type=getattr(msg, "type", "text"),
+                msg_attr=getattr(msg, "attr", "friend"),
+                max_count=max_count,
+                message_time=getattr(msg, "time", None) or getattr(msg, "_wxbot_received_at", None),
+            )
+            saved += 1
+        except Exception as exc:
+            _bot_log(bot, level="WARNING", message=f"全局监听 {chat_name}：放弃批次兜底写入记忆失败：{exc}")
+    return saved
+
+
 def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
     ensure_lightweight_delayed_listen_state(bot)
     if getattr(bot, "_lightweight_delayed_listen_flushing", False):
@@ -520,7 +553,10 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
                 continue
             created_at = float(current.get("created_at") or now_ts)
             if now_ts - created_at > LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS:
+                saved = _save_abandoned_lightweight_messages(bot, name, current.get("messages") or [])
                 _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听任务已过期，已放弃旧批次")
+                if saved:
+                    _bot_log(bot, level="INFO", message=f"全局监听 {name}：已兜底保存 {saved} 条放弃批次消息")
                 handled = True
                 continue
             if _get_bot_private_message_sequence(bot, name) != int(current.get("message_sequence") or 0):
@@ -550,7 +586,10 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
                 if _reschedule_lightweight_delayed_listen(bot, name, current, now_ts):
                     handled = True
                     continue
+                saved = _save_abandoned_lightweight_messages(bot, name, current.get("messages") or [])
                 _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听两次恢复失败，已放弃旧批次")
+                if saved:
+                    _bot_log(bot, level="INFO", message=f"全局监听 {name}：已兜底保存 {saved} 条放弃批次消息")
                 handled = True
                 continue
             messages = list(current.get("messages") or [])
@@ -1224,10 +1263,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                         msg._skip_ai_reply = True
 
                 if msg.attr == "friend" and chat_type != "group":
-                    should_save_memory = not (
-                        msg.type == "voice"
-                        and voice_content_state(getattr(msg, "content", "")) != "valid"
-                    )
+                    should_save_memory = msg.type in {"image", "quote"}
                     if should_save_memory and bot.config.memory_switch and bot.memory_manager:
                         try:
                             memory_chat = _types.SimpleNamespace(who=chat, chat_type="private")

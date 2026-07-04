@@ -80,8 +80,6 @@ class ImageReplyPipeline:
         )
         prompt = self.prompt_builder(
             request.chat_name,
-            request.history,
-            message,
             chat_type=request.chat_type,
             image_parse_block=self.image_parse_block_builder(),
         )
@@ -132,8 +130,6 @@ class ImageReplyPipeline:
 
         prompt = self.prompt_builder(
             request.chat_name,
-            request.history,
-            final_message,
             chat_type=request.chat_type,
             image_parse_block=image_parse_block,
         )

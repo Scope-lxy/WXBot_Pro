@@ -245,6 +245,53 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertNotIn("图片概览：", captured["message"])
         self.assertEqual(captured["prompt_kwargs"]["image_parse_block"], "IMAGE_RULES")
 
+    def test_direct_image_reply_uses_prompt_builder_keyword_signature(self):
+        captured = {}
+
+        class FakeFinalApi:
+            def chat(self, message, **kwargs):
+                captured["message"] = message
+                captured["kwargs"] = kwargs
+                return "视觉回复"
+
+        def build_prompt(chat_name, *, base_prompt=None, chat_type="private", image_parse_block="", prompt_extra=""):
+            captured["prompt_args"] = {
+                "chat_name": chat_name,
+                "base_prompt": base_prompt,
+                "chat_type": chat_type,
+                "image_parse_block": image_parse_block,
+                "prompt_extra": prompt_extra,
+            }
+            return "prompt"
+
+        pipeline = ImageReplyPipeline(
+            prompt_builder=build_prompt,
+            image_parse_block_builder=lambda: "IMAGE_RULES",
+            user_message_builder=build_image_user_message,
+            vision_bridge=SimpleNamespace(),
+        )
+
+        result = pipeline.reply(ImageReplyRequest(
+            chat_name="张三",
+            chat_type="private",
+            attached_text="看看这张图",
+            sender="张三",
+            history=[{"content": "前文"}],
+            final_api=FakeFinalApi(),
+            recognition_api=SimpleNamespace(),
+            final_api_supports_vision=True,
+            image_path=r"C:\tmp\photo.png",
+        ))
+
+        self.assertEqual(result, "视觉回复")
+        self.assertEqual(captured["prompt_args"]["chat_name"], "张三")
+        self.assertEqual(captured["prompt_args"]["chat_type"], "private")
+        self.assertEqual(captured["prompt_args"]["image_parse_block"], "IMAGE_RULES")
+        self.assertIn("看看这张图", captured["message"])
+        self.assertEqual(captured["kwargs"]["prompt"], "prompt")
+        self.assertEqual(captured["kwargs"]["history"], [{"content": "前文"}])
+        self.assertEqual(captured["kwargs"]["image_path"], r"C:\tmp\photo.png")
+
     def test_private_image_reply_generates_visual_note_before_final_reply(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(chat_image_recognition_api=0)

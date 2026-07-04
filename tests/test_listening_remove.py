@@ -475,6 +475,56 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(direct_saves, [])
         self.assertEqual(processed, [r"C:\tmp\global-image.png"])
 
+    def test_global_listen_text_is_processed_without_early_memory_save(self):
+        msg = SimpleNamespace(
+            id="txt-1",
+            type="text",
+            attr="friend",
+            sender="张三",
+            content="你好",
+        )
+
+        def get_next_new_message(**kwargs):
+            callback = kwargs.get("callback")
+            if callable(callback):
+                callback(msg)
+            return {"chat_name": "张三", "chat_type": "private", "msg": [msg]}
+
+        direct_saves = []
+        processed = []
+        bot = SimpleNamespace(
+            config=SimpleNamespace(
+                AllListen_switch=True,
+                listen_list=[],
+                group=[],
+                group_switch=False,
+                custom_forward_switch=False,
+                memory_switch=True,
+                memory_max_count=100,
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=False,
+            ),
+            memory_manager=SimpleNamespace(save_message=lambda **kwargs: direct_saves.append(kwargs)),
+            wx=SimpleNamespace(
+                GetAllListenMessage=lambda: {},
+                GetNextNewMessage=get_next_new_message,
+                chat_type="private",
+            ),
+            all_Mode_listen_list=[],
+            is_chat_listened=lambda _chat: False,
+            add_chat_to_listen=lambda _chat: SimpleNamespace(who="张三"),
+            _forget_runtime_listener_caches=lambda _chat: None,
+            _remove_dynamic_listener_entries=lambda _chat: None,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            process_message=lambda _chat, message: processed.append(message.content),
+        )
+
+        listening.alllisten_mode(bot, last_time=9999999999)
+
+        self.assertEqual(direct_saves, [])
+        self.assertEqual(processed, ["你好"])
+
     def test_add_and_verify_uses_add_listen_returned_chat_directly(self):
         calls = []
         sub_chat = SimpleNamespace(who="张三", SendMsg=lambda _msg: True)
@@ -944,6 +994,55 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(bot._lightweight_delayed_listen_tasks, {})
         self.assertIn(("AddListenChat", "张三", bot.message_handle_callback), calls)
         self.assertTrue(any(level == "WARNING" and "轻量延后监听两次恢复失败" in message for level, message in logs))
+
+    def test_lightweight_delayed_listen_final_failure_saves_text_fallback(self):
+        calls = []
+        saves = []
+        msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好", time="2026/07/04 10:00:00")
+        pending_voice = SimpleNamespace(id="2", attr="friend", type="voice", sender="张三", content='语音8"秒')
+
+        class TryLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        bot = SimpleNamespace(
+            config=SimpleNamespace(memory_switch=True, memory_max_count=100),
+            memory_manager=SimpleNamespace(save_message=lambda **kwargs: saves.append(kwargs)),
+            message_handle_callback=object(),
+            all_Mode_listen_list=[],
+            _listen_chats={},
+            _lightweight_delayed_listen_tasks={
+                "张三": {
+                    "chat": "张三",
+                    "messages": [msg, pending_voice],
+                    "message_keys": {"id:张三:1", "id:张三:2"},
+                    "created_at": 100.0,
+                    "due_at": 160.0,
+                    "attempt_index": 1,
+                    "allow_rebuild": False,
+                    "message_sequence": 0,
+                }
+            },
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            process_message=lambda _chat, _message: self.fail("未恢复子窗口时不应处理消息"),
+        )
+        bot._get_private_message_sequence = lambda _chat: 0
+        bot._get_wechat_action_lock = lambda: TryLock()
+        bot._add_and_verify_subwindow = lambda _chat: calls.append(("AddListenChat", _chat, bot.message_handle_callback)) or None
+        bot._resolve_identity_chat_name = lambda name: name
+
+        with mock.patch.object(listening.time, "time", return_value=161.0), mock.patch.object(listening, "_bot_sleep"):
+            flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
+
+        self.assertTrue(flushed)
+        self.assertEqual(len(saves), 1)
+        self.assertEqual(saves[0]["chat_name"], "张三")
+        self.assertEqual(saves[0]["content"], "你好")
+        self.assertEqual(saves[0]["message_time"], "2026/07/04 10:00:00")
 
     def test_lightweight_delayed_listen_keeps_task_when_lock_busy(self):
         releases = []

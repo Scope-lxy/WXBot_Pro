@@ -27,7 +27,7 @@ MAX_CONTACT_FETCH_LIMIT = 30000
 HISTORY_TARGET_DISAMBIGUATION_SESSION_LIMIT = 100
 HISTORY_TARGET_DISAMBIGUATION_CONTACT_LIMIT = 100
 HISTORY_TARGET_DISAMBIGUATION_HISTORY_LIMIT = 50
-HISTORY_TARGET_DISAMBIGUATION_ANCHOR_COUNT = 5
+HISTORY_TARGET_DISAMBIGUATION_ANCHOR_COUNT = 4
 HISTORY_TARGET_DISAMBIGUATION_MAX_CANDIDATES = 5
 LIVE_CHECK_CHAT_NAME = "文件传输助手"
 LIVE_CHECK_MESSAGE_PREFIX = "校验时间"
@@ -819,6 +819,7 @@ def read_local_history_messages_with_status(
     executable: str = "",
     expected_wx_id: str = "",
     anchor_messages: list[Any] | None = None,
+    chat_type: str = "private",
 ) -> LocalWechatReadResult:
     chat_name = _clean_text(chat_name)
     if not chat_name:
@@ -827,7 +828,16 @@ def read_local_history_messages_with_status(
     if not account_ok:
         return LocalWechatReadResult(False, [], account_error)
     history_target = chat_name
-    if _clean_text(expected_wx_id):
+    normalized_chat_type = _clean_text(chat_type).lower()
+    if normalized_chat_type == "group":
+        history_target, target_error = _resolve_group_history_target_from_sessions(
+            chat_name,
+            executable=executable,
+            anchor_messages=anchor_messages,
+        )
+        if not history_target:
+            return LocalWechatReadResult(False, [], target_error)
+    elif _clean_text(expected_wx_id):
         history_target, target_error = _resolve_history_target_from_contacts(
             chat_name,
             executable=executable,
@@ -863,6 +873,7 @@ def read_local_history_messages(
     executable: str = "",
     expected_wx_id: str = "",
     anchor_messages: list[Any] | None = None,
+    chat_type: str = "private",
 ) -> list[SimpleNamespace]:
     return read_local_history_messages_with_status(
         chat_name,
@@ -870,6 +881,7 @@ def read_local_history_messages(
         executable=executable,
         expected_wx_id=expected_wx_id,
         anchor_messages=anchor_messages,
+        chat_type=chat_type,
     ).items
 
 
@@ -897,35 +909,57 @@ def _contact_exact_name_match(item: dict[str, Any], chat_name: str) -> bool:
     return expected in values
 
 
-def _relaxed_history_fingerprint(item: Any) -> str:
+def _history_anchor_direction(attr: str, sender: str) -> str:
+    attr = _clean_text(attr).lower()
+    sender = _clean_text(sender).lower()
+    return "self" if attr == "self" or sender in {"self", "me"} else "other"
+
+
+def _relaxed_history_fingerprint(item: Any, *, chat_type: str = "private") -> str:
     if isinstance(item, dict):
         msg_type = _clean_text(item.get("type")).lower() or "text"
         attr = _clean_text(item.get("attr")).lower()
+        sender = _clean_text(item.get("sender"))
         content = _clean_text(item.get("content"))
     else:
         msg_type = _clean_text(getattr(item, "type", "")).lower() or "text"
         attr = _clean_text(getattr(item, "attr", "")).lower()
+        sender = _clean_text(getattr(item, "sender", ""))
         content = _clean_text(getattr(item, "content", ""))
     if msg_type == "other":
         msg_type = "text"
+    if msg_type == "voice":
+        return ""
     if msg_type == "image":
         content = "[图片]"
     if not content and msg_type not in {"image", "emotion", "voice", "video", "file"}:
         return ""
-    return "|".join([attr, msg_type, content])
+    direction = _history_anchor_direction(attr, sender)
+    parts = [direction]
+    if _clean_text(chat_type).lower() == "group" and direction != "self":
+        if not sender:
+            return ""
+        parts.append(sender)
+    parts.extend([msg_type, content])
+    return "|".join(parts)
 
 
-def _recent_anchor_fingerprints(anchor_messages: list[Any] | None, *, limit: int = 5) -> list[str]:
+def _recent_anchor_fingerprints(
+    anchor_messages: list[Any] | None,
+    *,
+    limit: int = 5,
+    chat_type: str = "private",
+) -> list[str]:
     fingerprints = []
     for item in anchor_messages or []:
-        fp = _relaxed_history_fingerprint(item)
+        fp = _relaxed_history_fingerprint(item, chat_type=chat_type)
         if fp:
             fingerprints.append(fp)
     return fingerprints[-max(1, int(limit or 5)):]
 
 
-def _longest_ordered_anchor_score(candidate_messages: list[Any], anchor_fps: list[str]) -> int:
-    candidate_fps = [_relaxed_history_fingerprint(item) for item in candidate_messages or []]
+def _longest_ordered_anchor_score(candidate_messages: list[Any], anchor_fps: list[str], *, chat_type: str = "private") -> int:
+    candidate_fps = [_relaxed_history_fingerprint(item, chat_type=chat_type) for item in candidate_messages or []]
     candidate_fps = [fp for fp in candidate_fps if fp]
     if not candidate_fps or not anchor_fps:
         return 0
@@ -962,6 +996,7 @@ def _resolve_ambiguous_history_target(
     *,
     executable: str = "",
     anchor_messages: list[Any] | None = None,
+    chat_type: str = "private",
 ) -> tuple[str, str]:
     candidates = sorted({_clean_text(username) for username in candidate_usernames if _clean_text(username)})
     if len(candidates) <= 1:
@@ -989,6 +1024,7 @@ def _resolve_ambiguous_history_target(
     anchor_fps = _recent_anchor_fingerprints(
         anchor_messages,
         limit=HISTORY_TARGET_DISAMBIGUATION_ANCHOR_COUNT,
+        chat_type=chat_type,
     )
     if len(anchor_fps) < HISTORY_TARGET_DISAMBIGUATION_ANCHOR_COUNT:
         return "", "wechat-cli history target is ambiguous for this chat name"
@@ -1009,7 +1045,7 @@ def _resolve_ambiguous_history_target(
         if not history_result.ok:
             continue
         candidate_messages = _parse_history_messages_payload(history_result.data, chat_name=chat_name)
-        scores[username] = _longest_ordered_anchor_score(candidate_messages, anchor_fps)
+        scores[username] = _longest_ordered_anchor_score(candidate_messages, anchor_fps, chat_type=chat_type)
     best_score = max(scores.values(), default=0)
     winners = [
         username
@@ -1071,6 +1107,52 @@ def _resolve_history_target_from_contacts(
             anchor_messages=anchor_messages,
         )
     return "", "wechat-cli history target could not be resolved uniquely"
+
+
+def _resolve_group_history_target_from_sessions(
+    chat_name: str,
+    *,
+    executable: str = "",
+    anchor_messages: list[Any] | None = None,
+) -> tuple[str, str]:
+    chat_name = _clean_text(chat_name)
+    if not chat_name:
+        return "", "empty chat name"
+    if chat_name.endswith("@chatroom"):
+        return chat_name, ""
+    result = run_wechat_cli_json(
+        [
+            "sessions",
+            "--limit",
+            str(HISTORY_TARGET_DISAMBIGUATION_SESSION_LIMIT),
+            "--format",
+            "json",
+        ],
+        executable=executable,
+    )
+    if not result.ok:
+        return "", sanitize_error(result.error) or "wechat-cli sessions query failed"
+    if not isinstance(result.data, list):
+        return "", "wechat-cli sessions query returned invalid data"
+    usernames = []
+    for item in result.data:
+        if not isinstance(item, dict):
+            continue
+        session = _normalize_wechat_cli_session(item)
+        if session["is_group"] and session["name"] == chat_name and session["username"]:
+            usernames.append(session["username"])
+    unique_usernames = sorted(set(usernames))
+    if len(unique_usernames) == 1:
+        return unique_usernames[0], ""
+    if len(unique_usernames) > 1:
+        return _resolve_ambiguous_history_target(
+            chat_name,
+            unique_usernames,
+            executable=executable,
+            anchor_messages=anchor_messages,
+            chat_type="group",
+        )
+    return "", "wechat-cli group history target could not be resolved uniquely"
 
 
 def read_local_sessions_with_status(

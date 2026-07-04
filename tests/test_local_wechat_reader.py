@@ -197,6 +197,77 @@ class LocalWechatReaderTests(unittest.TestCase):
         self.assertEqual(result.items[0]["content"], "消息已发出，但被对方拒收了。")
         self.assertEqual(result.items[0]["info"], "系统")
 
+    def test_group_history_resolves_target_from_sessions(self):
+        def fake_run(args, **_kwargs):
+            if args and args[0] == "sessions":
+                return LocalWechatCommandResult(True, data=[
+                    {"chat": "测试群", "username": "123@chatroom", "is_group": True},
+                ])
+            if args and args[0] == "history":
+                self.assertEqual(args[1], "123@chatroom")
+                return LocalWechatCommandResult(True, data={
+                    "messages": ["[2026-07-04 04:34] A: 群消息"]
+                })
+            return LocalWechatCommandResult(False, error="unexpected")
+
+        with (
+            patch("core.local_wechat_reader.ensure_wechat_cli_account_ready", return_value=(True, "")),
+            patch("core.local_wechat_reader.run_wechat_cli_json", side_effect=fake_run),
+        ):
+            result = read_local_history_messages_with_status(
+                "测试群",
+                limit=10,
+                expected_wx_id="wxid_current",
+                chat_type="group",
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.items[0].sender, "A")
+        self.assertEqual(result.items[0].content, "群消息")
+
+    def test_group_history_disambiguates_duplicate_group_names_with_sender_anchors(self):
+        anchor_messages = [
+            {"type": "text", "attr": "group", "sender": "A", "content": f"锚点{index}"}
+            for index in range(1, 5)
+        ]
+
+        def fake_run(args, **_kwargs):
+            if args and args[0] == "sessions":
+                return LocalWechatCommandResult(True, data=[
+                    {"chat": "测试群", "username": "123@chatroom", "is_group": True},
+                    {"chat": "测试群", "username": "456@chatroom", "is_group": True},
+                ])
+            if args[:2] == ["history", "123@chatroom"]:
+                return LocalWechatCommandResult(True, data={
+                    "messages": [
+                        f"[2026-07-04 04:3{index}] A: 锚点{index + 1}"
+                        for index in range(4)
+                    ]
+                })
+            if args[:2] == ["history", "456@chatroom"]:
+                return LocalWechatCommandResult(True, data={
+                    "messages": [
+                        f"[2026-07-04 04:3{index}] B: 锚点{index + 1}"
+                        for index in range(4)
+                    ]
+                })
+            return LocalWechatCommandResult(False, error="unexpected")
+
+        with (
+            patch("core.local_wechat_reader.ensure_wechat_cli_account_ready", return_value=(True, "")),
+            patch("core.local_wechat_reader.run_wechat_cli_json", side_effect=fake_run),
+        ):
+            result = read_local_history_messages_with_status(
+                "测试群",
+                limit=10,
+                expected_wx_id="wxid_current",
+                anchor_messages=anchor_messages,
+                chat_type="group",
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual([item.sender for item in result.items], ["A", "A", "A", "A"])
+
     def test_account_match_rejects_non_wxid_namespace(self):
         with tempfile.TemporaryDirectory() as tmp:
             ok, error = wechat_cli_account_matches("scope_rui", bindings_file=f"{tmp}/bindings.json")
@@ -426,10 +497,10 @@ class LocalWechatReaderTests(unittest.TestCase):
         ])
         self.assertIn("ambiguous", result.error)
 
-    def test_history_with_expected_account_disambiguates_with_five_anchors(self):
+    def test_history_with_expected_account_disambiguates_with_four_anchors(self):
         anchor_messages = [
             {"type": "text", "attr": "friend", "content": f"锚点{index}"}
-            for index in range(1, 6)
+            for index in range(1, 5)
         ]
 
         def fake_run(args, **_kwargs):
@@ -447,7 +518,7 @@ class LocalWechatReaderTests(unittest.TestCase):
                 return LocalWechatCommandResult(True, data={
                     "messages": [
                         f"[2026-07-04 04:3{index}] 张三: 锚点{index + 1}"
-                        for index in range(5)
+                        for index in range(4)
                     ]
                 })
             if args[:2] == ["history", "wxid_b"]:
@@ -468,12 +539,12 @@ class LocalWechatReaderTests(unittest.TestCase):
             )
 
         self.assertTrue(result.ok)
-        self.assertEqual([item.content for item in result.items], [f"锚点{index}" for index in range(1, 6)])
+        self.assertEqual([item.content for item in result.items], [f"锚点{index}" for index in range(1, 5)])
 
-    def test_history_with_expected_account_requires_five_anchors_to_disambiguate(self):
+    def test_history_with_expected_account_requires_four_anchors_to_disambiguate(self):
         anchor_messages = [
             {"type": "text", "attr": "friend", "content": f"锚点{index}"}
-            for index in range(1, 5)
+            for index in range(1, 4)
         ]
 
         with (
@@ -499,10 +570,65 @@ class LocalWechatReaderTests(unittest.TestCase):
         self.assertIn("ambiguous", result.error)
         self.assertEqual(run.call_count, 2)
 
-    def test_history_disambiguation_does_not_trust_single_session_without_five_anchors(self):
+    def test_history_disambiguation_skips_voice_anchors(self):
         anchor_messages = [
             {"type": "text", "attr": "friend", "content": f"锚点{index}"}
             for index in range(1, 5)
+        ] + [
+            {"type": "voice", "attr": "friend", "content": "微信侧语音转写"},
+            {"type": "voice", "attr": "self", "content": "另一条语音转写"},
+        ]
+
+        def fake_run(args, **_kwargs):
+            if args[:2] == ["contacts", "--query"]:
+                return LocalWechatCommandResult(True, data=[
+                    {"username": "wxid_a", "nick_name": "张三", "remark": "", "alias": ""},
+                    {"username": "wxid_b", "nick_name": "张三", "remark": "", "alias": ""},
+                ])
+            if args and args[0] == "sessions":
+                return LocalWechatCommandResult(True, data=[
+                    {"chat": "张三", "username": "wxid_a", "last_message": "普通消息"},
+                    {"chat": "张三", "username": "wxid_b", "last_message": "普通消息"},
+                ])
+            if args[:2] == ["history", "wxid_a"]:
+                return LocalWechatCommandResult(True, data={
+                    "messages": [
+                        f"[2026-07-04 04:3{index}] 张三: 锚点{index + 1}"
+                        for index in range(4)
+                    ] + [
+                        "[2026-07-04 04:35] 张三: [语音] <voicemsg />",
+                    ]
+                })
+            if args[:2] == ["history", "wxid_b"]:
+                return LocalWechatCommandResult(True, data={
+                    "messages": ["[2026-07-04 04:34] 张三: 另一个人"]
+                })
+            return LocalWechatCommandResult(False, error="unexpected")
+
+        with (
+            patch("core.local_wechat_reader.ensure_wechat_cli_account_ready", return_value=(True, "")),
+            patch("core.local_wechat_reader.run_wechat_cli_json", side_effect=fake_run),
+        ):
+            result = read_local_history_messages_with_status(
+                "张三",
+                limit=10,
+                expected_wx_id="wxid_current",
+                anchor_messages=anchor_messages,
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual([item.content for item in result.items], [
+            "锚点1",
+            "锚点2",
+            "锚点3",
+            "锚点4",
+            "一条语音消息（未识别出文字）",
+        ])
+
+    def test_history_disambiguation_does_not_trust_single_session_without_four_anchors(self):
+        anchor_messages = [
+            {"type": "text", "attr": "friend", "content": f"锚点{index}"}
+            for index in range(1, 4)
         ]
 
         with (
@@ -515,7 +641,7 @@ class LocalWechatReaderTests(unittest.TestCase):
                     {"username": "wxid_b", "nick_name": "张三", "remark": "", "alias": ""},
                 ]),
                 LocalWechatCommandResult(True, data=[
-                    {"chat": "张三", "username": "wxid_a", "last_message": "锚点4"},
+                    {"chat": "张三", "username": "wxid_a", "last_message": "锚点3"},
                 ]),
             ]
 
@@ -533,7 +659,7 @@ class LocalWechatReaderTests(unittest.TestCase):
     def test_history_disambiguation_skips_too_many_candidates_before_history_reads(self):
         anchor_messages = [
             {"type": "text", "attr": "friend", "content": f"锚点{index}"}
-            for index in range(1, 6)
+            for index in range(1, 5)
         ]
 
         with (

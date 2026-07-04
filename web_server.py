@@ -7500,12 +7500,31 @@ def find_free_port(start_port=10001, max_port=11000):
     raise RuntimeError("未找到可用端口")
 
 
+def _quiet_noisy_third_party_loggers():
+    noisy_loggers = {
+        'httpcore',
+        'httpx',
+        'openai',
+        'openai._base_client',
+        'wxautox4',
+    }
+    wxautox_version = _get_wxautox_version()
+    if wxautox_version:
+        noisy_loggers.add(f'wxautox4({wxautox_version})')
+    for logger_name in logging.root.manager.loggerDict:
+        if str(logger_name).startswith('wxautox4('):
+            noisy_loggers.add(str(logger_name))
+    for logger_name in noisy_loggers:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
 def main():
     logging.basicConfig(
         level=logging.WARNING,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[logging.NullHandler()]
     )
+    _quiet_noisy_third_party_loggers()
     # 屏蔽 werkzeug 的 INFO 级别访问日志（如 /get_logs、/get_status 轮询请求）
     # WARNING 及以上（如端口冲突、路由错误）仍正常输出
     logging.getLogger('werkzeug').setLevel(logging.WARNING)
