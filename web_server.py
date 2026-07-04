@@ -6478,20 +6478,32 @@ def contact_profiles_refresh_batch():
         completed = bool(result.get("completed", False))
         stopped_reason = str(result.get("stopped_reason", "") or "").strip()
         stopped_early = bool(result.get("stopped_early", False))
-        summary_message = (
-            f"本轮读取 {read_item_count} 条，本轮新增 {new_unique_count} 个唯一联系人，"
-            f"当前共 {directory_total_unique_count} 个联系人"
-        )
-        if stopped_reason == "manual_cap_reached":
-            summary_message = "标准建档已到 50 人上限，" + summary_message
-        elif stopped_reason == "stalled":
-            summary_message = "建档疑似卡住，已停止重试，" + summary_message
-        elif completed:
-            summary_message = "通讯录已读取完成，" + summary_message
-        elif stopped_early:
-            summary_message = "已停止建档，" + summary_message
+        local_contact_source = bool(result.get("local_contact_source", False))
+        if local_contact_source:
+            summary_message = (
+                f"本地快照建档完成，本次读取 {read_item_count} 个好友，"
+                f"本轮新增 {new_unique_count} 个唯一联系人，当前档案共 {directory_total_unique_count} 个联系人"
+            )
+            if stopped_early:
+                summary_message = "已停止建档，" + summary_message
+        else:
+            summary_message = (
+                f"本轮读取 {read_item_count} 条，本轮新增 {new_unique_count} 个唯一联系人，"
+                f"当前档案共 {directory_total_unique_count} 个联系人"
+            )
+            if stopped_reason == "manual_cap_reached":
+                summary_message = "标准建档已到 50 人上限，" + summary_message
+            elif stopped_reason == "stalled":
+                summary_message = "建档疑似卡住，已停止重试，" + summary_message
+            elif completed:
+                summary_message = "通讯录已读取完成，" + summary_message
+            elif stopped_early:
+                summary_message = "已停止建档，" + summary_message
         if stopped_early:
-            log('WARNING', f'[通讯录维护] {mode_label}已停止，本次读取 {total_count} 个好友')
+            source_text = '本地快照读取' if local_contact_source else '本次读取'
+            log('WARNING', f'[通讯录维护] {mode_label}已停止，{source_text} {total_count} 个好友')
+        elif local_contact_source:
+            log('SUCCESS', f'[通讯录维护] {mode_label}完成，本地快照读取 {total_count} 个好友')
         else:
             log('SUCCESS', f'[通讯录维护] {mode_label}完成，本次读取 {total_count} 个好友')
         return jsonify({
@@ -6610,9 +6622,11 @@ def relationship_scan_manual_scan():
         _require_running_contact_profiles_wx_id()
         result = bot.scan_relationship_sessions()
         count = len(result.get('sessions') or [])
+        scan_source = str(result.get('scan_source') or ((result.get('payload') or {}).get('summary') or {}).get('last_scan_source') or '').strip()
+        source_label = '本地快照' if scan_source == 'wechat_cli' else '微信界面'
         return jsonify({
             'status': 'success',
-            'message': f'关系扫描完成，本轮读取 {count} 个会话',
+            'message': f'关系扫描完成，{source_label}读取 {count} 个会话',
             'payload': result.get('payload') or {},
         })
     except ValueError as e:
@@ -6644,7 +6658,9 @@ def _relationship_full_scan_worker():
             log('INFO', '[关系扫描] 全量扫描已在运行，本次后台任务退出')
             return
         count = len(result.get('sessions') or [])
-        log('INFO', f'[关系扫描] 后台全量扫描完成，本轮读取 {count} 个会话')
+        scan_source = str(result.get('scan_source') or '').strip()
+        source_label = '本地快照' if scan_source == 'wechat_cli' else '微信界面'
+        log('INFO', f'[关系扫描] 后台全量扫描完成，{source_label}读取 {count} 个会话')
     except Exception as e:
         log('ERROR', f'[关系扫描] 后台全量扫描失败：{e}')
         try:

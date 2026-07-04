@@ -15,6 +15,7 @@ from feature.relationship_scan import (
     clear_state,
     due_for_auto_scan,
     due_for_wechat_tag_sync,
+    load_state,
     merge_state_into_contact_directory,
     normalize_settings,
     pending_sync_records,
@@ -103,6 +104,8 @@ class RelationshipScanTests(unittest.TestCase):
         self.assertEqual(record["name"], "阿英2")
         self.assertEqual(record["status"], STATUS_BLOCKED)
         self.assertEqual(record["source"], "session_preview")
+        self.assertEqual(result["scan_source"], "wechat_cli")
+        self.assertEqual(result["payload"]["summary"]["last_scan_source"], "wechat_cli")
 
     def test_missing_from_scan_does_not_recover(self):
         state = {
@@ -357,11 +360,13 @@ class RelationshipScanTests(unittest.TestCase):
 
             with patch("feature.relationship_scan._read_local_sessions", return_value=local_sessions) as read_local:
                 result = check_auto_scan(bot, now=now)
+            summary = relationship_scan_summary(load_state(tmp, "wxid_test"))
 
         self.assertTrue(result)
         read_local.assert_called_once()
         self.assertEqual(read_local.call_args.kwargs["limit"], 1000)
         self.assertEqual(calls, [])
+        self.assertEqual(summary.get("last_scan_source"), "wechat_cli")
 
     def test_default_wechat_tag_sync_interval_is_ten_minutes(self):
         self.assertEqual(normalize_settings({})["sync_interval_minutes"], 10)
@@ -514,6 +519,7 @@ class RelationshipScanTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertEqual(read_local.call_args.kwargs["limit"], 10000)
         self.assertEqual(result["payload"]["summary"]["last_scan_mode"], "full")
+        self.assertEqual(result["payload"]["summary"]["last_scan_source"], "wechat_cli")
         self.assertEqual(result["payload"]["summary"]["last_scan_count"], 1)
         self.assertEqual(result["state"]["records"][0]["status"], STATUS_DELETED)
         self.assertEqual(result["payload"]["summary"]["full_scan_progress"]["scrolled_rounds"], 0)

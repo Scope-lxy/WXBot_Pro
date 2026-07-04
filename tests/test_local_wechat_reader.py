@@ -151,6 +151,23 @@ class LocalWechatReaderTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(run.call_args.args[0], ["contacts", "--limit", "30000"])
 
+    def test_contacts_reader_filters_non_friend_directory_entries(self):
+        with patch("core.local_wechat_reader.run_wechat_cli_json") as run:
+            run.return_value = LocalWechatCommandResult(True, data=[
+                {"username": "wxid_friend", "nick_name": "阿英2", "remark": "A0-阿英2"},
+                {"username": "12345@chatroom", "nick_name": "测试群", "remark": ""},
+                {"username": "25984984907045214@openim", "nick_name": "企业微信联系人", "remark": ""},
+                {"username": "filehelper", "nick_name": "文件传输助手", "remark": ""},
+                {"username": "gh_158599a58f81", "nick_name": "公众号", "remark": ""},
+                {"username": "weixinguanhaozhushou", "nick_name": "微信公众平台", "remark": ""},
+                {"username": "wxid_empty_nick", "nick_name": "", "remark": ""},
+            ])
+
+            result = read_local_contacts_with_status(limit=10)
+
+        self.assertTrue(result.ok)
+        self.assertEqual([item["wxid"] for item in result.items], ["wxid_friend"])
+
     def test_read_local_sessions_maps_last_message_and_filters_groups(self):
         with patch("core.local_wechat_reader.run_wechat_cli_json") as run:
             run.return_value = LocalWechatCommandResult(True, data=[

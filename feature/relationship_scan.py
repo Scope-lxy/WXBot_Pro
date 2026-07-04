@@ -138,6 +138,7 @@ def default_state(wx_id: str) -> dict[str, Any]:
             "last_auto_scan_at": "",
             "last_scan_at": "",
             "last_scan_mode": "",
+            "last_scan_source": "",
             "last_scan_count": 0,
             "last_wechat_tag_sync_at": "",
             "full_scan_running": False,
@@ -483,6 +484,7 @@ def relationship_scan_summary(state: dict[str, Any], *, now: Any = None) -> dict
         "auto_scan_enabled": bool((state.get("settings") or {}).get("auto_scan_enabled", True)),
         "last_scan_at": _clean_text(runtime.get("last_scan_at")),
         "last_scan_mode": _clean_text(runtime.get("last_scan_mode")),
+        "last_scan_source": _clean_text(runtime.get("last_scan_source")),
         "last_scan_count": int(runtime.get("last_scan_count", 0) or 0),
         "full_scan_running": bool(runtime.get("full_scan_running", False)),
         "full_scan_progress": dict(full_scan_progress),
@@ -575,27 +577,34 @@ def _read_local_sessions(bot, *, limit: int = CLI_SESSION_SCAN_LIMIT) -> list[di
     return None
 
 
-def _read_sessions(bot, *, prefer_local: bool = True) -> list[dict[str, str]]:
+def _read_sessions_with_source(bot, *, prefer_local: bool = True) -> tuple[list[dict[str, str]], str]:
     if prefer_local:
         local_sessions = _read_local_sessions(bot)
         if local_sessions is not None:
-            return local_sessions
+            return local_sessions, "wechat_cli"
     get_session = getattr(getattr(bot, "wx", None), "GetSession", None)
     if not callable(get_session):
-        return []
+        return [], "wxauto_ui"
     with warn_slow_wechat_ui_action("GetSession()"):
-        return normalize_session_items(get_session())
+        return normalize_session_items(get_session()), "wxauto_ui"
+
+
+def _read_sessions(bot, *, prefer_local: bool = True) -> list[dict[str, str]]:
+    sessions, _source = _read_sessions_with_source(bot, prefer_local=prefer_local)
+    return sessions
 
 
 def scan_current_sessions(bot, *, mode: str = "manual", acquire_lock: bool = True) -> dict[str, Any]:
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化")
+    scan_source = "wechat_cli"
     if not acquire_lock:
-        sessions = _read_sessions(bot)
+        sessions, scan_source = _read_sessions_with_source(bot)
     else:
         sessions = _read_local_sessions(bot)
         if sessions is None:
             log(level="WARNING", message="[关系扫描] 手动扫描回退微信界面读取会话")
+            scan_source = "wxauto_ui"
             lock = bot._get_wechat_action_lock()
             with lock:
                 sessions = _read_sessions(bot, prefer_local=False)
@@ -605,11 +614,12 @@ def scan_current_sessions(bot, *, mode: str = "manual", acquire_lock: bool = Tru
     runtime = state.setdefault("runtime", {})
     runtime["last_scan_at"] = _iso_timestamp()
     runtime["last_scan_mode"] = _clean_text(mode) or "manual"
+    runtime["last_scan_source"] = scan_source
     runtime["last_scan_count"] = len(sessions)
     if mode == "auto":
         runtime["last_auto_scan_at"] = runtime["last_scan_at"]
     state = _save_bot_state(bot, state)
-    return {"sessions": sessions, "state": state, "payload": relationship_scan_payload(state)}
+    return {"sessions": sessions, "state": state, "payload": relationship_scan_payload(state), "scan_source": scan_source}
 
 
 def request_stop_full_scan(bot) -> dict[str, Any]:
@@ -690,6 +700,7 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_r
         runtime["stop_requested"] = False
         runtime["last_scan_at"] = _iso_timestamp()
         runtime["last_scan_mode"] = "full"
+        runtime["last_scan_source"] = "wechat_cli"
         runtime["last_scan_count"] = len(local_sessions)
         runtime["full_scan_progress"] = {
             "status": "completed",
@@ -699,10 +710,10 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_r
             "max_scrolls": max(1, int(max_scrolls or 1)),
             "unique_count": len(local_sessions),
             "last_name": _clean_text((local_sessions[-1] or {}).get("name")) if local_sessions else "",
-            "message": f"全量扫描完成，读取 {len(local_sessions)} 个会话",
+            "message": f"本地全量扫描完成，读取 {len(local_sessions)} 个会话",
         }
         state = _save_bot_state(bot, state)
-        return {"sessions": local_sessions, "state": state, "payload": relationship_scan_payload(state)}
+        return {"sessions": local_sessions, "state": state, "payload": relationship_scan_payload(state), "scan_source": "wechat_cli"}
 
     sessions_by_name: dict[str, dict[str, str]] = {}
     stale_rounds = 0
@@ -788,6 +799,7 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_r
     runtime = state.setdefault("runtime", {})
     runtime["last_scan_at"] = _iso_timestamp()
     runtime["last_scan_mode"] = "full"
+    runtime["last_scan_source"] = "wxauto_ui"
     runtime["last_scan_count"] = len(sessions)
     runtime["full_scan_progress"] = {
         "status": "completed",
@@ -797,10 +809,10 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_r
         "max_scrolls": max(1, int(max_scrolls or 1)),
         "unique_count": len(sessions),
         "last_name": _clean_text((sessions[-1] or {}).get("name")) if sessions else "",
-        "message": f"全量扫描完成，读取 {len(sessions)} 个会话",
+        "message": f"界面全量扫描完成，读取 {len(sessions)} 个会话",
     }
     state = _save_bot_state(bot, state)
-    return {"sessions": sessions, "state": state, "payload": relationship_scan_payload(state)}
+    return {"sessions": sessions, "state": state, "payload": relationship_scan_payload(state), "scan_source": "wxauto_ui"}
 
 
 def due_for_auto_scan(state: dict[str, Any], *, now: Any = None) -> bool:
@@ -855,6 +867,7 @@ def check_auto_scan(bot, *, now: Any = None) -> bool:
     runtime["last_cli_auto_scan_at"] = runtime["last_auto_scan_at"]
     runtime["last_scan_at"] = runtime["last_auto_scan_at"]
     runtime["last_scan_mode"] = "auto"
+    runtime["last_scan_source"] = "wechat_cli"
     runtime["last_scan_count"] = len(sessions)
     _save_bot_state(bot, state)
     process_pending_wechat_tag_sync(bot, now=now)

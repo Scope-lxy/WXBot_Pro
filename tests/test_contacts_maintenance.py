@@ -966,6 +966,48 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         self.assertEqual(settings["count"], 50)
 
+    def test_run_to_completion_local_snapshot_bypasses_manual_fifty_cap(self):
+        log_messages = []
+
+        class FakeWeChat:
+            def GetFriendDetails(self, **_kwargs):
+                raise AssertionError("local snapshot should not read contacts through wxauto")
+
+            def SwitchToChat(self):
+                pass
+
+        class FakeBot:
+            wx = FakeWeChat()
+            _local_wechat_reader_enabled = True
+
+            def _load_contact_profiles_directory(self):
+                return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
+
+        local_contacts = [
+            {
+                "微信号": f"aying{index}",
+                "wxid": f"wxid_aying{index}",
+                "昵称": f"阿英{index}",
+                "备注": f"A0-阿英{index}",
+            }
+            for index in range(1, 121)
+        ]
+
+        with (
+            patch("feature.contacts.read_local_contacts_with_status") as read_local,
+            patch("feature.contacts.save_contact_directory"),
+            patch("feature.contacts.load_contact_directory", return_value={"subjects": [], "maintenance": {}}),
+            patch("feature.contacts.log", side_effect=lambda **kwargs: log_messages.append(kwargs.get("message", ""))),
+        ):
+            read_local.return_value = SimpleNamespace(ok=True, items=local_contacts, error="")
+            result = refresh_contact_profiles_batch(FakeBot(), mode="standard", run_to_completion=True)
+
+        self.assertTrue(result["completed"])
+        self.assertTrue(result["local_contact_source"])
+        self.assertEqual(result["stopped_reason"], "directory_complete")
+        self.assertEqual(result["count_returned"], 120)
+        self.assertFalse(any("50 人上限" in message for message in log_messages))
+
     def test_auto_maintenance_batch_size_policy(self):
         self.assertEqual(normalize_auto_maintenance_batch_size(20), 20)
         self.assertEqual(normalize_auto_maintenance_batch_size(50), 50)

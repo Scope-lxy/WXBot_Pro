@@ -40,6 +40,8 @@ SYSTEM_CONTACT_USERNAMES = {
     "floatbottle",
     "mphelper",
     "brandsessionholder",
+    "filehelper",
+    "weixinguanhaozhushou",
 }
 
 HISTORY_LINE_RE = re.compile(r"^\[(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]\s+(?P<sender>.*?):\s*(?P<body>.*)$", re.S)
@@ -656,6 +658,12 @@ def _is_system_or_public_contact(item: dict[str, Any]) -> bool:
     if username in SYSTEM_CONTACT_USERNAMES:
         return True
     if username.startswith("gh_"):
+        return True
+    if username.endswith("@chatroom"):
+        return True
+    if "@openim" in username:
+        return True
+    if not _clean_text(item.get("nick_name") or item.get("nickname")):
         return True
     return False
 

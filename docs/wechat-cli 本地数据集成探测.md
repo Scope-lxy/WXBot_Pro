@@ -1,6 +1,6 @@
-# wechat-cli 本地数据集成探测
+# wechat-cli 本地数据集成
 
-`tools/wechat_cli_probe.py` 用于评估 `wechat-cli` 是否适合作为 WXBot 的可选只读数据源。
+`wechat-cli` 是 WXBot 当前集成的本地微信数据库只读数据源，主要用于加速通讯录维护、私聊聊天记录自动补全和关系扫描。`tools/wechat_cli_probe.py` 仍可用于只读探测工具是否可执行，但日常运行优先依赖启动脚本和状态面板自动检测。
 
 推荐把 `wechat-cli` 可执行文件放在项目现有外部工具目录：
 
@@ -46,17 +46,17 @@ $env:PYTHONIOENCODING='utf-8'
 .\venv\Scripts\python.exe -X utf8 .\tools\wechat_cli_probe.py --json
 ```
 
-## 后续集成原则
+## 当前集成原则
 
-- `wechat-cli` 作为可选外部工具，不放进 WXBot 核心依赖。
-- 补洞、通讯录读取优先尝试本地只读数据源；失败立即回退 wxautox4。
+- `wechat-cli` 作为项目级外部工具，安装在 `venv/tools/wechat-cli/`，不放进 WXBot 主 `venv` 的业务依赖清单。
+- 通讯录维护、聊天记录自动补全和关系扫描优先尝试本地只读数据源；失败时按具体场景处理，不能把偶发失败缓存成“永久不可用”。
 - 多账号环境不能只相信 `wechat-cli` 自动目录检测：WXBot 会把 wxautox4 识别到的当前账号命名空间和 `wechat-cli` 当前 `db_dir` 做绑定。首次绑定或目录变化时，会向文件传输助手发送一条 `校验时间：YYYY-MM-DD HH:MM:SS` 的简短消息，并用 `wechat-cli search` 命中后才保存绑定。
-- wxautox4 未授权、机器人未启动、无法切到文件传输助手或校验消息未被 `wechat-cli` 搜到时，不保存绑定；通讯录和补洞继续回退 wxautox4。
+- wxautox4 未授权、机器人未启动、无法切到文件传输助手或校验消息未被 `wechat-cli` 搜到时，不保存绑定；补洞和手动通讯录入口可按原 wxautox4 路径兜底，自动通讯录维护和自动关系扫描只告警并跳过本轮。
 - 本地源只做数据搬运和格式适配：成功提取的数据必须优先按 WXBot 现有字段、标准和 JSON 格式合并，不因为 `wechat-cli` 能拿到更多信息就新增联系人或历史记录字段。
 - 只记录可用性和耗时，不记录聊天内容、密钥、数据库内容。
 - 发送消息、改备注、打标签等写操作仍由 wxautox4 负责。
 
-## 当前探测结论
+## 当前集成结论
 
 - `wechat-cli --help` / `--version` 可用，版本为 `0.2.4`。
 - `init` 自动检测未覆盖当前机器的数据目录；手动传入 `db_storage` 后初始化成功。
@@ -65,6 +65,14 @@ $env:PYTHONIOENCODING='utf-8'
 - 已验证 `sessions` 和 `unread` 可用，单次耗时约 `300ms`。
 - 已验证 `history "私聊名" --limit 20` 可用，单次耗时约 `370ms`，返回结构包含 `chat`、`username`、`count`、`messages` 等字段。
 - Windows 下运行真实读库命令时需要设置 `PYTHONIOENCODING=utf-8`，否则包含特殊字符的 JSON 可能被 GBK 控制台编码打断。
+
+## 当前运行参数
+
+- 通讯录：WXBot 保存最多 `10000` 个好友；底层会向 `wechat-cli contacts` 请求最多 `30000` 条原始行，用于过滤系统号、公众号后尽量拿满好友。CLI 自动维护固定约 `6000` 秒执行一次，不受面板分批维护参数控制。
+- 私聊补洞：按 `memory_context_count` 读取最近 `60 ~ 210` 条本地历史，只把缺失记录补进 WXBot 现有聊天记录 JSON，不整套替换。
+- 补洞消歧：同名联系人先查最多 `100` 个联系人候选，再用最近 `100` 个会话缩小范围；候选超过 `5` 个直接放弃 CLI；候选历史最多各读 `50` 条，必须连续命中最近 `5` 条锚点才允许定位到该 wxid。
+- 关系扫描：自动 CLI 扫描 `1000` 会话 / `6000` 秒；手动立即扫描 `1000` 会话；手动全量扫描最多 `10000` 会话。删除 / 拉黑判断只看会话最后一条消息。
+- 状态面板：`wechat-cli 当前状态` 会自动检测可用性；`检查更新` 只提示远端是否有新提交，不自动更新。
 
 ## 外部项目发现
 
@@ -76,10 +84,9 @@ $env:PYTHONIOENCODING='utf-8'
 - `wechat-cli` 有一个未合并 PR 修复 Windows 4.x 自动目录检测和 GBK 输出崩溃；当前集成层需要自行设置 UTF-8 输出并允许手动指定 `db_storage`。
 - `wechat-cli` 有未合并 PR 暴露链接 URL、展开合并转发聊天记录、增加 schema/fields/ndjson/has_more 等 AI 友好能力；后续如果要强化链接和聊天记录转发，可借鉴这些 PR 的实现思路。
 
-## 对 WXBot 的集成启发
+## 后续增强方向
 
-- 通讯录可先用 `wechat-cli contacts/detail` 接入，收益最大、风险最低。
-- 通讯录在 WXBot 里应按“本地快照”理解，而不是模拟 wxautox4 分批滚动：手动建档一次性提取全部可读联系人；自动维护定期拉取最新快照校准本地资料，成功时不再走游标/分批/微信锁。
-- 补洞可先接 `wechat-cli history` 的文本、图片、链接、名片、聊天记录转发占位；本地源不受 UI 可见区域限制，当前内部读取上限可高于 wxautox4 的 `30/50`，但仍要按 WXBot 现有记忆字段归一化，对原始 XML 做清洗后再写入 WXBot 记忆。
+- 通讯录已经按“本地快照”接入：手动建档一次性提取全部可读联系人；自动维护定期拉取最新快照校准本地资料，成功时不再走游标/分批/微信锁。
+- 补洞已经接入 `wechat-cli history` 的文本、图片、链接、名片、聊天记录转发占位；本地源不受 UI 可见区域限制，但仍按 WXBot 现有记忆字段归一化，对原始 XML 做清洗后再写入 WXBot 记忆。
 - 语音不要直接写 XML。短期保持 `[语音] 一条语音消息（未识别出文字）`；中期可增加 `VoiceInfo` 查询与转录缓存，但默认关闭。
 - 后续可在 WXBot 自己的适配层实现一个 `get_voice_messages`/`decode_voice` 的极简版本，而不是直接引入整个 `wechat-decrypt` 运行时。

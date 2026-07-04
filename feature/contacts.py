@@ -1267,6 +1267,7 @@ def refresh_contact_profiles_local_snapshot(
             "retry_count": 0,
             "stopped_reason": "paused" if externally_paused else "directory_complete",
             "run_kind": run_kind,
+            "local_contact_source": True,
             "read_item_count": len(raw_details),
             "new_unique_count": growth["new_unique_count"],
             "directory_total_unique_count": growth["directory_total_unique_count"],
@@ -1579,6 +1580,7 @@ def refresh_contact_profiles_single_batch(
             "retry_count": 0,
             "stopped_reason": "paused" if externally_paused else "",
             "run_kind": run_kind,
+            "local_contact_source": local_contact_source,
             "read_item_count": len(raw_details),
             "new_unique_count": growth["new_unique_count"],
             "directory_total_unique_count": growth["directory_total_unique_count"],
@@ -1725,6 +1727,10 @@ def refresh_contact_profiles_batch(
 
         analysis = result.get("analysis") or {}
         outcome = str(analysis.get("outcome") or "").strip()
+        if outcome == "local_full_scan_complete":
+            stopped_reason = "directory_complete"
+            result["completed"] = True
+            break
         if outcome in {"suspicious_repeat", "not_advanced", "empty_batch"}:
             if retry_count >= int(policy.get("retry_limit", 0) or 0):
                 stopped_reason = "stalled"
@@ -1767,6 +1773,8 @@ def refresh_contact_profiles_batch(
         growth = summarize_directory_growth(initial_directory, final_directory)
     if stopped_early:
         _bot_log(bot, message=f"[通讯录维护] {mode_label}已停止，本次共读取 {total_count} 个好友")
+    elif bool(last_result.get("local_contact_source")):
+        _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] {mode_label}完成，本地快照读取 {total_count} 个好友")
     elif stopped_reason == "manual_cap_reached":
         _bot_log(bot, message=f"[通讯录维护] {mode_label}达到 50 人上限，本次共读取 {total_count} 个好友")
     elif stopped_reason == "stalled":
@@ -1785,7 +1793,7 @@ def refresh_contact_profiles_batch(
     last_result["completed"] = stopped_reason == "directory_complete"
     last_result["new_unique_count"] = growth["new_unique_count"]
     last_result["directory_total_unique_count"] = growth["directory_total_unique_count"]
-    if stopped_reason == "directory_complete":
+    if stopped_reason == "directory_complete" and not bool(last_result.get("local_contact_source")):
         final_directory = mark_contact_directory_full_scan_completed(bot, final_directory, automatic=automatic)
         last_result["directory"] = final_directory
     return last_result

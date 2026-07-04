@@ -45,7 +45,7 @@
 -> 面板优先开放在 http://127.0.0.1:10001（被占用时顺延）
 ```
 
-`打开软件.bat` 现在自己维护 Python 依赖清单，不再读取外部 `requirements.txt`。它还会兜底 `ffmpeg` / `ffprobe`：优先复用系统 PATH 中已有工具；系统缺失时，自动下载到 `venv\tools\ffmpeg\`。图片压缩依赖 `Pillow`，脚本会在创建新虚拟环境时安装，并在复用旧虚拟环境时用 `import PIL` 补检。开发和打包都以 Python 3.12 为准。
+`打开软件.bat` 现在自己维护 Python 依赖清单，不再读取外部 `requirements.txt`。它还会兜底 `ffmpeg` / `ffprobe`：优先复用系统 PATH 中已有工具；系统缺失时，自动下载到 `venv\tools\ffmpeg\`。`wechat-cli` 也按项目级外部工具处理，优先使用 `venv\tools\wechat-cli\` 下的本地安装，缺失时自动创建隔离 `pyenv` 并从官方仓库安装；初始化时只有检测到唯一 `db_storage` 候选才会自动指定目录，多账号候选不会猜测绑定。图片压缩依赖 `Pillow`，脚本会在创建新虚拟环境时安装，并在复用旧虚拟环境时用 `import PIL` 补检。开发和打包都以 Python 3.12 为准。
 
 ### 2. 面板层
 
@@ -57,6 +57,7 @@
 - Prompt、人设近况、Prompt 预览、会话记忆、聊天记录、通讯录、素材转发、发圈任务、备份等页面 API。
 - 统一任务工作台 API：`/api/task-workbench/<module>` 与 `/api/task-workbench/<module>/runtime`。
 - 启动 / 停止机器人：`/start_bot` 在后台线程里创建 `WXBot` 并调用 `run()`；前端通过 `/get_startup_status` 轮询真实启动结果。`/stop_bot` 和更新 `wxautox4` 前的自动停机都会等待线程真正退出。
+- `wechat-cli` 状态卡：`/check_wechat_cli_status` 只检测工具、初始化、账号绑定和轻量读取能力；`/repair_wechat_cli_status` 触发重新检测 / 活体校验；`/check_wechat_cli_update` 只检查并提示上游 Git HEAD，不自动更新。
 
 ### 3. 机器人启动层
 
@@ -161,6 +162,7 @@
 - `data/config/webhook.json`：Webhook 配置
 - `data/config/reply_count.json`：私聊回复轮数限制计数
 - `data/config/runtime_metrics_v1.json`：状态面板、数据图表和管理员 `/状态` 使用的小时级运行统计，保留最近 365 天；统计失败只影响展示，不阻断业务流程
+- `data/config/wechat_cli_account_bindings.json`：`scope_*` 这类 wxautox4 账号命名空间到 `wechat-cli` 数据库目录的活体校验绑定
 - `data/prompt/`：人格模板和人格近况文件
 - `data/system_prompts/`：系统 Prompt 片段及其备份
 - `data/accounts/<wx_id>/memory/`：聊天记录
@@ -180,14 +182,15 @@
 
 ## 当前关键行为边界
 
-- 会话记忆页里的“带入最近聊天”只配置 `最近 N 条`。`memory_context_count` 最小值是 `1`，不要恢复成 `0=关闭上下文`，也不要恢复成按好友消息和机器人消息分开计数。
+- 会话记忆页里的“带入最近聊天”只配置 `最近 N 条`。`memory_context_count` 范围是 `1 ~ 200`，默认 `50`；不要恢复成 `0=关闭上下文`，也不要恢复成按好友消息和机器人消息分开计数。
 - 私聊上下文补洞只由聊天记录配置里的两个开关控制：`memory_context_repair_low_risk_switch` 默认开，`memory_context_repair_high_risk_switch` 默认关；不要把冷却、锚点数量、可见读取上限等内部参数重新暴露到 UI。
-- 当前自动回复前优先走低风险补洞：如果 `venv/tools/wechat-cli/` 下的本地只读工具已初始化，先从本地微信数据库读取最近上下文，内部上限 `300`；本地源失败会记录 `WARNING` 并回退当前私聊子窗口 `GetAllMessage()`，UI 读取内部上限仍为 `30`，同私聊冷却 `60` 秒；没有启动 / 恢复 / 尾部不匹配这类强原因时，冷却到期会以 `scheduled_low_risk_check` 做一次计划性低风险巡检。
-- `wechat-cli` 本地源必须先通过当前微信账号绑定校验：真实 `wxid_...` 可直接按目录匹配；`scope_*` 这类 wxautox4 命名空间必须先经文件传输助手活体校验并保存绑定。绑定缺失、目录变化或 wxautox4 未授权时只允许回退 wxautox4，不允许猜测使用某个 `db_storage`。
+- 当前自动回复前优先走低风险补洞：如果 `venv/tools/wechat-cli/` 下的本地只读工具已初始化并通过当前账号校验，先从本地微信数据库读取最近上下文；读取条数由 `memory_context_count` 归一到 `50 ~ 200` 后加 `10` 条锚点缓冲，即 `60 ~ 210`。本地源失败会记录 `WARNING` 并回退当前私聊子窗口 `GetAllMessage()`，UI 读取内部上限仍为 `30`，同私聊冷却 `60` 秒；没有启动 / 恢复 / 尾部不匹配这类强原因时，冷却到期会以 `scheduled_low_risk_check` 做一次计划性低风险巡检。
+- `wechat-cli` 本地源必须先通过当前微信账号绑定校验：真实 `wxid_...` 可直接按目录匹配；`scope_*` 这类 wxautox4 命名空间必须先经文件传输助手活体校验并保存绑定。绑定缺失、目录变化或 wxautox4 未授权时只允许回退 wxautox4，不允许猜测使用某个 `db_storage`。聊天名解析到多个联系人时，先查询最多 `100` 个联系人候选、再用最近 `100` 个会话缩小候选，并分别读取最多 `5` 个候选的最近 `50` 条历史；只有连续命中最近 `5` 条锚点时才允许用该 wxid 读取历史，否则回退 UI。
 - 锚点只用来判断当前读取结果是否能和本地历史对齐；实际补入按全量去重处理当前读取到的缺失消息，锚点前后的可见缺口都会按时间排序补入 memory。无锚点也会补入，因为更常见原因是本地记录落后太多。该机制必须排除群聊，包括 `chat_type == "group"` 和已配置在 `config.group` 的对象。
 - 高风险补洞机制尚未完善，默认关闭；只允许在 `_repair_private_context_before_ai()` 中由低风险无锚点、`memory_context_repair_high_risk_switch=True`、高风险冷却允许、微信操作锁可用共同触发。UI 历史读取内部上限 `50`，同私聊冷却 `3600` 秒；如果本地数据库已读取到上下文，不再额外触发高风险 UI 历史读取。
 - 补洞日志要克制：低风险 / 高风险冷却中、微信操作锁繁忙属于正常让路，不写日志；本地源失败要写 `WARNING` 并继续尝试回退，不缓存“永久不可用”；低风险 `GetAllMessage()` 超过 `10` 秒仍保留 `WARNING` 慢操作告警，方便观察微信 UI 卡顿；真正失败和高风险读取异常继续告警。
-- 通讯录维护优先使用本地微信数据库快照：手动建档会一次性提取全部可读联系人并按现有联系人字段合并；自动维护到期时优先定期拉取一份最新快照校准本地资料，成功后不进入游标/分批/微信锁逻辑。本地源失败写 `WARNING` 后回退 wxautox4 的原分批维护链路；发送、改备注、打标签等写操作仍只能走 wxautox4。
+- 通讯录维护优先使用本地微信数据库快照：手动建档会一次性提取最多 `10000` 个可读好友并按现有联系人字段合并，底层会向 `wechat-cli contacts` 请求最多 `30000` 条原始行用于过滤系统号、公众号、群聊、企业微信 / openim、文件传输助手、空昵称等非普通联系人；自动维护固定约 `6000` 秒拉取一份最新快照校准本地资料，成功后不进入游标/分批/微信锁逻辑。本地源失败时，手动入口可回退 wxautox4 原分批维护链路；自动维护只写 `WARNING` 并跳过本轮，不主动回退 UI。发送、改备注、打标签等写操作仍只能走 wxautox4。`wechat-cli contacts` 目前只提供 `username / nick_name / remark`，不能仅为贴近微信界面数量而按昵称或 `wxid_...` 模式猜删疑似联系人。
+- 关系扫描优先使用本地会话快照：自动 CLI 扫描固定 `1000` 会话 / `6000` 秒，手动立即扫描 `1000` 会话，手动全量扫描最多 `10000` 会话。自动扫描本地源失败只告警并跳过本轮；手动扫描失败才允许回退微信界面。删除 / 拉黑状态只看会话最后一条消息是否命中对应提示，不搜索旧历史。
 - 图片回复按“最终回复接口是否支持视觉”分两条路径：支持视觉时直接把 `image_path/image_paths` 传给回复接口；不支持视觉时先走 `core/vision_bridge.py` 生成结构化视觉笔记，再把视觉笔记贴近当前 user 消息交给主回复模型。`image_parse.md` 只放图片处理规则，不再塞具体图片解析结果。
 - 图片消息本地记忆使用 `[图片]` + `image_paths` + `visual_notes`。AI 可见 `history` 统一走 `core/chat_history_format.py::build_model_visible_history(...)` 渲染，不把本地绝对路径喂给 AI；历史图片等媒体消息作为最近 N 条真实消息的一部分保留，不再按媒体条数单独裁剪。语音在面板展示保留 `[语音]文本`，AI 可见 history 和当前轮输入只传转写正文，不带 `[语音]` 标签或语音时长；旧回复若已把 `[语音]` 当普通文本写入记忆，模型可见层会剥掉开头标签，不需要清库。语音转文字失败或空内容不作为普通聊天内容污染 history。链接、小程序、视频、名片等保留必要类型壳和语义内容，视频去掉“下载”按钮字样但保留时长。
 - `wxauto_save/` 是微信下载原件和 AI 图片压缩副本的统一缓存区。AI 图片副本由 `core/media.py::prepare_ai_image_path(...)` 生成，最长边限制为 `2048`，照片类优先 JPEG，透明图、PNG、BMP、GIF 首帧保留 PNG。机器人启动时会按 `wxauto_save_cache_retention_days` 清理旧文件，并顺手移除变空的子目录；可选值为 `0/7/30/90/180/360`，其中 `0` 表示不清理，不要为 `compress_images/` 等子目录另起独立保留策略。
