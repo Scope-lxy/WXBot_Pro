@@ -167,7 +167,9 @@ from feature.voice_reply import (
 from core.contact_profiles import (
     directory_path as contact_directory_path,
     load_directory as load_contact_directory,
+    mark_history_target_status,
     merge_directory as merge_contact_directory,
+    resolve_directory_history_target,
     resolve_manual_target_names,
     resolve_target_selector,
     save_directory as save_contact_directory,
@@ -529,6 +531,8 @@ class WXBot:
         self._incoming_seen_ids = {}
         self._incoming_seen_fingerprints = {}
         self._wechat_action_lock = threading.RLock()
+        self._contact_cli_identity_sync_lock = threading.Lock()
+        self._local_history_verification_candidates = {}
         self._chat_merge_lock = threading.Lock()
         self._chat_send_locks = {}
         self._material_source_read_locks = {}
@@ -2399,6 +2403,9 @@ class WXBot:
 
     def _check_contact_directory_auto_maintenance(self, now=None):
         return contacts.check_contact_directory_auto_maintenance(self, now=now)
+
+    def _check_contact_directory_cli_identity_auto_sync(self, now=None):
+        return contacts.check_contact_directory_cli_identity_auto_sync(self, now=now)
 
     def relationship_scan_payload(self):
         state = relationship_scan.load_state(self.config.DATA_DIR, str(getattr(self, "wx_id", "") or "default"))
@@ -5520,20 +5527,19 @@ class WXBot:
         if getattr(self, "_local_wechat_reader_enabled", True) is False:
             return []
         max_limit = LOCAL_CONTEXT_REPAIR_MAX_LIMIT + LOCAL_CONTEXT_REPAIR_ANCHOR_BUFFER
-        result = read_local_history_messages_with_status(
-            chat_name,
-            limit=max(1, min(max_limit, int(limit or max_limit))),
-            expected_wx_id=(
-                getattr(self, "wx_id", "")
-                or getattr(getattr(self, "config", None), "current_account_wx_id", "")
-            ),
-            anchor_messages=anchor_messages,
-            chat_type=chat_type,
-        )
         label = "群聊" if str(chat_type or "").strip().lower() == "group" else "私聊"
-        diagnostic = result.diagnostic if isinstance(getattr(result, "diagnostic", None), dict) else {}
-        diagnostic_text = ""
-        if diagnostic:
+        normalized_chat_type = str(chat_type or "").strip().lower() or "private"
+        expected_wx_id = (
+            getattr(self, "wx_id", "")
+            or getattr(getattr(self, "config", None), "current_account_wx_id", "")
+        )
+        read_limit = max(1, min(max_limit, int(limit or max_limit)))
+
+        def diagnostic_suffix(result):
+            diagnostic = result.diagnostic if isinstance(getattr(result, "diagnostic", None), dict) else {}
+            diagnostic_text = ""
+            if not diagnostic:
+                return diagnostic, diagnostic_text
             diagnostic_parts = []
             for key, label_text in (
                 ("history_target", "target"),
@@ -5549,9 +5555,72 @@ class WXBot:
                 diagnostic_parts.append(f"{label_text}={value}{suffix}")
             if diagnostic_parts:
                 diagnostic_text = "，诊断 " + " ".join(diagnostic_parts)
-        if result.ok and result.items:
-            log(message=f"{label} {chat_name}：已从本地微信数据库读取上下文 {len(result.items)} 条{diagnostic_text}")
-            return list(result.items)
+            return diagnostic, diagnostic_text
+
+        def remember_history_candidate(result, source):
+            if normalized_chat_type == "group":
+                return
+            diagnostic = result.diagnostic if isinstance(getattr(result, "diagnostic", None), dict) else {}
+            history_target = str((diagnostic or {}).get("history_target") or "").strip()
+            if not history_target:
+                return
+            try:
+                candidates = getattr(self, "_local_history_verification_candidates", None)
+                if not isinstance(candidates, dict):
+                    candidates = {}
+                    setattr(self, "_local_history_verification_candidates", candidates)
+                candidates[chat_name] = {
+                    "history_target": history_target,
+                    "source": source,
+                    "expected_wx_id": expected_wx_id,
+                }
+            except Exception as exc:
+                log(level="WARNING", message=f"私聊 {chat_name}：本地 wxid 验证候选记录失败：{exc}")
+
+        preferred_target = ""
+        if normalized_chat_type != "group":
+            try:
+                directory, _directory_file, _wx_id = self._load_contact_profiles_directory()
+                resolved = resolve_directory_history_target(directory, chat_name, chat_type=normalized_chat_type)
+                if resolved.get("ok"):
+                    preferred_target = str(resolved.get("target") or "").strip()
+            except Exception as exc:
+                log(level="WARNING", message=f"私聊 {chat_name}：读取本地通讯录 wxid 失败，改用 CLI 实时解析：{exc}")
+
+        first_result = read_local_history_messages_with_status(
+            chat_name,
+            limit=read_limit,
+            expected_wx_id=expected_wx_id,
+            anchor_messages=anchor_messages,
+            chat_type=chat_type,
+            preferred_history_target=preferred_target,
+            preferred_resolution_source="directory_wxid" if preferred_target else "",
+        )
+        diagnostic, diagnostic_text = diagnostic_suffix(first_result)
+        if first_result.ok and first_result.items:
+            remember_history_candidate(first_result, "directory_history_success" if preferred_target else "cli_history_success")
+            log(message=f"{label} {chat_name}：已从本地微信数据库读取上下文 {len(first_result.items)} 条{diagnostic_text}")
+            return list(first_result.items)
+
+        result = first_result
+        if preferred_target and not first_result.ok:
+            log(
+                level="WARNING",
+                message=f"{label} {chat_name}：本地通讯录 wxid 直连读取失败，尝试 CLI 实时解析：{first_result.error}{diagnostic_text}",
+            )
+            result = read_local_history_messages_with_status(
+                chat_name,
+                limit=read_limit,
+                expected_wx_id=expected_wx_id,
+                anchor_messages=anchor_messages,
+                chat_type=chat_type,
+            )
+            diagnostic, diagnostic_text = diagnostic_suffix(result)
+            if result.ok and result.items:
+                remember_history_candidate(result, "cli_fallback_history_success")
+                log(message=f"{label} {chat_name}：CLI 实时解析后读取上下文 {len(result.items)} 条{diagnostic_text}")
+                return list(result.items)
+
         if not result.ok:
             fallback_text = "已跳过本地补洞" if label == "群聊" else "已回退微信界面读取"
             level = "INFO" if label == "群聊" else "WARNING"
@@ -5560,6 +5629,32 @@ class WXBot:
                 message=f"{label} {chat_name}：本地微信数据库读取上下文失败，{fallback_text}：{result.error}{diagnostic_text}",
             )
         return []
+
+    def _mark_local_history_candidate_verified(self, chat_name):
+        candidates = getattr(self, "_local_history_verification_candidates", None)
+        if not isinstance(candidates, dict):
+            return
+        candidate = candidates.pop(str(chat_name or "").strip(), None)
+        if not isinstance(candidate, dict):
+            return
+        history_target = str(candidate.get("history_target") or "").strip()
+        if not history_target:
+            return
+        expected_wx_id = str(candidate.get("expected_wx_id") or "").strip()
+        try:
+            directory, _directory_file, wx_id = self._load_contact_profiles_directory()
+            updated = mark_history_target_status(
+                directory,
+                chat_name,
+                history_target,
+                wx_id=wx_id or expected_wx_id,
+                status="verified",
+                source=str(candidate.get("source") or "history_anchor_verified"),
+                now=datetime.now(),
+            )
+            self._save_contact_profiles_directory(updated)
+        except Exception as exc:
+            log(level="WARNING", message=f"私聊 {chat_name}：本地 wxid 验证状态回写失败：{exc}")
 
     def _read_high_risk_context_messages(self, chat, limit):
         get_history, strategy = self._material_history_reader(
@@ -5708,6 +5803,8 @@ class WXBot:
                 chat_type="private",
             )
             if plan.anchor_found and plan.messages_to_append:
+                if local_context_source:
+                    self._mark_local_history_candidate_verified(chat_name)
                 result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
                 log(
                     message=(
@@ -5717,6 +5814,8 @@ class WXBot:
                 )
                 local_history = self.memory_manager.get_messages(memory_chat_name, cfg["history_limit"]) or []
             elif plan.anchor_found:
+                if local_context_source:
+                    self._mark_local_history_candidate_verified(chat_name)
                 log(message=f"私聊 {chat_name}：低风险上下文补洞已对齐，无需补入")
                 self._consume_context_repair_reasons(chat_name, reasons)
                 return True
@@ -8203,6 +8302,12 @@ class WXBot:
                 return False
             self.run_flag = True
             self._notify_startup_status(True, "机器人已启动并进入监听")
+            def startup_cli_identity_sync():
+                try:
+                    self._check_contact_directory_cli_identity_auto_sync()
+                except Exception as e:
+                    log(level="ERROR", message=f"CLI 基础身份启动同步检查出错：{e}")
+            threading.Thread(target=startup_cli_identity_sync, daemon=True).start()
         except Exception as e:
             print(traceback.format_exc())
             log(level="ERROR", message=f"启动阶段：微信监听器初始化失败，{e}")
@@ -8348,6 +8453,13 @@ class WXBot:
                     self._check_friend_request_auto_run()
                 except Exception as e:
                     log(level="ERROR", message=f"好友申请模块出错：{e}")
+
+                try:
+                    if self.is_stop_requested():
+                        break
+                    self._check_contact_directory_cli_identity_auto_sync()
+                except Exception as e:
+                    log(level="ERROR", message=f"CLI 基础身份自动同步模块出错：{e}")
 
                 if self._contact_directory_auto_maintenance_enabled():
                     try:

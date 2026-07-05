@@ -463,6 +463,9 @@ class WXBotContextRepairTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             lock = FakeLock()
             bot = self.make_bot(tmp, high_enabled=True, lock=lock, local_reader_enabled=True)
+            saved_directories = []
+            bot._load_contact_profiles_directory = lambda: ({"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui")
+            bot._save_contact_profiles_directory = lambda directory: saved_directories.append(directory)
             bot.memory_manager.append_missing_messages(
                 "张三",
                 [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
@@ -477,16 +480,71 @@ class WXBotContextRepairTests(unittest.TestCase):
             ]
 
             with patch("wxbot_core.read_local_history_messages_with_status") as read_local:
-                read_local.return_value = SimpleNamespace(ok=True, items=local_messages, error="")
+                read_local.return_value = SimpleNamespace(
+                    ok=True,
+                    items=local_messages,
+                    error="",
+                    diagnostic={"history_target": "wxid_wrong"},
+                )
                 repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
             self.assertTrue(repaired)
+            self.assertEqual(saved_directories, [])
             self.assertEqual(chat.history_args["limit"], 50)
             self.assertEqual(lock.acquire_calls, [False])
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
                 ["旧锚点", "中间", "新内容"],
             )
+
+    def test_local_history_marks_wxid_verified_only_after_anchor_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp, local_reader_enabled=True)
+            saved_directories = []
+            bot._load_contact_profiles_directory = lambda: (
+                {
+                    "subjects": [{
+                        "subject_type": "friend",
+                        "status": "active",
+                        "contact_key": "wechat_id:wxid_zhangsan",
+                        "wechat_id": "wxid_zhangsan",
+                        "wxid": "wxid_zhangsan",
+                        "remark": "张三",
+                        "nickname": "张三",
+                        "display_name": "张三",
+                        "send_name": "张三",
+                        "warnings": [],
+                        "raw_detail": {"wxid": "wxid_zhangsan", "备注": "张三"},
+                    }],
+                    "maintenance": {},
+                },
+                "ignored.json",
+                "scope_rui",
+            )
+            bot._save_contact_profiles_directory = lambda directory: saved_directories.append(directory)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "早"}],
+                100,
+            )
+            chat = FakeChat(visible=[msg("微信界面消息", time="3")])
+            local_messages = [
+                SimpleNamespace(type="text", attr="friend", sender="张三", content="早", time="1"),
+                SimpleNamespace(type="text", attr="friend", sender="张三", content="新内容", time="2"),
+            ]
+
+            with patch("wxbot_core.read_local_history_messages_with_status") as read_local:
+                read_local.return_value = SimpleNamespace(
+                    ok=True,
+                    items=local_messages,
+                    error="",
+                    diagnostic={"history_target": "wxid_zhangsan"},
+                )
+                repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="2"))
+
+            self.assertTrue(repaired)
+            self.assertEqual(saved_directories[-1]["subjects"][0]["wxid_status"], "verified")
+            self.assertEqual(saved_directories[-1]["subjects"][0]["last_history_success_at"], saved_directories[-1]["updated_at"])
 
     def test_high_risk_reads_history_when_enabled_and_low_risk_has_no_anchor(self):
         with tempfile.TemporaryDirectory() as tmp:

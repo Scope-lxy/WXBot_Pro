@@ -836,6 +836,11 @@ def _history_read_diagnostic(
     }
 
 
+def _looks_like_history_target(value: Any) -> bool:
+    text = _clean_text(value)
+    return bool(text == "filehelper" or text.startswith("wxid_") or text.endswith("@chatroom"))
+
+
 def read_local_history_messages_with_status(
     chat_name: str,
     *,
@@ -844,6 +849,8 @@ def read_local_history_messages_with_status(
     expected_wx_id: str = "",
     anchor_messages: list[Any] | None = None,
     chat_type: str = "private",
+    preferred_history_target: str = "",
+    preferred_resolution_source: str = "directory_wxid",
 ) -> LocalWechatReadResult:
     started_at = time.perf_counter()
     chat_name = _clean_text(chat_name)
@@ -880,6 +887,7 @@ def read_local_history_messages_with_status(
     account_ok, account_error = ensure_wechat_cli_account_ready(expected_wx_id, executable=executable)
     if not account_ok:
         return finish(False, error=account_error, error_stage="account_check")
+    preferred_history_target = _clean_text(preferred_history_target)
     history_target = chat_name
     resolution_source = "display_name_direct"
     if normalized_chat_type == "group":
@@ -896,6 +904,9 @@ def read_local_history_messages_with_status(
                 resolution_source=resolution_source,
                 error_stage="target_resolution",
             )
+    elif preferred_history_target and _looks_like_history_target(preferred_history_target):
+        history_target = preferred_history_target
+        resolution_source = _clean_text(preferred_resolution_source) or "directory_wxid"
     elif _clean_text(expected_wx_id):
         history_target, target_error, resolution_source = _resolve_history_target_from_contacts(
             chat_name,
@@ -957,6 +968,8 @@ def read_local_history_messages(
     expected_wx_id: str = "",
     anchor_messages: list[Any] | None = None,
     chat_type: str = "private",
+    preferred_history_target: str = "",
+    preferred_resolution_source: str = "directory_wxid",
 ) -> list[SimpleNamespace]:
     return read_local_history_messages_with_status(
         chat_name,
@@ -965,6 +978,8 @@ def read_local_history_messages(
         expected_wx_id=expected_wx_id,
         anchor_messages=anchor_messages,
         chat_type=chat_type,
+        preferred_history_target=preferred_history_target,
+        preferred_resolution_source=preferred_resolution_source,
     ).items
 
 

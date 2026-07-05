@@ -1916,9 +1916,6 @@ html.icons-pref-local [class*=" bi-"]::before {
               <button type="button" id="btn-contact-standard-build" class="ui-btn ui-btn--primary ui-btn--l2">
                 <i class="bi bi-list-check"></i> 立即建档
               </button>
-              <button type="button" id="btn-contact-force-build" class="ui-btn ui-btn--danger ui-btn--l2">
-                <i class="bi bi-exclamation-triangle"></i> 暴力建档
-              </button>
               <button type="button" id="btn-contact-pause-maintenance" class="ui-btn ui-btn--secondary ui-btn--l2">
                 <i class="bi bi-stop-circle"></i> 停止建档
               </button>
@@ -6043,19 +6040,14 @@ $(function(){
     }
   }, 10000);
   function contactDirectoryActionLabel(mode){
-    if(mode === 'force') return '暴力建档';
     return '立即建档';
   }
   function chooseContactDirectoryStart(mode){
-    if(mode === 'force'){
-      runContactDirectoryRefresh('force', '', {buttonId:'btn-contact-force-build'});
-      return;
-    }
     var payload = _contactDirectoryBrowserState.payload || {};
     var summary = payload.summary || {};
     var total = Number(summary.total || 0);
     var continueStartName = String(summary.continue_start_name || '').trim();
-    var buttonId = mode === 'force' ? 'btn-contact-force-build' : 'btn-contact-standard-build';
+    var buttonId = 'btn-contact-standard-build';
     if(total <= 0 || !continueStartName){
       runContactDirectoryRefresh(mode, '', {buttonId: buttonId});
       return;
@@ -8940,11 +8932,6 @@ $(function(){
   });
   $('#btn-contact-standard-build').click(function(){
     chooseContactDirectoryStart('standard');
-  });
-  $('#btn-contact-force-build').click(function(){
-    svModal.confirm('暴力建档会从通讯录头部开始全量读取好友信息，期间会长时间占用微信主窗口。确定继续吗？', function(){
-      runContactDirectoryRefresh('force', '', {buttonId:'btn-contact-force-build'});
-    }, '暴力建档确认', '开始全量建档', '取消');
   });
   $('#btn-contact-pause-maintenance').click(function(){
     toggleContactDirectoryPause(true);

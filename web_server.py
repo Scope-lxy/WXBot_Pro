@@ -6456,12 +6456,13 @@ def contact_profiles_refresh_batch():
         data = request.get_json(silent=True) or {}
         running_wx_id = _require_running_contact_profiles_wx_id()
         mode = str(data.get('mode', 'standard') or 'standard').strip()
+        if mode != 'test':
+            mode = 'standard'
         start_name = str(data.get('start_name', '') or '').strip()
         interval = data.get('interval')
         mode_label = {
             'test': '快速测试',
             'standard': '立即建档',
-            'force': '暴力建档',
         }.get(mode, '通讯录维护')
         log('INFO', f'[通讯录维护] 收到{mode_label}请求，起点：{start_name or "通讯录头部"}')
         result = bot.refresh_contact_profiles_batch(
@@ -6481,7 +6482,7 @@ def contact_profiles_refresh_batch():
         local_contact_source = bool(result.get("local_contact_source", False))
         if local_contact_source:
             summary_message = (
-                f"本地快照建档完成，本次读取 {read_item_count} 个好友，"
+                f"CLI 基础身份建档完成，本次读取 {read_item_count} 个好友，"
                 f"本轮新增 {new_unique_count} 个唯一联系人，当前档案共 {directory_total_unique_count} 个联系人"
             )
             if stopped_early:
@@ -6500,10 +6501,10 @@ def contact_profiles_refresh_batch():
             elif stopped_early:
                 summary_message = "已停止建档，" + summary_message
         if stopped_early:
-            source_text = '本地快照读取' if local_contact_source else '本次读取'
+            source_text = 'CLI 基础身份读取' if local_contact_source else '本次读取'
             log('WARNING', f'[通讯录维护] {mode_label}已停止，{source_text} {total_count} 个好友')
         elif local_contact_source:
-            log('SUCCESS', f'[通讯录维护] {mode_label}完成，本地快照读取 {total_count} 个好友')
+            log('SUCCESS', f'[通讯录维护] {mode_label}完成，CLI 基础身份读取 {total_count} 个好友')
         else:
             log('SUCCESS', f'[通讯录维护] {mode_label}完成，本次读取 {total_count} 个好友')
         return jsonify({
