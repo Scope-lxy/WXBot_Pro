@@ -447,6 +447,73 @@ class WXBotContextRepairTests(unittest.TestCase):
                 ["早"],
             )
 
+    def test_first_cli_final_failure_skips_ui_fallback_until_next_needed_attempt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = FakeLock()
+            bot = self.make_bot(tmp, lock=lock, local_reader_enabled=True)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FakeChat(visible=[msg("微信界面消息", time="2")])
+
+            with patch("wxbot_core.read_local_history_messages_with_status") as read_local:
+                read_local.return_value = SimpleNamespace(ok=False, items=[], error="boom", diagnostic={})
+                repaired = bot._repair_private_context_before_ai(chat, msg("当前消息", time="3"))
+
+            self.assertFalse(repaired)
+            self.assertEqual(lock.acquire_calls, [])
+            self.assertEqual(chat.get_all_calls, 0)
+            self.assertEqual(bot._memory_context_repair_cli_failures["private:张三"], 1)
+
+    def test_second_consecutive_cli_final_failure_uses_low_risk_ui_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = FakeLock()
+            bot = self.make_bot(tmp, lock=lock, local_reader_enabled=True)
+            bot._memory_context_repair_cli_failures["private:张三"] = 1
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FakeChat(visible=[
+                msg("旧锚点", time="1"),
+                msg("微信界面消息", time="2"),
+            ])
+
+            with patch("wxbot_core.read_local_history_messages_with_status") as read_local:
+                read_local.return_value = SimpleNamespace(ok=False, items=[], error="boom", diagnostic={})
+                repaired = bot._repair_private_context_before_ai(chat, msg("当前消息", time="3"))
+
+            self.assertTrue(repaired)
+            self.assertEqual(lock.acquire_calls, [False])
+            self.assertEqual(chat.get_all_calls, 1)
+            self.assertNotIn("private:张三", bot._memory_context_repair_cli_failures)
+            self.assertEqual(
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                ["旧锚点", "微信界面消息"],
+            )
+
+    def test_successful_repair_sets_three_hundred_second_ttl(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FakeChat(visible=[
+                msg("旧锚点", time="1"),
+                msg("新内容", time="2"),
+            ])
+
+            repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="2"))
+
+            self.assertTrue(repaired)
+            self.assertIn("private:张三", bot._memory_context_repair_last_low_risk_at)
+            self.assertFalse(bot._context_repair_success_ttl_allows("private:张三", 300))
+
     def test_local_context_repair_limit_follows_context_count_bounds(self):
         with tempfile.TemporaryDirectory() as tmp:
             low = self.make_bot(tmp, local_reader_enabled=True, memory_context_count=10)

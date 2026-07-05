@@ -3675,17 +3675,17 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="memory_context_repair_low_risk_switch" {% if config.get('memory_context_repair_low_risk_switch', True) %}checked{% endif %}>
             <label class="form-check-label" for="memory_context_repair_low_risk_switch">自动补最近上下文</label>
-            <span class="switch-desc">只读当前私聊子窗口</span>
+            <span class="switch-desc">开启 CLI 补洞和低风险 UI 兜底</span>
           </div>
-          <div class="cfg-hint">私聊 AI 接管前，仅读取当前子窗口最近可见消息，补齐手机端或人工回复后的短缺口</div>
+          <div class="cfg-hint">AI 回复前按需校准最近上下文；优先读本地微信数据库，连续失败时读取当前已渲染的微信消息兜底</div>
         </div>
         <div class="memory-config-section memory-repair-section">
           <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="memory_context_repair_high_risk_switch" {% if config.get('memory_context_repair_high_risk_switch', False) %}checked{% endif %}>
-            <label class="form-check-label" for="memory_context_repair_high_risk_switch">必要时补更多历史</label>
-            <span class="switch-desc">低风险失败后尝试</span>
+            <label class="form-check-label" for="memory_context_repair_high_risk_switch">补上下文时允许滚动微信窗口</label>
+            <span class="switch-desc">高风险 UI 补洞</span>
           </div>
-          <div class="cfg-hint">低风险未找到锚点时，尝试按历史读取最多 50 条；会占用微信操作锁，默认关闭</div>
+          <div class="cfg-hint">低风险补洞仍无法对齐时，允许滚动当前微信窗口读取更多已加载历史；会占用微信操作锁，默认关闭</div>
         </div>
       </div>
     </div>

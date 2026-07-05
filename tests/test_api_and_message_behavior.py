@@ -836,6 +836,81 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(timer_calls[0][0], 5)
         self.assertEqual(enqueued, [("张三", '语音2"秒你好')])
 
+    def test_pending_private_voice_reread_waits_until_text_is_ready(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(memory_switch=False)
+        bot._chat_merge_lock = threading.Lock()
+        bot._pending_private_voice_transcription = {}
+        bot.is_stop_requested = lambda: False
+
+        class TryLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        visible = [SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音4"秒')]
+        bot._get_wechat_action_lock = lambda: TryLock()
+        bot._visible_messages_for_pending_voice = lambda _chat: visible
+        enqueued = []
+        fallback_calls = []
+        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
+        bot._enqueue_private_message_for_ai = lambda chat, msg: enqueued.append((chat.who, msg.content)) or True
+        bot._send_private_voice_transcription_fallback = lambda _chat: fallback_calls.append(True) or True
+        timer_calls = []
+        bot._schedule_private_message_timer = lambda seconds, callback, chat: timer_calls.append((seconds, callback, chat)) or SimpleNamespace(cancel=lambda: None)
+        original = SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音4"秒')
+        chat = SimpleNamespace(who="张三")
+
+        self.assertTrue(bot._queue_pending_private_voice_transcription(chat, original))
+        bot._flush_pending_private_voice_transcription(chat)
+
+        self.assertEqual(enqueued, [])
+        self.assertEqual(fallback_calls, [])
+        self.assertIn("张三", bot._pending_private_voice_transcription)
+        self.assertEqual(timer_calls[-1][0], 5)
+
+        visible[:] = [SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音4"秒快写吧')]
+        bot._flush_pending_private_voice_transcription(chat)
+
+        self.assertEqual(enqueued, [("张三", '语音4"秒快写吧')])
+        self.assertEqual(fallback_calls, [])
+        self.assertNotIn("张三", bot._pending_private_voice_transcription)
+
+    def test_pending_private_voice_reread_falls_back_after_timeout(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(memory_switch=False)
+        bot._chat_merge_lock = threading.Lock()
+        bot._pending_private_voice_transcription = {}
+        bot.is_stop_requested = lambda: False
+
+        class TryLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        bot._get_wechat_action_lock = lambda: TryLock()
+        bot._visible_messages_for_pending_voice = lambda _chat: [
+            SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音4"秒')
+        ]
+        fallback_calls = []
+        bot._send_private_voice_transcription_fallback = lambda _chat: fallback_calls.append(True) or True
+        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
+        original = SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音4"秒')
+        chat = SimpleNamespace(who="张三")
+
+        self.assertTrue(bot._queue_pending_private_voice_transcription(chat, original))
+        item = next(iter(bot._pending_private_voice_transcription["张三"]["items"].values()))
+        item["first_seen_at"] = 1
+
+        bot._flush_pending_private_voice_transcription(chat)
+
+        self.assertEqual(fallback_calls, [True])
+        self.assertNotIn("张三", bot._pending_private_voice_transcription)
+
     def test_private_text_reply_sends_current_turn_context_to_api(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
