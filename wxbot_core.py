@@ -5531,15 +5531,33 @@ class WXBot:
             chat_type=chat_type,
         )
         label = "群聊" if str(chat_type or "").strip().lower() == "group" else "私聊"
+        diagnostic = result.diagnostic if isinstance(getattr(result, "diagnostic", None), dict) else {}
+        diagnostic_text = ""
+        if diagnostic:
+            diagnostic_parts = []
+            for key, label_text in (
+                ("history_target", "target"),
+                ("resolution_source", "source"),
+                ("error_stage", "stage"),
+                ("elapsed_ms", "elapsed"),
+                ("expected_wx_id", "account"),
+            ):
+                value = diagnostic.get(key)
+                if value == "" or value is None:
+                    continue
+                suffix = "ms" if key == "elapsed_ms" else ""
+                diagnostic_parts.append(f"{label_text}={value}{suffix}")
+            if diagnostic_parts:
+                diagnostic_text = "，诊断 " + " ".join(diagnostic_parts)
         if result.ok and result.items:
-            log(message=f"{label} {chat_name}：已从本地微信数据库读取上下文 {len(result.items)} 条")
+            log(message=f"{label} {chat_name}：已从本地微信数据库读取上下文 {len(result.items)} 条{diagnostic_text}")
             return list(result.items)
         if not result.ok:
             fallback_text = "已跳过本地补洞" if label == "群聊" else "已回退微信界面读取"
             level = "INFO" if label == "群聊" else "WARNING"
             log(
                 level=level,
-                message=f"{label} {chat_name}：本地微信数据库读取上下文失败，{fallback_text}：{result.error}",
+                message=f"{label} {chat_name}：本地微信数据库读取上下文失败，{fallback_text}：{result.error}{diagnostic_text}",
             )
         return []
 
