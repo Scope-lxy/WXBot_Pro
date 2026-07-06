@@ -77,7 +77,7 @@ from core.contact_profiles import (
     repair_candidates as contact_repair_candidates,
     save_directory as save_contact_directory,
 )
-from core.local_wechat_reader import check_wechat_cli_status, check_wechat_cli_update
+from core.local_wechat_reader import check_wechat_cli_status, check_wechat_cli_update, wechat_cli_integration_enabled
 from core.sending import clean_ai_reply_text, sanitize_ai_output_text
 from core.tts import TTSConfigError, create_tts_client, make_tts_cache_path
 from feature.voice_reply import DEFAULT_CHAT_VOICE_REPLY_KEYWORDS, DEFAULT_GROUP_VOICE_REPLY_KEYWORDS
@@ -2152,6 +2152,7 @@ def dashboard():
     config.setdefault('api_capability_map', {})
     config.setdefault('backup_chat_api_index', -1)
     config.setdefault('backup_chat_api_failover_threshold', 3)
+    config.setdefault('wechat_cli_enabled', False)
 
     # —— 新增字段默认值（关键）——
     config.setdefault('group_api_map', {})                   # 群组专属接口映射
@@ -3298,6 +3299,7 @@ def _coerce_bool_fields(merged_config):
         'chat_listen_only',
         'chat_voice_recognition_switch',
         'voice_transcription_fallback_reply_once',
+        'wechat_cli_enabled',
         'group_switch',
         'group_listen_only',
         'group_reply_at',
@@ -3894,6 +3896,18 @@ def save_config_route():
             global update_config_status
             update_config_status = True # 执行了保存配置
             if bot_thread and bot_thread.is_alive() and bot:
+                if 'wechat_cli_enabled' in (config_data or {}):
+                    enabled = bool(merged_config.get('wechat_cli_enabled', False))
+                    try:
+                        bot._local_wechat_reader_enabled = enabled
+                        if hasattr(bot, 'config'):
+                            bot.config.wechat_cli_enabled = enabled
+                            if isinstance(getattr(bot.config, 'config', None), dict):
+                                bot.config.config['wechat_cli_enabled'] = enabled
+                        if not enabled:
+                            _set_wechat_cli_status(check_wechat_cli_status())
+                    except Exception as e:
+                        log('WARNING', f'运行中 wechat-cli 开关同步失败，将在下次重启后生效：{e}')
                 api_runtime_fields = {
                     'api_configs',
                     'api_index',
@@ -4603,6 +4617,10 @@ def _check_wechat_cli_status_for_current_account():
 
 def _run_wechat_cli_status_check(*, reason='manual', log_result=False):
     global wechat_cli_status_checking
+    if not wechat_cli_integration_enabled():
+        with wechat_cli_status_lock:
+            wechat_cli_status_checking = False
+        return _set_wechat_cli_status(check_wechat_cli_status())
     with wechat_cli_status_lock:
         wechat_cli_status_checking = True
     try:
@@ -4635,6 +4653,9 @@ def _run_wechat_cli_status_check(*, reason='manual', log_result=False):
 
 def _start_wechat_cli_status_check_async(*, reason='startup'):
     global wechat_cli_status_checking
+    if not wechat_cli_integration_enabled():
+        _set_wechat_cli_status(check_wechat_cli_status())
+        return False
     with wechat_cli_status_lock:
         if wechat_cli_status_checking:
             return False
@@ -4796,6 +4817,9 @@ def _startup_status_callback(event, state):
         _report_bot_startup_state(success, message, event, state)
         if success:
             def delayed_check():
+                if not wechat_cli_integration_enabled():
+                    _set_wechat_cli_status(check_wechat_cli_status())
+                    return
                 for _attempt in range(3):
                     if _start_wechat_cli_status_check_async(reason='bot-ready'):
                         return

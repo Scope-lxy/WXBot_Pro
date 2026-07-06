@@ -525,6 +525,67 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(direct_saves, [])
         self.assertEqual(processed, ["你好"])
 
+    def test_global_listen_self_text_is_saved_without_ai_processing(self):
+        msg = SimpleNamespace(
+            id="self-1",
+            type="text",
+            attr="self",
+            sender="self",
+            content="我手机上已经回复了",
+            time="2026/07/04 10:00:00",
+        )
+
+        def get_next_new_message(**kwargs):
+            callback = kwargs.get("callback")
+            if callable(callback):
+                callback(msg)
+            return {"chat_name": "张三", "chat_type": "private", "msg": [msg]}
+
+        direct_saves = []
+        dirty = []
+        manual_self_interrupts = []
+        bot = SimpleNamespace(
+            config=SimpleNamespace(
+                AllListen_switch=True,
+                listen_list=[],
+                group=[],
+                group_switch=False,
+                custom_forward_switch=False,
+                memory_switch=True,
+                memory_max_count=100,
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=False,
+            ),
+            memory_manager=SimpleNamespace(save_message=lambda **kwargs: direct_saves.append(kwargs)),
+            wx=SimpleNamespace(
+                GetAllListenMessage=lambda: {},
+                GetNextNewMessage=get_next_new_message,
+                chat_type="private",
+            ),
+            all_Mode_listen_list=[],
+            is_chat_listened=lambda _chat: False,
+            add_chat_to_listen=lambda _chat: self.fail("self 消息不应触发动态监听接管"),
+            _forget_runtime_listener_caches=lambda _chat: None,
+            _remove_dynamic_listener_entries=lambda _chat: None,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            _should_skip_message_memory=lambda _chat, _message: False,
+            _consume_private_reply_runtime_echo=lambda _chat, _content: False,
+            _interrupt_private_ai_for_manual_self=lambda chat, message: manual_self_interrupts.append((chat.who, message.content)),
+            _mark_chat_memory_dirty=lambda chat, _message: dirty.append(chat.who),
+            process_message=lambda _chat, _message: self.fail("self 消息不应进入 AI 处理"),
+        )
+
+        listening.alllisten_mode(bot, last_time=9999999999)
+
+        self.assertEqual(len(direct_saves), 1)
+        self.assertEqual(direct_saves[0]["chat_name"], "张三")
+        self.assertEqual(direct_saves[0]["msg_attr"], "self")
+        self.assertEqual(direct_saves[0]["content"], "我手机上已经回复了")
+        self.assertEqual(direct_saves[0]["message_time"], "2026/07/04 10:00:00")
+        self.assertEqual(dirty, ["张三"])
+        self.assertEqual(manual_self_interrupts, [("张三", "我手机上已经回复了")])
+
     def test_add_and_verify_uses_add_listen_returned_chat_directly(self):
         calls = []
         sub_chat = SimpleNamespace(who="张三", SendMsg=lambda _msg: True)

@@ -471,6 +471,7 @@ class WXBot:
         self.run_flag = True                    # 主循环运行标志
         self._stop_requested = threading.Event()
         self.config   = WXBotConfig()           # 加载配置
+        self._local_wechat_reader_enabled = bool(getattr(self.config, "wechat_cli_enabled", False))
         self._voice_reply_state = load_voice_reply_state(self._voice_reply_state_path())
 
         # 根据当前默认接口快照选择对应的 AI 接口
@@ -3764,11 +3765,14 @@ class WXBot:
                 if self._handle_material_source_message(chat, msg):
                     return True
 
+            ordinary_private_self = self._is_ordinary_private_self_message(chat, msg)
+            should_skip_memory = self._should_skip_message_memory(chat, msg)
+
             # 写入对话记忆
             if (
                 self.config.memory_switch
                 and self.memory_manager
-                and not self._should_skip_message_memory(chat, msg)
+                and not should_skip_memory
             ):
                 try:
                     memory_chat_name = self._resolve_identity_chat_name(chat.who)
@@ -3784,18 +3788,16 @@ class WXBot:
                             max_count=self.config.memory_max_count,
                             message_time=getattr(msg, "_wxbot_received_at", None),
                         )
-                    if (
-                        msg.attr == "self"
-                        and chat.who != getattr(self.config, "cmd", "")
-                        and getattr(chat, "chat_type", "private") != "group"
-                    ):
-                        self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
                     self._mark_chat_memory_dirty(
                         SimpleNamespace(who=memory_chat_name, chat_type=getattr(chat, "chat_type", "private")),
                         msg,
                     )
                 except Exception as e:
                     log(level="WARNING", message=f"写入记忆失败: {e}")
+            if ordinary_private_self and not bool(getattr(msg, "_wxbot_private_reply_persisted_echo", False)):
+                runtime_echo = self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
+                if not runtime_echo:
+                    self._interrupt_private_ai_for_manual_self(chat, msg)
             if callback_result is not None:
                 return callback_result
         except Exception as e:
@@ -3813,6 +3815,13 @@ class WXBot:
             pass
         return message
 
+    def _is_ordinary_private_self_message(self, chat, message):
+        return (
+            getattr(message, "attr", "") == "self"
+            and getattr(chat, "who", "") != getattr(self.config, "cmd", "")
+            and getattr(chat, "chat_type", "private") != "group"
+        )
+
     def _should_skip_message_memory(self, chat, message):
         if bool(getattr(message, "_skip_memory", False)):
             return True
@@ -3827,13 +3836,47 @@ class WXBot:
         ):
             return True
         if (
-            getattr(message, "attr", "") == "self"
-            and getattr(chat, "who", "") != getattr(self.config, "cmd", "")
-            and getattr(chat, "chat_type", "private") != "group"
+            self._is_ordinary_private_self_message(chat, message)
             and self._consume_persisted_private_reply_echo(chat.who, getattr(message, "content", ""))
         ):
+            try:
+                setattr(message, "_wxbot_private_reply_persisted_echo", True)
+            except Exception:
+                pass
             return True
         return False
+
+    def _drop_private_ai_lightweight_send_queue(self, chat_name):
+        name = str(chat_name or "").strip()
+        if not name:
+            return False
+        self._ensure_lightweight_send_queue_state()
+        with self._lightweight_send_queue_lock:
+            item = self._lightweight_send_queue.get(name)
+            if not isinstance(item, dict):
+                return False
+            if str(item.get("source") or "").strip() != "private_ai_reply":
+                return False
+            self._lightweight_send_queue.pop(name, None)
+            return True
+
+    def _interrupt_private_ai_for_manual_self(self, chat, message=None):
+        if not self._is_ordinary_private_self_message(
+            chat,
+            message or SimpleNamespace(attr="self"),
+        ):
+            return False
+        name = str(getattr(chat, "who", "") or "").strip()
+        if not name:
+            return False
+        self._next_private_message_sequence(name)
+        self._clear_private_message_pipeline(name)
+        with self._chat_merge_lock:
+            self._cancel_pending_private_voice_fallback_locked(name)
+        dropped_queue = self._drop_private_ai_lightweight_send_queue(name)
+        suffix = "，已清理延迟发送队列" if dropped_queue else ""
+        log(message=f"私聊 {name}：检测到手动 self 消息，已停止当前 AI 回复{suffix}")
+        return True
 
     def _private_reply_can_continue(self, chat, *, log_prefix="私聊", expected_sequence=None):
         target = str(getattr(chat, "who", "") or "").strip()
@@ -5694,8 +5737,8 @@ class WXBot:
                 return items, bool(cli_failed)
             return items
 
-        if getattr(self, "_local_wechat_reader_enabled", True) is False:
-            return build_return([], False)
+        if not getattr(self, "_local_wechat_reader_enabled", False):
+            return build_return([], False, {"source": "disabled"})
         max_limit = LOCAL_CONTEXT_REPAIR_MAX_LIMIT + LOCAL_CONTEXT_REPAIR_ANCHOR_BUFFER
         normalized_chat_type = str(chat_type or "").strip().lower() or "private"
         expected_wx_id = (
@@ -5948,6 +5991,7 @@ class WXBot:
             )
             local_context_source = bool(local_messages)
             context_repair_source = "cli" if local_context_source else "ui"
+            local_disabled = isinstance(local_cli_detail, dict) and local_cli_detail.get("source") == "disabled"
             if local_context_source:
                 self._clear_context_repair_cli_failure(cooldown_key)
             if not local_messages:
@@ -5979,6 +6023,15 @@ class WXBot:
                     try:
                         local_messages = self._read_low_risk_context_messages(chat, cfg["visible_limit"])
                         context_repair_source = "ui_fallback"
+                    finally:
+                        lock.release()
+                elif local_disabled:
+                    lock = self._get_wechat_action_lock()
+                    if not lock.acquire(blocking=False):
+                        return False
+                    try:
+                        local_messages = self._read_low_risk_context_messages(chat, cfg["visible_limit"])
+                        context_repair_source = "ui"
                     finally:
                         lock.release()
                 else:
@@ -6087,7 +6140,7 @@ class WXBot:
         repair_key = f"private:{chat_name}"
         reasons = self._context_repair_reasons(chat, message, memory_chat_name)
         if not reasons:
-            reasons = ["scheduled_low_risk_check"]
+            return False
         if not self._context_repair_success_ttl_allows(repair_key, cfg["low_cooldown"]):
             return False
 

@@ -210,6 +210,7 @@ def build_quoted_image_message(text, image_paths):
 
 def build_merged_private_message(messages, *, on_extra_image=None):
     """Merge short consecutive private messages into one AI-facing message."""
+    source_messages = list(messages or [])
     text_parts = []
     image_paths = []
     sender = ""
@@ -228,7 +229,7 @@ def build_merged_private_message(messages, *, on_extra_image=None):
             text_parts.append(MULTI_EMOTION_TEXT_TEMPLATE.format(count=pending_emotion_count))
         pending_emotion_count = 0
 
-    for msg in messages:
+    for msg in source_messages:
         sender = sender or getattr(msg, "sender", "")
         attr = getattr(msg, "attr", attr)
         msg_type = getattr(msg, "type", "")
@@ -286,6 +287,7 @@ def build_merged_private_message(messages, *, on_extra_image=None):
                     sender=sender,
                     attr=attr,
                     _contains_voice_message=contains_voice_message,
+                    _merged_source_messages=source_messages,
                 )
             merged_content = build_quoted_image_message("", image_paths)
         else:
@@ -296,4 +298,5 @@ def build_merged_private_message(messages, *, on_extra_image=None):
         sender=sender,
         attr=attr,
         _contains_voice_message=contains_voice_message,
+        _merged_source_messages=source_messages,
     )

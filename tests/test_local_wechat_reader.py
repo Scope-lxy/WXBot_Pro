@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from core.local_wechat_reader import (
     LocalWechatCommandResult,
@@ -16,10 +16,18 @@ from core.local_wechat_reader import (
     save_wechat_cli_account_binding,
     verify_wechat_cli_live_binding,
     wechat_cli_account_matches,
+    wechat_cli_integration_enabled,
 )
 
 
 class LocalWechatReaderTests(unittest.TestCase):
+    def setUp(self):
+        self._enabled_patch = patch("core.local_wechat_reader.wechat_cli_integration_enabled", return_value=True)
+        self._enabled_patch.start()
+
+    def tearDown(self):
+        self._enabled_patch.stop()
+
     def test_normalize_contact_uses_existing_contact_fields_only(self):
         contact = normalize_wechat_cli_contact({
             "username": "wxid_abc",
@@ -691,6 +699,84 @@ class LocalWechatReaderTests(unittest.TestCase):
 
         self.assertFalse(status["available"])
         self.assertEqual(status["state"], "missing_tool")
+
+    def test_wechat_cli_integration_disabled_by_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text('{"wechat_cli_enabled": false}', encoding="utf-8")
+
+            self.assertFalse(wechat_cli_integration_enabled(str(config_path)))
+
+    def test_wechat_cli_integration_disabled_by_default_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text("{}", encoding="utf-8")
+
+            self.assertFalse(wechat_cli_integration_enabled(str(config_path)))
+
+    def test_wechat_cli_integration_enabled_by_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text('{"wechat_cli_enabled": true}', encoding="utf-8")
+
+            self.assertTrue(wechat_cli_integration_enabled(str(config_path)))
+
+    def test_wechat_cli_integration_disabled_by_env(self):
+        with patch.dict("os.environ", {"WXBOT_DISABLE_WECHAT_CLI": "1"}):
+            self.assertFalse(wechat_cli_integration_enabled())
+
+    def test_check_status_reports_disabled_without_probe(self):
+        with (
+            patch("core.local_wechat_reader.wechat_cli_integration_enabled", return_value=False),
+            patch("core.local_wechat_reader.find_wechat_cli_executable") as find_exe,
+        ):
+            status = check_wechat_cli_status()
+
+        self.assertFalse(status["available"])
+        self.assertEqual(status["state"], "disabled")
+        find_exe.assert_not_called()
+
+    def test_check_update_reports_disabled_without_probe(self):
+        with (
+            patch("core.local_wechat_reader.wechat_cli_integration_enabled", return_value=False),
+            patch("core.local_wechat_reader.find_wechat_cli_executable") as find_exe,
+        ):
+            status = check_wechat_cli_update()
+
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["state"], "disabled")
+        find_exe.assert_not_called()
+
+    def test_disabled_reader_does_not_run_cli_command(self):
+        with (
+            patch("core.local_wechat_reader.wechat_cli_integration_enabled", return_value=False),
+            patch("core.local_wechat_reader.run_wechat_cli_json") as run_cli,
+        ):
+            result = read_local_sessions_with_status(limit=10)
+
+        self.assertFalse(result.ok)
+        self.assertIn("disabled", result.error)
+        run_cli.assert_not_called()
+
+    def test_disabled_live_binding_does_not_send_probe_message(self):
+        sender = Mock()
+        with patch("core.local_wechat_reader.wechat_cli_integration_enabled", return_value=False):
+            result = verify_wechat_cli_live_binding("scope_rui", sender)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("disabled", result["error"])
+        sender.assert_not_called()
+
+    def test_disabled_account_switch_does_not_run_init(self):
+        with (
+            patch("core.local_wechat_reader.wechat_cli_integration_enabled", return_value=False),
+            patch("core.local_wechat_reader.subprocess.run") as run_process,
+        ):
+            result = __import__("core.local_wechat_reader", fromlist=["switch_wechat_cli_to_bound_account"]).switch_wechat_cli_to_bound_account("scope_rui")
+
+        self.assertFalse(result.ok)
+        self.assertIn("disabled", result.error)
+        run_process.assert_not_called()
 
     def test_check_status_reports_need_init(self):
         with (

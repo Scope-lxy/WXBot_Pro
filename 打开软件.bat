@@ -63,7 +63,13 @@ if errorlevel 1 (
     echo [WARNING] Failed to prepare ffmpeg/ffprobe. Voice replies may fall back to text.
 )
 
-call :ensure_wechat_cli
+call :wechat_cli_enabled
+if errorlevel 1 (
+    set "WXBOT_DISABLE_WECHAT_CLI=1"
+    echo wechat-cli local reader disabled by config. Skip install/init/check.
+) else (
+    call :ensure_wechat_cli
+)
 
 echo Starting WXBot Pro...
 echo Working directory: %cd%
@@ -74,6 +80,20 @@ echo.
 echo WXBot Pro has stopped.
 pause
 exit /b 0
+
+:wechat_cli_enabled
+if /i "%WXBOT_DISABLE_WECHAT_CLI%"=="1" exit /b 1
+if /i "%WXBOT_DISABLE_WECHAT_CLI%"=="true" exit /b 1
+if /i "%WXBOT_DISABLE_WECHAT_CLI%"=="yes" exit /b 1
+if /i "%WXBOT_DISABLE_WECHAT_CLI%"=="on" exit /b 1
+if not exist "data\config\config.json" exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference='Stop';" ^
+  "$cfg=Get-Content -LiteralPath 'data\config\config.json' -Raw -Encoding UTF8 | ConvertFrom-Json;" ^
+  "$prop=$cfg.PSObject.Properties['wechat_cli_enabled'];" ^
+  "if(-not $prop -or -not [bool]$prop.Value){ exit 1 };" ^
+  "exit 0"
+exit /b %errorlevel%
 
 :ensure_wechat_cli
 if exist "%LOCAL_WECHAT_CLI_EXE%" (

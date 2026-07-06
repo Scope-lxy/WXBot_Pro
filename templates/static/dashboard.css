@@ -153,6 +153,10 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 #runtime-metrics-card { order: 3; }
 #activate-card { order: 4; }
 #wechat-cli-card { order: 5; }
+#wechat-cli-card .wechat-cli-actions { justify-content: flex-start; align-items: center; }
+#wechat-cli-card .wechat-cli-toggle { min-width: 118px; }
+#wechat-cli-card .wechat-cli-toggle.is-cli-enabled { background: var(--danger); color: #fff; border-color: var(--danger); }
+#wechat-cli-card .wechat-cli-toggle.is-cli-enabled:hover { background: #DC2626; color: #fff; border-color: #DC2626; }
 #update-card { order: 6; }
 .cfg-inline-balance { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cfg-inline-gap); min-width: 0; }
 .cfg-inline-copy { min-width: 0; flex: 1 1 auto; }
@@ -1048,12 +1052,16 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .ui-modal-box--lg { width: min(640px, 92vw); }
 .ui-modal-box--xl { width: min(720px, 94vw); }
 .ui-modal-box--xxl { width: min(760px, 94vw); }
+.ui-modal-box--danger { border: 1px solid rgba(250,81,81,.34); box-shadow: 0 12px 48px rgba(250,81,81,.22), 0 12px 48px rgba(0,0,0,.18); }
+.ui-modal-box--danger .ui-modal-title { color: var(--danger); }
 .ui-modal-icon { text-align: center; font-size: 38px; margin-bottom: 12px; line-height: 1; }
 .ui-modal-title { font-size: 15.5px; font-weight: 800; color: var(--card-fg); margin-bottom: 8px; text-align: center; }
 .ui-modal-body { font-size: 13.5px; color: var(--muted); line-height: 1.7; text-align: center; margin-bottom: 22px; }
 .ui-modal-body--left { text-align: left; margin-bottom: 18px; }
 .ui-modal-form { display: grid; gap: 12px; }
 .ui-modal-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+.ui-modal-danger-action { background: var(--danger); color: #fff; border-color: var(--danger); }
+.ui-modal-danger-action:hover { background: #E64340; color: #fff; border-color: #E64340; }
 .ui-modal-input { width: 100%; margin-bottom: 16px; }
 .ui-modal-feedback { text-align: center; margin-top: 14px; }
 .manual-identity-modal { display: grid; gap: 10px; }

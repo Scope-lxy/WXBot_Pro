@@ -302,7 +302,11 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div id="wechat-cli-error" style="display:none;color:var(--muted);font-size:13px;padding:4px 0;">
           <i class="bi bi-wifi-off"></i> 检测失败，请查看日志后重试
         </div>
-        <div class="cfg-action-row">
+        <div class="cfg-action-row wechat-cli-actions">
+          <input type="checkbox" id="wechat_cli_enabled" {% if config.get('wechat_cli_enabled', False) %}checked{% endif %} hidden>
+          <button type="button" id="btn-toggle-wechat-cli" class="ui-btn ui-btn--primary ui-btn--l2 wechat-cli-toggle {% if config.get('wechat_cli_enabled', False) %}is-cli-enabled{% endif %}">
+            <i class="bi {% if config.get('wechat_cli_enabled', False) %}bi-power{% else %}bi-plug-fill{% endif %}"></i> <span id="wechat_cli_enabled_label">{% if config.get('wechat_cli_enabled', False) %}关闭 CLI{% else %}开启 CLI{% endif %}</span>
+          </button>
           <button type="button" id="btn-check-wechat-cli" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2">
             <i class="bi bi-arrow-repeat"></i> 重新检测
           </button>
@@ -2057,7 +2061,7 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>自动扫描</h5>
-              <span class="desc">自动扫描固定走 wechat-cli，本地读取不可用时跳过并写入警告日志</span>
+              <span class="desc">开启 wechat-cli 时自动扫描走本地快照；禁用或不可用时后台自动扫描跳过</span>
             </div>
             <div class="ui-head__actions">
               <label class="ui-switch ui-switch--l2 ui-head-switch" for="relationship_scan_auto_enabled" title="开启自动扫描">
@@ -11874,6 +11878,7 @@ $(function(){
       api_index:api_index,
       backup_chat_api_index:parseInt($('#backup_chat_api_index').val(), 10),
       backup_chat_api_failover_threshold:parseInt($('#backup_chat_api_failover_threshold').val(), 10)||3,
+      wechat_cli_enabled:$('#wechat_cli_enabled').is(':checked'),
       AllListen_switch:$('#AllListen_switch').is(':checked'),
       AllListen_filter_mute:$('#AllListen_filter_mute').is(':checked'),
       chat_listen_only:$('#chat_listen_only').is(':checked'),
@@ -12340,7 +12345,7 @@ $(function(){
     if(status === 'success'){
       clearBotStartupPolling();
       svModal.success(message || '机器人已启动', '启动成功');
-      if (typeof window.checkWechatCliStatus === 'function') {
+      if ($('#wechat_cli_enabled').is(':checked') && typeof window.checkWechatCliStatus === 'function') {
         setTimeout(function(){ window.checkWechatCliStatus(false); }, 1200);
       }
       return;
@@ -13909,22 +13914,67 @@ $(function(){
     $('#wechat-cli-version-ok, #wechat-cli-version-fail').text(text);
   }
 
+  function syncWechatCliEnabledState() {
+    var enabled = $('#wechat_cli_enabled').is(':checked');
+    var $btn = $('#btn-toggle-wechat-cli');
+    var $label = $('#wechat_cli_enabled_label');
+    $btn.toggleClass('is-cli-enabled', enabled);
+    $btn.attr('aria-pressed', enabled ? 'true' : 'false');
+    $btn.attr('title', enabled ? '关闭后不会安装、初始化或调用 wechat-cli' : '开启前需要确认微信风控和账号风险');
+    $btn.find('i').attr('class', enabled ? 'bi bi-power' : 'bi bi-plug-fill');
+    $label.text(enabled ? '关闭 CLI' : '开启 CLI');
+    $('#btn-check-wechat-cli').prop('disabled', !enabled);
+    $('#btn-check-wechat-cli-update').prop('disabled', !enabled);
+    if (!enabled) {
+      renderWechatCliStatus({
+        state: 'disabled',
+        title: 'wechat-cli 已关闭',
+        message: '本地 CLI 读取已关闭，机器人只会使用微信界面读取。',
+        detail: '保存配置后，后续启动不会安装、初始化或调用 wechat-cli。'
+      });
+    }
+  }
+
+  function setWechatCliEnabledSilently(enabled) {
+    if (!enabled) {
+      clearWechatCliStatusPolling();
+    }
+    $('#wechat_cli_enabled').prop('checked', !!enabled);
+    syncWechatCliEnabledState();
+  }
+
   function renderWechatCliStatus(data) {
     data = data || {};
     $('#wechat-cli-checking, #wechat-cli-ok, #wechat-cli-fail, #wechat-cli-error').hide();
     renderWechatCliVersion(data.version || '');
+    if (data.state === 'disabled') {
+      $('#wechat-cli-fail .page-inline-notice__icon').attr('class', 'bi bi-shield-x page-inline-notice__icon');
+      $('#wechat-cli-fail-title').text(data.title || 'wechat-cli 已关闭');
+      $('#wechat-cli-fail-message').text(data.message || '本地 CLI 读取已关闭，机器人只会使用微信界面读取。');
+      if (data.detail) {
+        $('#wechat-cli-version-fail').text((data.version ? '当前版本：' + data.version : '当前版本：未检测到') + '　' + data.detail);
+      } else {
+        renderWechatCliVersion(data.version || '');
+      }
+      $('#wechat-cli-fail-detail').hide().text('');
+      $('#wechat-cli-fail').show();
+      $('#btn-repair-wechat-cli').hide();
+      return;
+    }
     if (data.checking || data.state === 'checking') {
       $('#wechat-cli-checking').show();
       $('#btn-repair-wechat-cli').hide();
       return;
     }
     if (data.available) {
-      $('#wechat-cli-ok-title').text(data.title || 'wechat-cli 本地读取可用');
-      $('#wechat-cli-ok-message').text(data.message || '通讯录维护和聊天记录自动补全等功能将会优先使用该插件。');
+      $('#wechat-cli-ok .page-inline-notice__icon').attr('class', 'bi bi-database-check page-inline-notice__icon');
+      $('#wechat-cli-ok-title').text(data.title || 'wechat-cli 已开启');
+      $('#wechat-cli-ok-message').text(data.message || '本地 CLI 读取已开启，相关功能会优先使用 wechat-cli。');
       $('#wechat-cli-ok').css('display', 'grid');
       $('#btn-repair-wechat-cli').hide();
       return;
     }
+    $('#wechat-cli-fail .page-inline-notice__icon').attr('class', 'bi bi-database-exclamation page-inline-notice__icon');
     $('#wechat-cli-fail-title').text(data.title || 'wechat-cli 本地读取不可用');
     $('#wechat-cli-fail-message').text(data.message || '机器人已自动回退微信界面读取。');
     if (data.detail) {
@@ -13990,11 +14040,35 @@ $(function(){
         $('#wechat-cli-error').show();
       },
       complete: function() {
-        if (manual) $btn.prop('disabled', false).html('<i class="bi bi-arrow-repeat"></i> 重新检测');
+        if (manual) $btn.prop('disabled', !$('#wechat_cli_enabled').is(':checked')).html('<i class="bi bi-arrow-repeat"></i> 重新检测');
       }
     });
   }
 
+  $('#btn-toggle-wechat-cli').on('click', function(){
+    var enabled = $('#wechat_cli_enabled').is(':checked');
+    if (enabled) {
+      setWechatCliEnabledSilently(false);
+      return;
+    }
+    svModal.custom({
+      icon: '<i class="bi bi-exclamation-triangle-fill" style="color:#FA5151;font-size:36px;"></i>',
+      title: '开启 CLI 风险确认',
+      body: '开启 CLI 插件可以大幅加速相关功能的效率，但存在微信风控、账号封禁的风险，确定开启？',
+      boxClass: 'ui-modal-box--danger',
+      buttons: [
+        {text: '取消', variant: 'secondary'},
+        {
+          text: '确定开启',
+          className: 'ui-btn ui-btn--danger ui-modal-danger-action',
+          action: function(){
+            setWechatCliEnabledSilently(true);
+            checkWechatCliStatus(false);
+          }
+        }
+      ]
+    });
+  });
   $('#btn-check-wechat-cli').on('click', function() { checkWechatCliStatus(true); });
   $('#btn-check-wechat-cli-update').on('click', function() {
     var $btn = $('#btn-check-wechat-cli-update');
@@ -14022,7 +14096,7 @@ $(function(){
         svModal.error('wechat-cli 更新检查请求失败：' + (xhr.responseText || xhr.status));
       },
       complete: function() {
-        $btn.prop('disabled', false).text('检查更新');
+        $btn.prop('disabled', !$('#wechat_cli_enabled').is(':checked')).text('检查更新');
       }
     });
   });
@@ -14111,7 +14185,10 @@ $(function(){
     });
   });
   checkActivate(false);
-  checkWechatCliStatus(false);
+  syncWechatCliEnabledState();
+  if ($('#wechat_cli_enabled').is(':checked')) {
+    checkWechatCliStatus(false);
+  }
 
 });
 </script>

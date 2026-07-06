@@ -276,14 +276,31 @@ def build_repair_plan(
 
 
 def current_message_found_near_tail(local_history, current_message, *, tail_count=5) -> bool:
-    current_entry = normalize_wechat_message(current_message, source="current")
-    current_key = unique_message_key(current_entry)
-    current_fp = message_fingerprint(current_entry)
-    if not current_fp:
+    source_messages = getattr(current_message, "_merged_source_messages", None)
+    candidates = []
+    if source_messages:
+        try:
+            source_iter = list(source_messages)
+        except TypeError:
+            source_iter = []
+        for source_message in source_iter:
+            entry = normalize_wechat_message(source_message, source="current_source")
+            if message_fingerprint(entry):
+                candidates.append(entry)
+    if not candidates:
+        current_entry = normalize_wechat_message(current_message, source="current")
+        if message_fingerprint(current_entry):
+            candidates.append(current_entry)
+    if not candidates:
         return False
-    for item in recent_effective_messages(local_history, tail_count):
-        if current_key and unique_message_key(item) == current_key:
-            return True
-        if message_fingerprint(item) == current_fp:
-            return True
-    return False
+    tail = recent_effective_messages(local_history, max(tail_count, len(candidates)))
+    for current_entry in candidates:
+        current_key = unique_message_key(current_entry)
+        current_fp = message_fingerprint(current_entry)
+        if not any(
+            (current_key and unique_message_key(item) == current_key)
+            or message_fingerprint(item) == current_fp
+            for item in tail
+        ):
+            return False
+    return True

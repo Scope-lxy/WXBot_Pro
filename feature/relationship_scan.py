@@ -561,7 +561,13 @@ def _expected_wx_id(bot) -> str:
     return _clean_text(getattr(bot, "wx_id", "") or getattr(getattr(bot, "config", None), "current_account_wx_id", ""))
 
 
+def _local_wechat_reader_enabled(bot) -> bool:
+    return bool(getattr(bot, "_local_wechat_reader_enabled", False))
+
+
 def _read_local_sessions(bot, *, limit: int = CLI_SESSION_SCAN_LIMIT) -> list[dict[str, str]] | None:
+    if not _local_wechat_reader_enabled(bot):
+        return None
     local_result = read_local_sessions_with_status(
         limit=limit,
         expected_wx_id=_expected_wx_id(bot),

@@ -32,6 +32,9 @@ HISTORY_TARGET_DISAMBIGUATION_MAX_CANDIDATES = 5
 LIVE_CHECK_CHAT_NAME = "文件传输助手"
 LIVE_CHECK_MESSAGE_PREFIX = "校验时间"
 ACCOUNT_BINDINGS_FILENAME = "wechat_cli_account_bindings.json"
+WECHAT_CLI_ENABLED_CONFIG_KEY = "wechat_cli_enabled"
+WECHAT_CLI_DISABLE_ENV = "WXBOT_DISABLE_WECHAT_CLI"
+DISABLED_ERROR = "wechat-cli integration disabled"
 SYSTEM_CONTACT_USERNAMES = {
     "notifymessage",
     "weixin",
@@ -68,6 +71,46 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _coerce_enabled_value(value: Any, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"0", "false", "no", "off", "disabled", "disable"}:
+        return False
+    if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return True
+    return default
+
+
+def wechat_cli_integration_enabled(config_path: str = "") -> bool:
+    disable_env = os.environ.get(WECHAT_CLI_DISABLE_ENV)
+    if disable_env is not None and _coerce_enabled_value(disable_env, False):
+        return False
+    target = Path(config_path).expanduser() if config_path else _repo_root() / "data" / "config" / "config.json"
+    try:
+        with target.open("r", encoding="utf-8-sig") as file:
+            data = json.load(file)
+        if isinstance(data, dict):
+            return _coerce_enabled_value(data.get(WECHAT_CLI_ENABLED_CONFIG_KEY), False)
+    except Exception:
+        pass
+    return False
+
+
+def _disabled_status(checked_at: str = "") -> dict[str, Any]:
+    return {
+        "available": False,
+        "state": "disabled",
+        "title": "wechat-cli 已关闭",
+        "message": "本地 CLI 读取已关闭，机器人只会使用微信界面读取。",
+        "detail": "如需恢复本地高速读取，请点击“开启 CLI”后保存配置并重新检测。",
+        "checked_at": checked_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "version": "",
+    }
+
+
 def bundled_wechat_cli_candidates() -> list[str]:
     tool_dir = _repo_root() / "venv" / "tools" / "wechat-cli"
     return [
@@ -81,6 +124,8 @@ def bundled_wechat_cli_candidates() -> list[str]:
 
 
 def find_wechat_cli_executable(explicit: str = "") -> str:
+    if not wechat_cli_integration_enabled():
+        return ""
     for value in (
         explicit,
         os.environ.get("WXBOT_WECHAT_CLI_EXE", ""),
@@ -219,6 +264,8 @@ def verify_wechat_cli_live_binding(
     bindings_file: str = "",
     timeout: int = STATUS_CHECK_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
+    if not wechat_cli_integration_enabled():
+        return {"ok": False, "error": DISABLED_ERROR}
     expected = _clean_text(expected_wx_id)
     db_dir = wechat_cli_config_db_dir()
     if not expected:
@@ -272,6 +319,8 @@ def run_wechat_cli_json(
     executable: str = "",
     timeout: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> LocalWechatCommandResult:
+    if not wechat_cli_integration_enabled():
+        return LocalWechatCommandResult(False, error=DISABLED_ERROR)
     exe = find_wechat_cli_executable(executable)
     if not exe:
         return LocalWechatCommandResult(False, error="wechat-cli executable not found")
@@ -308,6 +357,8 @@ def switch_wechat_cli_to_bound_account(
     timeout: int = 60,
     bindings_file: str = "",
 ) -> LocalWechatCommandResult:
+    if not wechat_cli_integration_enabled():
+        return LocalWechatCommandResult(False, error=DISABLED_ERROR)
     expected = _clean_text(expected_wx_id)
     if not expected or expected.lower().startswith("wxid_"):
         return LocalWechatCommandResult(False, error="bound account switch only supports account namespace bindings")
@@ -347,6 +398,8 @@ def ensure_wechat_cli_account_ready(
     executable: str = "",
     bindings_file: str = "",
 ) -> tuple[bool, str]:
+    if not wechat_cli_integration_enabled():
+        return False, DISABLED_ERROR
     account_ok, account_error = wechat_cli_account_matches(expected_wx_id, bindings_file=bindings_file)
     if account_ok:
         return True, ""
@@ -379,6 +432,8 @@ def sanitize_error(value: Any) -> str:
 
 
 def _wechat_cli_version(executable: str, *, timeout: int = STATUS_CHECK_TIMEOUT_SECONDS) -> str:
+    if not wechat_cli_integration_enabled():
+        return ""
     if not executable:
         return ""
     try:
@@ -421,6 +476,8 @@ def _wechat_cli_python_executable(executable: str) -> str:
 
 
 def _installed_direct_url_metadata(executable: str, *, timeout: int = STATUS_CHECK_TIMEOUT_SECONDS) -> dict[str, Any]:
+    if not wechat_cli_integration_enabled():
+        return {}
     python_exe = _wechat_cli_python_executable(executable)
     script = (
         "import importlib.metadata, json\n"
@@ -479,6 +536,19 @@ def _git_remote_head(url: str, *, timeout: int = UPDATE_CHECK_TIMEOUT_SECONDS) -
 def check_wechat_cli_update(*, timeout: int = UPDATE_CHECK_TIMEOUT_SECONDS) -> dict[str, Any]:
     """Check whether the installed wechat-cli git source has a newer HEAD."""
     checked_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not wechat_cli_integration_enabled():
+        return {
+            "ok": False,
+            "update_available": False,
+            "state": "disabled",
+            "title": "wechat-cli 已关闭",
+            "message": "本地 CLI 读取关闭时不检查 wechat-cli 更新。",
+            "checked_at": checked_at,
+            "local_version": "",
+            "local_commit": "",
+            "remote_commit": "",
+            "source_url": "",
+        }
     executable = find_wechat_cli_executable()
     if not executable:
         return {
@@ -552,6 +622,8 @@ def check_wechat_cli_status(
 ) -> dict[str, Any]:
     """Return a safe dashboard status for the optional local reader."""
     checked_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not wechat_cli_integration_enabled():
+        return _disabled_status(checked_at)
     executable = find_wechat_cli_executable()
     if not executable:
         return {

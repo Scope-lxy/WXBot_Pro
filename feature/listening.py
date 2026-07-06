@@ -1305,6 +1305,49 @@ def alllisten_mode(bot, last_time, timeout=10):
                     if not bot.config.chat_voice_recognition_switch:
                         msg._skip_ai_reply = True
 
+                if msg.attr == "self" and chat_type != "group":
+                    memory_chat = _types.SimpleNamespace(who=chat, chat_type="private")
+                    try:
+                        should_skip_memory = False
+                        should_skip = getattr(bot, "_should_skip_message_memory", None)
+                        if callable(should_skip):
+                            should_skip_memory = bool(should_skip(memory_chat, msg))
+                        if bot.config.memory_switch and bot.memory_manager and not should_skip_memory:
+                            saved_by_image_path = False
+                            save_image_memory = getattr(bot, "_save_incoming_image_memory_message", None)
+                            if msg.type == "image" and callable(save_image_memory):
+                                saved_by_image_path = bool(save_image_memory(memory_chat, msg))
+                            if not saved_by_image_path:
+                                save_kwargs = {
+                                    "chat_name": chat,
+                                    "sender": msg.sender,
+                                    "content": strip_voice_duration_metadata(msg.content) if msg.type == "voice" else msg.content,
+                                    "msg_type": msg.type,
+                                    "msg_attr": msg.attr,
+                                    "max_count": bot.config.memory_max_count,
+                                    "message_time": getattr(msg, "time", None) or getattr(msg, "_wxbot_received_at", None),
+                                }
+                                if msg.type == "image" and str(getattr(msg, "content", "") or "").strip():
+                                    save_kwargs["image_paths"] = [str(msg.content).strip()]
+                                bot.memory_manager.save_message(**save_kwargs)
+                                mark_memory_dirty = getattr(bot, "_mark_chat_memory_dirty", None)
+                                if callable(mark_memory_dirty):
+                                    mark_memory_dirty(memory_chat, msg)
+                        if not bool(getattr(msg, "_wxbot_private_reply_persisted_echo", False)):
+                            consume_runtime_echo = getattr(bot, "_consume_private_reply_runtime_echo", None)
+                            runtime_echo = (
+                                bool(consume_runtime_echo(chat, getattr(msg, "content", "")))
+                                if callable(consume_runtime_echo)
+                                else False
+                            )
+                            if not runtime_echo:
+                                interrupt_manual_self = getattr(bot, "_interrupt_private_ai_for_manual_self", None)
+                                if callable(interrupt_manual_self):
+                                    interrupt_manual_self(memory_chat, msg)
+                    except Exception as exc:
+                        _bot_log(bot, level="WARNING", message=f"处理 self 消息失败: {exc}")
+                    continue
+
                 if msg.attr == "friend" and chat_type != "group":
                     should_save_memory = msg.type in {"image", "quote"}
                     if should_save_memory and bot.config.memory_switch and bot.memory_manager:

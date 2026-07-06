@@ -78,11 +78,7 @@ def _should_log_contact_read_progress(count: int) -> bool:
 
 
 def local_wechat_reader_enabled(bot) -> bool:
-    default_enabled = (
-        getattr(bot.__class__, "__module__", "") == "wxbot_core"
-        or getattr(bot.__class__, "__name__", "") == "WXBot"
-    )
-    return bool(getattr(bot, "_local_wechat_reader_enabled", default_enabled))
+    return bool(getattr(bot, "_local_wechat_reader_enabled", False))
 
 
 def _acquire_wechat_action_lock(lock: Any, *, blocking: bool = True):

@@ -27,6 +27,32 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _coerce_enabled_value(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"0", "false", "no", "off", "disabled", "disable"}:
+        return False
+    if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return True
+    return default
+
+
+def wechat_cli_disabled_by_project_config() -> bool:
+    disable_env = os.environ.get("WXBOT_DISABLE_WECHAT_CLI")
+    if disable_env is not None and _coerce_enabled_value(disable_env, False):
+        return True
+    config_path = _repo_root() / "data" / "config" / "config.json"
+    try:
+        with config_path.open("r", encoding="utf-8-sig") as file:
+            data = json.load(file)
+        return not (isinstance(data, dict) and _coerce_enabled_value(data.get("wechat_cli_enabled"), False))
+    except Exception:
+        return True
+
+
 def _bundled_tool_candidates() -> list[str]:
     tool_dir = _repo_root() / "venv" / "tools" / "wechat-cli"
     return [
@@ -171,6 +197,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(list(argv or sys.argv[1:]))
+    if wechat_cli_disabled_by_project_config():
+        message = "wechat-cli 已被项目配置禁用，未执行探测命令。"
+        if args.json:
+            print(json.dumps({"disabled": True, "message": message}, ensure_ascii=False, indent=2))
+        else:
+            print(message)
+        return 2
     report = build_probe_report(args)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))

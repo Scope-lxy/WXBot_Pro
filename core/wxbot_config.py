@@ -171,6 +171,7 @@ class WXBotConfig:
         self.reply_delay_split_max = 2   # 拆分消息最大延迟秒数
         self.wxauto_save_cache_retention_days = 30  # wxauto_save 缓存自动清理周期，0=不清理
         self.clean_ai_reply_switch = True  # AI 回复清洗开关
+        self.wechat_cli_enabled = False
         self.current_account_wx_id = ""
 
         # 初始化时自动加载配置并同步到属性
@@ -316,6 +317,7 @@ class WXBotConfig:
                     "reply_delay_split_max": 2,
                     "wxauto_save_cache_retention_days": 30,
                     "clean_ai_reply_switch": True,
+                    "wechat_cli_enabled": False,
                     "chat_image_recognition_switch": False,
                     "chat_voice_recognition_switch": False,
                     "voice_transcription_fallback_text": DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT,
@@ -1057,6 +1059,8 @@ class WXBotConfig:
         )
         self.config['wxauto_save_cache_retention_days'] = self.wxauto_save_cache_retention_days
         self.clean_ai_reply_switch = bool(self.config.get('clean_ai_reply_switch', True))
+        self.wechat_cli_enabled = bool(self.config.get('wechat_cli_enabled', False))
+        self.config['wechat_cli_enabled'] = self.wechat_cli_enabled
 
         # 图片识别配置
         self.chat_image_recognition_switch  = bool(self.config.get('chat_image_recognition_switch', False))
