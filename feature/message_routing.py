@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import sys
-import re
 import time
 from contextlib import nullcontext
 from datetime import datetime
 
 from core import runtime_chat_state
 from core.logger import log
+from core.message_pipeline import (
+    is_failed_voice_transcription_text,
+    is_unrecognized_voice_placeholder,
+    voice_message_body,
+)
 from feature import takeover_runtime
 from feature.custom_forward_runtime import handle_custom_forward, handle_custom_forward_takeover
 from feature.keyword_reply import normalize_keyword_reply_actions, plan_group_keyword_reply
@@ -53,20 +57,17 @@ def _recognition_switches_for_chat(bot, chat):
     return False, False
 
 
-_VOICE_DURATION_RE = re.compile(r'语音\s*(\d+)\s*["”]?\s*秒')
-
-
 def voice_content_state(content):
     text = str(content or "").strip()
     if not text:
         return "pending"
-    if "语音未能转换" in text:
+    if is_failed_voice_transcription_text(text):
         return "failed"
-    match = _VOICE_DURATION_RE.search(text)
-    if not match:
-        return "valid"
-    tail = text[match.end():].strip()
-    return "pending" if not tail else "valid"
+    if is_unrecognized_voice_placeholder(text):
+        return "pending"
+    if not voice_message_body(text):
+        return "pending"
+    return "valid"
 
 
 def _update_alllisten_timestamp(bot, chat_name: str) -> None:

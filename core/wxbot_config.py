@@ -320,7 +320,7 @@ class WXBotConfig:
                     "chat_voice_recognition_switch": False,
                     "voice_transcription_fallback_text": DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT,
                     "voice_transcription_fallback_reply_once": False,
-                    "chat_message_merge_delay": 3.0,
+                    "chat_message_merge_delay": 20,
                     "chat_image_recognition_api": 0,
                     "group_image_recognition_switch": False,
                     "group_voice_recognition_switch": False,
@@ -1068,8 +1068,8 @@ class WXBotConfig:
         self.voice_transcription_fallback_reply_once = bool(
             self.config.get('voice_transcription_fallback_reply_once', False)
         )
-        self.chat_message_merge_delay = coerce_float_range(
-            self.config.get('chat_message_merge_delay', 3.0), 3.0, 0.0, 10.0
+        self.chat_message_merge_delay = coerce_int_range(
+            self.config.get('chat_message_merge_delay', 20), 20, 1, 60
         )
         self.chat_image_recognition_api     = int(self.config.get('chat_image_recognition_api', 0))
         self.group_image_recognition_switch = bool(self.config.get('group_image_recognition_switch', False))

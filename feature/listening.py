@@ -29,7 +29,8 @@ from core.message_pipeline import message_unique_id, strip_voice_duration_metada
 LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS = 5
 LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS = (30, 60)
 LIGHTWEIGHT_DELAYED_LISTEN_DELAY_SECONDS = LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS[0]
-LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS = 90
+LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS = 60
+LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS = 600
 LIGHTWEIGHT_DELAYED_LISTEN_REBUILD_COOLDOWN_SECONDS = 600
 LIGHTWEIGHT_DELAYED_LISTEN_VERIFY_INTERVAL_SECONDS = 0.3
 LIGHTWEIGHT_DELAYED_LISTEN_MAX_MESSAGES_PER_CHAT = 20
@@ -357,6 +358,23 @@ def ensure_lightweight_delayed_listen_state(bot):
         bot._lightweight_delayed_listen_flushing = False
 
 
+def _has_due_lightweight_delayed_listen_task(bot, now_ts=None):
+    tasks = getattr(bot, "_lightweight_delayed_listen_tasks", {}) or {}
+    if not isinstance(tasks, dict):
+        return False
+    now_ts = time.time() if now_ts is None else float(now_ts)
+    for task in tasks.values():
+        if not isinstance(task, dict):
+            continue
+        try:
+            due_at = float(task.get("due_at") or 0.0)
+        except (TypeError, ValueError):
+            due_at = 0.0
+        if due_at <= now_ts:
+            return True
+    return False
+
+
 def _queue_lightweight_delayed_listen(bot, chat_name, messages, *, reason="", allow_rebuild=False, now=None):
     name = str(chat_name or "").strip()
     msgs = list(messages or [])
@@ -475,22 +493,33 @@ def _rebuild_lightweight_delayed_listener(bot, chat_name):
 def _reschedule_lightweight_delayed_listen(bot, name, task, now_ts):
     attempt_index = int(task.get("attempt_index") or 0)
     next_index = attempt_index + 1
-    if next_index >= len(LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS):
-        return False
     created_at = float(task.get("created_at") or now_ts)
-    next_due = created_at + LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS[next_index]
-    if next_due - created_at > LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS:
+    expires_at = created_at + LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS
+    if now_ts >= expires_at:
         return False
+    if next_index < len(LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS):
+        next_delay = LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS[next_index]
+        next_due = created_at + next_delay
+    else:
+        next_delay = LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS
+        next_due = min(now_ts + next_delay, expires_at)
     task["attempt_index"] = next_index
     task["due_at"] = next_due
     bot._lightweight_delayed_listen_tasks[name] = task
+    if next_index < len(LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS):
+        message = (
+            f"全局监听 {name}：轻量延后监听第 {attempt_index + 1} 次未恢复，"
+            f"将在 {next_delay}s 后再试一次"
+        )
+    else:
+        message = (
+            f"全局监听 {name}：轻量延后监听第 {attempt_index + 1} 次未恢复，"
+            f"将在 {next_delay}s 后继续等待窗口恢复"
+        )
     _bot_log(
         bot,
         level="INFO",
-        message=(
-            f"全局监听 {name}：轻量延后监听第 {attempt_index + 1} 次未恢复，"
-            f"将在 {LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS[next_index]}s 后再试一次"
-        ),
+        message=message,
     )
     return True
 
@@ -552,9 +581,16 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
             if not current:
                 continue
             created_at = float(current.get("created_at") or now_ts)
-            if now_ts - created_at > LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS:
+            if now_ts - created_at >= LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS:
                 saved = _save_abandoned_lightweight_messages(bot, name, current.get("messages") or [])
-                _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听任务已过期，已放弃旧批次")
+                _bot_log(
+                    bot,
+                    level="WARNING",
+                    message=(
+                        f"全局监听 {name}：轻量延后监听等待超过 "
+                        f"{LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS}s，已放弃旧批次"
+                    ),
+                )
                 if saved:
                     _bot_log(bot, level="INFO", message=f"全局监听 {name}：已兜底保存 {saved} 条放弃批次消息")
                 handled = True
@@ -587,7 +623,14 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
                     handled = True
                     continue
                 saved = _save_abandoned_lightweight_messages(bot, name, current.get("messages") or [])
-                _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听两次恢复失败，已放弃旧批次")
+                _bot_log(
+                    bot,
+                    level="WARNING",
+                    message=(
+                        f"全局监听 {name}：轻量延后监听等待超过 "
+                        f"{LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS}s，已放弃旧批次"
+                    ),
+                )
                 if saved:
                     _bot_log(bot, level="INFO", message=f"全局监听 {name}：已兜底保存 {saved} 条放弃批次消息")
                 handled = True
@@ -908,7 +951,7 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
         ensure_lightweight_delayed_listen_state(bot)
         if (
             getattr(bot, "_lightweight_delayed_listen_flushing", False)
-            or getattr(bot, "_lightweight_delayed_listen_tasks", {})
+            or _has_due_lightweight_delayed_listen_task(bot)
         ):
             return []
 

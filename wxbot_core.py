@@ -541,6 +541,7 @@ class WXBot:
         self._material_source_read_locks_guard = threading.Lock()
         self._last_incoming_message_at = 0.0
         self._private_message_pipelines = {}
+        self._pending_private_voice_fallbacks = {}
         self._private_message_sequence_by_chat = {}
         self._memory_context_repair_startup_done = set()
         self._memory_context_repair_restore_pending = set()
@@ -621,6 +622,12 @@ class WXBot:
                     if isinstance(task, dict) and task.get("timer"):
                         timers.append(task.get("timer"))
                 pending_voice.clear()
+            pending_voice_fallbacks = getattr(self, "_pending_private_voice_fallbacks", None)
+            if isinstance(pending_voice_fallbacks, dict):
+                for item in pending_voice_fallbacks.values():
+                    if isinstance(item, dict) and item.get("timer"):
+                        timers.append(item.get("timer"))
+                pending_voice_fallbacks.clear()
             for pipeline in self._private_message_pipelines.values():
                 if not isinstance(pipeline, dict):
                     continue
@@ -1720,10 +1727,18 @@ class WXBot:
     def _material_outreach_is_stopped(self, result):
         return isinstance(result, dict) and str(result.get("status") or "").strip() == "stopped"
 
+    def _material_outreach_is_deferred(self, result):
+        if not isinstance(result, dict):
+            return False
+        status = str(result.get("status") or "").strip().lower()
+        return status in {"deferred", "deferred_lock_busy"}
+
     def _material_outreach_result_failed(self, result):
         if self._material_outreach_preface_is_queued(result):
             return False
         if self._material_outreach_is_stopped(result):
+            return False
+        if self._material_outreach_is_deferred(result):
             return False
         if isinstance(result, dict):
             status = str(result.get("status") or "").strip().lower()
@@ -2196,7 +2211,7 @@ class WXBot:
             datetime.now(),
         ):
             return False
-        return bool(self._send_material_outreach_locked(task))
+        return self._send_material_outreach_locked(task)
 
     def _material_outreach_task_label(self, task):
         task = task or {}
@@ -2286,15 +2301,22 @@ class WXBot:
                 self._log_material_outreach_run_finish(original_task, snapshot)
             return True
         if task.get("batch_material_strategy") == "fixed" and not str(task.get("fixed_material_id") or "").strip():
-            success = self._attempt_material_outreach_batches(task, send_records, allow_rebuild=False)
-            if snapshot:
+            result = self._attempt_material_outreach_batches(task, send_records, allow_rebuild=False)
+            if snapshot and not self._material_outreach_is_deferred(result):
                 self._log_material_outreach_run_finish(task, snapshot)
-            return success
+            return result
         success = False
         for attempt in range(3):
             send_records = self._load_material_send_records()
             send_count_before = len(send_records)
-            if self._attempt_material_outreach_batches(task, send_records, allow_rebuild=True):
+            result = self._attempt_material_outreach_batches(task, send_records, allow_rebuild=True)
+            if (
+                self._material_outreach_is_deferred(result)
+                or self._material_outreach_is_stopped(result)
+                or self._material_outreach_preface_is_queued(result)
+            ):
+                return result
+            if result:
                 success = True
                 break
             send_count_after = len(self._load_material_send_records())
@@ -2641,7 +2663,15 @@ class WXBot:
         for action in plan["send"]:
             if self.is_stop_requested():
                 return {"status": "stopped", "message": "机器人正在停止，已停止后续素材转发"}
-            result = self._send_material_outreach_action(task, action, materials)
+            material = action.get("material") if isinstance(action, dict) else {}
+            material_source = str((material or {}).get("source") or "").strip()
+            if material_source:
+                with self._get_material_source_read_lock(material_source):
+                    result = self._send_material_outreach_action_with_batch_lock(task, action, materials)
+            else:
+                result = self._send_material_outreach_action_with_batch_lock(task, action, materials)
+            if self._material_outreach_is_deferred(result):
+                return result
             self._flush_lightweight_send_queue()
             if self._material_outreach_preface_is_queued(result):
                 has_preface_queue = True
@@ -2656,6 +2686,23 @@ class WXBot:
             log(message="[素材转发] 运行时素材发送失败，准备重建素材池重试")
             return False
         return all_success
+
+    def _send_material_outreach_action_with_batch_lock(self, task, action, materials):
+        lock = self._get_wechat_action_lock()
+        if not lock.acquire(blocking=False):
+            return self._material_outreach_lock_busy_result()
+        try:
+            return self._send_material_outreach_action(task, action, materials)
+        finally:
+            lock.release()
+
+    def _material_outreach_lock_busy_result(self):
+        log(message="[素材转发] 微信 UI 正忙，本批次稍后重试")
+        return {
+            "status": "deferred_lock_busy",
+            "reason": "wechat_ui_busy",
+            "message": "微信 UI 正忙，素材转发批次稍后重试",
+        }
 
     def _append_material_outreach_skip_progress(self, task, skip):
         snapshot = task.get("_outreach_target_snapshot") if isinstance(task, dict) else None
@@ -5084,6 +5131,8 @@ class WXBot:
             self._chat_send_locks = {}
         if not hasattr(self, '_private_message_pipelines'):
             self._private_message_pipelines = {}
+        if not hasattr(self, '_pending_private_voice_fallbacks'):
+            self._pending_private_voice_fallbacks = {}
         if not hasattr(self, '_private_message_sequence_by_chat'):
             self._private_message_sequence_by_chat = {}
         if not hasattr(self, '_recent_private_image_hashes'):
@@ -5457,6 +5506,11 @@ class WXBot:
         if handled_any:
             log(message=f"私聊 {name}：语音识别延后重读已恢复部分待处理语音")
         if expired_items:
+            with self._chat_merge_lock:
+                has_active_private_reply = self._private_message_pipeline_has_work_locked(name)
+            if handled_any or has_active_private_reply:
+                log(message=f"私聊 {name}：同批已有有效语音内容，已跳过 {len(expired_items)} 条未识别语音兜底")
+                return True
             log(level="WARNING", message=f"私聊 {name}：语音识别等待超时，已走兜底回复（{len(expired_items)} 条）")
             return self._send_private_voice_transcription_fallback(chat)
         return True
@@ -5621,11 +5675,28 @@ class WXBot:
         limit = max(1, min(50, int(limit or DEFAULT_VISIBLE_LIMIT)))
         return messages[-limit:] if len(messages) > limit else messages
 
-    def _read_local_context_messages(self, chat_name, limit, *, anchor_messages=None, chat_type="private", return_status=False):
+    def _read_local_context_messages(
+        self,
+        chat_name,
+        limit,
+        *,
+        anchor_messages=None,
+        chat_type="private",
+        return_status=False,
+        return_detail=False,
+    ):
+        def build_return(items, cli_failed=False, detail=None):
+            items = list(items or [])
+            detail = detail or {}
+            if return_status and return_detail:
+                return items, bool(cli_failed), detail
+            if return_status:
+                return items, bool(cli_failed)
+            return items
+
         if getattr(self, "_local_wechat_reader_enabled", True) is False:
-            return ([], False) if return_status else []
+            return build_return([], False)
         max_limit = LOCAL_CONTEXT_REPAIR_MAX_LIMIT + LOCAL_CONTEXT_REPAIR_ANCHOR_BUFFER
-        label = "群聊" if str(chat_type or "").strip().lower() == "group" else "私聊"
         normalized_chat_type = str(chat_type or "").strip().lower() or "private"
         expected_wx_id = (
             getattr(self, "wx_id", "")
@@ -5683,7 +5754,7 @@ class WXBot:
                 if resolved.get("ok"):
                     preferred_target = str(resolved.get("target") or "").strip()
             except Exception as exc:
-                log(level="WARNING", message=f"私聊 {chat_name}：读取本地通讯录 wxid 失败，改用 CLI 实时解析：{exc}")
+                preferred_target = ""
 
         first_result = read_local_history_messages_with_status(
             chat_name,
@@ -5697,16 +5768,14 @@ class WXBot:
         diagnostic, diagnostic_text = diagnostic_suffix(first_result)
         if first_result.ok and first_result.items:
             remember_history_candidate(first_result, "directory_history_success" if preferred_target else "cli_history_success")
-            log(message=f"{label} {chat_name}：已从本地微信数据库读取上下文 {len(first_result.items)} 条{diagnostic_text}")
-            items = list(first_result.items)
-            return (items, False) if return_status else items
+            return build_return(
+                first_result.items,
+                False,
+                {"source": "cli", "diagnostic": diagnostic, "diagnostic_text": diagnostic_text},
+            )
 
         result = first_result
         if preferred_target and not first_result.ok:
-            log(
-                level="WARNING",
-                message=f"{label} {chat_name}：本地通讯录 wxid 直连读取失败，尝试 CLI 实时解析：{first_result.error}{diagnostic_text}",
-            )
             result = read_local_history_messages_with_status(
                 chat_name,
                 limit=read_limit,
@@ -5717,17 +5786,79 @@ class WXBot:
             diagnostic, diagnostic_text = diagnostic_suffix(result)
             if result.ok and result.items:
                 remember_history_candidate(result, "cli_fallback_history_success")
-                log(message=f"{label} {chat_name}：CLI 实时解析后读取上下文 {len(result.items)} 条{diagnostic_text}")
-                items = list(result.items)
-                return (items, False) if return_status else items
+                return build_return(
+                    result.items,
+                    False,
+                    {
+                        "source": "cli",
+                        "previous_error": str(first_result.error or "").strip(),
+                        "diagnostic": diagnostic,
+                        "diagnostic_text": diagnostic_text,
+                    },
+                )
 
         if not result.ok:
-            log(
-                level="WARNING",
-                message=f"{label} {chat_name}：本地微信数据库读取上下文失败，已跳过本轮 CLI 补洞：{result.error}{diagnostic_text}",
+            return build_return(
+                [],
+                True,
+                {
+                    "source": "cli",
+                    "error": str(result.error or first_result.error or "未知原因").strip(),
+                    "diagnostic": diagnostic,
+                    "diagnostic_text": diagnostic_text,
+                },
             )
-            return ([], True) if return_status else []
-        return ([], False) if return_status else []
+        return build_return([], False, {"source": "cli", "diagnostic": diagnostic, "diagnostic_text": diagnostic_text})
+
+    def _context_repair_log_label(self, chat_type, chat_name):
+        label = "群聊" if str(chat_type or "").strip().lower() == "group" else "私聊"
+        return f"{label} {chat_name}"
+
+    def _context_repair_cli_error_text(self, detail):
+        error = ""
+        if isinstance(detail, dict):
+            error = str(detail.get("error") or "").strip()
+        if not error:
+            return "未知原因"
+        normalized = re.sub(r"\s+", " ", error).strip()
+        lower = normalized.lower()
+        for needle, text in (
+            ("wechat-cli executable not found", "未找到 wechat-cli 工具"),
+            ("wechat-cli config not initialized", "wechat-cli 尚未初始化"),
+            ("wechat-cli config missing db_dir", "wechat-cli 配置缺少数据库目录"),
+            ("wechat-cli account binding missing", "当前微信账号还没有绑定 wechat-cli 数据目录"),
+            ("bound wechat-cli database directory does not exist", "已绑定的微信数据库目录不存在"),
+            ("wechat-cli config belongs to another wechat account", "wechat-cli 绑定的是另一个微信账号"),
+            ("wechat-cli history returned invalid data", "CLI 返回的聊天记录格式异常"),
+            ("wechat-cli history missing messages", "CLI 没有返回聊天记录"),
+            ("wechat-cli history target could not be resolved uniquely", "CLI 无法唯一定位这个聊天"),
+            ("wechat-cli history target has too many ambiguous candidates", "CLI 找到过多同名聊天候选"),
+            ("wechat-cli history target is ambiguous", "CLI 找到多个同名聊天候选"),
+            ("wechat-cli contacts query failed", "CLI 查询通讯录失败"),
+            ("wechat-cli sessions query failed", "CLI 查询会话列表失败"),
+            ("timed out", "CLI 读取超时"),
+            ("timeout", "CLI 读取超时"),
+            ("permission denied", "CLI 没有权限读取本地数据"),
+        ):
+            if needle in lower:
+                return text
+        return normalized.replace("wechat-cli", "CLI")
+
+    def _log_context_repair_cli_failure(self, chat_type, chat_name, detail, *, fallback_text):
+        label = self._context_repair_log_label(chat_type, chat_name)
+        reason = self._context_repair_cli_error_text(detail)
+        log(level="WARNING", message=f"{label}：上下文 CLI 补洞失败，原因：{reason}；{fallback_text}")
+
+    def _log_context_repair_result(self, chat_type, chat_name, source, added, *, suffix=""):
+        label = self._context_repair_log_label(chat_type, chat_name)
+        action_text = {
+            "cli": "上下文 CLI 补洞",
+            "ui_fallback": "上下文 UI 兜底补洞",
+            "ui": "上下文 UI 补洞",
+        }.get(source, "上下文补洞")
+        suffix = str(suffix or "").strip()
+        suffix_text = f"，{suffix}" if suffix else ""
+        log(message=f"{label}：{action_text}完成，补入 {int(added or 0)} 条{suffix_text}")
 
     def _mark_local_history_candidate_verified(self, chat_name):
         candidates = getattr(self, "_local_history_verification_candidates", None)
@@ -5807,26 +5938,47 @@ class WXBot:
             anchor_messages = list(local_history or [])
             if not current_message_found_near_tail(anchor_messages, message, tail_count=8):
                 anchor_messages.append(normalize_wechat_message(message, source="wechat_context_repair_group_anchor"))
-            local_messages, local_cli_failed = self._read_local_context_messages(
+            local_messages, local_cli_failed, local_cli_detail = self._read_local_context_messages(
                 chat_name,
                 self._local_context_repair_limit(),
                 anchor_messages=anchor_messages,
                 chat_type="group",
                 return_status=True,
+                return_detail=True,
             )
             local_context_source = bool(local_messages)
+            context_repair_source = "cli" if local_context_source else "ui"
             if local_context_source:
                 self._clear_context_repair_cli_failure(cooldown_key)
             if not local_messages:
                 if local_cli_failed:
                     failures = self._record_context_repair_cli_failure(cooldown_key)
                     if failures < 2:
+                        self._log_context_repair_cli_failure(
+                            "group",
+                            chat_name,
+                            local_cli_detail,
+                            fallback_text="等待下次补洞再启用微信 UI 兜底",
+                        )
                         return False
                     lock = self._get_wechat_action_lock()
                     if not lock.acquire(blocking=False):
+                        self._log_context_repair_cli_failure(
+                            "group",
+                            chat_name,
+                            local_cli_detail,
+                            fallback_text="微信 UI 正忙，本轮暂未兜底",
+                        )
                         return False
+                    self._log_context_repair_cli_failure(
+                        "group",
+                        chat_name,
+                        local_cli_detail,
+                        fallback_text="已切换微信 UI 兜底",
+                    )
                     try:
                         local_messages = self._read_low_risk_context_messages(chat, cfg["visible_limit"])
+                        context_repair_source = "ui_fallback"
                     finally:
                         lock.release()
                 else:
@@ -5843,16 +5995,16 @@ class WXBot:
             )
             if plan.anchor_found and plan.messages_to_append:
                 result = self._append_context_repair_messages(chat_name, plan.messages_to_append, chat_type="group")
-                log(
-                    message=(
-                        f"群聊 {chat_name}：低风险上下文补洞完成，"
-                        f"读取 {len(local_entries)} 条，补入 {result.get('added', 0)} 条"
-                    )
+                self._log_context_repair_result(
+                    "group",
+                    chat_name,
+                    context_repair_source,
+                    result.get("added", 0),
                 )
                 self._mark_context_repair_success(cooldown_key)
                 return int(result.get("added", 0) or 0) > 0
             if plan.anchor_found:
-                log(message=f"群聊 {chat_name}：低风险上下文补洞已对齐，无需补入")
+                self._log_context_repair_result("group", chat_name, context_repair_source, 0)
                 self._mark_context_repair_success(cooldown_key)
                 return True
             if cfg["high_enabled"]:
@@ -5877,16 +6029,23 @@ class WXBot:
                                     history_plan.messages_to_append,
                                     chat_type="group",
                                 )
-                                log(
-                                    message=(
-                                        f"群聊 {chat_name}：高风险上下文补洞完成，"
-                                        f"读取 {len(history_entries)} 条，补入 {result.get('added', 0)} 条"
-                                    )
+                                self._log_context_repair_result(
+                                    "group",
+                                    chat_name,
+                                    "ui",
+                                    result.get("added", 0),
+                                    suffix="高风险读取",
                                 )
                                 self._mark_context_repair_success(cooldown_key)
                                 return int(result.get("added", 0) or 0) > 0
                             if history_plan.anchor_found:
-                                log(message=f"群聊 {chat_name}：高风险上下文补洞已对齐，无需补入")
+                                self._log_context_repair_result(
+                                    "group",
+                                    chat_name,
+                                    "ui",
+                                    0,
+                                    suffix="高风险读取",
+                                )
                                 self._mark_context_repair_success(cooldown_key)
                                 return True
                             log(message=f"群聊 {chat_name}：高风险上下文补洞未找到锚点，已跳过补入")
@@ -5897,7 +6056,13 @@ class WXBot:
                     else:
                         with self._memory_context_repair_lock:
                             self._memory_context_repair_last_high_risk_at.pop(cooldown_key, None)
-            log(message=f"群聊 {chat_name}：低风险上下文补洞未找到锚点，已跳过补入")
+            self._log_context_repair_result(
+                "group",
+                chat_name,
+                context_repair_source,
+                0,
+                suffix="未找到锚点，已跳过补入",
+            )
             return False
         except Exception as exc:
             log(level="WARNING", message=f"群聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")
@@ -5931,25 +6096,48 @@ class WXBot:
             anchor_messages = list(local_history or [])
             if not current_message_found_near_tail(anchor_messages, message, tail_count=8):
                 anchor_messages.append(normalize_wechat_message(message, source="wechat_context_repair_anchor"))
-            visible_messages, local_cli_failed = self._read_local_context_messages(
+            visible_messages, local_cli_failed, local_cli_detail = self._read_local_context_messages(
                 chat_name,
                 self._local_context_repair_limit(),
                 anchor_messages=anchor_messages,
                 return_status=True,
+                return_detail=True,
             )
             local_context_source = bool(visible_messages)
+            context_repair_source = "cli" if local_context_source else "ui"
             if local_context_source:
                 self._clear_context_repair_cli_failure(repair_key)
             if not visible_messages:
                 if local_cli_failed:
                     failures = self._record_context_repair_cli_failure(repair_key)
                     if failures < 2:
+                        self._log_context_repair_cli_failure(
+                            "private",
+                            chat_name,
+                            local_cli_detail,
+                            fallback_text="等待下次补洞再启用微信 UI 兜底",
+                        )
                         return False
                 lock = self._get_wechat_action_lock()
                 if not lock.acquire(blocking=False):
+                    if local_cli_failed:
+                        self._log_context_repair_cli_failure(
+                            "private",
+                            chat_name,
+                            local_cli_detail,
+                            fallback_text="微信 UI 正忙，本轮暂未兜底",
+                        )
                     return False
+                if local_cli_failed:
+                    self._log_context_repair_cli_failure(
+                        "private",
+                        chat_name,
+                        local_cli_detail,
+                        fallback_text="已切换微信 UI 兜底",
+                    )
                 try:
                     visible_messages = self._read_low_risk_context_messages(chat, cfg["visible_limit"])
+                    context_repair_source = "ui_fallback" if local_cli_failed else "ui"
                 finally:
                     lock.release()
         except Exception as exc:
@@ -5971,17 +6159,17 @@ class WXBot:
                 if local_context_source:
                     self._mark_local_history_candidate_verified(chat_name)
                 result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
-                log(
-                    message=(
-                        f"私聊 {chat_name}：低风险上下文补洞完成，原因 {','.join(reasons)}，"
-                        f"读取 {len(visible_entries)} 条，补入 {result.get('added', 0)} 条"
-                    )
+                self._log_context_repair_result(
+                    "private",
+                    chat_name,
+                    context_repair_source,
+                    result.get("added", 0),
                 )
                 local_history = self.memory_manager.get_messages(memory_chat_name, cfg["history_limit"]) or []
             elif plan.anchor_found:
                 if local_context_source:
                     self._mark_local_history_candidate_verified(chat_name)
-                log(message=f"私聊 {chat_name}：低风险上下文补洞已对齐，无需补入")
+                self._log_context_repair_result("private", chat_name, context_repair_source, 0)
                 self._consume_context_repair_reasons(chat_name, reasons)
                 self._mark_context_repair_success(repair_key)
                 return True
@@ -6008,16 +6196,23 @@ class WXBot:
                                 history_plan.messages_to_append + low_risk_messages,
                             )
                             if int(result.get("added", 0) or 0) > 0:
-                                log(
-                                    message=(
-                                        f"私聊 {chat_name}：高风险上下文补洞完成，原因 {','.join(reasons)}，"
-                                        f"读取 {len(history_entries)} 条，补入 {result.get('added', 0)} 条"
-                                    )
+                                self._log_context_repair_result(
+                                    "private",
+                                    chat_name,
+                                    "ui",
+                                    result.get("added", 0),
+                                    suffix="高风险读取",
                                 )
                                 self._consume_context_repair_reasons(chat_name, reasons)
                                 self._mark_context_repair_success(repair_key)
                                 return True
-                            log(message=f"私聊 {chat_name}：高风险上下文补洞未发现可补入消息")
+                            self._log_context_repair_result(
+                                "private",
+                                chat_name,
+                                "ui",
+                                0,
+                                suffix="高风险读取，未发现可补入消息",
+                            )
                         except Exception as exc:
                             log(level="WARNING", message=f"私聊 {chat_name}：高风险上下文补洞失败，已退回低风险结果，详情：{exc}")
                         finally:
@@ -6028,11 +6223,12 @@ class WXBot:
 
             if not plan.anchor_found:
                 result = self._append_context_repair_messages(memory_chat_name, plan.messages_to_append)
-                log(
-                    message=(
-                        f"私聊 {chat_name}：低风险上下文补洞未找到锚点，"
-                        f"已按最近可见消息补入 {result.get('added', 0)} 条"
-                    )
+                self._log_context_repair_result(
+                    "private",
+                    chat_name,
+                    context_repair_source,
+                    result.get("added", 0),
+                    suffix="未找到锚点",
                 )
             self._consume_context_repair_reasons(chat_name, reasons)
             repaired = bool(plan.messages_to_append)
@@ -6053,19 +6249,17 @@ class WXBot:
         )
 
     def _private_message_merge_delay(self):
-        return coerce_float_range(
-            getattr(self.config, 'chat_message_merge_delay', 3.0), 3.0, 3.0, 10.0
-        )
+        return getattr(self.config, 'chat_message_merge_delay', 20)
 
     @staticmethod
     def _private_message_max_wait(delay):
-        return max(9.0, min(30.0, float(delay or 3.0) * 3.0))
+        return min(180.0, float(delay) * 3.0)
 
     @staticmethod
     def _private_message_effective_merge_delay(pipeline, base_delay):
         kind = str((pipeline or {}).get("open_kind") or "text").strip().lower()
         multiplier = 2.0 if kind in {"image", "mixed"} else 1.0
-        return float(base_delay or 3.0) * multiplier
+        return min(60.0, float(base_delay) * multiplier)
 
     def _private_message_pipeline(self, chat_name):
         self._ensure_message_runtime_state()
@@ -6116,6 +6310,63 @@ class WXBot:
         timer.daemon = True
         timer.start()
         return timer
+
+    def _cancel_pending_private_voice_fallback_locked(self, chat_name):
+        pending = getattr(self, "_pending_private_voice_fallbacks", None)
+        if not isinstance(pending, dict):
+            return False
+        item = pending.pop(str(chat_name or "").strip(), None)
+        if not isinstance(item, dict):
+            return False
+        self._cancel_timer(item.get("timer"))
+        return True
+
+    def _private_message_pipeline_has_work_locked(self, chat_name):
+        pipelines = getattr(self, "_private_message_pipelines", {})
+        pipeline = pipelines.get(str(chat_name or "").strip()) if isinstance(pipelines, dict) else None
+        return isinstance(pipeline, dict) and (
+            bool(pipeline.get("open_messages"))
+            or bool(pipeline.get("queued_batches"))
+            or bool(pipeline.get("worker_running"))
+        )
+
+    def _schedule_private_voice_transcription_fallback(self, chat):
+        self._ensure_message_runtime_state()
+        name = str(getattr(chat, "who", "") or "").strip()
+        if not name:
+            return True
+        delay = self._private_message_merge_delay()
+        with self._chat_merge_lock:
+            self._cancel_pending_private_voice_fallback_locked(name)
+            if self._private_message_pipeline_has_work_locked(name):
+                log(message=f"私聊 {name}：同批已有有效消息，已跳过语音转文字失败兜底提示")
+                return True
+            self._pending_private_voice_fallbacks[name] = {
+                "chat": chat,
+                "timer": self._schedule_private_message_timer(
+                    delay,
+                    self._flush_pending_private_voice_fallback,
+                    chat,
+                ),
+            }
+        log(message=f"私聊 {name}：语音转文字失败，等待同批有效消息 {delay}s 后再决定是否提示")
+        return True
+
+    def _flush_pending_private_voice_fallback(self, chat):
+        name = str(getattr(chat, "who", "") or "").strip()
+        if not name:
+            return True
+        self._ensure_message_runtime_state()
+        with self._chat_merge_lock:
+            pending = getattr(self, "_pending_private_voice_fallbacks", {})
+            item = pending.pop(name, None) if isinstance(pending, dict) else None
+            if isinstance(item, dict):
+                item["timer"] = None
+        if not isinstance(item, dict):
+            return True
+        if self.is_stop_requested():
+            return True
+        return self._send_private_voice_transcription_fallback(chat)
 
     def _schedule_private_message_pipeline_locked(self, chat, pipeline, delay, max_wait_base_delay=None):
         self._cancel_timer(pipeline.get("idle_timer"))
@@ -6268,7 +6519,7 @@ class WXBot:
             if not self._mark_message_content_fingerprint_seen(chat.who, message):
                 log(message=f"私聊 {chat.who}：短时间重复失败语音回调已忽略")
                 return True
-            return self._send_private_voice_transcription_fallback(chat)
+            return self._schedule_private_voice_transcription_fallback(chat)
         if self._should_skip_private_ai_message(message):
             return True
         if not self._mark_message_seen(chat.who, message):
@@ -6287,6 +6538,7 @@ class WXBot:
         batch_kind = self._private_message_batch_kind(message)
         pending_image_paths = []
         with self._chat_merge_lock:
+            self._cancel_pending_private_voice_fallback_locked(chat.who)
             pipeline = self._private_message_pipeline(chat.who)
             if not pipeline:
                 return True

@@ -447,6 +447,30 @@ class WXBotContextRepairTests(unittest.TestCase):
                 ["早"],
             )
 
+    def test_successful_cli_repair_logs_only_added_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp, local_reader_enabled=True)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FakeChat(visible=[msg("微信界面消息", time="2")])
+            local_messages = [
+                msg("旧锚点", time="1"),
+                msg("CLI 补入消息", time="2"),
+            ]
+
+            with patch("wxbot_core.read_local_history_messages_with_status") as read_local, \
+                    patch("wxbot_core.log") as log_mock:
+                read_local.return_value = SimpleNamespace(ok=True, items=local_messages, error="", diagnostic={})
+                repaired = bot._repair_private_context_before_ai(chat, msg("当前消息", time="3"))
+
+            self.assertTrue(repaired)
+            messages = [call.kwargs.get("message", "") for call in log_mock.call_args_list]
+            self.assertEqual(messages, ["私聊 张三：上下文 CLI 补洞完成，补入 1 条"])
+            self.assertFalse(any("读取" in message or "诊断" in message for message in messages))
+
     def test_first_cli_final_failure_skips_ui_fallback_until_next_needed_attempt(self):
         with tempfile.TemporaryDirectory() as tmp:
             lock = FakeLock()
@@ -493,6 +517,64 @@ class WXBotContextRepairTests(unittest.TestCase):
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
                 ["旧锚点", "微信界面消息"],
+            )
+
+    def test_cli_failure_with_ui_fallback_logs_reason_and_fallback_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = FakeLock()
+            bot = self.make_bot(tmp, lock=lock, local_reader_enabled=True)
+            bot._memory_context_repair_cli_failures["private:张三"] = 1
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FakeChat(visible=[
+                msg("旧锚点", time="1"),
+                msg("微信界面消息", time="2"),
+            ])
+
+            with patch("wxbot_core.read_local_history_messages_with_status") as read_local, \
+                    patch("wxbot_core.log") as log_mock:
+                read_local.return_value = SimpleNamespace(ok=False, items=[], error="boom", diagnostic={})
+                repaired = bot._repair_private_context_before_ai(chat, msg("当前消息", time="3"))
+
+            self.assertTrue(repaired)
+            calls = [(call.kwargs.get("level", "INFO"), call.kwargs.get("message", "")) for call in log_mock.call_args_list]
+            self.assertEqual(
+                calls,
+                [
+                    ("WARNING", "私聊 张三：上下文 CLI 补洞失败，原因：boom；已切换微信 UI 兜底"),
+                    ("INFO", "私聊 张三：上下文 UI 兜底补洞完成，补入 1 条"),
+                ],
+            )
+
+    def test_cli_failure_reason_uses_readable_chinese(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lock = FakeLock()
+            bot = self.make_bot(tmp, lock=lock, local_reader_enabled=True)
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                100,
+            )
+            chat = FakeChat(visible=[msg("微信界面消息", time="2")])
+
+            with patch("wxbot_core.read_local_history_messages_with_status") as read_local, \
+                    patch("wxbot_core.log") as log_mock:
+                read_local.return_value = SimpleNamespace(
+                    ok=False,
+                    items=[],
+                    error="wechat-cli config not initialized",
+                    diagnostic={},
+                )
+                repaired = bot._repair_private_context_before_ai(chat, msg("当前消息", time="3"))
+
+            self.assertFalse(repaired)
+            messages = [call.kwargs.get("message", "") for call in log_mock.call_args_list]
+            self.assertEqual(
+                messages,
+                ["私聊 张三：上下文 CLI 补洞失败，原因：wechat-cli 尚未初始化；等待下次补洞再启用微信 UI 兜底"],
             )
 
     def test_successful_repair_sets_three_hundred_second_ttl(self):

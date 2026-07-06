@@ -1127,7 +1127,7 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
       </div>
     </div>
-    {% set chat_merge_delay = config.get('chat_message_merge_delay', 3.0) | float %}
+    {% set chat_merge_delay = config.get('chat_message_merge_delay', 20) | int %}
     <div class="cfg-card chat-ability-card chat-ability-card--reply">
       <div class="ui-head ui-head--section">
         <div class="ui-head__main">
@@ -1265,24 +1265,17 @@ html.icons-pref-local [class*=" bi-"]::before {
               <h5>连续消息合并</h5>
               <span class="desc">等待短时间后统一发给 AI，避免连续语音/文字/图片触发多次回复</span>
             </div>
-            <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l3 ui-head-switch" for="chat_message_merge_switch">
-                <input class="form-check-input" type="checkbox" id="chat_message_merge_switch"
-                       {% if chat_merge_delay > 0 %}checked{% endif %}>
-                <span class="ui-switch-knob"></span>
-              </label>
-            </div>
           </div>
           <div id="chat_message_merge_settings" class="chat-ability-settings">
             <div class="row g-3">
               <div class="col-12 col-lg-6">
                 <label class="cfg-label" for="chat_message_merge_delay">等待时间（秒）</label>
-                <input type="number" class="form-control" id="chat_message_merge_delay" min="3" max="10" step="0.5"
-                       value="{{ chat_merge_delay if chat_merge_delay > 0 else 3.0 }}" placeholder="3.0">
-                <div class="cfg-hint">打包消息发给 AI 前的等待队列时间，默认 3 秒，最多 10 秒</div>
+                <input type="number" class="form-control" id="chat_message_merge_delay" min="1" max="60" step="1"
+                       value="{{ (chat_merge_delay if chat_merge_delay >= 1 and chat_merge_delay <= 60 else 20) | int }}" placeholder="20">
+                <div class="cfg-hint">好友停顿多久后再统一交给 AI，默认 20 秒，范围 1-60 秒</div>
               </div>
             </div>
-            <div class="chat-ability-note">开启后，同一好友短时间内连续发来的文字、语音、图片和表情会先合并，再交给 AI 生成回复。</div>
+            <div class="chat-ability-note">同一好友短时间内连续发来的文字、语音、图片和表情会先合并，再交给 AI 生成回复。</div>
           </div>
         </div>
       </div>
@@ -1926,11 +1919,10 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <i class="bi bi-person-check"></i> 手动校准
               </button>
             </div>
-            <div class="cfg-hint contact-maintenance-note">优先使用 wechat-cli 本地快照一次性读取；不可用时回退微信界面分批读取</div>
             <div class="page-inline-notice page-inline-notice--danger">
               <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
               <div class="page-inline-notice__content">
-                建档时会自动把微信界面切到前台，干扰微信界面可能会导致建档失败
+                优先使用 CLI 读取本地数据，CLI 不可用时自动读取微信 UI 信息。建档时会自动把微信界面切到前台，干扰微信界面可能会导致建档失败
               </div>
             </div>
             <div class="relationship-scan-table identity-calibration-table" id="identity-calibration-card">
@@ -2049,7 +2041,7 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
             <div class="page-inline-notice page-inline-notice--danger">
               <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
-              <div class="page-inline-notice__content">优先使用 wechat-cli 本地快照；只有本地读取不可用并回退微信界面时，才会滚动微信主窗口会话列表</div>
+              <div class="page-inline-notice__content">优先使用 CLI 读取本地数据，CLI 不可用时自动读取微信 UI 信息；只有读取微信 UI 信息时，才会滚动微信主窗口会话列表</div>
             </div>
             <div class="relationship-scan-table">
               <div class="relationship-scan-row relationship-scan-row--head">
@@ -11968,7 +11960,7 @@ $(function(){
       chat_voice_reply_limit_hours:Math.max(0,parseInt($('#chat_voice_reply_limit_hours').val())||0),
       chat_voice_session_minutes:Math.max(1,parseInt($('#chat_voice_session_minutes').val())||10),
       chat_voice_session_turns:Math.max(1,parseInt($('#chat_voice_session_turns').val())||5),
-      chat_message_merge_delay:$('#chat_message_merge_switch').is(':checked') ? Math.max(3,Math.min(10,parseFloat($('#chat_message_merge_delay').val())||3)) : 0,
+      chat_message_merge_delay:Math.max(1,Math.min(60,parseInt($('#chat_message_merge_delay').val())||20)),
       chat_image_recognition_api:parseInt($('#chat_image_recognition_api').val())||0,
       group_voice_recognition_switch:$('#group_voice_recognition_switch').is(':checked'),
       group_voice_reply_switch:$('#group_voice_reply_switch').is(':checked'),

@@ -1172,6 +1172,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         get_calls = [call for call in calls if call[0] == "GetFriendDetails"]
         self.assertEqual(get_calls[0][1]["timeout"], 600)
+        self.assertEqual(get_calls[0][1]["interval"], 0)
 
     def test_single_batch_prefers_local_contacts_without_wechat_ui(self):
         calls = []
@@ -1370,7 +1371,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(read_logs, [])
         self.assertEqual(result["callback_names"], ["阿英2"])
 
-    def test_standard_callback_stops_when_pause_requested(self):
+    def test_standard_callback_finishes_current_batch_when_pause_requested(self):
         calls = []
         state = {"directory": {"subjects": [], "maintenance": {}}}
 
@@ -1408,73 +1409,14 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         ):
             result = refresh_contact_profiles_single_batch(FakeBot(), mode="standard")
 
-        self.assertIn(("callback_return", False), calls)
+        self.assertIn(("callback_return", True), calls)
         self.assertTrue(result["stopped_early"])
         self.assertFalse(result["completed"])
         self.assertEqual(result["stopped_reason"], "paused")
 
-    def test_pause_schedules_return_to_chat_after_delay(self):
+    def test_pause_only_marks_state_without_interrupting_current_batch(self):
         calls = []
         saved = {}
-
-        class FakeTimer:
-            def __init__(self, delay, callback):
-                calls.append(("timer", delay))
-                self.callback = callback
-                self.daemon = False
-                self.cancelled = False
-
-            def start(self):
-                calls.append(("timer_start", self.daemon))
-
-            def cancel(self):
-                self.cancelled = True
-                calls.append(("timer_cancel",))
-
-        class FakeWeChat:
-            def SwitchToChat(self):
-                calls.append(("SwitchToChat",))
-
-        class FakeBot:
-            wx = FakeWeChat()
-
-            def _load_contact_profiles_directory(self):
-                return saved.get("directory", {"maintenance": {}}), "ignored.json", "scope_rui"
-
-        def fake_save(_path, directory):
-            saved["directory"] = directory
-
-        with (
-            patch("feature.contacts.save_contact_directory", side_effect=fake_save),
-            patch("feature.contacts.threading.Timer", FakeTimer),
-            patch("feature.contacts.time.sleep"),
-        ):
-            bot = FakeBot()
-            bot._contact_profiles_reading_active = True
-            with patch("feature.contacts.click_wechat_main_window_chat_nav", side_effect=lambda: calls.append(("interrupt_click",)) or setattr(bot, "_contact_profiles_reading_active", False) or True):
-                set_contact_profiles_paused(bot, True)
-                timer = bot._contact_profiles_stop_return_timer
-                timer.callback()
-
-        self.assertIn(("timer", 0.6), calls)
-        self.assertIn(("timer_start", True), calls)
-        self.assertIn(("interrupt_click",), calls)
-        self.assertEqual(calls.count(("interrupt_click",)), 1)
-        self.assertNotIn(("SwitchToChat",), calls)
-
-    def test_resume_cancels_pending_return_to_chat(self):
-        calls = []
-        saved = {}
-
-        class FakeTimer:
-            def __init__(self, _delay, _callback):
-                self.daemon = False
-
-            def start(self):
-                calls.append(("timer_start",))
-
-            def cancel(self):
-                calls.append(("timer_cancel",))
 
         class FakeBot:
             wx = object()
@@ -1485,17 +1427,34 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         def fake_save(_path, directory):
             saved["directory"] = directory
 
-        with (
-            patch("feature.contacts.save_contact_directory", side_effect=fake_save),
-            patch("feature.contacts.threading.Timer", FakeTimer),
-        ):
+        with patch("feature.contacts.save_contact_directory", side_effect=fake_save):
+            bot = FakeBot()
+            bot._contact_profiles_reading_active = True
+            set_contact_profiles_paused(bot, True)
+
+        self.assertEqual(calls, [])
+        self.assertTrue(saved["directory"]["maintenance"]["paused"])
+        self.assertEqual(saved["directory"]["maintenance"]["status"], "paused")
+
+    def test_resume_only_clears_paused_state(self):
+        saved = {}
+
+        class FakeBot:
+            wx = object()
+
+            def _load_contact_profiles_directory(self):
+                return saved.get("directory", {"maintenance": {}}), "ignored.json", "scope_rui"
+
+        def fake_save(_path, directory):
+            saved["directory"] = directory
+
+        with patch("feature.contacts.save_contact_directory", side_effect=fake_save):
             bot = FakeBot()
             set_contact_profiles_paused(bot, True)
-            self.assertIsNotNone(bot._contact_profiles_stop_return_timer)
             set_contact_profiles_paused(bot, False)
 
-        self.assertIn(("timer_cancel",), calls)
-        self.assertIsNone(bot._contact_profiles_stop_return_timer)
+        self.assertFalse(saved["directory"]["maintenance"]["paused"])
+        self.assertEqual(saved["directory"]["maintenance"]["status"], "idle")
 
     def test_repair_remarks_retries_single_contact_after_rebind(self):
         calls = []

@@ -631,7 +631,7 @@ class MessageBehaviorTests(unittest.TestCase):
 
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
-            chat_message_merge_delay=4,
+            chat_message_merge_delay=20,
             chat_voice_recognition_switch=False,
             chat_image_recognition_switch=False,
         )
@@ -642,16 +642,57 @@ class MessageBehaviorTests(unittest.TestCase):
 
         with mock.patch("wxbot_core.threading.Timer", side_effect=fake_timer):
             self.assertTrue(bot._enqueue_private_message_for_ai(chat, first))
-            self.assertEqual(timers[0].seconds, 4)
-            self.assertAlmostEqual(timers[1].seconds, 12, places=2)
+            self.assertEqual(timers[0].seconds, 20)
+            self.assertAlmostEqual(timers[1].seconds, 60, places=2)
             self.assertTrue(bot._enqueue_private_message_for_ai(chat, second))
 
         self.assertEqual(len(timers), 3)
-        self.assertEqual(timers[2].seconds, 4)
+        self.assertEqual(timers[2].seconds, 20)
         self.assertTrue(timers[0].cancelled)
         pipeline = bot._private_message_pipelines["张三"]
         self.assertEqual([msg.content for msg in pipeline["open_messages"]], ["第一条", "第二条"])
         self.assertEqual(bot._get_private_message_sequence("张三"), 2)
+
+    def test_private_message_merge_supports_minimum_one_second_delay(self):
+        class FakeTimer:
+            def __init__(self, seconds, callback, args):
+                self.seconds = seconds
+                self.callback = callback
+                self.args = args
+                self.cancelled = False
+                self.daemon = False
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        timers = []
+
+        def fake_timer(seconds, callback, args=()):
+            timer = FakeTimer(seconds, callback, args)
+            timers.append(timer)
+            return timer
+
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_message_merge_delay=1,
+            chat_voice_recognition_switch=False,
+            chat_image_recognition_switch=False,
+        )
+        bot.is_stop_requested = lambda: False
+        chat = SimpleNamespace(who="张三")
+        message = SimpleNamespace(type="text", attr="friend", sender="张三", content="马上回", id="1")
+
+        with mock.patch("wxbot_core.threading.Timer", side_effect=fake_timer):
+            self.assertTrue(bot._enqueue_private_message_for_ai(chat, message))
+
+        pipeline = bot._private_message_pipelines["张三"]
+        self.assertEqual(timers[0].seconds, 1.0)
+        self.assertAlmostEqual(timers[1].seconds, 3.0, places=2)
+        self.assertEqual([msg.content for msg in pipeline["open_messages"]], ["马上回"])
+        self.assertEqual(bot._get_private_message_sequence("张三"), 1)
 
     def test_voice_transcription_fallback_once_resets_with_reply_window(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -703,6 +744,162 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertEqual(sent, [])
             self.assertTrue(any(level == "INFO" and "未配置兜底提示" in message for level, message in logs))
             self.assertFalse(any(level == "WARNING" and "未配置兜底提示" in message for level, message in logs))
+
+    def test_failed_private_voice_fallback_waits_for_batch_window(self):
+        class FakeTimer:
+            def __init__(self, seconds, callback, args):
+                self.seconds = seconds
+                self.callback = callback
+                self.args = args
+                self.cancelled = False
+                self.daemon = False
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        timers = []
+
+        def fake_timer(seconds, callback, args=()):
+            timer = FakeTimer(seconds, callback, args)
+            timers.append(timer)
+            return timer
+
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(chat_message_merge_delay=3)
+        bot.is_stop_requested = lambda: False
+        fallback_calls = []
+        bot._send_private_voice_transcription_fallback = lambda _chat: fallback_calls.append(True) or True
+        chat = SimpleNamespace(who="张三")
+        message = SimpleNamespace(
+            type="voice",
+            attr="friend",
+            sender="张三",
+            content="语音未能转换",
+            _voice_transcription_failed=True,
+            id="v1",
+        )
+
+        with mock.patch("wxbot_core.threading.Timer", side_effect=fake_timer):
+            self.assertTrue(bot._enqueue_private_message_for_ai(chat, message))
+
+        self.assertEqual(fallback_calls, [])
+        self.assertEqual(timers[0].seconds, 3)
+        timers[0].callback(*timers[0].args)
+        self.assertEqual(fallback_calls, [True])
+
+    def test_valid_private_message_cancels_pending_failed_voice_fallback(self):
+        class FakeTimer:
+            def __init__(self, seconds, callback, args):
+                self.seconds = seconds
+                self.callback = callback
+                self.args = args
+                self.cancelled = False
+                self.daemon = False
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        timers = []
+
+        def fake_timer(seconds, callback, args=()):
+            timer = FakeTimer(seconds, callback, args)
+            timers.append(timer)
+            return timer
+
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_message_merge_delay=3,
+            chat_voice_recognition_switch=True,
+            chat_image_recognition_switch=False,
+        )
+        bot.is_stop_requested = lambda: False
+        bot._send_private_voice_transcription_fallback = lambda _chat: self.fail("有效消息同批到达时不应再兜底")
+        chat = SimpleNamespace(who="张三")
+        failed_voice = SimpleNamespace(
+            type="voice",
+            attr="friend",
+            sender="张三",
+            content="语音未能转换",
+            _voice_transcription_failed=True,
+            id="v1",
+        )
+        valid_voice = SimpleNamespace(
+            type="voice",
+            attr="friend",
+            sender="张三",
+            content='语音8"秒我刚说的是这个',
+            id="v2",
+        )
+
+        with mock.patch("wxbot_core.threading.Timer", side_effect=fake_timer):
+            self.assertTrue(bot._enqueue_private_message_for_ai(chat, failed_voice))
+            self.assertTrue(bot._enqueue_private_message_for_ai(chat, valid_voice))
+
+        self.assertTrue(timers[0].cancelled)
+        pipeline = bot._private_message_pipelines["张三"]
+        self.assertEqual([msg.content for msg in pipeline["open_messages"]], ['语音8"秒我刚说的是这个'])
+        timers[0].callback(*timers[0].args)
+
+    def test_failed_private_voice_after_valid_message_does_not_schedule_extra_fallback(self):
+        class FakeTimer:
+            def __init__(self, seconds, callback, args):
+                self.seconds = seconds
+                self.callback = callback
+                self.args = args
+                self.cancelled = False
+                self.daemon = False
+
+            def start(self):
+                return None
+
+            def cancel(self):
+                self.cancelled = True
+
+        timers = []
+
+        def fake_timer(seconds, callback, args=()):
+            timer = FakeTimer(seconds, callback, args)
+            timers.append(timer)
+            return timer
+
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_message_merge_delay=3,
+            chat_voice_recognition_switch=True,
+            chat_image_recognition_switch=False,
+        )
+        bot.is_stop_requested = lambda: False
+        bot._send_private_voice_transcription_fallback = lambda _chat: self.fail("有效消息同批存在时不应兜底")
+        chat = SimpleNamespace(who="张三")
+        valid_voice = SimpleNamespace(
+            type="voice",
+            attr="friend",
+            sender="张三",
+            content='语音8"秒我刚说的是这个',
+            id="v1",
+        )
+        failed_voice = SimpleNamespace(
+            type="voice",
+            attr="friend",
+            sender="张三",
+            content="语音未能转换",
+            _voice_transcription_failed=True,
+            id="v2",
+        )
+
+        with mock.patch("wxbot_core.threading.Timer", side_effect=fake_timer):
+            self.assertTrue(bot._enqueue_private_message_for_ai(chat, valid_voice))
+            self.assertTrue(bot._enqueue_private_message_for_ai(chat, failed_voice))
+
+        self.assertEqual(len(timers), 2)
+        pipeline = bot._private_message_pipelines["张三"]
+        self.assertEqual([msg.content for msg in pipeline["open_messages"]], ['语音8"秒我刚说的是这个'])
 
     def test_text_reply_limit_logs_warning_when_capacity_is_hit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -807,6 +1004,36 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(getattr(msg, "_skip_memory", False))
         self.assertEqual(queued, [("张三", '语音2"秒')])
 
+    def test_prepare_failed_private_voice_uses_exact_status_texts(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AllListen_switch=False,
+            listen_list=["张三"],
+            group=[],
+            chat_image_recognition_switch=False,
+            chat_voice_recognition_switch=True,
+        )
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        for content in ("语音未能转换", '语音2"秒语音未能转换', "语音转换失败", "语音识别失败"):
+            with self.subTest(content=content):
+                msg = SimpleNamespace(attr="friend", sender="张三", type="voice", content=content)
+                message_routing.prepare_message_media(bot, msg, chat)
+                self.assertTrue(getattr(msg, "_voice_transcription_failed", False))
+                self.assertFalse(getattr(msg, "_skip_ai_reply", False))
+
+    def test_voice_failure_detection_does_not_use_broad_contains(self):
+        self.assertEqual(message_routing.voice_content_state("语音未能转换"), "failed")
+        self.assertEqual(message_routing.voice_content_state('语音1"秒语音未能转换'), "failed")
+        self.assertEqual(message_routing.voice_content_state("一条语音消息（未识别出文字）"), "pending")
+        self.assertEqual(message_routing.voice_content_state("<msg><voicemsg /></msg>"), "pending")
+        self.assertEqual(
+            message_routing.voice_content_state('语音2"秒我这边显示语音未能转换怎么办'),
+            "valid",
+        )
+        self.assertEqual(message_routing.voice_content_state("未能转换"), "valid")
+        self.assertEqual(message_routing.voice_content_state("转换失败"), "valid")
+
     def test_pending_private_voice_reread_enqueues_resolved_text(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(memory_switch=False)
@@ -875,6 +1102,117 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._flush_pending_private_voice_transcription(chat)
 
         self.assertEqual(enqueued, [("张三", '语音4"秒快写吧')])
+        self.assertEqual(fallback_calls, [])
+        self.assertNotIn("张三", bot._pending_private_voice_transcription)
+
+    def test_pending_private_voice_reread_waits_on_unrecognized_placeholder(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(memory_switch=False)
+        bot._chat_merge_lock = threading.Lock()
+        bot._pending_private_voice_transcription = {}
+        bot.is_stop_requested = lambda: False
+
+        class TryLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        bot._get_wechat_action_lock = lambda: TryLock()
+        bot._visible_messages_for_pending_voice = lambda _chat: [
+            SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content="一条语音消息（未识别出文字）")
+        ]
+        fallback_calls = []
+        bot._send_private_voice_transcription_fallback = lambda _chat: fallback_calls.append(True) or True
+        bot._enqueue_private_message_for_ai = lambda *_args, **_kwargs: self.fail("未识别占位不应立即进 AI 或兜底")
+        timer_calls = []
+        bot._schedule_private_message_timer = lambda seconds, callback, chat: timer_calls.append((seconds, callback, chat)) or SimpleNamespace(cancel=lambda: None)
+        original = SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音4"秒')
+        chat = SimpleNamespace(who="张三")
+
+        self.assertTrue(bot._queue_pending_private_voice_transcription(chat, original))
+        bot._flush_pending_private_voice_transcription(chat)
+
+        self.assertEqual(fallback_calls, [])
+        self.assertIn("张三", bot._pending_private_voice_transcription)
+        self.assertEqual(timer_calls[-1][0], 5)
+
+    def test_pending_private_voice_reread_falls_back_on_unrecognized_after_timeout(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(memory_switch=False)
+        bot._chat_merge_lock = threading.Lock()
+        bot._pending_private_voice_transcription = {}
+        bot.is_stop_requested = lambda: False
+
+        class TryLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        bot._get_wechat_action_lock = lambda: TryLock()
+        bot._visible_messages_for_pending_voice = lambda _chat: [
+            SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content="<msg><voicemsg /></msg>")
+        ]
+        fallback_calls = []
+        bot._send_private_voice_transcription_fallback = lambda _chat: fallback_calls.append(True) or True
+        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
+        original = SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音4"秒')
+        chat = SimpleNamespace(who="张三")
+
+        self.assertTrue(bot._queue_pending_private_voice_transcription(chat, original))
+        item = next(iter(bot._pending_private_voice_transcription["张三"]["items"].values()))
+        item["first_seen_at"] = 1
+
+        bot._flush_pending_private_voice_transcription(chat)
+
+        self.assertEqual(fallback_calls, [True])
+        self.assertNotIn("张三", bot._pending_private_voice_transcription)
+
+    def test_pending_private_voice_reread_skips_expired_fallback_when_another_voice_resolves(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(memory_switch=False)
+        bot._chat_merge_lock = threading.Lock()
+        bot._pending_private_voice_transcription = {}
+        bot.is_stop_requested = lambda: False
+
+        class TryLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        bot._get_wechat_action_lock = lambda: TryLock()
+        bot._visible_messages_for_pending_voice = lambda _chat: [
+            SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音3"秒这是识别成功的内容'),
+            SimpleNamespace(id="v2", attr="friend", sender="张三", type="voice", content="一条语音消息（未识别出文字）"),
+        ]
+        enqueued = []
+        fallback_calls = []
+        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
+        bot._enqueue_private_message_for_ai = lambda _chat, msg: enqueued.append(msg.content) or True
+        bot._send_private_voice_transcription_fallback = lambda _chat: fallback_calls.append(True) or True
+        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
+        chat = SimpleNamespace(who="张三")
+
+        self.assertTrue(bot._queue_pending_private_voice_transcription(
+            chat,
+            SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音3"秒'),
+        ))
+        self.assertTrue(bot._queue_pending_private_voice_transcription(
+            chat,
+            SimpleNamespace(id="v2", attr="friend", sender="张三", type="voice", content='语音5"秒'),
+        ))
+        for item in bot._pending_private_voice_transcription["张三"]["items"].values():
+            if item["id"] == "v2":
+                item["first_seen_at"] = 1
+
+        bot._flush_pending_private_voice_transcription(chat)
+
+        self.assertEqual(enqueued, ['语音3"秒这是识别成功的内容'])
         self.assertEqual(fallback_calls, [])
         self.assertNotIn("张三", bot._pending_private_voice_transcription)
 
@@ -1664,7 +2002,7 @@ class MessageBehaviorTests(unittest.TestCase):
 
     def test_private_message_pipeline_merges_batch_without_version_cancelling_reply(self):
         bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(chat_message_merge_delay=3)
+        bot.config = SimpleNamespace(chat_message_merge_delay=20)
         bot.is_stop_requested = lambda: False
         sent_to_ai = []
         bot.wx_send_ai = lambda _chat, message: sent_to_ai.append(message.content) or True
@@ -1692,7 +2030,7 @@ class MessageBehaviorTests(unittest.TestCase):
     def test_private_message_pipeline_merges_image_batch_with_followup_text(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
-            chat_message_merge_delay=3,
+            chat_message_merge_delay=20,
             chat_image_recognition_switch=True,
         )
         bot.is_stop_requested = lambda: False
@@ -1719,7 +2057,7 @@ class MessageBehaviorTests(unittest.TestCase):
     def test_private_image_batch_uses_double_idle_and_base_triple_max_wait(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
-            chat_message_merge_delay=3,
+            chat_message_merge_delay=20,
             chat_image_recognition_switch=True,
         )
         bot.is_stop_requested = lambda: False
@@ -1741,14 +2079,14 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(bot._enqueue_private_message_for_ai(chat, image_msg))
 
         self.assertEqual(scheduled[0][0], "_close_private_message_batch_by_idle")
-        self.assertEqual(scheduled[0][1], 6.0)
+        self.assertEqual(scheduled[0][1], 40.0)
         self.assertEqual(scheduled[1][0], "_close_private_message_batch_by_max_wait")
-        self.assertAlmostEqual(scheduled[1][1], 9.0, delta=0.1)
+        self.assertAlmostEqual(scheduled[1][1], 60.0, delta=0.1)
 
         self.assertTrue(bot._enqueue_private_message_for_ai(chat, text_msg))
 
         self.assertEqual(scheduled[-1][0], "_close_private_message_batch_by_idle")
-        self.assertEqual(scheduled[-1][1], 6.0)
+        self.assertEqual(scheduled[-1][1], 40.0)
         self.assertEqual(
             [name for name, _seconds in scheduled].count("_close_private_message_batch_by_max_wait"),
             1,
@@ -1757,7 +2095,7 @@ class MessageBehaviorTests(unittest.TestCase):
     def test_private_image_sets_pending_context_before_ai_worker_runs(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
-            chat_message_merge_delay=3,
+            chat_message_merge_delay=20,
             chat_image_recognition_switch=True,
         )
         bot.is_stop_requested = lambda: False
@@ -1776,7 +2114,7 @@ class MessageBehaviorTests(unittest.TestCase):
 
     def test_private_image_only_batch_reaches_ai_after_idle_close(self):
         bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(chat_message_merge_delay=3)
+        bot.config = SimpleNamespace(chat_message_merge_delay=20)
         bot.is_stop_requested = lambda: False
         sent_to_ai = []
         bot.wx_send_ai = lambda _chat, message: sent_to_ai.append((message.type, message.content)) or True

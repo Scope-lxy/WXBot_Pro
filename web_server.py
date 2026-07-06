@@ -2237,7 +2237,7 @@ def dashboard():
     config.setdefault('new_friend_remark_suffix_timestamp', False)
     config.setdefault('chat_voice_recognition_switch', False)
     config.setdefault('voice_transcription_fallback_reply_once', False)
-    config.setdefault('chat_message_merge_delay', 3.0)
+    config.setdefault('chat_message_merge_delay', 20)
     config.setdefault('chat_image_recognition_switch', False)   # 私聊图片识别开关
     config.setdefault('chat_image_recognition_api',    0)        # 私聊识别接口索引
     config.setdefault('group_image_recognition_switch', False)  # 群组图片识别开关
@@ -3362,10 +3362,6 @@ def _coerce_list_fields(merged_config):
             merged_config[field] = [item for item in merged_config[field] if str(item).strip()]
 
 def _coerce_float_fields(merged_config):
-    if 'chat_message_merge_delay' in merged_config:
-        merged_config['chat_message_merge_delay'] = coerce_float_range(
-            merged_config['chat_message_merge_delay'], 3.0, 0.0, 10.0
-        )
     # 仅当前需要 group_welcome_random，限定 [0.0, 1.0]
     if 'group_welcome_random' in merged_config:
         try:
@@ -3437,6 +3433,7 @@ def _coerce_int_range_fields(merged_config):
         'chat_memory_message_threshold': (10, 200, 100),
         'chat_memory_interval_hours': (1, 72, 12),
         'chat_memory_protected_recent_count': (0, 200, 20),
+        'chat_message_merge_delay': (1, 60, 20),
         'contact_directory_auto_maintenance_batch_size': (20, 80, 50),
         'contact_directory_auto_maintenance_interval_minutes': (5, 1440, 20),
         'contact_directory_auto_maintenance_full_scan_interval_days': (1, 30, 7),
@@ -6534,7 +6531,7 @@ def contact_profiles_pause():
         wx_id = str(directory.get('wx_id', '') or running_wx_id or getattr(bot, 'wx_id', '') or '').strip()
         return jsonify({
             'status': 'success',
-            'message': '已请求停止建档，会尽快停止；若当前读取未被打断，则会在本批返回后停止' if paused else '已恢复建档状态',
+            'message': '已请求停止建档，当前批次会继续跑完，并在本批返回后停止' if paused else '已恢复建档状态',
             'data': directory,
             'browser': _contact_profiles_browser_payload(wx_id) if wx_id else _contact_profiles_browser_payload(''),
         })
@@ -7603,7 +7600,7 @@ def main():
                 "chat_voice_recognition_switch": False,
                 "voice_transcription_fallback_text": DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT,
                 "voice_transcription_fallback_reply_once": False,
-                "chat_message_merge_delay": 3.0,
+                "chat_message_merge_delay": 20,
                 "chat_image_recognition_api": 0,
                 "group_image_recognition_switch": False,
                 "group_voice_recognition_switch": False,

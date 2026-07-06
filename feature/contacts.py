@@ -23,7 +23,6 @@ from core.contact_profiles import (
 from core.local_wechat_reader import read_local_contacts_with_status
 from core.wechat_window import (
     bring_wechat_main_window_to_front,
-    click_wechat_main_window_chat_nav,
     move_cursor_to_wechat_main_window_center,
     run_with_wechat_rebind_retry,
 )
@@ -53,11 +52,7 @@ AUTO_FULL_SCAN_MAX_DAYS = 30
 AUTO_WINDOW_START_DEFAULT = "00:00"
 AUTO_WINDOW_END_DEFAULT = "23:59"
 AUTO_TAIL_CONFIRM_RETRY_LIMIT = 3
-STOP_MAINTENANCE_HINT = "停止请求会尽快生效；若当前读取未被打断，则会在本批返回后停止。"
-STOP_INTERRUPT_INITIAL_DELAY_SECONDS = 0.6
-STOP_INTERRUPT_INTERVAL_SECONDS = 0.8
-STOP_INTERRUPT_ATTEMPTS = 5
-STOP_RETURN_TIMER_ATTR = "_contact_profiles_stop_return_timer"
+STOP_MAINTENANCE_HINT = "已请求停止建档，当前批次会继续跑完，并在本批返回后停止。"
 CONTACT_PROFILES_READING_ATTR = "_contact_profiles_reading_active"
 CONTACT_CURSOR_MATCH_SETTLE_SECONDS = 1.0
 CONTACT_READ_PROGRESS_LOG_INTERVAL = 20
@@ -797,72 +792,6 @@ def switch_contact_directory_back_to_chat(bot, *, use_lock: bool = False) -> Non
     do_switch()
 
 
-def cancel_contact_profiles_stop_return(bot) -> None:
-    timer = getattr(bot, STOP_RETURN_TIMER_ATTR, None)
-    if timer is not None:
-        try:
-            timer.cancel()
-        except Exception:
-            pass
-    try:
-        setattr(bot, STOP_RETURN_TIMER_ATTR, None)
-    except Exception:
-        pass
-
-
-def schedule_contact_profiles_stop_return_to_chat(bot, *, delay: float = STOP_INTERRUPT_INITIAL_DELAY_SECONDS):
-    cancel_contact_profiles_stop_return(bot)
-
-    timer_holder = {}
-
-    def still_paused() -> bool:
-        load_directory_fn = getattr(bot, "_load_contact_profiles_directory", None)
-        if callable(load_directory_fn):
-            directory, _directory_file, _wx_id = load_directory_fn()
-        else:
-            directory, _directory_file, _wx_id = load_contact_profiles_directory(bot)
-        return bool(((directory or {}).get("maintenance") or {}).get("paused", False))
-
-    def reading_active() -> bool:
-        return bool(getattr(bot, CONTACT_PROFILES_READING_ATTR, False))
-
-    def interrupt_once(attempt: int) -> bool:
-        clicked = click_wechat_main_window_chat_nav()
-        if clicked:
-            return True
-        _bot_log(bot, level="WARNING", message="[通讯录维护] 停止建档中断点击失败，尝试直接切回聊天页")
-        switch_contact_directory_back_to_chat(bot, use_lock=False)
-        return False
-
-    def delayed_switch():
-        try:
-            for attempt in range(1, STOP_INTERRUPT_ATTEMPTS + 1):
-                if not still_paused() or not reading_active():
-                    break
-                interrupt_once(attempt)
-                if attempt < STOP_INTERRUPT_ATTEMPTS:
-                    time.sleep(STOP_INTERRUPT_INTERVAL_SECONDS)
-        except Exception as exc:
-            _bot_log(bot, level="WARNING", message=f"[通讯录维护] 停止后中断建档失败：{exc}")
-        finally:
-            timer = timer_holder.get("timer")
-            if getattr(bot, STOP_RETURN_TIMER_ATTR, None) is timer:
-                try:
-                    setattr(bot, STOP_RETURN_TIMER_ATTR, None)
-                except Exception:
-                    pass
-
-    timer = threading.Timer(max(0.0, float(delay)), delayed_switch)
-    timer.daemon = True
-    timer_holder["timer"] = timer
-    try:
-        setattr(bot, STOP_RETURN_TIMER_ATTR, timer)
-    except Exception:
-        pass
-    timer.start()
-    return timer
-
-
 def refresh_run_kind(mode: str, *, automatic: bool = False) -> str:
     if automatic:
         return "auto_maintenance"
@@ -1279,6 +1208,7 @@ def refresh_contact_profiles_single_batch(
             settings["count"] = max(1, int(count_override))
         except (TypeError, ValueError):
             pass
+    read_interval = 0 if run_kind == "auto_maintenance" else settings["interval"]
     callback_start_name = effective_start_name(
         directory,
         start_name,
@@ -1299,36 +1229,22 @@ def refresh_contact_profiles_single_batch(
     callback_names = []
     matched_name = ""
     callback_seen_names = set()
-    callback_stop_logged = False
-    last_pause_check_at = 0.0
-    last_pause_requested = False
 
     def callback_detail_name(detail):
         if isinstance(detail, dict):
             return _detail_name(detail)
         return _clean_text(detail)
 
-    def pause_requested(*, force=False):
-        nonlocal last_pause_check_at, last_pause_requested
-        now_ts = time.monotonic()
-        if not force and now_ts - last_pause_check_at < 0.5:
-            return last_pause_requested
-        last_pause_check_at = now_ts
+    def pause_requested():
         try:
             latest = load_contact_directory(directory_file, wx_id=wx_id)
-            last_pause_requested = bool(((latest or {}).get("maintenance") or {}).get("paused", False))
+            return bool(((latest or {}).get("maintenance") or {}).get("paused", False))
         except Exception:
-            last_pause_requested = False
-        return last_pause_requested
+            return False
 
     def callback(detail):
-        nonlocal matched_name, callback_stop_logged
+        nonlocal matched_name
         name_text = callback_detail_name(detail)
-        if pause_requested(force=True):
-            if not callback_stop_logged:
-                _bot_log(bot, message="[通讯录维护] 检测到停止请求，正在结束当前读取")
-                callback_stop_logged = True
-            return False
         matched = contact_name_matches(name_text, callback_start_name)
         if matched and not matched_name:
             matched_name = name_text
@@ -1346,7 +1262,7 @@ def refresh_contact_profiles_single_batch(
 
     local_contact_source = False
     result = []
-    if run_kind != "auto_maintenance" and local_wechat_reader_enabled(bot) and not pause_requested(force=True):
+    if run_kind != "auto_maintenance" and local_wechat_reader_enabled(bot) and not pause_requested():
         local_result = read_local_contacts_with_status(
             limit=LOCAL_CONTACT_READ_LIMIT,
             expected_wx_id=wx_id,
@@ -1371,7 +1287,7 @@ def refresh_contact_profiles_single_batch(
             raise RuntimeError("微信操作繁忙，已跳过本次通讯录维护")
         try:
             def read_friend_details():
-                if pause_requested(force=True):
+                if pause_requested():
                     _bot_log(bot, message="[通讯录维护] 检测到停止请求，跳过本次读取")
                     return []
                 prepare_window_fn = getattr(bot, "_prepare_contact_directory_window", None)
@@ -1389,7 +1305,7 @@ def refresh_contact_profiles_single_batch(
                                 if run_kind == "auto_maintenance"
                                 else contact_read_timeout_seconds(settings["count"])
                             ),
-                            "interval": settings["interval"],
+                            "interval": read_interval,
                             "save_head_image": False,
                             "callback": callback,
                         }
@@ -1398,7 +1314,7 @@ def refresh_contact_profiles_single_batch(
                         read_success = True
                         return result
                 except Exception:
-                    if pause_requested(force=True):
+                    if pause_requested():
                         _bot_log(bot, message="[通讯录维护] 读取已被停止请求中断")
                         read_success = True
                         return []
@@ -1518,7 +1434,7 @@ def refresh_contact_profiles_single_batch(
             "backup_start_name": backup_start_name,
             "count_requested": settings["count"],
             "count_returned": len(raw_details),
-            "interval": settings["interval"],
+            "interval": read_interval,
             "callback_names": callback_names,
             "directory": finished,
             "stopped_early": externally_paused,
@@ -2175,10 +2091,6 @@ def set_contact_profiles_paused(bot, paused=True):
         callback_names=[],
     )
     save_contact_directory(directory_file, updated)
-    if paused:
-        schedule_contact_profiles_stop_return_to_chat(bot)
-    else:
-        cancel_contact_profiles_stop_return(bot)
     return updated
 
 

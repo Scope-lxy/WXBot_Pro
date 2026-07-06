@@ -244,6 +244,8 @@ def run_due_fixed_material_outreach(bot, now=None):
             if bot._resolve_material_outreach_direct_failure(task.get("task_id"), executed, now=now):
                 changed = True
             continue
+        if bot._material_outreach_is_deferred(executed):
+            continue
         if bot._material_outreach_preface_is_queued(executed):
             continue
         if plan.get("repeat_mode") == "once":
@@ -323,6 +325,8 @@ def run_due_random_material_outreach(bot, now=None):
         if bot._material_outreach_result_failed(executed):
             if bot._resolve_material_outreach_direct_failure(task.get("task_id"), executed, now=now):
                 changed = True
+            continue
+        if bot._material_outreach_is_deferred(executed):
             continue
         if bot._material_outreach_preface_is_queued(executed):
             continue

@@ -1626,13 +1626,20 @@ def trigger_random_material_outreach_if_due(
         return False
     log_info = log_info or (lambda message: None)
     log_error = log_error or (lambda message: None)
+    should_clear_next_fire = True
     try:
-        send_material_outreach(task)
+        result = send_material_outreach(task)
+        status = str(result.get("status") or "").strip().lower() if isinstance(result, dict) else ""
+        if status in {"deferred", "deferred_lock_busy"}:
+            log_info(f"素材转发 {task_id} 微信 UI 正忙，稍后重试")
+            should_clear_next_fire = False
+            return False
         state["last_fire_date"] = now.date()
     except Exception as exc:
         log_error(f"素材转发 {task_id} 发送失败：{exc}")
     finally:
-        state["next_fire"] = None
+        if should_clear_next_fire:
+            state["next_fire"] = None
     return True
 
 

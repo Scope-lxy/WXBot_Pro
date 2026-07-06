@@ -10,6 +10,12 @@ MULTI_EMOTION_TEXT_TEMPLATE = "对方连续发来了 {count} 个微信表情（�
 MAX_MERGED_PRIVATE_IMAGES = 9
 VOICE_DURATION_PREFIX_RE = re.compile(r'^\s*语音\s*\d+\s*["”]?\s*秒\s*')
 LEADING_VOICE_LABEL_RE = re.compile(r'^\s*\[语音\]\s*')
+UNRECOGNIZED_VOICE_TEXT = "一条语音消息（未识别出文字）"
+VOICE_TRANSCRIPTION_FAILED_TEXTS = {
+    "语音未能转换",
+    "语音转换失败",
+    "语音识别失败",
+}
 MESSAGE_TYPE_LABELS = {
     "voice": "语音",
     "emotion": "微信表情",
@@ -53,6 +59,28 @@ def strip_leading_voice_label(content):
     if not text:
         return ""
     return LEADING_VOICE_LABEL_RE.sub("", text, count=1).strip()
+
+
+def voice_message_body(content):
+    text = strip_leading_voice_label(content)
+    if not text:
+        return ""
+    match = VOICE_DURATION_PREFIX_RE.match(text)
+    if match:
+        return strip_leading_voice_label(text[match.end():].strip())
+    return text
+
+
+def is_failed_voice_transcription_text(content):
+    return voice_message_body(content) in VOICE_TRANSCRIPTION_FAILED_TEXTS
+
+
+def is_unrecognized_voice_placeholder(content):
+    body = voice_message_body(content)
+    if not body:
+        return False
+    lowered = body.lower()
+    return body == UNRECOGNIZED_VOICE_TEXT or lowered.startswith("<") or "voicemsg" in lowered
 
 
 def readable_emotion_text(content):
@@ -121,8 +149,10 @@ def format_model_message_text(message):
     msg_type = str(item.get("type", "") or getattr(message, "type", "") or "").strip().lower()
     raw = str(item.get("content", "") or getattr(message, "content", "") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if msg_type == "voice":
-        body = strip_leading_voice_label(strip_message_shell(raw, msg_type))
-        return body or "一条语音消息（未识别出文字）"
+        body = voice_message_body(raw)
+        if is_failed_voice_transcription_text(raw) or is_unrecognized_voice_placeholder(raw):
+            return ""
+        return body or UNRECOGNIZED_VOICE_TEXT
     if msg_type in {"", "text"}:
         return strip_leading_voice_label(raw)
     return format_message_semantic_text(message)
@@ -205,6 +235,9 @@ def build_merged_private_message(messages, *, on_extra_image=None):
         content = str(getattr(msg, "content", "") or "").strip()
         semantic_text = format_message_semantic_text(msg)
         if msg_type == "voice":
+            model_voice_text = format_model_message_text(msg)
+            if not model_voice_text:
+                continue
             contains_voice_message = True
             content = strip_voice_duration_metadata(content)
         if msg_type == "emotion":
@@ -218,7 +251,7 @@ def build_merged_private_message(messages, *, on_extra_image=None):
         if msg_type in {"link", "miniapp", "personal_card", "note", "video", "voice"}:
             flush_emotions()
             if semantic_text:
-                text_parts.append(format_model_message_text(msg) if msg_type == "voice" else semantic_text)
+                text_parts.append(model_voice_text if msg_type == "voice" else semantic_text)
             continue
         if not content:
             continue

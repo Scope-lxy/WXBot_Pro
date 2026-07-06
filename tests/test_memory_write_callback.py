@@ -88,6 +88,9 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         chat = SimpleNamespace(who="chat-a", chat_type="private")
         duration_only = SimpleNamespace(attr="self", sender="self", content='语音10"秒', type="voice")
         failed = SimpleNamespace(attr="friend", sender="friend-a", content="语音未能转换", type="voice")
+        failed_with_duration = SimpleNamespace(attr="friend", sender="friend-a", content='语音1"秒语音未能转换', type="voice")
+        failed_conversion = SimpleNamespace(attr="friend", sender="friend-a", content="语音转换失败", type="voice")
+        failed_recognition = SimpleNamespace(attr="friend", sender="friend-a", content="语音识别失败", type="voice")
         transcribed = SimpleNamespace(
             attr="self",
             sender="self",
@@ -97,6 +100,9 @@ class MemoryWriteCallbackTests(unittest.TestCase):
 
         self.assertTrue(bot._should_skip_message_memory(chat, duration_only))
         self.assertTrue(bot._should_skip_message_memory(chat, failed))
+        self.assertTrue(bot._should_skip_message_memory(chat, failed_with_duration))
+        self.assertTrue(bot._should_skip_message_memory(chat, failed_conversion))
+        self.assertTrue(bot._should_skip_message_memory(chat, failed_recognition))
         self.assertFalse(bot._should_skip_message_memory(chat, transcribed))
 
     def test_voice_label_is_display_only_not_model_context(self):
@@ -132,6 +138,28 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             format_model_message_text({"type": "voice", "content": ""}),
             "一条语音消息（未识别出文字）",
         )
+        self.assertEqual(format_model_message_text({"type": "voice", "content": '语音1"秒语音未能转换'}), "")
+        self.assertEqual(format_model_message_text({"type": "voice", "content": "一条语音消息（未识别出文字）"}), "")
+
+    def test_failed_voice_does_not_pollute_merged_private_message(self):
+        merged = build_merged_private_message([
+            SimpleNamespace(type="text", attr="friend", sender="张三", content="前一句"),
+            SimpleNamespace(type="voice", attr="friend", sender="张三", content='语音1"秒语音未能转换'),
+            SimpleNamespace(type="text", attr="friend", sender="张三", content="后一句"),
+        ])
+
+        self.assertEqual(merged.content, "前一句\n后一句")
+        self.assertFalse(getattr(merged, "_contains_voice_message", False))
+
+    def test_mixed_failed_and_transcribed_voices_keep_valid_voice_content(self):
+        merged = build_merged_private_message([
+            SimpleNamespace(type="voice", attr="friend", sender="张三", content='语音1"秒语音未能转换'),
+            SimpleNamespace(type="voice", attr="friend", sender="张三", content='语音8"秒我刚说的是这个'),
+            SimpleNamespace(type="voice", attr="friend", sender="张三", content="语音识别失败"),
+        ])
+
+        self.assertEqual(merged.content, "我刚说的是这个")
+        self.assertTrue(getattr(merged, "_contains_voice_message", False))
 
     def test_existing_text_voice_label_is_removed_from_model_context(self):
         record = {

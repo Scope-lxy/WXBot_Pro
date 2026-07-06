@@ -947,7 +947,7 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(any(level == "INFO" and "轻量延后监听第 1 次未恢复" in message for level, message in logs))
         self.assertFalse(any(level == "WARNING" and "轻量延后监听第 1 次未恢复" in message for level, message in logs))
 
-    def test_lightweight_delayed_listen_final_failure_stays_warning(self):
+    def test_lightweight_delayed_listen_second_failure_keeps_waiting(self):
         calls = []
         logs = []
         msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
@@ -991,11 +991,14 @@ class RemoveListenChatTests(unittest.TestCase):
             flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
 
         self.assertTrue(flushed)
-        self.assertEqual(bot._lightweight_delayed_listen_tasks, {})
+        task = bot._lightweight_delayed_listen_tasks["张三"]
+        self.assertEqual(task["attempt_index"], 2)
+        self.assertEqual(task["due_at"], 221.0)
         self.assertIn(("AddListenChat", "张三", bot.message_handle_callback), calls)
-        self.assertTrue(any(level == "WARNING" and "轻量延后监听两次恢复失败" in message for level, message in logs))
+        self.assertTrue(any(level == "INFO" and "第 2 次未恢复" in message for level, message in logs))
+        self.assertFalse(any(level == "WARNING" and "两次恢复失败" in message for level, message in logs))
 
-    def test_lightweight_delayed_listen_final_failure_saves_text_fallback(self):
+    def test_lightweight_delayed_listen_expiry_saves_text_fallback(self):
         calls = []
         saves = []
         msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好", time="2026/07/04 10:00:00")
@@ -1020,8 +1023,8 @@ class RemoveListenChatTests(unittest.TestCase):
                     "messages": [msg, pending_voice],
                     "message_keys": {"id:张三:1", "id:张三:2"},
                     "created_at": 100.0,
-                    "due_at": 160.0,
-                    "attempt_index": 1,
+                    "due_at": 700.0,
+                    "attempt_index": 8,
                     "allow_rebuild": False,
                     "message_sequence": 0,
                 }
@@ -1035,7 +1038,7 @@ class RemoveListenChatTests(unittest.TestCase):
         bot._add_and_verify_subwindow = lambda _chat: calls.append(("AddListenChat", _chat, bot.message_handle_callback)) or None
         bot._resolve_identity_chat_name = lambda name: name
 
-        with mock.patch.object(listening.time, "time", return_value=161.0), mock.patch.object(listening, "_bot_sleep"):
+        with mock.patch.object(listening.time, "time", return_value=700.0), mock.patch.object(listening, "_bot_sleep"):
             flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
 
         self.assertTrue(flushed)
@@ -1091,7 +1094,7 @@ class RemoveListenChatTests(unittest.TestCase):
                     "chat": "张三",
                     "messages": [msg],
                     "message_keys": {"id:张三:1"},
-                    "created_at": 10.0,
+                    "created_at": -500.0,
                     "due_at": 20.0,
                     "allow_rebuild": False,
                     "message_sequence": 0,
@@ -1147,19 +1150,53 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(any(level == "INFO" and "轻量延后监听期间已有新消息处理" in message for level, message in logs))
         self.assertFalse(any(level == "WARNING" and "轻量延后监听期间已有新消息处理" in message for level, message in logs))
 
-    def test_listener_reconcile_skips_when_lightweight_delayed_listen_pending(self):
+    def test_listener_reconcile_allows_future_lightweight_delayed_listen_pending(self):
+        calls = []
+
+        class FreeLock:
+            def acquire(self, blocking=True):
+                calls.append(("lock", blocking))
+                return True
+
+            def release(self):
+                calls.append(("unlock",))
+
         bot = SimpleNamespace(
             wx=object(),
             config=SimpleNamespace(AllListen_switch=True),
-            _lightweight_delayed_listen_tasks={"张三": {"chat": "张三"}},
+            _lightweight_delayed_listen_tasks={"张三": {"chat": "张三", "due_at": 200.0}},
             _lightweight_delayed_listen_last_rebuild_at={},
             _lightweight_delayed_listen_flushing=False,
             _listener_reconcile_interval_seconds=30,
             _listener_reconcile_last_at=0.0,
         )
-        bot._get_wechat_action_lock = lambda: self.fail("延后补窗排队时不应触发固定监听巡检")
+        bot._get_wechat_action_lock = lambda: FreeLock()
 
-        reopened = listening.maybe_reconcile_listener_subwindows(bot)
+        with mock.patch.object(listening.time, "time", return_value=100.0), mock.patch.object(
+            listening,
+            "reconcile_listener_subwindows",
+            return_value=["管理员"],
+        ):
+            reopened = listening.maybe_reconcile_listener_subwindows(bot)
+
+        self.assertEqual(reopened, ["管理员"])
+        self.assertEqual(calls, [("lock", False), ("unlock",)])
+        self.assertEqual(bot._listener_reconcile_last_at, 100.0)
+
+    def test_listener_reconcile_skips_when_lightweight_delayed_listen_due(self):
+        bot = SimpleNamespace(
+            wx=object(),
+            config=SimpleNamespace(AllListen_switch=True),
+            _lightweight_delayed_listen_tasks={"张三": {"chat": "张三", "due_at": 90.0}},
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            _listener_reconcile_interval_seconds=30,
+            _listener_reconcile_last_at=0.0,
+        )
+        bot._get_wechat_action_lock = lambda: self.fail("延后补窗到期时不应触发固定监听巡检")
+
+        with mock.patch.object(listening.time, "time", return_value=100.0):
+            reopened = listening.maybe_reconcile_listener_subwindows(bot)
 
         self.assertEqual(reopened, [])
 
