@@ -1067,67 +1067,41 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
     <div class="cfg-card chat-ability-card chat-ability-card--recognition">
-      <div class="ui-head ui-head--section">
-        <div class="ui-head__main">
-          <div class="ui-head__title-row"><i class="bi bi-image"></i><h5>内容识别</h5></div>
-          <span class="desc">配置私聊中的图片与语音理解能力</span>
+      <div class="ui-head ui-head--page">
+        <i class="bi bi-image"></i>
+        <h5>内容识别</h5>
+        <span class="desc">配置私聊中的图片与语音理解能力</span>
+        <div class="ui-head__actions">
+          <select class="form-select ui-head-select recognition-api-select" id="chat_image_recognition_api" name="chat_image_recognition_api" title="辅助识图接口">
+            {% for cfg in config.api_configs %}
+            <option value="{{ loop.index0 }}"
+              {% if config.chat_image_recognition_api == loop.index0 %}selected{% endif %}>
+              辅助识图接口：{{ cfg.model }}
+            </option>
+            {% endfor %}
+          </select>
         </div>
       </div>
-        <div class="chat-ability-grid">
-          <div class="chat-ability-block chat-ability-block--image">
-            <div class="ui-head ui-head--item">
-              <div class="ui-head__main">
-                <h5>图片识别</h5>
-                <span class="desc">调用模型识别图片内容，识别结果与模型能力相关</span>
-              </div>
-              <div class="ui-head__actions">
-                <label class="ui-switch ui-switch--l3 ui-head-switch" for="chat_image_recognition_switch">
-                  <input class="form-check-input" type="checkbox" id="chat_image_recognition_switch"
-                       name="chat_image_recognition_switch"
-                       {% if config.chat_image_recognition_switch %}checked{% endif %}>
-                <span class="ui-switch-knob"></span>
-              </label>
-            </div>
-          </div>
-          <div id="chat_img_api_row" class="chat-ability-settings">
-            <label class="cfg-label" for="chat_image_recognition_api">识图专用接口</label>
-            <select class="form-select" id="chat_image_recognition_api" name="chat_image_recognition_api">
-              {% for cfg in config.api_configs %}
-              <option value="{{ loop.index0 }}"
-                {% if config.chat_image_recognition_api == loop.index0 %}selected{% endif %}>
-                接口{{ loop.index }}: {{ cfg.model }}
-              </option>
-              {% endfor %}
-            </select>
-            <div class="cfg-hint">请选择支持视觉输入的模型接口</div>
-          </div>
+      <div class="recognition-card-grid">
+        <div class="switch-row switch-row--inline-desc recognition-inline-row">
+          <input class="form-check-input" type="checkbox" id="chat_image_recognition_switch"
+                 name="chat_image_recognition_switch"
+                 {% if config.chat_image_recognition_switch %}checked{% endif %}>
+          <label for="chat_image_recognition_switch"><span class="switch-title">识别图片消息</span></label>
+          <span class="switch-desc">调用模型识别图片内容，识别结果与模型能力相关</span>
         </div>
-        <div class="chat-ability-block chat-ability-block--voice">
-          <div class="ui-head ui-head--item">
-            <div class="ui-head__main">
-              <h5>处理语音消息</h5>
-              <span class="desc">微信必须开启「语音自动转文字」功能</span>
-            </div>
-            <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l3 ui-head-switch" for="chat_voice_recognition_switch">
-                <input class="form-check-input" type="checkbox" id="chat_voice_recognition_switch"
-                       name="chat_voice_recognition_switch"
-                       {% if config.get('chat_voice_recognition_switch', False) %}checked{% endif %}>
-                <span class="ui-switch-knob"></span>
-              </label>
-            </div>
-          </div>
+        <div class="switch-row switch-row--inline-desc recognition-inline-row">
+          <input class="form-check-input" type="checkbox" id="chat_voice_recognition_switch"
+                 name="chat_voice_recognition_switch"
+                 {% if config.get('chat_voice_recognition_switch', False) %}checked{% endif %}>
+          <label for="chat_voice_recognition_switch"><span class="switch-title">识别语音消息</span></label>
+          <span class="switch-desc">微信必须开启「语音自动转文字」功能</span>
         </div>
       </div>
     </div>
     {% set chat_merge_delay = config.get('chat_message_merge_delay', 20) | int %}
     <div class="cfg-card chat-ability-card chat-ability-card--reply">
-      <div class="ui-head ui-head--section">
-        <div class="ui-head__main">
-          <div class="ui-head__title-row"><i class="bi bi-reply"></i><h5>回复行为</h5></div>
-          <span class="desc">配置私聊回复的组织方式与节奏</span>
-        </div>
-      </div>
+      <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5><span class="desc">配置私聊回复的组织方式与节奏</span></div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--voice-reply">
           <div class="ui-head ui-head--item">
@@ -1278,7 +1252,7 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Group ===== -->
   <div class="config-panel" id="tab-group">
     <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-people"></i><h5>群聊监听</h5><span class="desc">配置群聊相关功能</span></div>
+      <div class="ui-head ui-head--page group-page-head"><i class="bi bi-people"></i><h5>群聊监听</h5><span class="desc">配置群聊相关功能</span></div>
       <div class="group-page-summary" id="group_page_summary">
         <span class="ui-pill ui-pill--status {% if config.group_switch %}is-success{% else %}is-danger{% endif %}" id="group_summary_switch">群聊回复：{% if config.group_switch %}开{% else %}关{% endif %}</span>
         <span id="group_summary_at" class="ui-pill is-info">仅@回复：{% if config.group_reply_at %}开{% else %}关{% endif %}</span>
@@ -1364,66 +1338,40 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
     <div class="cfg-card chat-ability-card chat-ability-card--recognition">
-      <div class="ui-head ui-head--section">
-        <div class="ui-head__main">
-          <div class="ui-head__title-row"><i class="bi bi-image"></i><h5>内容识别</h5></div>
-          <span class="desc">配置群聊中的图片与语音理解能力</span>
+      <div class="ui-head ui-head--page">
+        <i class="bi bi-image"></i>
+        <h5>内容识别</h5>
+        <span class="desc">配置群聊中的图片与语音理解能力</span>
+        <div class="ui-head__actions">
+          <select class="form-select ui-head-select recognition-api-select" id="group_image_recognition_api" name="group_image_recognition_api" title="辅助识图接口">
+            {% for cfg in config.api_configs %}
+            <option value="{{ loop.index0 }}"
+              {% if config.group_image_recognition_api == loop.index0 %}selected{% endif %}>
+              辅助识图接口：{{ cfg.model }}
+            </option>
+            {% endfor %}
+          </select>
         </div>
       </div>
-      <div class="chat-ability-grid">
-        <div class="chat-ability-block chat-ability-block--image">
-          <div class="ui-head ui-head--item">
-            <div class="ui-head__main">
-              <h5>图片识别</h5>
-              <span class="desc">调用 AI 大模型识别图片内容</span>
-            </div>
-            <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l3 ui-head-switch" for="group_image_recognition_switch">
-                <input class="form-check-input" type="checkbox" id="group_image_recognition_switch"
-                       name="group_image_recognition_switch"
-                       {% if config.group_image_recognition_switch %}checked{% endif %}>
-                <span class="ui-switch-knob"></span>
-              </label>
-            </div>
-          </div>
-          <div id="group_img_api_row" class="chat-ability-settings">
-            <label class="cfg-label" for="group_image_recognition_api">识图专用接口</label>
-            <select class="form-select" id="group_image_recognition_api" name="group_image_recognition_api">
-              {% for cfg in config.api_configs %}
-              <option value="{{ loop.index0 }}"
-                {% if config.group_image_recognition_api == loop.index0 %}selected{% endif %}>
-                接口{{ loop.index }}: {{ cfg.model }}
-              </option>
-              {% endfor %}
-            </select>
-            <div class="cfg-hint">请选择支持视觉输入的大模型接口</div>
-          </div>
+      <div class="recognition-card-grid">
+        <div class="switch-row switch-row--inline-desc recognition-inline-row">
+          <input class="form-check-input" type="checkbox" id="group_image_recognition_switch"
+                 name="group_image_recognition_switch"
+                 {% if config.group_image_recognition_switch %}checked{% endif %}>
+          <label for="group_image_recognition_switch"><span class="switch-title">识别图片消息</span></label>
+          <span class="switch-desc">调用 AI 大模型识别图片内容</span>
         </div>
-        <div class="chat-ability-block chat-ability-block--voice">
-          <div class="ui-head ui-head--item">
-            <div class="ui-head__main">
-              <h5>处理语音消息</h5>
-              <span class="desc">微信必须开启「语音自动转文字」功能</span>
-            </div>
-            <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l3 ui-head-switch" for="group_voice_recognition_switch">
-                <input class="form-check-input" type="checkbox" id="group_voice_recognition_switch"
-                       name="group_voice_recognition_switch"
-                       {% if config.get('group_voice_recognition_switch', False) %}checked{% endif %}>
-                <span class="ui-switch-knob"></span>
-              </label>
-            </div>
-          </div>
+        <div class="switch-row switch-row--inline-desc recognition-inline-row">
+          <input class="form-check-input" type="checkbox" id="group_voice_recognition_switch"
+                 name="group_voice_recognition_switch"
+                 {% if config.get('group_voice_recognition_switch', False) %}checked{% endif %}>
+          <label for="group_voice_recognition_switch"><span class="switch-title">识别语音消息</span></label>
+          <span class="switch-desc">微信必须开启「语音自动转文字」功能</span>
         </div>
       </div>
     </div>
     <div class="cfg-card chat-ability-card chat-ability-card--reply">
-      <div class="ui-head ui-head--section">
-        <div class="ui-head__main">
-          <div class="ui-head__title-row"><i class="bi bi-reply"></i><h5>回复行为</h5></div>
-          <span class="desc">配置群聊回复的组织方式</span>
-        </div>
-      </div>
+      <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5><span class="desc">配置群聊回复的组织方式</span></div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--voice-reply">
           <div class="ui-head ui-head--item">

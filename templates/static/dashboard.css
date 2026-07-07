@@ -487,7 +487,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .contact-maintenance-card > .ui-head.ui-head--page,
 .relationship-scan-card > .ui-head.ui-head--page,
 .listen-page-head,
-#tab-group > .cfg-card > .ui-head.ui-head--page { margin-bottom: 0; padding-bottom: 12px; }
+.group-page-head { margin-bottom: 0; padding-bottom: 12px; }
 .keyword-reply-summary,
 .listen-page-summary,
 .group-page-summary,
@@ -1538,6 +1538,9 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .page-inline-notice--danger { background: #FEF2F2; border-color: #FECACA; color: #B42318; }
 .page-inline-notice--danger .page-inline-notice__icon { color: #DC2626; }
 .chat-ability-card .ui-head { margin-bottom: 16px; }
+.recognition-api-select { min-width: 280px; max-width: 380px; font-weight: 800; }
+.recognition-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.recognition-inline-row { min-height: 44px; margin-bottom: 0; }
 .chat-ability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .chat-ability-stack { display: grid; gap: 16px; }
 .chat-ability-block { min-width: 0; padding: var(--ui-l3-card-padding); border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
@@ -1571,6 +1574,8 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .listen-rule-toolbar { align-items: flex-start; flex-direction: column; }
   .listen-rule-toolbar .listen-rule-tabs { margin-left: 0; }
   .chat-ability-grid { grid-template-columns: 1fr; }
+  .recognition-card-grid { grid-template-columns: 1fr; }
+  .recognition-api-select { max-width: none; width: 100%; }
 }
 
 /* ===== Memory Panel ===== */
