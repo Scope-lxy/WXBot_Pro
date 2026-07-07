@@ -70,6 +70,52 @@ def voice_content_state(content):
     return "valid"
 
 
+def try_voice_to_text(bot, msg, chat=None) -> bool:
+    converter = getattr(msg, "to_text", None)
+    if not callable(converter):
+        return False
+
+    lock = None
+    acquired = False
+    get_lock = getattr(bot, "_get_wechat_action_lock", None)
+    if callable(get_lock):
+        lock = get_lock()
+        if lock is not None and not lock.acquire(blocking=False):
+            return False
+        acquired = lock is not None
+
+    try:
+        text = converter()
+    except Exception as exc:
+        _bot_log(bot, level="INFO", message=f"语音转文字未就绪，等待后续重读：{exc}")
+        return False
+    finally:
+        if acquired:
+            try:
+                lock.release()
+            except Exception:
+                pass
+
+    state = voice_content_state(text)
+    if state == "pending":
+        return False
+    try:
+        msg.content = str(text or "").strip()
+        msg._wxbot_media_prepared = True
+    except Exception:
+        pass
+    return state == "valid"
+
+
+def mark_failed_voice_silent_ignore(bot, msg) -> None:
+    mark_skip_memory = getattr(bot, "_mark_message_skip_memory", None)
+    if callable(mark_skip_memory):
+        mark_skip_memory(msg)
+    msg._skip_ai_reply = True
+    msg._voice_transcription_failed = True
+    _bot_log(bot, "INFO", "语音识别失败，未得到有效文字，已静默忽略")
+
+
 def _update_alllisten_timestamp(bot, chat_name: str) -> None:
     if not getattr(bot.config, "AllListen_switch", False):
         return
@@ -114,8 +160,13 @@ def prepare_message_media(bot, msg, chat) -> None:
     if state == "valid":
         return
     if state == "failed":
-        msg._voice_transcription_failed = True
-        _bot_log(bot, "WARNING", "语音识别失败，已进入兜底回复流程")
+        mark_failed_voice_silent_ignore(bot, msg)
+        return
+    if try_voice_to_text(bot, msg, chat):
+        return
+    state = voice_content_state(getattr(msg, "content", ""))
+    if state == "failed":
+        mark_failed_voice_silent_ignore(bot, msg)
         return
     queue_pending = getattr(bot, "_queue_pending_private_voice_transcription", None)
     if callable(queue_pending) and getattr(msg, "attr", "") == "friend":

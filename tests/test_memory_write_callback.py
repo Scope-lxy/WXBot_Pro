@@ -305,6 +305,189 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertIn("张三", bot._private_message_pipelines)
         self.assertTrue(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
 
+    def test_private_reply_echo_during_active_ai_work_does_not_trigger_self_boundary(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=True,
+            memory_max_count=5000,
+            group_welcome=False,
+            group=[],
+            cmd="admin",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            chat_image_recognition_switch=False,
+            chat_voice_recognition_switch=False,
+        )
+        bot.memory_manager = CaptureMemory()
+        bot._handle_material_source_message = lambda _chat, _msg: False
+        bot.callback_is_die = False
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+        bot._mark_chat_memory_dirty = lambda _chat, _msg: self.fail("机器人回显不应重复写入记忆")
+        bot._ensure_message_runtime_state()
+        bot._private_message_sequence_by_chat["张三"] = 3
+        bot._private_message_pipelines["张三"] = {
+            "open_messages": [],
+            "open_started_at": 0.0,
+            "open_kind": "text",
+            "idle_timer": None,
+            "max_timer": None,
+            "queued_batches": deque([[SimpleNamespace(content="下一批用户消息")]]),
+            "worker_running": True,
+        }
+        bot._ensure_lightweight_send_queue_state()
+        bot._lightweight_send_queue["张三"] = {
+            "target": "张三",
+            "actions": [{"type": "text", "text": "机器人第一段"}],
+            "source": "private_ai_reply",
+            "expected_sequence": 3,
+        }
+        bot._remember_persisted_private_reply_echo("张三", "机器人第一段")
+
+        msg = SimpleNamespace(attr="self", sender="self", content="机器人第一段", type="text")
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        with mock.patch("wxbot_core.log") as log_mock:
+            bot.message_handle_callback(msg, chat)
+
+        log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
+        self.assertTrue(any("已忽略机器人回显" in message for message in log_messages))
+        self.assertFalse(any("self 介入" in message for message in log_messages))
+        self.assertFalse(any("self 边界" in message for message in log_messages))
+        self.assertEqual(bot.memory_manager.calls, [])
+        self.assertEqual(bot._get_private_message_sequence("张三"), 3)
+        self.assertIn("张三", bot._private_message_pipelines)
+        self.assertIn("张三", bot._lightweight_send_queue)
+        self.assertTrue(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
+
+    def test_private_self_before_ai_starts_splits_open_batch_without_interrupt(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=False,
+            group_welcome=False,
+            group=[],
+            cmd="admin",
+            chat_message_merge_delay=20,
+            chat_image_recognition_switch=False,
+            chat_voice_recognition_switch=False,
+        )
+        bot.memory_manager = None
+        bot._handle_material_source_message = lambda _chat, _msg: False
+        bot.callback_is_die = False
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+        bot.is_stop_requested = lambda: False
+        timer_calls = []
+        bot._schedule_private_message_timer = lambda seconds, callback, chat: timer_calls.append((seconds, callback, chat)) or SimpleNamespace(cancel=lambda: None)
+        bot._ensure_message_runtime_state()
+
+        chat = SimpleNamespace(who="张三", chat_type="private")
+        bot._enqueue_private_message_for_ai(chat, SimpleNamespace(id="a", attr="friend", sender="张三", content="aaa", type="text"))
+        bot._enqueue_private_message_for_ai(chat, SimpleNamespace(id="b", attr="friend", sender="张三", content="bbb", type="text"))
+        self.assertEqual(bot._get_private_message_sequence("张三"), 2)
+        self.assertEqual([msg.content for msg in bot._private_message_pipelines["张三"]["open_messages"]], ["aaa", "bbb"])
+
+        self_msg = SimpleNamespace(attr="self", sender="self", content="ccc", type="text")
+        with mock.patch("wxbot_core.log") as log_mock:
+            bot.message_handle_callback(self_msg, chat)
+
+        log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
+        self.assertTrue(any("self 边界" in message for message in log_messages))
+        self.assertFalse(any("检测到手动 self" in message for message in log_messages))
+        self.assertEqual(bot._get_private_message_sequence("张三"), 3)
+        self.assertNotIn("张三", bot._private_message_pipelines)
+
+    def test_private_self_without_pending_work_is_kept_as_history_not_interrupt(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=False,
+            group_welcome=False,
+            group=[],
+            cmd="admin",
+            chat_image_recognition_switch=False,
+            chat_voice_recognition_switch=False,
+        )
+        bot.memory_manager = None
+        bot._handle_material_source_message = lambda _chat, _msg: False
+        bot.callback_is_die = False
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+        bot._ensure_message_runtime_state()
+        bot._private_message_sequence_by_chat["张三"] = 7
+
+        chat = SimpleNamespace(who="张三", chat_type="private")
+        self_msg = SimpleNamespace(attr="self", sender="self", content="历史里的我方消息", type="text")
+        with mock.patch("wxbot_core.log") as log_mock:
+            bot.message_handle_callback(self_msg, chat)
+
+        log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
+        self.assertTrue(any("作为历史记录保留" in message for message in log_messages))
+        self.assertFalse(any("检测到手动 self" in message for message in log_messages))
+        self.assertEqual(bot._get_private_message_sequence("张三"), 7)
+        self.assertNotIn("张三", bot._private_message_pipelines)
+
+    def test_private_pending_voice_transcription_clears_after_self_boundary_invalidates_turn(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(chat_message_merge_delay=20)
+        bot.is_stop_requested = lambda: False
+        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
+        bot._ensure_message_runtime_state()
+
+        chat = SimpleNamespace(who="张三", chat_type="private")
+        voice = SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音4"秒')
+        self.assertTrue(bot._queue_pending_private_voice_transcription(chat, voice))
+        self.assertIn("张三", bot._pending_private_voice_transcription)
+
+        with mock.patch("wxbot_core.log") as log_mock:
+            self.assertTrue(bot._handle_private_self_message_boundary(
+                chat,
+                SimpleNamespace(attr="self", sender="self", content="我来回", type="text"),
+            ))
+
+        log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
+        self.assertTrue(any("self 边界" in message for message in log_messages))
+        self.assertNotIn("张三", bot._pending_private_voice_transcription)
+
+    def test_private_self_boundary_keeps_later_friend_message_as_only_current_batch(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=False,
+            group_welcome=False,
+            group=[],
+            cmd="admin",
+            chat_message_merge_delay=20,
+            chat_image_recognition_switch=False,
+            chat_voice_recognition_switch=False,
+        )
+        bot.memory_manager = None
+        bot._handle_material_source_message = lambda _chat, _msg: False
+        bot.callback_is_die = False
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+        bot.is_stop_requested = lambda: False
+        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
+        bot._ensure_message_runtime_state()
+
+        def mark_worker_ready(_chat, pipeline):
+            pipeline["worker_running"] = True
+            return True
+
+        bot._start_private_message_worker_locked = mark_worker_ready
+        captured = []
+        bot.wx_send_ai = lambda _chat, merged: captured.append(merged.content) or True
+
+        chat = SimpleNamespace(who="张三", chat_type="private")
+        with mock.patch("wxbot_core.log"):
+            bot._enqueue_private_message_for_ai(chat, SimpleNamespace(id="a", attr="friend", sender="张三", content="aaa", type="text"))
+            bot._enqueue_private_message_for_ai(chat, SimpleNamespace(id="b", attr="friend", sender="张三", content="bbb", type="text"))
+            bot.message_handle_callback(SimpleNamespace(attr="self", sender="self", content="ccc", type="text"), chat)
+            bot._enqueue_private_message_for_ai(chat, SimpleNamespace(id="d", attr="friend", sender="张三", content="ddd", type="text"))
+            self.assertTrue(bot._close_private_message_batch_by_idle(chat))
+            self.assertTrue(bot._run_private_message_pipeline_worker(chat))
+
+        self.assertEqual(captured, ["ddd"])
+
     def test_friend_message_after_manual_self_starts_new_ai_with_manual_self_in_history(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
@@ -677,7 +860,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             sender="B",
             content='语音2"秒B 的语音内容',
             type="voice",
-            to_text=lambda: self.fail("不应主动调用微信右键语音转文字"),
+            to_text=lambda: self.fail("已有语音正文时不应重复转文字"),
         )
         chat = SimpleNamespace(who="测试群", chat_type="group")
 

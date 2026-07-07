@@ -426,9 +426,8 @@ MOMENTS_CAPTION_PROMPT_FILE = "moments_caption.md"
 MATERIAL_OUTREACH_DECISION_PROMPT_FILE = "material_decision.md"
 MATERIAL_OUTREACH_PREFACE_PROMPT_FILE = "material_preface.md"
 PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS = 30 * 60
-VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
 VOICE_TRANSCRIPTION_RETRY_DELAY_SECONDS = 5
-VOICE_TRANSCRIPTION_MAX_WAIT_SECONDS = 20
+VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS = 3
 
 
 class _ChatAPIFailoverProxy:
@@ -540,7 +539,6 @@ class WXBot:
         self._material_source_read_locks_guard = threading.Lock()
         self._last_incoming_message_at = 0.0
         self._private_message_pipelines = {}
-        self._pending_private_voice_fallbacks = {}
         self._private_message_sequence_by_chat = {}
         self._memory_context_repair_startup_done = set()
         self._memory_context_repair_restore_pending = set()
@@ -621,12 +619,6 @@ class WXBot:
                     if isinstance(task, dict) and task.get("timer"):
                         timers.append(task.get("timer"))
                 pending_voice.clear()
-            pending_voice_fallbacks = getattr(self, "_pending_private_voice_fallbacks", None)
-            if isinstance(pending_voice_fallbacks, dict):
-                for item in pending_voice_fallbacks.values():
-                    if isinstance(item, dict) and item.get("timer"):
-                        timers.append(item.get("timer"))
-                pending_voice_fallbacks.clear()
             for pipeline in self._private_message_pipelines.values():
                 if not isinstance(pipeline, dict):
                     continue
@@ -3855,7 +3847,7 @@ class WXBot:
             if ordinary_private_self and not bool(getattr(msg, "_wxbot_private_reply_persisted_echo", False)):
                 runtime_echo = self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
                 if not runtime_echo:
-                    self._interrupt_private_ai_for_manual_self(chat, msg)
+                    self._handle_private_self_message_boundary(chat, msg)
             if callback_result is not None:
                 return callback_result
         except Exception as e:
@@ -3927,7 +3919,34 @@ class WXBot:
             self._lightweight_send_queue.pop(name, None)
             return True
 
-    def _interrupt_private_ai_for_manual_self(self, chat, message=None):
+    def _has_private_ai_lightweight_send_queue(self, chat_name):
+        name = str(chat_name or "").strip()
+        if not name:
+            return False
+        self._ensure_lightweight_send_queue_state()
+        with self._lightweight_send_queue_lock:
+            item = self._lightweight_send_queue.get(name)
+            return (
+                isinstance(item, dict)
+                and str(item.get("source") or "").strip() == "private_ai_reply"
+            )
+
+    def _invalidate_private_ai_reply_turn(self, chat_name):
+        name = str(chat_name or "").strip()
+        if not name:
+            return {}
+        sequence = self._next_private_message_sequence(name)
+        self._clear_private_message_pipeline(name)
+        with self._chat_merge_lock:
+            cancelled_voice = self._cancel_pending_private_voice_transcription_locked(name)
+        dropped_queue = self._drop_private_ai_lightweight_send_queue(name)
+        return {
+            "sequence": sequence,
+            "cancelled_voice_transcription": cancelled_voice,
+            "dropped_lightweight_queue": dropped_queue,
+        }
+
+    def _handle_private_self_message_boundary(self, chat, message=None):
         if not self._is_ordinary_private_self_message(
             chat,
             message or SimpleNamespace(attr="self"),
@@ -3936,13 +3955,27 @@ class WXBot:
         name = str(getattr(chat, "who", "") or "").strip()
         if not name:
             return False
-        self._next_private_message_sequence(name)
-        self._clear_private_message_pipeline(name)
+        self._ensure_message_runtime_state()
         with self._chat_merge_lock:
-            self._cancel_pending_private_voice_fallback_locked(name)
-        dropped_queue = self._drop_private_ai_lightweight_send_queue(name)
-        suffix = "，已清理延迟发送队列" if dropped_queue else ""
-        log(message=f"私聊 {name}：检测到手动 self 消息，已停止当前 AI 回复{suffix}")
+            pipeline = self._private_message_pipelines.get(name)
+            has_open_batch = isinstance(pipeline, dict) and bool(pipeline.get("open_messages"))
+            has_committed_batch = isinstance(pipeline, dict) and (
+                bool(pipeline.get("queued_batches"))
+                or bool(pipeline.get("worker_running"))
+            )
+            has_voice_transcription = name in (getattr(self, "_pending_private_voice_transcription", {}) or {})
+        if has_committed_batch or self._has_private_ai_lightweight_send_queue(name):
+            result = self._invalidate_private_ai_reply_turn(name)
+            dropped_queue = bool(result.get("dropped_lightweight_queue"))
+            suffix = "，已清理延迟发送队列" if dropped_queue else ""
+            log(message=f"私聊 {name}：检测到 self 介入，已停止当前 AI 回复{suffix}")
+            return True
+
+        if has_open_batch or has_voice_transcription:
+            self._invalidate_private_ai_reply_turn(name)
+            log(message=f"私聊 {name}：检测到 self 边界，已切分待回复批次")
+        else:
+            log(message=f"私聊 {name}：检测到 self 消息，当前无待回复任务，已作为历史记录保留")
         return True
 
     def _private_reply_can_continue(self, chat, *, log_prefix="私聊", expected_sequence=None):
@@ -4397,8 +4430,6 @@ class WXBot:
             time.sleep(1)
             return result
         if action == "group_ai":
-            if getattr(message, '_voice_transcription_failed', False):
-                return self._send_group_voice_transcription_fallback(chat, message)
             group_image_reply_context_used = False
             content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
             log(message=f"群组 {chat.who}：触发 AI 回复，内容：{content_without_at}")
@@ -5241,8 +5272,10 @@ class WXBot:
             self._chat_send_locks = {}
         if not hasattr(self, '_private_message_pipelines'):
             self._private_message_pipelines = {}
-        if not hasattr(self, '_pending_private_voice_fallbacks'):
-            self._pending_private_voice_fallbacks = {}
+        if not hasattr(self, '_pending_private_voice_transcription'):
+            self._pending_private_voice_transcription = {}
+        if not hasattr(self, '_pending_private_voice_sequence'):
+            self._pending_private_voice_sequence = {}
         if not hasattr(self, '_private_message_sequence_by_chat'):
             self._private_message_sequence_by_chat = {}
         if not hasattr(self, '_recent_private_image_hashes'):
@@ -5371,114 +5404,129 @@ class WXBot:
         should_mark = bool(blocked and blocked_policy["reply_once"] and user_key)
         return blocked, already_notified, should_mark
 
-    def _send_private_voice_transcription_fallback(self, chat):
-        user_key = self._get_reply_count_key(chat)
-        if (
-            getattr(self.config, "voice_transcription_fallback_reply_once", False)
-            and user_key
-            and self._reply_once_user_data(user_key).get("voice_transcription_fallback_notified")
-        ):
-            log(level="INFO", message=f"私聊 {chat.who} 语音转文字失败，回复循环窗口内已提示过，已跳过兜底提示")
-            return True
-        fallback_text = str(
-            getattr(self.config, "voice_transcription_fallback_text", "")
-        ).strip()
-        if not fallback_text:
-            log(level="INFO", message=f"私聊 {chat.who} 语音转文字失败，未配置兜底提示，本次静默")
-            return True
-        try:
-            result = chat.SendMsg(fallback_text)
-            if result is not False:
-                self._remember_private_outbound_echo_for_send_result(
-                    chat.who,
-                    result,
-                    "text",
-                    fallback_text,
-                    source="voice_fallback",
-                )
-                if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
-                    self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
-                self._record_reply_metric_success(chat.who, chat_type="private")
-                log(level="INFO", message=f"私聊 {chat.who} 语音转文字失败，已发送兜底提示")
-                return True
-            log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，聊天窗口兜底提示发送失败，准备走全局发送兜底")
-        except Exception as exc:
-            log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，聊天窗口兜底提示异常：{exc}，准备走全局发送兜底")
-        wx_client = getattr(self, 'wx', None)
-        if wx_client is None:
-            return False
-        try:
-            result = wx_client.SendMsg(who=chat.who, msg=fallback_text)
-            if result is False:
-                log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，全局兜底提示发送失败")
-                return False
-            self._remember_private_outbound_echo_for_send_result(
-                chat.who,
-                result,
-                "text",
-                fallback_text,
-                source="voice_fallback",
-            )
-            if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
-                self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
-            self._record_reply_metric_success(chat.who, chat_type="private")
-            log(level="INFO", message=f"私聊 {chat.who} 语音转文字失败，已通过全局发送兜底提示")
-            return True
-        except Exception as exc:
-            log(level="WARNING", message=f"私聊 {chat.who} 语音转文字失败，全局兜底提示异常：{exc}")
-            return False
-
-    def _send_group_voice_transcription_fallback(self, chat, message):
-        user_key = self._get_group_reply_once_key(chat, message)
-        if (
-            getattr(self.config, "voice_transcription_fallback_reply_once", False)
-            and user_key
-            and self._reply_once_user_data(user_key).get("voice_transcription_fallback_notified")
-        ):
-            log(level="INFO", message=f"群聊 {chat.who} {getattr(message, 'sender', '')} 语音转文字失败，回复循环窗口内已提示过，已跳过兜底提示")
-            return True
-        fallback_text = str(
-            getattr(self.config, "voice_transcription_fallback_text", "")
-        ).strip()
-        if not fallback_text:
-            log(level="INFO", message=f"群聊 {chat.who} 语音转文字失败，未配置兜底提示，本次静默")
-            return True
-        try:
-            if getattr(self.config, "group_reply_quote", True) and getattr(self.config, "group_reply_at_msg", True):
-                result = message.quote(fallback_text, at=message.sender)
-            elif getattr(self.config, "group_reply_quote", True):
-                result = message.quote(fallback_text)
-            elif getattr(self.config, "group_reply_at_msg", True):
-                result = chat.SendMsg(msg=fallback_text, at=message.sender)
-            else:
-                result = chat.SendMsg(msg=fallback_text)
-            if not ReplyCountStore.was_send_success(result):
-                log(level="WARNING", message=f"群聊 {chat.who} 语音转文字失败，兜底提示发送失败")
-                return False
-            if getattr(self.config, "voice_transcription_fallback_reply_once", False) and user_key:
-                self.reply_count_store.mark_voice_transcription_fallback_notified(user_key)
-            self._record_reply_metric_success(chat.who, chat_type="group")
-            log(level="INFO", message=f"群聊 {chat.who} 语音转文字失败，已发送兜底提示")
-            return True
-        except Exception as exc:
-            log(level="WARNING", message=f"群聊 {chat.who} 语音转文字失败，兜底提示异常：{exc}")
-            return False
-
-    @staticmethod
-    def _voice_duration_seconds(message):
-        match = re.search(r'语音\s*(\d+)\s*["”]?\s*秒', str(getattr(message, "content", "") or ""))
-        if not match:
-            return ""
-        return match.group(1)
-
     def _ensure_pending_private_voice_transcription_state(self):
         if not hasattr(self, "_pending_private_voice_transcription") or self._pending_private_voice_transcription is None:
             self._pending_private_voice_transcription = {}
+        if not hasattr(self, "_pending_private_voice_sequence") or self._pending_private_voice_sequence is None:
+            self._pending_private_voice_sequence = {}
 
     @staticmethod
     def _pending_voice_item_expired(item):
+        attempts = int(item.get("reread_attempts") or 0)
+        return attempts >= VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS
+
+    @staticmethod
+    def _pending_voice_item_deadline_reached(item):
         first_seen_at = float(item.get("first_seen_at") or time.time())
-        return time.time() - first_seen_at >= VOICE_TRANSCRIPTION_MAX_WAIT_SECONDS
+        max_wait = VOICE_TRANSCRIPTION_RETRY_DELAY_SECONDS * VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS
+        return time.time() - first_seen_at >= max_wait
+
+    @staticmethod
+    def _is_unresolved_pending_voice_message(message):
+        return bool(
+            getattr(message, "_wxbot_pending_voice_key", "")
+            and not getattr(message, "_wxbot_pending_voice_resolved", False)
+        )
+
+    def _private_pipeline_has_unresolved_voice_locked(self, pipeline):
+        if not isinstance(pipeline, dict):
+            return False
+        for message in pipeline.get("open_messages") or []:
+            if self._is_unresolved_pending_voice_message(message):
+                return True
+        return False
+
+    def _insert_pending_private_voice_placeholder_locked(self, name, chat, message, key):
+        pipeline = self._private_message_pipeline(name)
+        if not pipeline:
+            return False
+        for existing in pipeline.get("open_messages") or []:
+            if getattr(existing, "_wxbot_pending_voice_key", "") == key:
+                return False
+        try:
+            setattr(message, "_wxbot_pending_voice_key", key)
+            setattr(message, "_wxbot_pending_voice_resolved", False)
+        except Exception:
+            pass
+        batch_kind = self._private_message_batch_kind(message)
+        open_kind = str(pipeline.get("open_kind") or "text").strip().lower()
+        if not pipeline["open_messages"]:
+            pipeline["open_started_at"] = time.time()
+            pipeline["open_kind"] = batch_kind
+        else:
+            pipeline["open_kind"] = open_kind if open_kind == batch_kind else "mixed"
+        pipeline["open_messages"].append(message)
+        self._private_message_sequence_by_chat[name] = self._private_message_sequence_by_chat.get(name, 0) + 1
+        base_delay = self._private_message_merge_delay()
+        self._schedule_private_message_pipeline_locked(
+            chat,
+            pipeline,
+            self._private_message_effective_merge_delay(pipeline, base_delay),
+            max_wait_base_delay=base_delay,
+        )
+        return True
+
+    def _replace_pending_private_voice_placeholder_locked(self, name, key, resolved):
+        pipeline = self._private_message_pipelines.get(name)
+        if not isinstance(pipeline, dict):
+            return False
+        for index, message in enumerate(pipeline.get("open_messages") or []):
+            if getattr(message, "_wxbot_pending_voice_key", "") != key:
+                continue
+            try:
+                setattr(resolved, "_wxbot_pending_voice_key", key)
+                setattr(resolved, "_wxbot_pending_voice_resolved", True)
+                setattr(resolved, "_wxbot_media_prepared", True)
+            except Exception:
+                pass
+            pipeline["open_messages"][index] = resolved
+            return True
+        return False
+
+    def _drop_pending_private_voice_placeholder_locked(self, name, key):
+        pipeline = self._private_message_pipelines.get(name)
+        if not isinstance(pipeline, dict):
+            return False
+        messages = pipeline.get("open_messages") or []
+        kept = [message for message in messages if getattr(message, "_wxbot_pending_voice_key", "") != key]
+        if len(kept) == len(messages):
+            return False
+        pipeline["open_messages"] = kept
+        if not kept:
+            pipeline["open_started_at"] = 0.0
+            pipeline["open_kind"] = "text"
+        return True
+
+    def _wake_private_batch_if_pending_voice_unblocked_locked(self, name, chat):
+        pipeline = self._private_message_pipelines.get(name)
+        if not isinstance(pipeline, dict):
+            return False
+        if not pipeline.get("pending_voice_blocked_close"):
+            return False
+        if self._private_pipeline_has_unresolved_voice_locked(pipeline):
+            return False
+        pipeline["pending_voice_blocked_close"] = False
+        if not pipeline.get("open_messages"):
+            return False
+        self._cancel_timer(pipeline.get("idle_timer"))
+        self._cancel_timer(pipeline.get("max_timer"))
+        pipeline["idle_timer"] = self._schedule_private_message_timer(
+            0,
+            self._close_private_message_batch_by_idle,
+            chat,
+        )
+        pipeline["max_timer"] = None
+        return True
+
+    def _cancel_pending_private_voice_transcription_locked(self, chat_name):
+        pending = getattr(self, "_pending_private_voice_transcription", None)
+        if not isinstance(pending, dict):
+            return False
+        task = pending.pop(str(chat_name or "").strip(), None)
+        if not isinstance(task, dict):
+            return False
+        self._cancel_timer(task.get("timer"))
+        return True
 
     def _reschedule_pending_private_voice_transcription(self, chat, items, *, reason):
         name = str(getattr(chat, "who", "") or "").strip()
@@ -5496,6 +5544,9 @@ class WXBot:
                 if not key:
                     continue
                 task["items"][key] = item
+                source_key = item.get("source_key")
+                if source_key:
+                    task.setdefault("source_keys", set()).add(source_key)
             if not task.get("timer"):
                 task["timer"] = self._schedule_private_message_timer(
                     VOICE_TRANSCRIPTION_RETRY_DELAY_SECONDS,
@@ -5510,23 +5561,34 @@ class WXBot:
         if not name:
             return False
         self._ensure_pending_private_voice_transcription_state()
-        key = message_unique_id(name, message)
+        source_key = message_unique_id(name, message)
         item = {
-            "key": key,
-            "id": getattr(message, "id", None),
-            "sender": getattr(message, "sender", ""),
-            "duration": self._voice_duration_seconds(message),
+            "key": "",
+            "source_key": source_key,
             "message": message,
             "first_seen_at": time.time(),
+            "reread_attempts": 0,
         }
         created_task = False
         with self._chat_merge_lock:
             task = self._pending_private_voice_transcription.get(name)
             if not isinstance(task, dict):
-                task = {"chat": chat, "items": {}, "timer": None}
+                task = {"chat": chat, "items": {}, "source_keys": set(), "timer": None}
                 self._pending_private_voice_transcription[name] = task
+            task.setdefault("source_keys", set())
+            already_pending = bool(source_key and source_key in task["source_keys"])
+            if already_pending:
+                task["chat"] = chat
+                return True
+            sequence = self._pending_private_voice_sequence.get(name, 0) + 1
+            self._pending_private_voice_sequence[name] = sequence
+            key = f"voice:{name}:{sequence}"
+            item["key"] = key
             task["chat"] = chat
+            if source_key:
+                task["source_keys"].add(source_key)
             task["items"][key] = item
+            self._insert_pending_private_voice_placeholder_locked(name, chat, message, key)
             if not task.get("timer"):
                 task["timer"] = self._schedule_private_message_timer(
                     VOICE_TRANSCRIPTION_RETRY_DELAY_SECONDS,
@@ -5537,33 +5599,6 @@ class WXBot:
         if created_task:
             log(message=f"私聊 {name}：语音识别结果暂未就绪，{VOICE_TRANSCRIPTION_RETRY_DELAY_SECONDS}s 后重读")
         return True
-
-    def _visible_messages_for_pending_voice(self, chat):
-        getter = getattr(chat, "GetAllMessage", None)
-        if not callable(getter):
-            return []
-        with warn_slow_wechat_ui_action(f"GetAllMessage({getattr(chat, 'who', '')})"):
-            messages = getter()
-        return list(messages or [])
-
-    def _match_pending_voice_message(self, visible_messages, item):
-        msg_id = item.get("id")
-        if msg_id:
-            for candidate in visible_messages:
-                if getattr(candidate, "id", None) == msg_id:
-                    return candidate
-        duration = str(item.get("duration") or "")
-        sender = str(item.get("sender") or "")
-        matches = []
-        for candidate in visible_messages:
-            if getattr(candidate, "type", "") != "voice":
-                continue
-            if sender and str(getattr(candidate, "sender", "") or "") != sender:
-                continue
-            if duration and self._voice_duration_seconds(candidate) != duration:
-                continue
-            matches.append(candidate)
-        return matches[0] if len(matches) == 1 else None
 
     def _flush_pending_private_voice_transcription(self, chat):
         name = str(getattr(chat, "who", "") or "").strip()
@@ -5581,50 +5616,103 @@ class WXBot:
             return True
         lock = self._get_wechat_action_lock()
         if not lock.acquire(blocking=False):
-            expired = [item for item in items if self._pending_voice_item_expired(item)]
+            expired = [
+                item for item in items
+                if self._pending_voice_item_expired(item) or self._pending_voice_item_deadline_reached(item)
+            ]
             pending = [item for item in items if item not in expired]
             if pending:
                 self._reschedule_pending_private_voice_transcription(chat, pending, reason="重读时微信操作锁忙")
             if expired:
-                log(level="WARNING", message=f"私聊 {name}：语音识别等待超时且微信操作锁忙，已走兜底回复")
-                return self._send_private_voice_transcription_fallback(chat)
+                with self._chat_merge_lock:
+                    for item in expired:
+                        item_key = item.get("key")
+                        if item_key:
+                            self._drop_pending_private_voice_placeholder_locked(name, item_key)
+                    self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                log(message=f"私聊 {name}：{len(expired)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字，已静默忽略")
             return True
         try:
-            visible_messages = self._visible_messages_for_pending_voice(chat)
+            for item in items:
+                item["reread_attempts"] = int(item.get("reread_attempts") or 0) + 1
+            for item in items:
+                original_message = item.get("message")
+                if original_message is None:
+                    continue
+                if message_routing.voice_content_state(getattr(original_message, "content", "")) != "valid":
+                    message_routing.try_voice_to_text(self, original_message, chat)
         except Exception as exc:
-            expired = [item for item in items if self._pending_voice_item_expired(item)]
+            expired = [
+                item for item in items
+                if self._pending_voice_item_expired(item) or self._pending_voice_item_deadline_reached(item)
+            ]
             pending = [item for item in items if item not in expired]
             if pending:
                 self._reschedule_pending_private_voice_transcription(chat, pending, reason=f"重读失败：{exc}")
             if expired:
-                log(level="WARNING", message=f"私聊 {name}：语音识别等待超时且重读失败，已走兜底回复，详情：{exc}")
-                return self._send_private_voice_transcription_fallback(chat)
+                with self._chat_merge_lock:
+                    for item in expired:
+                        item_key = item.get("key")
+                        if item_key:
+                            self._drop_pending_private_voice_placeholder_locked(name, item_key)
+                    self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                log(message=f"私聊 {name}：{len(expired)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字，已静默忽略，最后一次重读失败：{exc}")
             return True
         finally:
             lock.release()
         handled_any = False
         pending_items = []
         expired_items = []
+        unblocked_batch = False
         for item in items:
-            resolved = self._match_pending_voice_message(visible_messages, item)
+            item_key = item.get("key")
+            resolved = item.get("message")
             if not resolved:
-                if self._pending_voice_item_expired(item):
+                if self._pending_voice_item_expired(item) or self._pending_voice_item_deadline_reached(item):
                     expired_items.append(item)
+                    if item_key:
+                        with self._chat_merge_lock:
+                            self._drop_pending_private_voice_placeholder_locked(name, item_key)
+                            unblocked_batch = (
+                                self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                                or unblocked_batch
+                            )
                 else:
                     pending_items.append(item)
                 continue
             state = message_routing.voice_content_state(getattr(resolved, "content", ""))
             if state == "valid":
-                setattr(resolved, "_wxbot_media_prepared", True)
+                replaced = False
+                if item_key:
+                    with self._chat_merge_lock:
+                        replaced = self._replace_pending_private_voice_placeholder_locked(name, item_key, resolved)
+                        unblocked_batch = (
+                            self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                            or unblocked_batch
+                        )
+                if not replaced:
+                    log(message=f"私聊 {name}：语音识别结果已过期，已静默忽略")
+                    continue
                 self._save_private_incoming_memory_message(chat, resolved)
-                self._enqueue_private_message_for_ai(chat, resolved)
                 handled_any = True
             elif state == "failed":
-                setattr(resolved, "_voice_transcription_failed", True)
-                self._enqueue_private_message_for_ai(chat, resolved)
-                handled_any = True
-            elif self._pending_voice_item_expired(item):
+                if item_key:
+                    with self._chat_merge_lock:
+                        self._drop_pending_private_voice_placeholder_locked(name, item_key)
+                        unblocked_batch = (
+                            self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                            or unblocked_batch
+                        )
+                log(message=f"私聊 {name}：语音识别失败，未得到有效文字，已静默忽略")
+            elif self._pending_voice_item_expired(item) or self._pending_voice_item_deadline_reached(item):
                 expired_items.append(item)
+                if item_key:
+                    with self._chat_merge_lock:
+                        self._drop_pending_private_voice_placeholder_locked(name, item_key)
+                        unblocked_batch = (
+                            self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                            or unblocked_batch
+                        )
             else:
                 pending_items.append(item)
         if pending_items:
@@ -5632,13 +5720,9 @@ class WXBot:
         if handled_any:
             log(message=f"私聊 {name}：语音识别延后重读已恢复部分待处理语音")
         if expired_items:
-            with self._chat_merge_lock:
-                has_active_private_reply = self._private_message_pipeline_has_work_locked(name)
-            if handled_any or has_active_private_reply:
-                log(message=f"私聊 {name}：同批已有有效语音内容，已跳过 {len(expired_items)} 条未识别语音兜底")
-                return True
-            log(level="WARNING", message=f"私聊 {name}：语音识别等待超时，已走兜底回复（{len(expired_items)} 条）")
-            return self._send_private_voice_transcription_fallback(chat)
+            log(message=f"私聊 {name}：{len(expired_items)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字，已静默忽略")
+        if unblocked_batch:
+            log(message=f"私聊 {name}：待识别语音已完成，继续关闭当前合并批次")
         return True
 
     def _save_private_incoming_memory_message(self, chat, message):
@@ -6447,16 +6531,6 @@ class WXBot:
         timer.start()
         return timer
 
-    def _cancel_pending_private_voice_fallback_locked(self, chat_name):
-        pending = getattr(self, "_pending_private_voice_fallbacks", None)
-        if not isinstance(pending, dict):
-            return False
-        item = pending.pop(str(chat_name or "").strip(), None)
-        if not isinstance(item, dict):
-            return False
-        self._cancel_timer(item.get("timer"))
-        return True
-
     def _private_message_pipeline_has_work_locked(self, chat_name):
         pipelines = getattr(self, "_private_message_pipelines", {})
         pipeline = pipelines.get(str(chat_name or "").strip()) if isinstance(pipelines, dict) else None
@@ -6465,44 +6539,6 @@ class WXBot:
             or bool(pipeline.get("queued_batches"))
             or bool(pipeline.get("worker_running"))
         )
-
-    def _schedule_private_voice_transcription_fallback(self, chat):
-        self._ensure_message_runtime_state()
-        name = str(getattr(chat, "who", "") or "").strip()
-        if not name:
-            return True
-        delay = self._private_message_merge_delay()
-        with self._chat_merge_lock:
-            self._cancel_pending_private_voice_fallback_locked(name)
-            if self._private_message_pipeline_has_work_locked(name):
-                log(message=f"私聊 {name}：同批已有有效消息，已跳过语音转文字失败兜底提示")
-                return True
-            self._pending_private_voice_fallbacks[name] = {
-                "chat": chat,
-                "timer": self._schedule_private_message_timer(
-                    delay,
-                    self._flush_pending_private_voice_fallback,
-                    chat,
-                ),
-            }
-        log(message=f"私聊 {name}：语音转文字失败，等待同批有效消息 {delay}s 后再决定是否提示")
-        return True
-
-    def _flush_pending_private_voice_fallback(self, chat):
-        name = str(getattr(chat, "who", "") or "").strip()
-        if not name:
-            return True
-        self._ensure_message_runtime_state()
-        with self._chat_merge_lock:
-            pending = getattr(self, "_pending_private_voice_fallbacks", {})
-            item = pending.pop(name, None) if isinstance(pending, dict) else None
-            if isinstance(item, dict):
-                item["timer"] = None
-        if not isinstance(item, dict):
-            return True
-        if self.is_stop_requested():
-            return True
-        return self._send_private_voice_transcription_fallback(chat)
 
     def _schedule_private_message_pipeline_locked(self, chat, pipeline, delay, max_wait_base_delay=None):
         self._cancel_timer(pipeline.get("idle_timer"))
@@ -6544,9 +6580,18 @@ class WXBot:
             pipeline["idle_timer"] = None
             pipeline["max_timer"] = None
             return False
+        if self._private_pipeline_has_unresolved_voice_locked(pipeline):
+            pipeline["pending_voice_blocked_close"] = True
+            self._cancel_timer(pipeline.get("idle_timer"))
+            self._cancel_timer(pipeline.get("max_timer"))
+            pipeline["idle_timer"] = None
+            pipeline["max_timer"] = None
+            log(message=f"私聊 {name}：当前批次仍有语音等待识别，已暂缓合并回复")
+            return False
         pipeline["open_messages"] = []
         pipeline["open_started_at"] = 0.0
         pipeline["open_kind"] = "text"
+        pipeline["pending_voice_blocked_close"] = False
         self._cancel_timer(pipeline.get("idle_timer"))
         self._cancel_timer(pipeline.get("max_timer"))
         pipeline["idle_timer"] = None
@@ -6655,7 +6700,8 @@ class WXBot:
             if not self._mark_message_content_fingerprint_seen(chat.who, message):
                 log(message=f"私聊 {chat.who}：短时间重复失败语音回调已忽略")
                 return True
-            return self._schedule_private_voice_transcription_fallback(chat)
+            log(message=f"私聊 {chat.who}：语音识别失败，未得到有效文字，已静默忽略")
+            return True
         if self._should_skip_private_ai_message(message):
             return True
         if not self._mark_message_seen(chat.who, message):
@@ -6674,7 +6720,6 @@ class WXBot:
         batch_kind = self._private_message_batch_kind(message)
         pending_image_paths = []
         with self._chat_merge_lock:
-            self._cancel_pending_private_voice_fallback_locked(chat.who)
             pipeline = self._private_message_pipeline(chat.who)
             if not pipeline:
                 return True

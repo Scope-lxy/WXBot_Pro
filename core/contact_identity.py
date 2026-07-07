@@ -854,7 +854,6 @@ def _merge_reply_count_user(old_data: dict[str, Any], new_data: dict[str, Any]) 
         "api_err_notified",
         "limit_notified",
         "meta_reply_blocked_notified",
-        "voice_transcription_fallback_notified",
     ):
         merged[field] = bool(old_data.get(field)) or bool(new_data.get(field))
     for field in ("window_started_at",):

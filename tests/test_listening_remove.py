@@ -543,7 +543,7 @@ class RemoveListenChatTests(unittest.TestCase):
 
         direct_saves = []
         dirty = []
-        manual_self_interrupts = []
+        self_boundaries = []
         bot = SimpleNamespace(
             config=SimpleNamespace(
                 AllListen_switch=True,
@@ -571,7 +571,7 @@ class RemoveListenChatTests(unittest.TestCase):
             _handle_material_source_message=lambda _chat, _msg: False,
             _should_skip_message_memory=lambda _chat, _message: False,
             _consume_private_reply_runtime_echo=lambda _chat, _content: False,
-            _interrupt_private_ai_for_manual_self=lambda chat, message: manual_self_interrupts.append((chat.who, message.content)),
+            _handle_private_self_message_boundary=lambda chat, message: self_boundaries.append((chat.who, message.content)),
             _mark_chat_memory_dirty=lambda chat, _message: dirty.append(chat.who),
             process_message=lambda _chat, _message: self.fail("self 消息不应进入 AI 处理"),
         )
@@ -584,7 +584,7 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(direct_saves[0]["content"], "我手机上已经回复了")
         self.assertEqual(direct_saves[0]["message_time"], "2026/07/04 10:00:00")
         self.assertEqual(dirty, ["张三"])
-        self.assertEqual(manual_self_interrupts, [("张三", "我手机上已经回复了")])
+        self.assertEqual(self_boundaries, [("张三", "我手机上已经回复了")])
 
     def test_add_and_verify_uses_add_listen_returned_chat_directly(self):
         calls = []

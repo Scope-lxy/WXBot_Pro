@@ -263,7 +263,6 @@ DEFAULT_EMAIL_CONFIG = {
     "user": "",
     "pass": "",
 }
-DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
 
 
 def _clean_sort_text(value):
@@ -341,13 +340,6 @@ def normalize_voice_reply_config(config):
     config['chat_voice_reply_trigger_modes'] = trigger_modes
     if 'incoming_voice' in trigger_modes:
         config['chat_voice_recognition_switch'] = True
-    if 'voice_transcription_fallback_text' not in config:
-        config['voice_transcription_fallback_text'] = DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT
-    else:
-        config['voice_transcription_fallback_text'] = str(
-            config.get('voice_transcription_fallback_text') or ''
-        ).strip()
-    config.setdefault('voice_transcription_fallback_reply_once', False)
     config['chat_voice_reply_request_keywords'] = _split_inline_keyword_list(
         config.get('chat_voice_reply_request_keywords', DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
     ) or list(DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
@@ -2225,7 +2217,6 @@ def dashboard():
     config.setdefault('new_friend_remark_prefix_timestamp', False)
     config.setdefault('new_friend_remark_suffix_timestamp', False)
     config.setdefault('chat_voice_recognition_switch', False)
-    config.setdefault('voice_transcription_fallback_reply_once', False)
     config.setdefault('chat_message_merge_delay', 20)
     config.setdefault('chat_image_recognition_switch', False)   # 私聊图片识别开关
     config.setdefault('chat_image_recognition_api',    0)        # 私聊识别接口索引
@@ -3286,7 +3277,6 @@ def _coerce_bool_fields(merged_config):
         'AllListen_filter_mute',
         'chat_listen_only',
         'chat_voice_recognition_switch',
-        'voice_transcription_fallback_reply_once',
         'wechat_cli_enabled',
         'group_switch',
         'group_listen_only',
@@ -7631,8 +7621,6 @@ def main():
                 "clean_ai_reply_switch": True,
                 "chat_image_recognition_switch": False,
                 "chat_voice_recognition_switch": False,
-                "voice_transcription_fallback_text": DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT,
-                "voice_transcription_fallback_reply_once": False,
                 "chat_message_merge_delay": 20,
                 "chat_image_recognition_api": 0,
                 "group_image_recognition_switch": False,

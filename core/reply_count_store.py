@@ -41,7 +41,6 @@ class ReplyCountStore:
             "api_err_notified": bool(user_data.get("api_err_notified", False)),
             "limit_notified": bool(user_data.get("limit_notified", False)),
             "meta_reply_blocked_notified": bool(user_data.get("meta_reply_blocked_notified", False)),
-            "voice_transcription_fallback_notified": bool(user_data.get("voice_transcription_fallback_notified", False)),
         }
 
     @classmethod
@@ -109,7 +108,6 @@ class ReplyCountStore:
             user_data["limit_notified"] = False
             user_data["api_err_notified"] = False
             user_data["meta_reply_blocked_notified"] = False
-            user_data["voice_transcription_fallback_notified"] = False
         return user_data
 
     def get_user(self, user_key, *, now=None, limit_hours=0):
@@ -168,15 +166,6 @@ class ReplyCountStore:
             if user_data.get("meta_reply_blocked_notified"):
                 return False
             user_data["meta_reply_blocked_notified"] = True
-            self._save_locked()
-            return True
-
-    def mark_voice_transcription_fallback_notified(self, user_key):
-        with self._lock:
-            user_data = self.get_user(user_key)
-            if user_data.get("voice_transcription_fallback_notified"):
-                return False
-            user_data["voice_transcription_fallback_notified"] = True
             self._save_locked()
             return True
 

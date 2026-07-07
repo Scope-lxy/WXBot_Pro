@@ -1117,17 +1117,6 @@ html.icons-pref-local [class*=" bi-"]::before {
               </label>
             </div>
           </div>
-          <div class="chat-ability-settings">
-            <label class="cfg-label" for="voice_transcription_fallback_text">语音识别失败回复</label>
-            <div class="inline-check-field">
-              <input type="text" class="form-control voice-transcription-fallback-input" id="voice_transcription_fallback_text" value="{{ config.get('voice_transcription_fallback_text', '刚才那条语音，我有点没听清') }}" placeholder="不填写则静默不回复">
-              <label class="inline-check-suffix" for="voice_transcription_fallback_reply_once">
-                <input class="form-check-input" type="checkbox" id="voice_transcription_fallback_reply_once" {% if config.get('voice_transcription_fallback_reply_once', False) %}checked{% endif %}>
-                只回复一次
-              </label>
-            </div>
-            <div class="cfg-hint">语音转文字失败时的兜底回复；不填写则静默不回复；勾选后同一好友在回复循环窗口内只提醒一次</div>
-          </div>
         </div>
       </div>
     </div>
@@ -1424,11 +1413,6 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <span class="ui-switch-knob"></span>
               </label>
             </div>
-          </div>
-          <div class="chat-ability-settings">
-            <label class="cfg-label" for="group_voice_transcription_fallback_text">语音识别失败回复</label>
-            <input type="text" class="form-control voice-transcription-fallback-input" id="group_voice_transcription_fallback_text" value="{{ config.get('voice_transcription_fallback_text', '刚才那条语音，我有点没听清') }}" placeholder="不填写则静默不回复">
-            <div class="cfg-hint">与私聊共用文案；不填写则静默不回复；勾选后同一发言人在回复循环窗口内只提醒一次</div>
           </div>
         </div>
       </div>
@@ -11823,9 +11807,6 @@ $(function(){
         .map(function(s){ return s.trim(); })
         .filter(Boolean);
     }
-    function voiceTranscriptionFallbackText(){
-      return String($('#voice_transcription_fallback_text').val() || '').trim();
-    }
     // 收集接口配置列表
     var api_configs=[];
     var api_index=0;
@@ -11955,8 +11936,6 @@ $(function(){
       wxauto_save_cache_retention_days:parseInt($('#wxauto_save_cache_retention_days').val(),10)||0,
       chat_image_recognition_switch:$('#chat_image_recognition_switch').is(':checked'),
       chat_voice_recognition_switch:$('#chat_voice_recognition_switch').is(':checked'),
-      voice_transcription_fallback_text:voiceTranscriptionFallbackText(),
-      voice_transcription_fallback_reply_once:$('#voice_transcription_fallback_reply_once').is(':checked'),
       chat_voice_reply_switch:$('#chat_voice_reply_switch').is(':checked'),
       chat_voice_reply_trigger_modes:selectedCompactMultiSelectValues($('#chat_voice_reply_trigger_modes_wrap')),
       chat_voice_reply_request_keywords:splitInlineList('#chat_voice_reply_request_keywords'),

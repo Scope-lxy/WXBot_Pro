@@ -1336,9 +1336,9 @@ def alllisten_mode(bot, last_time, timeout=10):
                                 else False
                             )
                             if not runtime_echo:
-                                interrupt_manual_self = getattr(bot, "_interrupt_private_ai_for_manual_self", None)
-                                if callable(interrupt_manual_self):
-                                    interrupt_manual_self(memory_chat, msg)
+                                handle_self_boundary = getattr(bot, "_handle_private_self_message_boundary", None)
+                                if callable(handle_self_boundary):
+                                    handle_self_boundary(memory_chat, msg)
                     except Exception as exc:
                         _bot_log(bot, level="WARNING", message=f"处理 self 消息失败: {exc}")
                     continue

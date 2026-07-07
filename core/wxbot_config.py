@@ -42,8 +42,6 @@ from feature.scheduled_message_tasks import (
 from feature.task_workbench_storage import TaskWorkbenchStorage
 from feature.voice_reply import DEFAULT_CHAT_VOICE_REPLY_KEYWORDS, DEFAULT_GROUP_VOICE_REPLY_KEYWORDS
 LONG_REPLY_SEGMENT_CHARS = 1000
-DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT = "刚才那条语音，我有点没听清"
-
 
 class WXBotConfig:
     """
@@ -320,8 +318,6 @@ class WXBotConfig:
                     "wechat_cli_enabled": False,
                     "chat_image_recognition_switch": False,
                     "chat_voice_recognition_switch": False,
-                    "voice_transcription_fallback_text": DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT,
-                    "voice_transcription_fallback_reply_once": False,
                     "chat_message_merge_delay": 20,
                     "chat_image_recognition_api": 0,
                     "group_image_recognition_switch": False,
@@ -1065,13 +1061,6 @@ class WXBotConfig:
         # 图片识别配置
         self.chat_image_recognition_switch  = bool(self.config.get('chat_image_recognition_switch', False))
         self.chat_voice_recognition_switch  = bool(self.config.get('chat_voice_recognition_switch', False))
-        voice_fallback_text = str(
-            self.config.get('voice_transcription_fallback_text', DEFAULT_VOICE_TRANSCRIPTION_FALLBACK_TEXT) or ''
-        ).strip()
-        self.voice_transcription_fallback_text = voice_fallback_text
-        self.voice_transcription_fallback_reply_once = bool(
-            self.config.get('voice_transcription_fallback_reply_once', False)
-        )
         self.chat_message_merge_delay = coerce_int_range(
             self.config.get('chat_message_merge_delay', 20), 20, 1, 60
         )
