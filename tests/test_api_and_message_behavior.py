@@ -2595,6 +2595,34 @@ class MessageBehaviorTests(unittest.TestCase):
             1,
         )
 
+    def test_private_image_batch_can_wait_up_to_double_max_base_delay(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_message_merge_delay=60,
+            chat_image_recognition_switch=True,
+        )
+        bot.is_stop_requested = lambda: False
+        scheduled = []
+
+        def capture_timer(seconds, callback, _chat):
+            scheduled.append((callback.__name__, seconds))
+            return SimpleNamespace(cancel=lambda: None)
+
+        bot._schedule_private_message_timer = capture_timer
+        bot._existing_local_image_path = lambda path: path
+        bot._start_private_message_worker_locked = lambda _chat, _pipeline: True
+
+        chat = SimpleNamespace(who="张三")
+        image_msg = SimpleNamespace(type="image", attr="friend", sender="张三", content=r"C:\tmp\a.png", id="1")
+
+        bot._ensure_message_runtime_state()
+        self.assertTrue(bot._enqueue_private_message_for_ai(chat, image_msg))
+
+        self.assertEqual(scheduled[0][0], "_close_private_message_batch_by_idle")
+        self.assertEqual(scheduled[0][1], 120.0)
+        self.assertEqual(scheduled[1][0], "_close_private_message_batch_by_max_wait")
+        self.assertAlmostEqual(scheduled[1][1], 180.0, delta=0.1)
+
     def test_private_image_sets_pending_context_before_ai_worker_runs(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(

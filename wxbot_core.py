@@ -6479,7 +6479,7 @@ class WXBot:
     def _private_message_effective_merge_delay(pipeline, base_delay):
         kind = str((pipeline or {}).get("open_kind") or "text").strip().lower()
         multiplier = 2.0 if kind in {"image", "mixed"} else 1.0
-        return min(60.0, float(base_delay) * multiplier)
+        return min(120.0, float(base_delay) * multiplier)
 
     def _private_message_pipeline(self, chat_name):
         self._ensure_message_runtime_state()

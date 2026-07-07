@@ -1242,7 +1242,7 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <div class="cfg-hint">好友停顿多久后再统一交给 AI，默认 20 秒，范围 1-60 秒</div>
               </div>
             </div>
-            <div class="chat-ability-note">同一好友短时间内连续发来的文字、语音、图片和表情会先合并，再交给 AI 生成回复。</div>
+            <div class="chat-ability-note">同一好友连续消息会先合并：普通消息按上方时间等待停顿；含图片最多等 2 倍且封顶 120 秒；一直不停发则最长 3 倍且封顶 180 秒后先回复一轮。</div>
           </div>
         </div>
       </div>
