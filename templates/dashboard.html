@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -1926,7 +1926,7 @@ html.icons-pref-local [class*=" bi-"]::before {
             <div class="page-inline-notice page-inline-notice--danger">
               <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
               <div class="page-inline-notice__content">
-                优先使用 CLI 读取本地数据，CLI 不可用时自动读取微信 UI 信息。建档时会自动把微信界面切到前台，干扰微信界面可能会导致建档失败
+                CLI 开启且可用时读取本地通讯录；CLI 关闭或不可用时改用微信界面建档，建档期间请不要操作微信
               </div>
             </div>
             <div class="relationship-scan-table identity-calibration-table" id="identity-calibration-card">
@@ -2045,7 +2045,7 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
             <div class="page-inline-notice page-inline-notice--danger">
               <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
-              <div class="page-inline-notice__content">优先使用 CLI 读取本地数据，CLI 不可用时自动读取微信 UI 信息；只有读取微信 UI 信息时，才会滚动微信主窗口会话列表</div>
+              <div class="page-inline-notice__content">CLI 开启且可用时读取本地会话快照；CLI 关闭或不可用时自动扫描只轻量读取当前会话列表，手动全量扫描才会滚动微信会话列表</div>
             </div>
             <div class="relationship-scan-table">
               <div class="relationship-scan-row relationship-scan-row--head">
@@ -2061,7 +2061,7 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>自动扫描</h5>
-              <span class="desc">开启 wechat-cli 时自动扫描走本地快照；禁用或不可用时后台自动扫描跳过</span>
+              <span class="desc">开启 wechat-cli 时自动扫描走本地快照；禁用或不可用时轻量读取当前会话列表</span>
             </div>
             <div class="ui-head__actions">
               <label class="ui-switch ui-switch--l2 ui-head-switch" for="relationship_scan_auto_enabled" title="开启自动扫描">

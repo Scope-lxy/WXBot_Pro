@@ -11,7 +11,7 @@ from feature.contacts import analyze_refresh_batch
 from feature.contacts import auto_maintenance_is_due
 from feature.contacts import contact_auto_maintenance_read_timeout_seconds
 from feature.contacts import check_contact_directory_auto_maintenance
-from feature.contacts import check_contact_directory_cli_identity_auto_sync
+from feature.contacts import check_contact_directory_cli_contact_basics_auto_sync
 from feature.contacts import edit_friend_info_via_chat_profile
 from feature.contacts import has_active_contact_maintenance_conflict
 from feature.contacts import modify_friend_tags_via_chat_profile
@@ -256,7 +256,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(success_updates["auto_cycle_next_start_name"], "B")
         self.assertEqual(success_updates["auto_cycle_backup_start_name"], "A")
 
-    def test_cli_identity_auto_sync_runs_independently_without_wechat_lock(self):
+    def test_cli_contact_basics_auto_sync_runs_independently_without_wechat_lock(self):
         bot = self._auto_maintenance_bot(pending_queue=False)
         bot._local_wechat_reader_enabled = True
         saved = []
@@ -280,35 +280,35 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             patch("feature.contacts.load_contact_directory", return_value={"subjects": [], "maintenance": {}}),
         ):
             read_local.return_value = SimpleNamespace(ok=True, items=local_contacts, error="")
-            result = check_contact_directory_cli_identity_auto_sync(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+            result = check_contact_directory_cli_contact_basics_auto_sync(bot, now=datetime(2026, 6, 10, 21, 0, 0))
 
         self.assertTrue(result)
         self.assertEqual(read_local.call_args.kwargs["limit"], 10000)
         self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
         self.assertFalse(any(call == ("lock_acquire", False) for call in bot.calls))
-        self.assertEqual(saved[-1]["maintenance"]["last_cli_identity_sync_count"], 1)
+        self.assertEqual(saved[-1]["maintenance"]["last_cli_contact_basics_sync_count"], 1)
         self.assertNotIn("last_full_scan_completed_at", saved[-1]["maintenance"])
 
-    def test_cli_identity_auto_sync_uses_full_scan_days_interval(self):
+    def test_cli_contact_basics_auto_sync_uses_full_scan_days_interval(self):
         bot = self._auto_maintenance_bot(pending_queue=False)
         bot._local_wechat_reader_enabled = True
         bot._load_contact_profiles_directory = lambda: (
             {
                 "subjects": [{"subject_type": "friend", "status": "active", "send_name": "阿英2", "wxid": "wxid_aying2"}],
-                "maintenance": {"last_cli_identity_sync_completed_at": "2026-06-10 20:00:01"},
+                "maintenance": {"last_cli_contact_basics_sync_completed_at": "2026-06-10 20:00:01"},
             },
             "ignored.json",
             "scope_rui",
         )
 
         with patch("feature.contacts.read_local_contacts_with_status") as read_local:
-            result = check_contact_directory_cli_identity_auto_sync(bot, now=datetime(2026, 6, 10, 21, 40, 0))
+            result = check_contact_directory_cli_contact_basics_auto_sync(bot, now=datetime(2026, 6, 10, 21, 40, 0))
 
         self.assertFalse(result)
         read_local.assert_not_called()
         self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
 
-    def test_cli_identity_auto_sync_skips_disk_until_next_memory_check(self):
+    def test_cli_contact_basics_auto_sync_skips_disk_until_next_memory_check(self):
         bot = self._auto_maintenance_bot(pending_queue=False)
         bot._local_wechat_reader_enabled = True
         calls = {"load": 0}
@@ -318,7 +318,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             return (
                 {
                     "subjects": [{"subject_type": "friend", "status": "active", "send_name": "阿英2", "wxid": "wxid_aying2"}],
-                    "maintenance": {"last_cli_identity_sync_completed_at": "2026-06-10 20:00:01"},
+                    "maintenance": {"last_cli_contact_basics_sync_completed_at": "2026-06-10 20:00:01"},
                 },
                 "ignored.json",
                 "scope_rui",
@@ -327,15 +327,15 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         bot._load_contact_profiles_directory = load_directory
 
         with patch("feature.contacts.read_local_contacts_with_status") as read_local:
-            first = check_contact_directory_cli_identity_auto_sync(bot, now=datetime(2026, 6, 10, 21, 40, 0))
-            second = check_contact_directory_cli_identity_auto_sync(bot, now=datetime(2026, 6, 10, 21, 40, 3))
+            first = check_contact_directory_cli_contact_basics_auto_sync(bot, now=datetime(2026, 6, 10, 21, 40, 0))
+            second = check_contact_directory_cli_contact_basics_auto_sync(bot, now=datetime(2026, 6, 10, 21, 40, 3))
 
         self.assertFalse(first)
         self.assertFalse(second)
         self.assertEqual(calls["load"], 1)
         read_local.assert_not_called()
 
-    def test_cli_identity_auto_sync_failure_does_not_touch_ui_maintenance(self):
+    def test_cli_contact_basics_auto_sync_failure_does_not_touch_ui_maintenance(self):
         bot = self._auto_maintenance_bot(pending_queue=False)
         bot._local_wechat_reader_enabled = True
 
@@ -344,22 +344,22 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             patch("feature.contacts.read_local_contacts_with_status") as read_local,
         ):
             read_local.return_value = SimpleNamespace(ok=False, items=[], error="cli boom")
-            result = check_contact_directory_cli_identity_auto_sync(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+            result = check_contact_directory_cli_contact_basics_auto_sync(bot, now=datetime(2026, 6, 10, 21, 0, 0))
 
         self.assertFalse(result)
         self.assertFalse(any(call == ("lock_acquire", False) for call in bot.calls))
         self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
 
-    def test_cli_identity_auto_sync_running_lock_skips_work(self):
+    def test_cli_contact_basics_auto_sync_running_lock_skips_work(self):
         bot = self._auto_maintenance_bot(pending_queue=False)
         bot._local_wechat_reader_enabled = True
         lock = threading.Lock()
         lock.acquire()
-        bot._contact_cli_identity_sync_lock = lock
+        bot._contact_cli_contact_basics_sync_lock = lock
 
         try:
             with patch("feature.contacts.read_local_contacts_with_status") as read_local:
-                result = check_contact_directory_cli_identity_auto_sync(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+                result = check_contact_directory_cli_contact_basics_auto_sync(bot, now=datetime(2026, 6, 10, 21, 0, 0))
         finally:
             lock.release()
 
@@ -367,7 +367,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         read_local.assert_not_called()
         self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
 
-    def test_cli_identity_auto_sync_exception_log_does_not_claim_ui_fallback(self):
+    def test_cli_contact_basics_auto_sync_exception_log_does_not_claim_ui_fallback(self):
         bot = self._auto_maintenance_bot(pending_queue=False)
         bot._local_wechat_reader_enabled = True
         log_messages = []
@@ -385,14 +385,14 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         with (
             patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True),
             patch("feature.contacts.read_local_contacts_with_status", return_value=SimpleNamespace(ok=True, items=local_contacts, error="")),
-            patch("feature.contacts.merge_cli_identity_index", side_effect=RuntimeError("merge boom")),
+            patch("feature.contacts.merge_cli_contact_basics", side_effect=RuntimeError("merge boom")),
             patch("feature.contacts.log", side_effect=lambda **kwargs: log_messages.append(kwargs.get("message", ""))),
         ):
-            result = check_contact_directory_cli_identity_auto_sync(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+            result = check_contact_directory_cli_contact_basics_auto_sync(bot, now=datetime(2026, 6, 10, 21, 0, 0))
 
         self.assertFalse(result)
         joined = "\n".join(log_messages)
-        self.assertIn("CLI 基础身份同步失败", joined)
+        self.assertIn("CLI 基础资料同步失败", joined)
         self.assertNotIn("已回退微信界面读取", joined)
 
     def test_auto_maintenance_waits_for_active_private_pipeline(self):
@@ -1048,7 +1048,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         self.assertEqual(settings["count"], 50)
 
-    def test_manual_standard_cli_identity_bypasses_manual_fifty_cap(self):
+    def test_manual_standard_cli_contact_basics_bypasses_manual_fifty_cap(self):
         log_messages = []
 
         class FakeWeChat:
@@ -1228,7 +1228,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         self.assertTrue(result["completed"])
         self.assertEqual(read_local.call_args.kwargs["limit"], 10000)
-        self.assertEqual(result["analysis"]["outcome"], "cli_identity_sync_complete")
+        self.assertEqual(result["analysis"]["outcome"], "cli_contact_basics_sync_complete")
         self.assertEqual(result["next_start_name"], "")
         self.assertEqual([call[0] for call in calls], [])
         raw_detail = result["directory"]["subjects"][0]["raw_detail"]

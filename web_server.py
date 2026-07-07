@@ -60,21 +60,17 @@ from core.config import api_supports_capability
 from core.runtime_metrics import RuntimeMetricsStore
 from core.memory import read_memory_original_name, resolve_memory_storage_name
 from core.chat_history_format import format_memory_record_for_display
-from core.identity_index import (
-    dismiss_pending as dismiss_identity_pending,
-    list_chat_memory_names,
-    list_memory_chat_names,
-    load_index as load_identity_index,
-    reconcile_storage_names as reconcile_identity_storage_names,
-    save_index as save_identity_index,
-)
 from core.contact_profiles import (
     default_directory as default_contact_directory,
+    dismiss_identity_calibration_pending,
     directory_path as contact_directory_path,
+    list_chat_memory_names,
+    list_memory_chat_names,
     load_directory as load_contact_directory,
     mark_send_name_conflicts,
     normalize_tag_list,
     repair_candidates as contact_repair_candidates,
+    reconcile_contact_storage_names,
     save_directory as save_contact_directory,
 )
 from core.local_wechat_reader import check_wechat_cli_status, check_wechat_cli_update, wechat_cli_integration_enabled
@@ -393,14 +389,6 @@ def _account_chat_memory_dir(wx_id, *, create=False):
 
 def _account_contact_profiles_dir(wx_id, *, create=False):
     return _account_area_dir(wx_id, 'contact_profiles', create=create, base_dir=CONTACT_PROFILES_DIR)
-
-
-def _identity_index_for_wx_id(wx_id):
-    return load_identity_index(DATA_DIR, wx_id)
-
-
-def _save_identity_index_for_wx_id(wx_id, index):
-    return save_identity_index(DATA_DIR, wx_id, index)
 
 
 def _account_moments_drafts_dir(wx_id, *, create=False):
@@ -5787,7 +5775,9 @@ def _contact_profiles_wx_id_from_request():
 def _load_contact_profiles_directory(wx_id):
     wx_id = str(wx_id or '').strip()
     path = contact_directory_path(CONTACT_PROFILES_DIR, wx_id)
-    return load_contact_directory(path, wx_id=wx_id) if wx_id else default_contact_directory('')
+    if not wx_id:
+        return default_contact_directory('')
+    return load_contact_directory(path, wx_id=wx_id)
 
 
 def _contact_profiles_continue_start_name(directory):
@@ -5895,12 +5885,12 @@ def _manual_identity_calibration_candidates(wx_id):
         for key in ('remark', 'nickname', 'display_name', 'send_name', 'wechat_id'):
             add_name(subject.get(key), '通讯录')
 
-    index = _identity_index_for_wx_id(wx_id)
-    for identity in index.get('identities') or []:
+    identity_state = directory.get('identity_calibration') if isinstance(directory.get('identity_calibration'), dict) else {}
+    for identity in identity_state.get('identities') or []:
         if not isinstance(identity, dict):
             continue
         for key in ('current_chat_name', 'remark', 'nickname', 'display_name', 'send_name', 'wechat_id'):
-            add_name(identity.get(key), '身份索引')
+            add_name(identity.get(key), '通讯录身份')
 
     for name in list_memory_chat_names(DATA_DIR, wx_id):
         add_name(name, '聊天记录')
@@ -5949,9 +5939,6 @@ def _manual_identity_calibration_wx_id_from_request():
 
 def _refresh_runtime_identity_after_manual_calibration():
     if bot_thread and bot_thread.is_alive() and bot:
-        load_identity_cache = getattr(bot, '_load_identity_index_cache', None)
-        if callable(load_identity_cache):
-            load_identity_cache()
         refresh_config = getattr(getattr(bot, 'config', None), 'refresh_config', None)
         if callable(refresh_config):
             refresh_config()
@@ -6247,7 +6234,8 @@ def contact_profiles_identity_calibration():
     """返回身份校准待确认项。"""
     try:
         wx_id = _contact_profiles_wx_id_from_request()
-        index = _identity_index_for_wx_id(wx_id)
+        directory = _load_contact_profiles_directory(wx_id)
+        index = directory.get('identity_calibration') if isinstance(directory.get('identity_calibration'), dict) else {}
         pending = [
             item for item in (index.get('pending') or [])
             if isinstance(item, dict) and str(item.get('status') or 'pending') == 'pending'
@@ -6302,7 +6290,7 @@ def contact_profiles_manual_identity_calibration():
         if old_name not in known_names:
             return jsonify({'status': 'error', 'message': f'未找到旧名字「{old_name}」，请刷新候选后重试'}), 404
 
-        manifest = reconcile_identity_storage_names(
+        manifest = reconcile_contact_storage_names(
             DATA_DIR,
             wx_id,
             old_name,
@@ -6331,8 +6319,11 @@ def contact_profiles_identity_calibration_dismiss(fingerprint):
     """确认两个身份不是同一人，避免反复提示。"""
     try:
         wx_id = _contact_profiles_wx_id_from_request()
-        index = dismiss_identity_pending(_identity_index_for_wx_id(wx_id), fingerprint)
-        _save_identity_index_for_wx_id(wx_id, index)
+        path = contact_directory_path(CONTACT_PROFILES_DIR, wx_id)
+        directory = load_contact_directory(path, wx_id=wx_id)
+        directory = dismiss_identity_calibration_pending(directory, fingerprint)
+        save_contact_directory(path, directory)
+        index = directory.get('identity_calibration') if isinstance(directory.get('identity_calibration'), dict) else {}
         log('INFO', f'[身份校准] 已标记不是同一人：{fingerprint}')
         return jsonify({
             'status': 'success',
@@ -6350,7 +6341,9 @@ def contact_profiles_identity_calibration_merge(fingerprint):
     """确认两个身份是同一人，并自动合并聊天记录和会话记忆。"""
     try:
         wx_id = _contact_profiles_wx_id_from_request()
-        index = _identity_index_for_wx_id(wx_id)
+        path = contact_directory_path(CONTACT_PROFILES_DIR, wx_id)
+        directory = load_contact_directory(path, wx_id=wx_id)
+        index = directory.get('identity_calibration') if isinstance(directory.get('identity_calibration'), dict) else {}
         target = None
         for item in index.get('pending') or []:
             if isinstance(item, dict) and str(item.get('fingerprint') or '') == str(fingerprint or ''):
@@ -6364,7 +6357,7 @@ def contact_profiles_identity_calibration_merge(fingerprint):
         new_name = str(new_snapshot.get('current_chat_name') or '').strip()
         if not old_name or not new_name:
             return jsonify({'status': 'error', 'message': '待确认项缺少可合并的会话名'}), 400
-        manifest = reconcile_identity_storage_names(
+        manifest = reconcile_contact_storage_names(
             DATA_DIR,
             wx_id,
             old_name,
@@ -6409,7 +6402,9 @@ def contact_profiles_identity_calibration_merge(fingerprint):
                 )
             )
         ]
-        index = _save_identity_index_for_wx_id(wx_id, index)
+        directory['identity_calibration'] = index
+        directory['updated_at'] = datetime.now().replace(microsecond=0).isoformat()
+        save_contact_directory(path, directory)
         _refresh_runtime_identity_after_manual_calibration()
         log('SUCCESS', f'[身份校准] 已确认同一人并合并：{old_name} -> {new_name}')
         return jsonify({
@@ -6503,7 +6498,7 @@ def contact_profiles_refresh_batch():
         local_contact_source = bool(result.get("local_contact_source", False))
         if local_contact_source:
             summary_message = (
-                f"CLI 基础身份建档完成，本次读取 {read_item_count} 个好友，"
+                f"CLI 基础资料建档完成，本次读取 {read_item_count} 个好友，"
                 f"本轮新增 {new_unique_count} 个唯一联系人，当前档案共 {directory_total_unique_count} 个联系人"
             )
             if stopped_early:
@@ -6522,10 +6517,10 @@ def contact_profiles_refresh_batch():
             elif stopped_early:
                 summary_message = "已停止建档，" + summary_message
         if stopped_early:
-            source_text = 'CLI 基础身份读取' if local_contact_source else '本次读取'
+            source_text = 'CLI 基础资料读取' if local_contact_source else '本次读取'
             log('WARNING', f'[通讯录维护] {mode_label}已停止，{source_text} {total_count} 个好友')
         elif local_contact_source:
-            log('SUCCESS', f'[通讯录维护] {mode_label}完成，CLI 基础身份读取 {total_count} 个好友')
+            log('SUCCESS', f'[通讯录维护] {mode_label}完成，CLI 基础资料读取 {total_count} 个好友')
         else:
             log('SUCCESS', f'[通讯录维护] {mode_label}完成，本次读取 {total_count} 个好友')
         return jsonify({

@@ -16,6 +16,15 @@ from pathlib import Path
 from typing import Any
 
 from core.account_storage import account_area_dir
+from core.contact_identity import (
+    default_calibration_state as default_contact_calibration_state,
+    dismiss_pending as dismiss_contact_identity_pending,
+    list_chat_memory_names,
+    list_memory_chat_names,
+    normalize_calibration_state as normalize_contact_calibration_state,
+    reconcile_contact_storage as reconcile_contact_storage_names,
+    update_calibration_from_directory as update_contact_identity_from_directory,
+)
 
 
 SCHEMA_VERSION = 1
@@ -214,7 +223,7 @@ def contact_history_target(contact: dict[str, Any]) -> str:
     return ""
 
 
-def _cli_identity_values(raw_detail: dict[str, Any]) -> dict[str, str]:
+def _cli_contact_basics_values(raw_detail: dict[str, Any]) -> dict[str, str]:
     raw_detail = raw_detail or {}
     username = _first_text(raw_detail, ("wxid", "wx_id", "username", "UserName"))
     nickname = _first_text(raw_detail, ("昵称", "nickname", "nick_name", "NickName", "name", "Name"))
@@ -251,12 +260,12 @@ def _merge_cli_raw_detail(existing_raw: dict[str, Any], raw_detail: dict[str, An
     return merged
 
 
-def _find_existing_contact_for_cli_identity(
+def _find_existing_contact_for_cli_basics(
     raw_detail: dict[str, Any],
     old_subjects: list[dict[str, Any]],
     incoming_values: list[dict[str, str]],
 ) -> dict[str, Any] | None:
-    values = _cli_identity_values(raw_detail)
+    values = _cli_contact_basics_values(raw_detail)
     wxid = values["wxid"]
     if wxid:
         matches = [item for item in old_subjects if contact_history_target(item) == wxid]
@@ -300,7 +309,7 @@ def _refresh_names_from_identity(contact: dict[str, Any]) -> None:
     contact["warnings"] = warnings
 
 
-def merge_cli_identity_index(
+def merge_cli_contact_basics(
     existing_directory: dict[str, Any] | None,
     raw_details: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None,
     *,
@@ -311,17 +320,17 @@ def merge_cli_identity_index(
     timestamp = _iso_timestamp(now)
     existing = _normalize_directory_shape(existing_directory or {}, wx_id)
     old_subjects = [item for item in existing.get("subjects") or [] if isinstance(item, dict)]
-    incoming_values = [_cli_identity_values(item or {}) for item in (raw_details or []) if isinstance(item, dict)]
+    incoming_values = [_cli_contact_basics_values(item or {}) for item in (raw_details or []) if isinstance(item, dict)]
 
     updated_by_key: dict[str, dict[str, Any]] = {}
     new_key_order: list[str] = []
     for raw_detail in (raw_details or []):
         if not isinstance(raw_detail, dict):
             continue
-        values = _cli_identity_values(raw_detail)
+        values = _cli_contact_basics_values(raw_detail)
         if not (values["wxid"] or values["wechat_id"] or values["remark"] or values["nickname"]):
             continue
-        old_contact = _find_existing_contact_for_cli_identity(raw_detail, old_subjects, incoming_values)
+        old_contact = _find_existing_contact_for_cli_basics(raw_detail, old_subjects, incoming_values)
         if old_contact:
             key = contact_identity_key(old_contact)
             contact = copy.deepcopy(old_contact)
@@ -352,7 +361,7 @@ def merge_cli_identity_index(
             key = contact_identity_key(contact)
 
         contact["identity_source"] = "cli_basic"
-        contact["last_cli_identity_synced_at"] = timestamp
+        contact["last_cli_contact_basics_synced_at"] = timestamp
         contact["last_seen_at"] = timestamp
         if contact_history_target(contact) and not _clean_text(contact.get("wxid_status")):
             contact["wxid_status"] = "recent_cli"
@@ -601,6 +610,11 @@ def default_directory(wx_id: str) -> dict[str, Any]:
             "last_error": "",
             "paused": False,
         },
+        "identity_calibration": {
+            "identities": [],
+            "pending": [],
+            "dismissed_pairs": [],
+        },
         "subjects": [],
     }
 
@@ -618,6 +632,10 @@ def _normalize_directory_shape(directory: Any, wx_id: str = "") -> dict[str, Any
     maintenance = directory.get("maintenance")
     if isinstance(maintenance, dict):
         normalized["maintenance"].update(copy.deepcopy(maintenance))
+
+    identity_calibration = directory.get("identity_calibration")
+    if isinstance(identity_calibration, dict):
+        normalized["identity_calibration"] = normalize_contact_calibration_state(identity_calibration, wx_id=normalized["wx_id"])
 
     subjects = directory.get("subjects")
     normalized["subjects"] = copy.deepcopy(subjects) if isinstance(subjects, list) else []
@@ -704,6 +722,37 @@ def save_directory(path: str | Path, directory: dict[str, Any]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(directory, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def sync_identity_calibration_from_directory(
+    directory: dict[str, Any],
+    *,
+    wx_id: str = "",
+    now: Any = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Refresh embedded identity calibration state from the contact directory."""
+    updated = _normalize_directory_shape(directory or {}, wx_id)
+    index = normalize_contact_calibration_state(
+        updated.get("identity_calibration") or default_contact_calibration_state(updated.get("wx_id", "")),
+        wx_id=updated.get("wx_id", ""),
+    )
+    next_index, actions = update_contact_identity_from_directory(
+        index,
+        updated,
+        wx_id=updated.get("wx_id", ""),
+        now=now,
+    )
+    updated["identity_calibration"] = next_index
+    updated["updated_at"] = _iso_timestamp(now)
+    return updated, actions
+
+
+def dismiss_identity_calibration_pending(directory: dict[str, Any], fingerprint: Any) -> dict[str, Any]:
+    updated = _normalize_directory_shape(directory or {}, _clean_text((directory or {}).get("wx_id")) if isinstance(directory, dict) else "")
+    index = dismiss_contact_identity_pending(updated.get("identity_calibration") or {}, _clean_text(fingerprint))
+    updated["identity_calibration"] = normalize_contact_calibration_state(index, wx_id=updated.get("wx_id", ""))
+    updated["updated_at"] = _iso_timestamp()
+    return updated
 
 
 def _is_active_friend(contact: dict[str, Any]) -> bool:

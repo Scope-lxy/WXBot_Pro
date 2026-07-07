@@ -861,19 +861,29 @@ def check_auto_scan(bot, *, now: Any = None) -> bool:
         return False
 
     sessions = _read_local_sessions(bot, limit=CLI_SESSION_SCAN_LIMIT)
+    scan_source = "wechat_cli"
     if sessions is None:
-        log(level="WARNING", message="[关系扫描] 自动扫描未使用微信界面回退，本轮跳过")
-        process_pending_wechat_tag_sync(bot, now=now)
-        return False
+        lock = bot._get_wechat_action_lock()
+        if not lock.acquire(blocking=False):
+            log(level="WARNING", message="[关系扫描] 自动扫描未取得微信操作锁，本轮跳过")
+            process_pending_wechat_tag_sync(bot, now=now)
+            return False
+        try:
+            log(level="WARNING", message="[关系扫描] 自动扫描回退微信界面读取当前会话")
+            sessions = _read_sessions(bot, prefer_local=False)
+            scan_source = "wxauto_ui"
+        finally:
+            lock.release()
     state = update_state_from_sessions(state, sessions, source="session_preview")
     state = apply_state_to_local_contacts(bot, state)
     runtime = state.setdefault("runtime", {})
     runtime["last_auto_scan_at"] = _iso_timestamp(now)
-    runtime["last_auto_scan_source"] = "wechat_cli"
-    runtime["last_cli_auto_scan_at"] = runtime["last_auto_scan_at"]
+    runtime["last_auto_scan_source"] = scan_source
+    if scan_source == "wechat_cli":
+        runtime["last_cli_auto_scan_at"] = runtime["last_auto_scan_at"]
     runtime["last_scan_at"] = runtime["last_auto_scan_at"]
     runtime["last_scan_mode"] = "auto"
-    runtime["last_scan_source"] = "wechat_cli"
+    runtime["last_scan_source"] = scan_source
     runtime["last_scan_count"] = len(sessions)
     _save_bot_state(bot, state)
     process_pending_wechat_tag_sync(bot, now=now)

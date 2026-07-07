@@ -1,4 +1,4 @@
-"""Friend identity index and storage reconciliation helpers."""
+"""Contact identity calibration and storage reconciliation helpers."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from core.memory import read_memory_original_name, resolve_memory_storage_name
 
 
 SCHEMA_VERSION = 1
-INDEX_FILENAME = "contacts.json"
 PENDING_STATUS_PENDING = "pending"
 PENDING_STATUS_DISMISSED = "dismissed"
 
@@ -43,16 +42,8 @@ def _short_hash(value: str, length: int = 12) -> str:
     return hashlib.sha1(value.encode("utf-8", errors="ignore")).hexdigest()[:length]
 
 
-def identity_index_dir(base_dir: str | Path, wx_id: str, *, create: bool = False) -> Path:
-    return account_area_dir(base_dir, wx_id, "identity_index", create=create)
 
-
-def identity_index_path(base_dir: str | Path, wx_id: str, *, create_parent: bool = False) -> Path:
-    base = identity_index_dir(base_dir, wx_id, create=create_parent)
-    return base / INDEX_FILENAME
-
-
-def default_index(wx_id: str = "") -> dict[str, Any]:
+def default_calibration_state(wx_id: str = "") -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
         "wx_id": _clean(wx_id),
@@ -143,9 +134,9 @@ def normalize_identity(identity: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def normalize_index(index: dict[str, Any] | None, wx_id: str = "") -> dict[str, Any]:
+def normalize_calibration_state(index: dict[str, Any] | None, wx_id: str = "") -> dict[str, Any]:
     index = index if isinstance(index, dict) else {}
-    normalized = default_index(wx_id or index.get("wx_id", ""))
+    normalized = default_calibration_state(wx_id or index.get("wx_id", ""))
     normalized["schema_version"] = index.get("schema_version") or SCHEMA_VERSION
     normalized["updated_at"] = _clean(index.get("updated_at"))
     identities = []
@@ -173,26 +164,6 @@ def normalize_index(index: dict[str, Any] | None, wx_id: str = "") -> dict[str, 
     })
     return normalized
 
-
-def load_index(base_dir: str | Path, wx_id: str) -> dict[str, Any]:
-    path = identity_index_path(base_dir, wx_id)
-    if not path.exists():
-        return default_index(wx_id)
-    try:
-        return normalize_index(json.loads(path.read_text(encoding="utf-8")), wx_id=wx_id)
-    except Exception:
-        return default_index(wx_id)
-
-
-def save_index(base_dir: str | Path, wx_id: str, index: dict[str, Any]) -> dict[str, Any]:
-    path = identity_index_path(base_dir, wx_id, create_parent=True)
-    normalized = normalize_index(index, wx_id=wx_id)
-    normalized["updated_at"] = _now_text()
-    tmp_path = str(path) + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as file:
-        json.dump(normalized, file, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, path)
-    return normalized
 
 
 def _group_by(items: list[dict[str, Any]], key: str) -> dict[str, list[dict[str, Any]]]:
@@ -379,7 +350,7 @@ def add_pending(
     new_identity_id: str = "",
     now: Any = None,
 ) -> dict[str, Any]:
-    index = normalize_index(index)
+    index = normalize_calibration_state(index)
     old_identity = normalize_identity(old_identity)
     new_snapshot = normalize_snapshot(new_snapshot)
     fingerprint = pending_fingerprint(old_identity, new_snapshot)
@@ -407,7 +378,7 @@ def add_pending(
 
 
 def dismiss_pending(index: dict[str, Any], fingerprint: str) -> dict[str, Any]:
-    index = normalize_index(index)
+    index = normalize_calibration_state(index)
     fingerprint = _clean(fingerprint)
     if not fingerprint:
         return index
@@ -425,14 +396,14 @@ def dismiss_pending(index: dict[str, Any], fingerprint: str) -> dict[str, Any]:
     return index
 
 
-def update_index_from_directory(
+def update_calibration_from_directory(
     index: dict[str, Any],
     directory: dict[str, Any],
     *,
     wx_id: str = "",
     now: Any = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    index = normalize_index(index, wx_id=wx_id)
+    index = normalize_calibration_state(index, wx_id=wx_id)
     snapshots = active_contact_snapshots(directory)
     identities = [normalize_identity(item) for item in index.get("identities") or []]
     by_id = {item["identity_id"]: item for item in identities}
@@ -488,11 +459,8 @@ def update_index_from_directory(
 
     index["identities"] = sorted(by_id.values(), key=lambda item: item.get("current_chat_name", ""))
     index["updated_at"] = stamp
-    return normalize_index(index, wx_id=wx_id), actions
+    return normalize_calibration_state(index, wx_id=wx_id), actions
 
-
-def resolve_chat_name(index: dict[str, Any] | None, chat_name: str) -> str:
-    return _clean(chat_name)
 
 
 def _safe_copytree(src: Path, dst: Path) -> None:
@@ -835,7 +803,7 @@ def _replace_exact_string_values(value: Any, old_text: str, new_text: str) -> tu
     return value, 0
 
 
-def sync_identity_task_names(base_dir: str | Path, wx_id: str, old_chat_name: str, new_chat_name: str) -> dict[str, Any]:
+def sync_contact_task_names(base_dir: str | Path, wx_id: str, old_chat_name: str, new_chat_name: str) -> dict[str, Any]:
     old_chat_name = _clean(old_chat_name)
     new_chat_name = _clean(new_chat_name)
     result = {
@@ -896,7 +864,7 @@ def _merge_reply_count_user(old_data: dict[str, Any], new_data: dict[str, Any]) 
     return merged
 
 
-def sync_identity_config_names(base_dir: str | Path, old_chat_name: str, new_chat_name: str) -> dict[str, Any]:
+def sync_contact_config_names(base_dir: str | Path, old_chat_name: str, new_chat_name: str) -> dict[str, Any]:
     old_chat_name = _clean(old_chat_name)
     new_chat_name = _clean(new_chat_name)
     result = {
@@ -1013,7 +981,7 @@ def sync_relationship_scan_names(base_dir: str | Path, wx_id: str, old_chat_name
     return result
 
 
-def reconcile_storage_names(
+def reconcile_contact_storage(
     base_dir: str | Path,
     wx_id: str,
     old_chat_name: str,
@@ -1025,7 +993,7 @@ def reconcile_storage_names(
     old_chat_name = _clean(old_chat_name)
     new_chat_name = _clean(new_chat_name)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_root = Path(backup_base) if backup_base else account_area_dir(base_dir, wx_id, "identity_backups", create=True)
+    backup_root = Path(backup_base) if backup_base else account_area_dir(base_dir, wx_id, "contact_merge_backups", create=True)
     backup_root = backup_root / f"merged_{stamp}_{_short_hash(old_chat_name + '->' + new_chat_name, 6)}"
     paths = {
         "old_memory": memory_dir(base_dir, wx_id, old_chat_name),
@@ -1036,8 +1004,8 @@ def reconcile_storage_names(
     copied = backup_paths(paths, backup_root)
     memory_result = merge_memory_dirs(base_dir, wx_id, old_chat_name, new_chat_name)
     chat_memory_result = merge_chat_memory_files(base_dir, wx_id, old_chat_name, new_chat_name)
-    config_result = sync_identity_config_names(base_dir, old_chat_name, new_chat_name)
-    task_result = sync_identity_task_names(base_dir, wx_id, old_chat_name, new_chat_name)
+    config_result = sync_contact_config_names(base_dir, old_chat_name, new_chat_name)
+    task_result = sync_contact_task_names(base_dir, wx_id, old_chat_name, new_chat_name)
     relationship_result = sync_relationship_scan_names(base_dir, wx_id, old_chat_name, new_chat_name)
     manifest = {
         "at": _now_text(),

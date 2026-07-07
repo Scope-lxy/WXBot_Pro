@@ -132,7 +132,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             chat_voice_recognition_switch=False,
         )
         bot.memory_manager = CaptureMemory()
-        bot._resolve_identity_chat_name = lambda name: name
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot.callback_is_die = False
         bot.wx = SimpleNamespace(nickname="bot")
@@ -189,7 +188,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             chat_voice_recognition_switch=False,
         )
         bot.memory_manager = CaptureMemory()
-        bot._resolve_identity_chat_name = lambda name: name
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot.callback_is_die = False
         bot.wx = SimpleNamespace(nickname="bot")
@@ -252,7 +250,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             split_long_text=lambda text: [text],
         )
         bot.memory_manager = InMemoryChatMemory()
-        bot._resolve_identity_chat_name = lambda name: name
         bot._handle_admin_forward_input = lambda _chat, _msg: False
         bot._handle_admin_moments_input = lambda _chat, _msg: False
         bot._handle_material_source_message = lambda _chat, _msg: False

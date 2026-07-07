@@ -403,7 +403,6 @@ class WXBotContextRepairTests(unittest.TestCase):
             memory_context_repair_high_risk_switch=high_enabled,
         )
         bot.memory_manager = MemoryManager("wxid", tmp)
-        bot._resolve_identity_chat_name = lambda name: name
         bot._mark_chat_memory_dirty = lambda *args, **kwargs: None
         bot.is_stop_requested = lambda: False
         bot._wechat_action_lock = lock or FakeLock()

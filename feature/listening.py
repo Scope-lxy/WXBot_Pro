@@ -532,8 +532,7 @@ def _save_abandoned_lightweight_messages(bot, chat_name, messages):
     if not callable(save_message):
         return 0
     saved = 0
-    resolver = getattr(bot, "_resolve_identity_chat_name", None)
-    memory_chat_name = resolver(chat_name) if callable(resolver) else chat_name
+    memory_chat_name = str(chat_name or "").strip()
     max_count = getattr(getattr(bot, "config", None), "memory_max_count", 1000)
     for msg in messages or []:
         msg_type = str(getattr(msg, "type", "") or "").strip().lower()
@@ -1059,13 +1058,9 @@ def init_wx_listeners(bot):
     bot._set_admin_forward_draft_namespace(wx_id)
     _base = os.path.dirname(sys.executable) if hasattr(sys, "_MEIPASS") else os.path.abspath(".")
     memory_base = os.path.join(_base, "data")
-    load_identity_index = getattr(bot, "_load_identity_index_cache", None)
-    if callable(load_identity_index):
-        load_identity_index()
     bot.memory_manager = MemoryManager(
         wx_id,
         memory_base,
-        chat_name_resolver=getattr(bot, "_resolve_identity_chat_name", None),
     )
     bot._init_prompt_system(str(account_area_dir(os.path.join(_base, "data"), wx_id, "chat_memory", create=True)))
     _bot_log(bot, message=f"记忆管理器已初始化，微信号: {wx_id}")

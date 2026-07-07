@@ -14,7 +14,7 @@ from core.contact_profiles import (
     apply_repaired_remark,
     directory_path as contact_directory_path,
     load_directory as load_contact_directory,
-    merge_cli_identity_index,
+    merge_cli_contact_basics,
     merge_directory as merge_contact_directory,
     normalize_tag_list,
     repair_candidates as contact_repair_candidates,
@@ -59,8 +59,8 @@ CONTACT_READ_PROGRESS_LOG_INTERVAL = 20
 AUTO_MAINTENANCE_READ_TIMEOUT_SECONDS = 600
 AUTO_MAINTENANCE_ACTIVITY_GRACE_SECONDS = 10
 LOCAL_CONTACT_READ_LIMIT = 10000
-CLI_IDENTITY_SYNC_FAILURE_RETRY_SECONDS = 1800
-CLI_IDENTITY_SYNC_IDLE_RECHECK_SECONDS = 3600
+CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS = 1800
+CLI_CONTACT_BASICS_SYNC_IDLE_RECHECK_SECONDS = 3600
 
 
 def _clean_text(value: Any) -> str:
@@ -627,7 +627,7 @@ def auto_maintenance_full_scan_is_due(
     return current >= last_full_scan + timedelta(days=interval)
 
 
-def cli_identity_index_sync_is_due(
+def cli_contact_basics_sync_is_due(
     directory: dict[str, Any] | None,
     *,
     interval_days: Any,
@@ -640,18 +640,18 @@ def cli_identity_index_sync_is_due(
         return False
     subjects = (directory or {}).get("subjects") if isinstance(directory, dict) else []
     if not isinstance(subjects, list) or not subjects:
-        last_failed = _parse_maintenance_time(maintenance.get("last_cli_identity_sync_failed_at"))
+        last_failed = _parse_maintenance_time(maintenance.get("last_cli_contact_basics_sync_failed_at"))
         if last_failed is not None:
             current = now if isinstance(now, datetime) else _parse_maintenance_time(now) or datetime.now()
-            if current < last_failed + timedelta(seconds=CLI_IDENTITY_SYNC_FAILURE_RETRY_SECONDS):
+            if current < last_failed + timedelta(seconds=CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS):
                 return False
         return True
-    last_run = _parse_maintenance_time(maintenance.get("last_cli_identity_sync_completed_at"))
+    last_run = _parse_maintenance_time(maintenance.get("last_cli_contact_basics_sync_completed_at"))
     if last_run is None:
-        last_failed = _parse_maintenance_time(maintenance.get("last_cli_identity_sync_failed_at"))
+        last_failed = _parse_maintenance_time(maintenance.get("last_cli_contact_basics_sync_failed_at"))
         if last_failed is not None:
             current = now if isinstance(now, datetime) else _parse_maintenance_time(now) or datetime.now()
-            if current < last_failed + timedelta(seconds=CLI_IDENTITY_SYNC_FAILURE_RETRY_SECONDS):
+            if current < last_failed + timedelta(seconds=CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS):
                 return False
         return True
     interval = coerce_auto_maintenance_full_scan_interval_days(interval_days)
@@ -659,7 +659,7 @@ def cli_identity_index_sync_is_due(
     return current >= last_run + timedelta(days=interval)
 
 
-def cli_identity_index_next_check_at(
+def cli_contact_basics_next_check_at(
     directory: dict[str, Any] | None,
     *,
     interval_days: Any,
@@ -669,21 +669,21 @@ def cli_identity_index_next_check_at(
     if not isinstance(maintenance, dict):
         maintenance = {}
     current = now if isinstance(now, datetime) else _parse_maintenance_time(now) or datetime.now()
-    last_failed = _parse_maintenance_time(maintenance.get("last_cli_identity_sync_failed_at"))
+    last_failed = _parse_maintenance_time(maintenance.get("last_cli_contact_basics_sync_failed_at"))
     if last_failed is not None:
-        failure_retry_at = last_failed + timedelta(seconds=CLI_IDENTITY_SYNC_FAILURE_RETRY_SECONDS)
+        failure_retry_at = last_failed + timedelta(seconds=CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS)
         if current < failure_retry_at:
             return failure_retry_at
     subjects = (directory or {}).get("subjects") if isinstance(directory, dict) else []
     if not isinstance(subjects, list) or not subjects:
         return current
-    last_run = _parse_maintenance_time(maintenance.get("last_cli_identity_sync_completed_at"))
+    last_run = _parse_maintenance_time(maintenance.get("last_cli_contact_basics_sync_completed_at"))
     if last_run is None:
         return current
     due_at = last_run + timedelta(days=coerce_auto_maintenance_full_scan_interval_days(interval_days))
     if current >= due_at:
         return current
-    idle_recheck_at = current + timedelta(seconds=CLI_IDENTITY_SYNC_IDLE_RECHECK_SECONDS)
+    idle_recheck_at = current + timedelta(seconds=CLI_CONTACT_BASICS_SYNC_IDLE_RECHECK_SECONDS)
     return min(due_at, idle_recheck_at)
 
 
@@ -1075,7 +1075,7 @@ def mark_contact_directory_full_scan_completed(bot, directory, *, automatic: boo
     return updated
 
 
-def refresh_contact_profiles_cli_identity_index(
+def refresh_contact_profiles_cli_contact_basics(
     bot,
     *,
     automatic=False,
@@ -1093,7 +1093,7 @@ def refresh_contact_profiles_cli_identity_index(
 
     save_directory_fn = getattr(bot, "_save_contact_profiles_directory", None)
 
-    def save_identity_directory(snapshot):
+    def save_directory_snapshot(snapshot):
         if callable(save_directory_fn):
             save_directory_fn(snapshot)
         else:
@@ -1106,22 +1106,22 @@ def refresh_contact_profiles_cli_identity_index(
     if not local_result.ok:
         failed = copy.deepcopy(directory or {})
         failed_maintenance = failed.setdefault("maintenance", {})
-        failed_maintenance["last_cli_identity_sync_error"] = local_result.error
-        failed_maintenance["last_cli_identity_sync_failed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        save_identity_directory(failed)
+        failed_maintenance["last_cli_contact_basics_sync_error"] = local_result.error
+        failed_maintenance["last_cli_contact_basics_sync_failed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        save_directory_snapshot(failed)
         _bot_log(
             bot,
             level="WARNING",
-            message=f"[通讯录维护] CLI 基础身份同步失败：{local_result.error}",
+            message=f"[通讯录维护] CLI 基础资料同步失败：{local_result.error}",
         )
         return None
     raw_details = coerce_detail_list(local_result.items)
     if not raw_details:
-        _bot_log(bot, level="WARNING", message="[通讯录维护] CLI 基础身份同步未返回联系人")
+        _bot_log(bot, level="WARNING", message="[通讯录维护] CLI 基础资料同步未返回联系人")
         return None
 
     try:
-        merged = merge_cli_identity_index(
+        merged = merge_cli_contact_basics(
             directory,
             raw_details,
             wx_id=wx_id,
@@ -1134,21 +1134,23 @@ def refresh_contact_profiles_cli_identity_index(
         else:
             growth = summarize_directory_growth(directory, finished)
         finished_maintenance = finished.setdefault("maintenance", {})
-        finished_maintenance["last_cli_identity_sync_completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        finished_maintenance["last_cli_identity_sync_count"] = len(raw_details)
-        finished_maintenance["last_cli_identity_sync_new_unique_count"] = growth["new_unique_count"]
-        finished_maintenance["last_cli_identity_sync_total_unique_count"] = growth["directory_total_unique_count"]
-        finished_maintenance["last_cli_identity_sync_error"] = ""
-        save_identity_directory(finished)
-        sync_identity_fn = getattr(bot, "_sync_identity_index_from_contact_directory", None)
+        finished_maintenance["last_cli_contact_basics_sync_completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        finished_maintenance["last_cli_contact_basics_sync_count"] = len(raw_details)
+        finished_maintenance["last_cli_contact_basics_sync_new_unique_count"] = growth["new_unique_count"]
+        finished_maintenance["last_cli_contact_basics_sync_total_unique_count"] = growth["directory_total_unique_count"]
+        finished_maintenance["last_cli_contact_basics_sync_error"] = ""
+        save_directory_snapshot(finished)
+        sync_identity_fn = getattr(bot, "_sync_contact_identity_from_contact_directory", None)
         if callable(sync_identity_fn):
-            sync_identity_fn(finished)
+            synced_directory = sync_identity_fn(finished)
+            if isinstance(synced_directory, dict):
+                finished = synced_directory
         sync_relationship_fn = getattr(bot, "_sync_relationship_state_from_contact_directory", None)
         if callable(sync_relationship_fn):
             synced_directory = sync_relationship_fn(finished)
             if isinstance(synced_directory, dict):
                 finished = synced_directory
-        _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] CLI 基础身份同步完成，更新 {len(raw_details)} 个好友")
+        _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] CLI 基础资料同步完成，更新 {len(raw_details)} 个好友")
         return {
             "wx_id": wx_id,
             "count_synced": len(raw_details),
@@ -1160,10 +1162,10 @@ def refresh_contact_profiles_cli_identity_index(
     except Exception as exc:
         failed = copy.deepcopy(directory or {})
         failed_maintenance = failed.setdefault("maintenance", {})
-        failed_maintenance["last_cli_identity_sync_error"] = str(exc)
-        failed_maintenance["last_cli_identity_sync_failed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        save_identity_directory(failed)
-        _bot_log(bot, level="ERROR", message=f"[通讯录维护] CLI 基础身份同步失败：{exc}")
+        failed_maintenance["last_cli_contact_basics_sync_error"] = str(exc)
+        failed_maintenance["last_cli_contact_basics_sync_failed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        save_directory_snapshot(failed)
+        _bot_log(bot, level="ERROR", message=f"[通讯录维护] CLI 基础资料同步失败：{exc}")
         return None
 
 
@@ -1343,14 +1345,14 @@ def refresh_contact_profiles_single_batch(
                 if _should_log_contact_read_progress(index):
                     _bot_log(bot, message=f"[通讯录维护] 已读取联系人 {index}/{total_details} 人，当前：{label}")
         if local_contact_source:
-            merged = merge_cli_identity_index(
+            merged = merge_cli_contact_basics(
                 running_directory,
                 raw_details,
                 wx_id=wx_id,
                 now=datetime.now(),
             )
             analysis = {
-                "outcome": "cli_identity_sync_complete",
+                "outcome": "cli_contact_basics_sync_complete",
                 "completed": bool(raw_details),
                 "advanced": bool(raw_details),
                 "next_start_name": "",
@@ -1403,13 +1405,15 @@ def refresh_contact_profiles_single_batch(
         finished_maintenance["last_batch_outcome"] = str(analysis.get("outcome") or "")
         finished_maintenance["retry_count"] = 0
         if local_contact_source and not externally_paused:
-            finished_maintenance["last_cli_identity_sync_completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            finished_maintenance["last_cli_identity_sync_count"] = len(raw_details)
-            finished_maintenance["last_cli_identity_sync_error"] = ""
+            finished_maintenance["last_cli_contact_basics_sync_completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            finished_maintenance["last_cli_contact_basics_sync_count"] = len(raw_details)
+            finished_maintenance["last_cli_contact_basics_sync_error"] = ""
         save_contact_directory(directory_file, finished)
-        sync_identity_fn = getattr(bot, "_sync_identity_index_from_contact_directory", None)
+        sync_identity_fn = getattr(bot, "_sync_contact_identity_from_contact_directory", None)
         if callable(sync_identity_fn):
-            sync_identity_fn(finished)
+            synced_directory = sync_identity_fn(finished)
+            if isinstance(synced_directory, dict):
+                finished = synced_directory
         sync_relationship_fn = getattr(bot, "_sync_relationship_state_from_contact_directory", None)
         if callable(sync_relationship_fn):
             synced_directory = sync_relationship_fn(finished)
@@ -1572,7 +1576,7 @@ def refresh_contact_profiles_batch(
 
         analysis = result.get("analysis") or {}
         outcome = str(analysis.get("outcome") or "").strip()
-        if outcome == "cli_identity_sync_complete":
+        if outcome == "cli_contact_basics_sync_complete":
             stopped_reason = "directory_complete"
             result["completed"] = True
             break
@@ -1981,7 +1985,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             flush_lightweight()
 
 
-def check_contact_directory_cli_identity_auto_sync(bot, now=None):
+def check_contact_directory_cli_contact_basics_auto_sync(bot, now=None):
     if not local_wechat_reader_enabled(bot):
         return False
     if not getattr(bot, "wx", None):
@@ -1992,14 +1996,14 @@ def check_contact_directory_cli_identity_auto_sync(bot, now=None):
     else:
         now_dt = maintenance_now(now)
     current_ts = now_dt.timestamp()
-    next_check_at = float(getattr(bot, "_contact_cli_identity_next_check_at", 0.0) or 0.0)
+    next_check_at = float(getattr(bot, "_contact_cli_contact_basics_next_check_at", 0.0) or 0.0)
     if next_check_at and current_ts < next_check_at:
         return False
-    sync_lock = getattr(bot, "_contact_cli_identity_sync_lock", None)
+    sync_lock = getattr(bot, "_contact_cli_contact_basics_sync_lock", None)
     if not hasattr(sync_lock, "acquire") or not hasattr(sync_lock, "release"):
         sync_lock = threading.Lock()
         try:
-            setattr(bot, "_contact_cli_identity_sync_lock", sync_lock)
+            setattr(bot, "_contact_cli_contact_basics_sync_lock", sync_lock)
         except Exception:
             pass
     if not sync_lock.acquire(blocking=False):
@@ -2007,7 +2011,7 @@ def check_contact_directory_cli_identity_auto_sync(bot, now=None):
 
     def schedule_next_check(check_at: datetime) -> None:
         try:
-            setattr(bot, "_contact_cli_identity_next_check_at", check_at.timestamp())
+            setattr(bot, "_contact_cli_contact_basics_next_check_at", check_at.timestamp())
         except Exception:
             pass
 
@@ -2021,15 +2025,15 @@ def check_contact_directory_cli_identity_auto_sync(bot, now=None):
         else:
             directory, _, wx_id = load_contact_profiles_directory(bot)
         if not wx_id:
-            schedule_delay(CLI_IDENTITY_SYNC_IDLE_RECHECK_SECONDS)
+            schedule_delay(CLI_CONTACT_BASICS_SYNC_IDLE_RECHECK_SECONDS)
             return False
         full_scan_days_fn = getattr(bot, "_contact_directory_auto_maintenance_full_scan_interval_days_value", None)
         if callable(full_scan_days_fn):
             full_scan_days = full_scan_days_fn()
         else:
             full_scan_days = contact_directory_auto_maintenance_full_scan_interval_days_value(bot)
-        if not cli_identity_index_sync_is_due(directory, interval_days=full_scan_days, now=now_dt):
-            schedule_next_check(cli_identity_index_next_check_at(
+        if not cli_contact_basics_sync_is_due(directory, interval_days=full_scan_days, now=now_dt):
+            schedule_next_check(cli_contact_basics_next_check_at(
                 directory,
                 interval_days=full_scan_days,
                 now=now_dt,
@@ -2049,19 +2053,19 @@ def check_contact_directory_cli_identity_auto_sync(bot, now=None):
         if has_pending_queue:
             schedule_delay(60)
             return False
-        result = refresh_contact_profiles_cli_identity_index(bot, automatic=True)
+        result = refresh_contact_profiles_cli_contact_basics(bot, automatic=True)
         if result:
             schedule_delay(min(
-                CLI_IDENTITY_SYNC_IDLE_RECHECK_SECONDS,
+                CLI_CONTACT_BASICS_SYNC_IDLE_RECHECK_SECONDS,
                 coerce_auto_maintenance_full_scan_interval_days(full_scan_days) * 86400,
             ))
             _bot_log(
                 bot,
                 level="SUCCESS",
-                message=f"[通讯录维护] CLI 基础身份自动同步完成 {result.get('count_synced', 0)} 个好友",
+                message=f"[通讯录维护] CLI 基础资料自动同步完成 {result.get('count_synced', 0)} 个好友",
             )
             return True
-        schedule_delay(CLI_IDENTITY_SYNC_FAILURE_RETRY_SECONDS)
+        schedule_delay(CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS)
         return False
     finally:
         sync_lock.release()
@@ -2206,7 +2210,7 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
                     now=datetime.now(),
                 )
                 save_contact_directory(directory_file, current_directory)
-                sync_identity_fn = getattr(bot, "_sync_identity_index_from_contact_directory", None)
+                sync_identity_fn = getattr(bot, "_sync_contact_identity_from_contact_directory", None)
                 if callable(sync_identity_fn):
                     sync_identity_fn(current_directory)
                 result["success_count"] += 1

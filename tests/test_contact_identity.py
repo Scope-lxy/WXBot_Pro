@@ -6,16 +6,15 @@ from unittest.mock import patch
 
 from core.account_storage import account_area_dir
 from core.contact_profiles import merge_directory
-from core.identity_index import (
+from core.contact_identity import (
     add_pending,
-    default_index,
+    default_calibration_state,
     dismiss_pending,
     match_identity,
-    reconcile_storage_names,
-    resolve_chat_name,
-    sync_identity_task_names,
+    reconcile_contact_storage,
+    sync_contact_task_names,
     sync_relationship_scan_names,
-    update_index_from_directory,
+    update_calibration_from_directory,
 )
 from core.memory import resolve_memory_storage_name
 import web_server
@@ -64,7 +63,7 @@ def contact(**kwargs):
     }
 
 
-class IdentityIndexTests(unittest.TestCase):
+class ContactIdentityTests(unittest.TestCase):
     def test_same_wechat_id_matches_after_name_change(self):
         old = snapshot(current_chat_name="A0-努力", wechat_id="wxid_1", remark="A0-努力", nickname="皖君")
         new = snapshot(current_chat_name="A0-努力加油", wechat_id="wxid_1", remark="A0-努力加油", nickname="皖君")
@@ -102,10 +101,10 @@ class IdentityIndexTests(unittest.TestCase):
         self.assertEqual(reason, "new_or_pending")
 
     def test_no_remark_missing_wechat_id_reuses_identical_snapshot_without_pending(self):
-        first, actions = update_index_from_directory(default_index("wxid_test"), directory(
+        first, actions = update_calibration_from_directory(default_calibration_state("wxid_test"), directory(
             contact(nickname="努力", source="通过扫一扫添加", added_at="2024-10-17"),
         ), wx_id="wxid_test")
-        repeated, actions = update_index_from_directory(first, directory(
+        repeated, actions = update_calibration_from_directory(first, directory(
             contact(nickname="努力", source="通过扫一扫添加", added_at="2024-10-17"),
         ), wx_id="wxid_test")
 
@@ -115,13 +114,13 @@ class IdentityIndexTests(unittest.TestCase):
 
     def test_weak_source_added_or_nickname_alone_does_not_create_pending(self):
         index = {
-            **default_index("wxid_test"),
+            **default_calibration_state("wxid_test"),
             "identities": [
                 snapshot(current_chat_name="旧1", wechat_id="wxid_1", nickname="同昵称"),
                 snapshot(current_chat_name="旧2", wechat_id="wxid_2", nickname="其他", source="通过扫一扫添加", added_at="2024-10-17"),
             ],
         }
-        updated, actions = update_index_from_directory(index, directory(
+        updated, actions = update_calibration_from_directory(index, directory(
             contact(wechat_id="wxid_3", nickname="同昵称"),
             contact(wechat_id="wxid_4", nickname="新人", source="通过扫一扫添加", added_at="2024-10-17"),
         ), wx_id="wxid_test")
@@ -131,13 +130,13 @@ class IdentityIndexTests(unittest.TestCase):
 
     def test_conflict_generates_pending_and_dismiss_prevents_reprompt(self):
         index = {
-            **default_index("wxid_test"),
+            **default_calibration_state("wxid_test"),
             "identities": [
                 snapshot(current_chat_name="旧1", wechat_id="wxid_1", remark="同备注"),
                 snapshot(current_chat_name="旧2", wechat_id="wxid_2", remark="同备注"),
             ],
         }
-        updated, _actions = update_index_from_directory(index, directory(
+        updated, _actions = update_calibration_from_directory(index, directory(
             contact(wechat_id="wxid_3", remark="同备注", nickname="新"),
         ), wx_id="wxid_test")
 
@@ -145,7 +144,7 @@ class IdentityIndexTests(unittest.TestCase):
         self.assertEqual(len(pending), 2)
 
         dismissed = dismiss_pending(updated, pending[0]["fingerprint"])
-        repeated, _actions = update_index_from_directory(dismissed, directory(
+        repeated, _actions = update_calibration_from_directory(dismissed, directory(
             contact(wechat_id="wxid_4", remark="同备注", nickname="新2"),
         ), wx_id="wxid_test")
         fingerprints = {item["fingerprint"] for item in repeated["pending"] if item.get("status") == "pending"}
@@ -205,7 +204,7 @@ class IdentityIndexTests(unittest.TestCase):
                 "events": [{"name": old_name, "type": "blocked"}],
             }, ensure_ascii=False), encoding="utf-8")
 
-            manifest = reconcile_storage_names(base, wx_id, old_name, new_name, reason="test")
+            manifest = reconcile_contact_storage(base, wx_id, old_name, new_name, reason="test")
 
             self.assertTrue(manifest["memory"]["changed"])
             merged_messages = json.loads((new_memory_dir / f"{new_memory_dir.name}_memory.json").read_text(encoding="utf-8"))
@@ -239,7 +238,7 @@ class IdentityIndexTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            manifest = reconcile_storage_names(base, wx_id, old_name, new_name, reason="rename_only")
+            manifest = reconcile_contact_storage(base, wx_id, old_name, new_name, reason="rename_only")
 
             new_memory_dir = account_area_dir(base, wx_id, "memory") / resolve_memory_storage_name(new_name)
             canonical_file = new_memory_dir / f"{new_memory_dir.name}_memory.json"
@@ -336,7 +335,7 @@ class IdentityIndexTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            reconcile_storage_names(base, wx_id, old_name, new_name, reason="legacy_profile")
+            reconcile_contact_storage(base, wx_id, old_name, new_name, reason="legacy_profile")
 
             merged = json.loads((conv_dir / f"{resolve_memory_storage_name(new_name)}.json").read_text(encoding="utf-8"))
             contents = {item["content"] for item in merged["memories"]}
@@ -360,19 +359,6 @@ class IdentityIndexTests(unittest.TestCase):
 
         self.assertEqual(len(merged["subjects"]), 1)
         self.assertEqual(merged["subjects"][0]["wechat_id"], "wxid_new")
-
-    def test_resolve_chat_name_is_hot_path_noop_after_reconcile(self):
-        index, actions = update_index_from_directory(default_index("wxid_test"), directory(
-            contact(wechat_id="wxid_1", remark="A0-努力", nickname="皖君"),
-        ), wx_id="wxid_test")
-        index, actions = update_index_from_directory(index, directory(
-            contact(wechat_id="wxid_1", remark="A0-努力加油", nickname="皖君"),
-        ), wx_id="wxid_test")
-
-        self.assertEqual(actions[0]["old_chat_name"], "A0-努力")
-        self.assertEqual(actions[0]["new_chat_name"], "A0-努力加油")
-        self.assertEqual(resolve_chat_name(index, "A0-努力加油"), "A0-努力加油")
-        self.assertEqual(resolve_chat_name(index, "A0-努力"), "A0-努力")
 
     def test_sync_relationship_scan_names_handles_missing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -417,7 +403,7 @@ class IdentityIndexTests(unittest.TestCase):
             self.assertEqual(record["changed_at"], "2026-06-15T10:00:00")
 
     def test_pending_item_records_new_identity_id_for_manual_merge(self):
-        index = default_index("wxid_test")
+        index = default_calibration_state("wxid_test")
         index["identities"] = [snapshot(current_chat_name="旧", wechat_id="wxid_old", remark="同备注")]
         index = add_pending(
             index,
@@ -429,7 +415,7 @@ class IdentityIndexTests(unittest.TestCase):
 
         self.assertEqual(index["pending"][0]["new_identity_id"], "person_new")
 
-    def test_sync_identity_task_names_replaces_exact_values_only(self):
+    def test_sync_contact_task_names_replaces_exact_values_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             task_dir = base / "accounts" / "wxid_test" / "tasks" / "custom_forward"
@@ -441,7 +427,7 @@ class IdentityIndexTests(unittest.TestCase):
                 "note": "旧同学",
             }], ensure_ascii=False), encoding="utf-8")
 
-            result = sync_identity_task_names(base, "wxid_test", "旧", "新")
+            result = sync_contact_task_names(base, "wxid_test", "旧", "新")
 
             self.assertTrue(result["changed"])
             data = json.loads(path.read_text(encoding="utf-8"))

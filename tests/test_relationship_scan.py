@@ -294,7 +294,7 @@ class RelationshipScanTests(unittest.TestCase):
         state["runtime"]["last_auto_scan_at"] = (now - timedelta(seconds=5)).isoformat()
         self.assertFalse(due_for_auto_scan(state, now=now))
 
-    def test_auto_scan_uses_cli_interval_and_skips_ui_fallback(self):
+    def test_auto_scan_falls_back_to_current_ui_sessions_without_scrolling(self):
         calls = []
 
         class FakeLock:
@@ -315,7 +315,7 @@ class RelationshipScanTests(unittest.TestCase):
             state = {
                 "wx_id": "wxid_test",
                 "settings": {"auto_scan_enabled": True, "auto_sync_wechat_tags": False, "scan_interval_seconds": 10},
-                "runtime": {"last_cli_auto_scan_at": (now - timedelta(seconds=5999)).isoformat()},
+                "runtime": {"last_cli_auto_scan_at": (now - timedelta(seconds=6000)).isoformat()},
             }
             save_state(tmp, state)
             bot = SimpleNamespace(
@@ -327,9 +327,11 @@ class RelationshipScanTests(unittest.TestCase):
 
             with patch("feature.relationship_scan._read_local_sessions", return_value=None):
                 result = check_auto_scan(bot, now=now)
+            summary = relationship_scan_summary(load_state(tmp, "wxid_test"))
 
-        self.assertFalse(result)
-        self.assertEqual(calls, [])
+            self.assertTrue(result)
+            self.assertEqual(calls, ["lock_acquire", "get_session", "lock_release"])
+            self.assertEqual(summary.get("last_scan_source"), "wxauto_ui")
 
     def test_auto_scan_runs_cli_every_6000_seconds(self):
         calls = []

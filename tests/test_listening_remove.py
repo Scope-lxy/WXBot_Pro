@@ -1097,7 +1097,6 @@ class RemoveListenChatTests(unittest.TestCase):
         bot._get_private_message_sequence = lambda _chat: 0
         bot._get_wechat_action_lock = lambda: TryLock()
         bot._add_and_verify_subwindow = lambda _chat: calls.append(("AddListenChat", _chat, bot.message_handle_callback)) or None
-        bot._resolve_identity_chat_name = lambda name: name
 
         with mock.patch.object(listening.time, "time", return_value=700.0), mock.patch.object(listening, "_bot_sleep"):
             flushed = listening.flush_lightweight_delayed_listen_tasks(bot)

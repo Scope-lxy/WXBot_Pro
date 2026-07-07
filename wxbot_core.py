@@ -115,12 +115,9 @@ from core.prompting import (
 )
 from core.vision_bridge import VisionBridge
 from core.memory import MemoryManager
-from core.identity_index import (
-    load_index as load_identity_index,
-    resolve_chat_name as resolve_identity_chat_name,
-    save_index as save_identity_index,
-    update_index_from_directory,
-    reconcile_storage_names,
+from core.contact_profiles import (
+    reconcile_contact_storage_names,
+    sync_identity_calibration_from_directory,
 )
 from core.media import cleanup_wxauto_save_cache, existing_local_image_path, image_content_hash, is_image_path
 from core.message_pipeline import (
@@ -527,14 +524,12 @@ class WXBot:
         self._runtime_metrics_store_instance = RuntimeMetricsStore(
             os.path.join(_data, 'config', 'runtime_metrics_v1.json')
         )
-        self._identity_index_lock = threading.RLock()
-        self._identity_index_cache = None
         self._init_prompt_system()
         self._incoming_seen_lock = threading.Lock()
         self._incoming_seen_ids = {}
         self._incoming_seen_fingerprints = {}
         self._wechat_action_lock = threading.RLock()
-        self._contact_cli_identity_sync_lock = threading.Lock()
+        self._contact_cli_contact_basics_sync_lock = threading.Lock()
         self._local_history_verification_candidates = {}
         self._chat_merge_lock = threading.Lock()
         self._chat_send_locks = {}
@@ -1186,7 +1181,6 @@ class WXBot:
             self.config,
             state_dir=state_dir,
             prompt_dir=prompt_dir,
-            chat_name_resolver=self._resolve_identity_chat_name,
         )
         return self.prompt_system
 
@@ -1195,38 +1189,6 @@ class WXBot:
             os.path.dirname(sys.executable) if hasattr(sys, '_MEIPASS') else os.path.abspath("."),
             'data',
         )
-
-    def _load_identity_index_cache(self):
-        wx_id = str(getattr(self, 'wx_id', '') or '').strip()
-        if not wx_id:
-            self._identity_index_cache = None
-            return None
-        with self._identity_index_lock:
-            self._identity_index_cache = load_identity_index(self._identity_base_dir(), wx_id)
-            return self._identity_index_cache
-
-    def _identity_index(self):
-        index = getattr(self, "_identity_index_cache", None)
-        if index is None:
-            index = self._load_identity_index_cache()
-        return index
-
-    def _save_identity_index(self, index):
-        wx_id = str(getattr(self, 'wx_id', '') or '').strip()
-        if not wx_id:
-            return index
-        with self._identity_index_lock:
-            self._identity_index_cache = save_identity_index(self._identity_base_dir(), wx_id, index)
-            return self._identity_index_cache
-
-    def _resolve_identity_chat_name(self, chat_name):
-        chat_name = str(chat_name or "").strip()
-        if not chat_name:
-            return ""
-        try:
-            return resolve_identity_chat_name(self._identity_index(), chat_name) or chat_name
-        except Exception:
-            return chat_name
 
     def _reconcile_identity_storage(self, old_chat_name, new_chat_name, *, reason=""):
         old_chat_name = str(old_chat_name or "").strip()
@@ -1237,7 +1199,7 @@ class WXBot:
         if not wx_id:
             return None
         try:
-            manifest = reconcile_storage_names(
+            manifest = reconcile_contact_storage_names(
                 self._identity_base_dir(),
                 wx_id,
                 old_chat_name,
@@ -1257,13 +1219,12 @@ class WXBot:
             log(level="WARNING", message=f"身份校准：{old_chat_name} -> {new_chat_name} 失败：{exc}")
             return None
 
-    def _sync_identity_index_from_contact_directory(self, directory):
+    def _sync_contact_identity_from_contact_directory(self, directory):
         wx_id = str(getattr(self, 'wx_id', '') or '').strip()
         if not wx_id:
             return None
         try:
-            index, actions = update_index_from_directory(
-                self._identity_index(),
+            updated_directory, actions = sync_identity_calibration_from_directory(
                 directory,
                 wx_id=wx_id,
             )
@@ -1274,9 +1235,10 @@ class WXBot:
                         action.get("new_chat_name"),
                         reason=action.get("reason", "contact_profiles"),
                     )
-            return self._save_identity_index(index)
+            self._save_contact_profiles_directory(updated_directory)
+            return updated_directory
         except Exception as exc:
-            log(level="WARNING", message=f"身份索引更新失败：{exc}")
+            log(level="WARNING", message=f"通讯录身份校准状态更新失败：{exc}")
             return None
 
     def _build_prompt_with_context(
@@ -2430,8 +2392,8 @@ class WXBot:
     def _check_contact_directory_auto_maintenance(self, now=None):
         return contacts.check_contact_directory_auto_maintenance(self, now=now)
 
-    def _check_contact_directory_cli_identity_auto_sync(self, now=None):
-        return contacts.check_contact_directory_cli_identity_auto_sync(self, now=now)
+    def _check_contact_directory_cli_contact_basics_auto_sync(self, now=None):
+        return contacts.check_contact_directory_cli_contact_basics_auto_sync(self, now=now)
 
     def relationship_scan_payload(self):
         state = relationship_scan.load_state(self.config.DATA_DIR, str(getattr(self, "wx_id", "") or "default"))
@@ -3775,7 +3737,7 @@ class WXBot:
                 and not should_skip_memory
             ):
                 try:
-                    memory_chat_name = self._resolve_identity_chat_name(chat.who)
+                    memory_chat_name = str(getattr(chat, "who", "") or "").strip()
                     if getattr(msg, "type", "") == "image":
                         self._save_incoming_image_memory_message(chat, msg)
                     else:
@@ -3954,7 +3916,7 @@ class WXBot:
                 history = []
                 if self.config.memory_switch and self.config.memory_context_switch and self.memory_manager:
                     self._repair_private_context_before_ai(chat, message)
-                    history = self._get_model_context_history(self._resolve_identity_chat_name(chat.who))
+                    history = self._get_model_context_history(str(getattr(chat, "who", "") or "").strip())
                 voice_candidate, start_voice_session = private_voice_candidate(
                     self.config,
                     chat.who,
@@ -4184,12 +4146,12 @@ class WXBot:
             return None
         try:
             messages = self.memory_manager.get_messages(
-                self._resolve_identity_chat_name(chat.who),
+                str(getattr(chat, "who", "") or "").strip(),
                 getattr(self.config, 'memory_max_count', 5000)
             )
             api = self._get_other_api(self._get_chat_api_index(chat.who))
             updated = system.update_memory(
-                self._resolve_identity_chat_name(chat.who),
+                str(getattr(chat, "who", "") or "").strip(),
                 messages,
                 api,
                 chat_type='private',
@@ -5099,7 +5061,7 @@ class WXBot:
             return False
         chat_type = getattr(chat, "chat_type", "private")
         try:
-            memory_chat_name = self._resolve_identity_chat_name(chat.who)
+            memory_chat_name = str(getattr(chat, "who", "") or "").strip()
             save_message(
                 chat_name=memory_chat_name,
                 sender=getattr(message, "sender", ""),
@@ -5566,7 +5528,7 @@ class WXBot:
         if not callable(save_message):
             return False
         try:
-            memory_chat_name = self._resolve_identity_chat_name(chat.who)
+            memory_chat_name = str(getattr(chat, "who", "") or "").strip()
             if getattr(message, "type", "") == "image":
                 return self._save_incoming_image_memory_message(chat, message)
             save_message(
@@ -6136,7 +6098,7 @@ class WXBot:
             return False
         if not chat_name:
             return False
-        memory_chat_name = self._resolve_identity_chat_name(chat_name)
+        memory_chat_name = str(chat_name or "").strip()
         repair_key = f"private:{chat_name}"
         reasons = self._context_repair_reasons(chat, message, memory_chat_name)
         if not reasons:
@@ -6748,7 +6710,7 @@ class WXBot:
             return False
         try:
             save_message(
-                chat_name=self._resolve_identity_chat_name(chat.who),
+                chat_name=str(getattr(chat, "who", "") or "").strip(),
                 sender="self",
                 content=text,
                 msg_type=str(msg_type or "text").strip() or "text",
@@ -8777,12 +8739,12 @@ class WXBot:
                 return False
             self.run_flag = True
             self._notify_startup_status(True, "机器人已启动并进入监听")
-            def startup_cli_identity_sync():
+            def startup_cli_contact_basics_sync():
                 try:
-                    self._check_contact_directory_cli_identity_auto_sync()
+                    self._check_contact_directory_cli_contact_basics_auto_sync()
                 except Exception as e:
-                    log(level="ERROR", message=f"CLI 基础身份启动同步检查出错：{e}")
-            threading.Thread(target=startup_cli_identity_sync, daemon=True).start()
+                    log(level="ERROR", message=f"CLI 基础资料启动同步检查出错：{e}")
+            threading.Thread(target=startup_cli_contact_basics_sync, daemon=True).start()
         except Exception as e:
             print(traceback.format_exc())
             log(level="ERROR", message=f"启动阶段：微信监听器初始化失败，{e}")
@@ -8932,9 +8894,9 @@ class WXBot:
                 try:
                     if self.is_stop_requested():
                         break
-                    self._check_contact_directory_cli_identity_auto_sync()
+                    self._check_contact_directory_cli_contact_basics_auto_sync()
                 except Exception as e:
-                    log(level="ERROR", message=f"CLI 基础身份自动同步模块出错：{e}")
+                    log(level="ERROR", message=f"CLI 基础资料自动同步模块出错：{e}")
 
                 if self._contact_directory_auto_maintenance_enabled():
                     try:
