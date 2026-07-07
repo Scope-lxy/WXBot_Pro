@@ -216,6 +216,95 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertIn("张三", bot._private_message_pipelines)
         self.assertTrue(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
 
+    def test_private_voice_echo_self_callback_does_not_interrupt_ai_reply(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=True,
+            memory_max_count=5000,
+            group_welcome=False,
+            group=[],
+            cmd="admin",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            chat_image_recognition_switch=False,
+            chat_voice_recognition_switch=False,
+        )
+        bot.memory_manager = CaptureMemory()
+        bot._handle_material_source_message = lambda _chat, _msg: False
+        bot.callback_is_die = False
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+        bot._mark_chat_memory_dirty = lambda _chat, _msg: self.fail("机器人语音回显不应重复写入记忆")
+        bot._ensure_message_runtime_state()
+        bot._private_message_sequence_by_chat["张三"] = 1
+        bot._private_message_pipelines["张三"] = {
+            "open_messages": [SimpleNamespace(content="上一条")],
+            "open_started_at": 1.0,
+            "open_kind": "text",
+            "idle_timer": None,
+            "max_timer": None,
+            "queued_batches": deque(),
+            "worker_running": True,
+        }
+        bot._remember_private_outbound_echo("张三", "voice", source="private_ai_reply")
+
+        msg = SimpleNamespace(attr="self", sender="self", content='语音8"秒', type="voice")
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        with mock.patch("wxbot_core.log"):
+            bot.message_handle_callback(msg, chat)
+
+        self.assertEqual(bot.memory_manager.calls, [])
+        self.assertEqual(bot._get_private_message_sequence("张三"), 1)
+        self.assertIn("张三", bot._private_message_pipelines)
+        self.assertTrue(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
+
+    def test_private_image_echo_self_callback_does_not_interrupt_ai_reply(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=True,
+            memory_max_count=5000,
+            group_welcome=False,
+            group=[],
+            cmd="admin",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            chat_image_recognition_switch=False,
+            chat_voice_recognition_switch=False,
+        )
+        bot.memory_manager = CaptureMemory()
+        bot._handle_material_source_message = lambda _chat, _msg: False
+        bot.callback_is_die = False
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+        bot._save_incoming_image_memory_message = lambda _chat, _msg: self.fail("机器人图片回显不应重复写入记忆")
+        bot._mark_chat_memory_dirty = lambda _chat, _msg: self.fail("机器人图片回显不应标记记忆")
+        bot._ensure_message_runtime_state()
+        bot._private_message_sequence_by_chat["张三"] = 1
+        bot._private_message_pipelines["张三"] = {
+            "open_messages": [SimpleNamespace(content="上一条")],
+            "open_started_at": 1.0,
+            "open_kind": "text",
+            "idle_timer": None,
+            "max_timer": None,
+            "queued_batches": deque(),
+            "worker_running": True,
+        }
+        bot._remember_private_outbound_echo("张三", "image", source="keyword_reply")
+
+        msg = SimpleNamespace(attr="self", sender="self", content="C:/tmp/a.jpg", type="image")
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        with mock.patch("wxbot_core.log"):
+            bot.message_handle_callback(msg, chat)
+
+        self.assertEqual(bot.memory_manager.calls, [])
+        self.assertEqual(bot._get_private_message_sequence("张三"), 1)
+        self.assertIn("张三", bot._private_message_pipelines)
+        self.assertTrue(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
+
     def test_friend_message_after_manual_self_starts_new_ai_with_manual_self_in_history(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(

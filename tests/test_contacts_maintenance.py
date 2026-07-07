@@ -184,7 +184,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(updated["subjects"][0]["wxid"], "wxid_new")
         self.assertEqual(updated["subjects"][0]["raw_detail"]["wxid"], "wxid_new")
 
-    def _auto_maintenance_bot(self, *, pending_queue=False):
+    def _auto_maintenance_bot(self, *, pending_queue=False, pending_echo=False):
         calls = []
 
         class FreeLock:
@@ -223,6 +223,10 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                     self._lightweight_send_queue.clear()
                 return not pending_queue
 
+            def _has_pending_private_outbound_echoes(self):
+                calls.append(("pending_echo",))
+                return pending_echo
+
             def _write_contact_directory_auto_cycle_state(self, directory, **updates):
                 calls.append(("write_cycle", updates))
                 directory = dict(directory or {})
@@ -255,6 +259,16 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         success_updates = [call[1] for call in bot.calls if call[0] == "write_cycle"][-1]
         self.assertEqual(success_updates["auto_cycle_next_start_name"], "B")
         self.assertEqual(success_updates["auto_cycle_backup_start_name"], "A")
+
+    def test_auto_maintenance_waits_for_pending_private_outbound_echo(self):
+        bot = self._auto_maintenance_bot(pending_queue=False, pending_echo=True)
+        with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
+            result = check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+
+        self.assertFalse(result)
+        self.assertIn(("flush_lightweight",), bot.calls)
+        self.assertIn(("pending_echo",), bot.calls)
+        self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
 
     def test_cli_contact_basics_auto_sync_runs_independently_without_wechat_lock(self):
         bot = self._auto_maintenance_bot(pending_queue=False)

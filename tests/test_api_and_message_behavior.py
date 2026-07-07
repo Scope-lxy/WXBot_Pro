@@ -510,7 +510,7 @@ class MessageBehaviorTests(unittest.TestCase):
 
         bot._ensure_lightweight_send_queue_state()
         bot._lightweight_send_queue.clear()
-        bot._send_lightweight_actions_to_child = lambda _target, _actions: False
+        bot._send_lightweight_actions_to_child = lambda _target, _actions, **_kwargs: False
         logs = []
         with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append(kwargs.get("message", ""))):
             bot._queue_lightweight_send("李四", [{"type": "text", "text": "你好"}], source="text")
@@ -522,7 +522,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot = WXBot.__new__(WXBot)
         bot._get_wechat_action_lock = lambda: threading.RLock()
         bot._wechat_action_lock_is_busy = lambda: False
-        bot._send_lightweight_actions_to_child = lambda _target, _actions: self.fail("旧回复不应继续发送")
+        bot._send_lightweight_actions_to_child = lambda _target, _actions, **_kwargs: self.fail("旧回复不应继续发送")
         bot._ensure_message_runtime_state()
         bot._next_private_message_sequence("张三")
         expected_sequence = bot._get_private_message_sequence("张三")
@@ -959,6 +959,101 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertTrue(any(level == "WARNING" and "语音回复触发上限" in message for level, message in logs))
+
+    def test_keyword_private_reply_registers_outbound_echoes(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
+        bot._ensure_message_runtime_state()
+        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
+        sent = []
+
+        class Chat:
+            who = "张三"
+            chat_type = "private"
+
+            def SendMsg(self, msg=None, **_kwargs):
+                sent.append(("text", msg))
+                return True
+
+            def SendFiles(self, filepath=None, **_kwargs):
+                sent.append(("file", filepath))
+                return True
+
+        chat = Chat()
+        bot._verified_send_chat = lambda _target, candidate=None: candidate
+        bot._ensure_target_listen_chat_for_send = lambda _target: chat
+
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = os.path.join(tmp, "a.jpg")
+            with open(image_path, "wb") as f:
+                f.write(b"img")
+            success, result = bot._send_keyword_reply_actions(
+                chat,
+                [
+                    {"type": "text", "content": "关键词回复"},
+                    {"type": "file", "path": image_path},
+                ],
+            )
+
+        self.assertTrue(success)
+        self.assertTrue(result)
+        self.assertEqual(sent[0], ("text", "关键词回复"))
+        echoes = bot._private_outbound_echoes["张三"]
+        self.assertEqual([item["type"] for item in echoes], ["text", "image"])
+        self.assertEqual(echoes[0]["content"], "关键词回复")
+        self.assertTrue(all(item["source"] == "keyword_reply" for item in echoes))
+
+    def test_known_material_echo_types_are_not_normalized_to_unknown(self):
+        bot = WXBot.__new__(WXBot)
+
+        self.assertEqual(bot._normalize_private_outbound_echo_type("note"), "note")
+        self.assertEqual(bot._normalize_private_outbound_echo_type("location"), "location")
+        self.assertEqual(bot._normalize_private_outbound_echo_type("personal_card"), "personal_card")
+
+    def test_private_outbound_echo_ttl_uses_short_known_non_text_window(self):
+        bot = WXBot.__new__(WXBot)
+
+        self.assertEqual(bot._private_outbound_echo_ttl("text"), 60)
+        self.assertEqual(bot._private_outbound_echo_ttl("image"), 60)
+        self.assertEqual(bot._private_outbound_echo_ttl("voice"), 60)
+        self.assertEqual(bot._private_outbound_echo_ttl("unknown"), 30)
+
+    def test_private_outbound_echoes_keep_last_twenty_per_chat(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
+        bot._ensure_message_runtime_state()
+
+        for index in range(25):
+            bot._remember_private_outbound_echo("张三", "text", f"消息{index}", source="test")
+
+        echoes = bot._private_outbound_echoes["张三"]
+        self.assertEqual(len(echoes), 20)
+        self.assertEqual(echoes[0]["content"], "消息5")
+        self.assertEqual(echoes[-1]["content"], "消息24")
+
+    def test_pending_private_outbound_echo_query_prunes_expired_echoes(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
+        bot._ensure_message_runtime_state()
+        bot._private_outbound_echoes = {
+            "张三": [
+                {"type": "text", "content": "过期", "source": "test", "remaining": 1, "expires_at": 99.0},
+                {"type": "text", "content": "未过期", "source": "test", "remaining": 1, "expires_at": 101.0},
+            ],
+            "李四": [
+                {"type": "image", "content": "", "source": "test", "remaining": 1, "expires_at": 98.0},
+            ],
+        }
+
+        with mock.patch("wxbot_core.time.time", return_value=100.0):
+            self.assertTrue(bot._has_pending_private_outbound_echoes())
+
+        self.assertEqual(list(bot._private_outbound_echoes.keys()), ["张三"])
+        self.assertEqual(bot._private_outbound_echoes["张三"][0]["content"], "未过期")
+
+        with mock.patch("wxbot_core.time.time", return_value=102.0):
+            self.assertFalse(bot._has_pending_private_outbound_echoes())
+        self.assertEqual(bot._private_outbound_echoes, {})
 
     def test_prepare_voice_uses_wechat_auto_text_without_to_text(self):
         bot = WXBot.__new__(WXBot)

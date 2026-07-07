@@ -1137,7 +1137,7 @@ def pass_new_friends(bot):
                 record_metric = getattr(bot, "_metric_increment", None)
                 if callable(record_metric):
                     record_metric("new_friend_accepted_count")
-                _bot_log(bot, message="已通过" + send_name + "的好友请求")
+                _bot_log(bot, level="SUCCESS", message="已通过" + send_name + "的好友请求")
                 bot.wx.SwitchToChat()
                 _bot_sleep(bot, 5)
                 if bool(getattr(bot.config, "new_friend_reply_switch", False)):

@@ -89,14 +89,22 @@ def send_text_to_target(bot, target, msg):
     chat = get_listen_chat(bot, target)
     if listen_chat_has_method(chat, "SendMsg"):
         with bot._get_chat_send_lock(target):
-            return chat.SendMsg(msg)
+            result = chat.SendMsg(msg)
+            remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
+            if callable(remember_echo):
+                remember_echo(target, result, "text", msg, source="runtime_send")
+            return result
     verifier = getattr(bot, "_verified_send_chat", None)
     if callable(verifier):
         verified = verifier(target, chat)
         if verified:
             remember_listen_chat(bot, target, verified)
             with bot._get_chat_send_lock(target):
-                return verified.SendMsg(msg)
+                result = verified.SendMsg(msg)
+                remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
+                if callable(remember_echo):
+                    remember_echo(target, result, "text", msg, source="runtime_send")
+                return result
         if chat:
             remove_listen_chat(bot, target)
     sender = getattr(bot, "_send_text_to_target_without_child", None)
@@ -109,14 +117,22 @@ def send_file_to_target(bot, target, path):
     chat = get_listen_chat(bot, target)
     if listen_chat_has_method(chat, "SendFiles"):
         with bot._get_chat_send_lock(target):
-            return chat.SendFiles(filepath=path)
+            result = chat.SendFiles(filepath=path)
+            remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
+            if callable(remember_echo):
+                remember_echo(target, result, "file", source="runtime_send", path=path)
+            return result
     verifier = getattr(bot, "_verified_send_chat", None)
     if callable(verifier):
         verified = verifier(target, chat)
         if verified:
             remember_listen_chat(bot, target, verified)
             with bot._get_chat_send_lock(target):
-                return verified.SendFiles(filepath=path)
+                result = verified.SendFiles(filepath=path)
+                remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
+                if callable(remember_echo):
+                    remember_echo(target, result, "file", source="runtime_send", path=path)
+                return result
         if chat:
             remove_listen_chat(bot, target)
     sender = getattr(bot, "_send_file_to_target_without_child", None)

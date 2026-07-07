@@ -675,6 +675,16 @@ def _flush_after_full_scan_lock_release(bot) -> None:
         log(level="WARNING", message=f"[关系扫描] 分片释放锁后处理轻量发送队列失败：{exc}")
 
 
+def _has_pending_private_outbound_echoes(bot) -> bool:
+    pending_echoes = getattr(bot, "_has_pending_private_outbound_echoes", None)
+    if not callable(pending_echoes):
+        return False
+    try:
+        return bool(pending_echoes())
+    except Exception:
+        return False
+
+
 def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_running: bool = False) -> dict[str, Any]:
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化")
@@ -863,6 +873,8 @@ def check_auto_scan(bot, *, now: Any = None) -> bool:
     sessions = _read_local_sessions(bot, limit=CLI_SESSION_SCAN_LIMIT)
     scan_source = "wechat_cli"
     if sessions is None:
+        if _has_pending_private_outbound_echoes(bot):
+            return False
         lock = bot._get_wechat_action_lock()
         if not lock.acquire(blocking=False):
             log(level="WARNING", message="[关系扫描] 自动扫描未取得微信操作锁，本轮跳过")
@@ -1011,6 +1023,8 @@ def process_pending_wechat_tag_sync(bot, *, limit: int | None = None, now: Any =
     records = pending_sync_records(state, now=current_time)[:batch_limit]
     if not records:
         return {"processed": 0, "success": 0, "failed": 0}
+    if not force and _has_pending_private_outbound_echoes(bot):
+        return {"processed": 0, "success": 0, "failed": 0}
     lock = bot._get_wechat_action_lock()
     if not lock.acquire(blocking=False):
         return {"processed": 0, "success": 0, "failed": 0}
@@ -1136,7 +1150,10 @@ def process_pending_wechat_tag_sync(bot, *, limit: int | None = None, now: Any =
                     log(message="[关系扫描] 微信标签同步状态已变化，放弃写回本轮失败结果")
                     break
         if processed:
-            log(message=f"[关系扫描] 微信标签同步完成：成功 {success}，失败 {failed}")
+            log(
+                level="SUCCESS" if success > 0 else "WARNING",
+                message=f"[关系扫描] 微信标签同步完成：成功 {success}，失败 {failed}",
+            )
         return {"processed": processed, "success": success, "failed": failed}
     finally:
         lock.release()

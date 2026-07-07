@@ -16,6 +16,9 @@ class RuntimeChatStateSendTests(unittest.TestCase):
         class Bot:
             _listen_chats = {"阿英2": CachedChat()}
 
+            def __init__(self):
+                self.remembered = []
+
             def _verified_send_chat(self, target, candidate=None):
                 raise AssertionError("cached send should not touch verifier")
 
@@ -29,12 +32,26 @@ class RuntimeChatStateSendTests(unittest.TestCase):
 
                 return Lock()
 
+            def _remember_private_outbound_echo_for_send_result(
+                self,
+                target,
+                result,
+                msg_type="text",
+                content="",
+                *,
+                source="",
+                path="",
+                count=1,
+            ):
+                self.remembered.append((target, result, msg_type, content, source, path, count))
+
         bot = Bot()
 
         result = runtime_chat_state.send_text_to_target(bot, "阿英2", "你好")
 
         self.assertTrue(result)
         self.assertEqual(sends, [("cached", "你好")])
+        self.assertEqual(bot.remembered, [("阿英2", True, "text", "你好", "runtime_send", "", 1)])
 
     def test_send_text_falls_back_when_cached_chat_is_not_verified(self):
         sends = []

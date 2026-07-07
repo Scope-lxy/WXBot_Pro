@@ -921,6 +921,16 @@ def has_pending_lightweight_send_queue(bot) -> bool:
         return bool(queue)
 
 
+def has_pending_private_outbound_echoes(bot) -> bool:
+    pending_echoes = getattr(bot, "_has_pending_private_outbound_echoes", None)
+    if not callable(pending_echoes):
+        return False
+    try:
+        return bool(pending_echoes())
+    except Exception:
+        return False
+
+
 def is_contact_directory_auto_maintenance_idle(bot):
     mode, _target = takeover_runtime.get_workspace_mode(bot)
     return mode == takeover_runtime.IDLE_MODE
@@ -1726,6 +1736,8 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         has_pending_queue = has_pending_lightweight_send_queue(bot)
     if has_pending_queue:
         return False
+    if has_pending_private_outbound_echoes(bot):
+        return False
 
     cycle_state_fn = getattr(bot, "_contact_directory_auto_cycle_state", None)
     if callable(cycle_state_fn):
@@ -2198,9 +2210,9 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
             append_bounded_record(records_file, record, limit=1000)
             result["records"].append(record)
             if success:
-                _bot_log(bot, message=f"[通讯录维护] 备注修复 {index}/{len(candidates)}：{target_display} -> {suggested_remark}")
+                _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] 备注修复 {index}/{len(candidates)}：{target_display} -> {suggested_remark}")
             else:
-                _bot_log(bot, message=f"[通讯录维护] 备注修复失败 {index}/{len(candidates)}：{target_display} -> {suggested_remark}，错误：{error}")
+                _bot_log(bot, level="WARNING", message=f"[通讯录维护] 备注修复失败 {index}/{len(candidates)}：{target_display} -> {suggested_remark}，错误：{error}")
 
             if success:
                 current_directory = apply_repaired_remark(

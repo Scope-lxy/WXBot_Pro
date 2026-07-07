@@ -321,6 +321,44 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         self.assertEqual(disabled, [])
         self.assertEqual(saved, [])
 
+    def test_ai_material_outreach_success_registers_outbound_echoes(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
+        bot._ensure_message_runtime_state()
+        material = {
+            "id": "mat_1",
+            "source": "素材源",
+            "type": "miniapp",
+            "type_bucket": "miniapp",
+            "stable_signature": "sig_1",
+        }
+        bot._find_material_by_stable_signature = lambda signature: material if signature == "sig_1" else None
+        bot._material_runtime_message = lambda item, refresh_missing=True: (item, object(), [item])
+        bot._material_forward_error_needs_refresh = lambda _error: False
+        bot._append_material_send_record = lambda *_args, **_kwargs: None
+        forwards = []
+        bot._forward_material_message = (
+            lambda message, targets, **kwargs: forwards.append((targets, kwargs)) or (True, "")
+        )
+
+        success, error = bot._send_ai_material_outreach_record(
+            {
+                "stable_signature": "sig_1",
+                "target": "张三",
+                "preface_enabled": True,
+                "preface": "这个你可能会喜欢",
+                "material_type": "miniapp",
+            }
+        )
+
+        self.assertTrue(success)
+        self.assertEqual(error, "")
+        self.assertEqual(forwards[0][0], ["张三"])
+        echoes = bot._private_outbound_echoes["张三"]
+        self.assertEqual([item["type"] for item in echoes], ["text", "miniapp"])
+        self.assertEqual(echoes[0]["content"], "这个你可能会喜欢")
+        self.assertTrue(all(item["source"] == "ai_material_outreach" for item in echoes))
+
 
 if __name__ == "__main__":
     unittest.main()

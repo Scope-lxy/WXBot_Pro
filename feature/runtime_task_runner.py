@@ -69,6 +69,42 @@ def _scheduled_message_result_summary(result):
     return f"目标 {target_count} 人，发送 {attempted_count} 条，成功 {success_count}，失败 {failed_count}，延后 {queued_count}"
 
 
+def _task_log_name(task, default="未命名任务"):
+    task = task if isinstance(task, dict) else {}
+    return str(
+        task.get("display_title")
+        or task.get("task_name")
+        or task.get("name")
+        or task.get("task_id")
+        or task.get("id")
+        or default
+    ).strip() or default
+
+
+def _log_scheduled_message_run_result(task, result):
+    result = result if isinstance(result, dict) else {}
+    success_count = int(result.get("success_count") or 0)
+    queued_count = int(result.get("queued_count") or 0)
+    result_type = str(result.get("result_type") or "").strip()
+    if success_count > 0:
+        level = "SUCCESS"
+    elif result_type == "queued" and queued_count > 0:
+        level = "INFO"
+    else:
+        level = "WARNING"
+    log(
+        level=level,
+        message=f"定时消息任务 {_task_log_name(task, '未命名定时消息')} 完成：{_scheduled_message_result_summary(result)}",
+    )
+
+
+def _log_material_outreach_run_result(task, success):
+    log(
+        level="SUCCESS" if success else "WARNING",
+        message=f"素材转发任务 {_task_log_name(task, '未命名素材转发')} {'执行成功' if success else '执行失败'}",
+    )
+
+
 def _moments_tag_summary(tags):
     tags = [str(tag or "").strip() for tag in (tags or []) if str(tag or "").strip()]
     if not tags:
@@ -176,8 +212,9 @@ def run_due_scheduled_message_tasks(bot, now=None):
             config_data={},
             save_config=None,
             log_info=lambda message: log(message=message),
-            log_error=lambda message: log(level="ERROR", message=message),
+            log_error=lambda message: log(level="WARNING", message=message),
         )
+        _log_scheduled_message_run_result(raw_task, result)
         record_scheduled_sends = getattr(bot, "_record_scheduled_message_send_successes", None)
         if callable(record_scheduled_sends):
             record_scheduled_sends(
@@ -238,9 +275,10 @@ def run_due_fixed_material_outreach(bot, now=None):
             task=task,
             send_material_outreach=bot.send_material_outreach,
             log_info=lambda message: log(message=message),
-            log_error=lambda message: log(level="ERROR", message=message),
+            log_error=lambda message: log(level="WARNING", message=message),
         )
         if bot._material_outreach_result_failed(executed):
+            _log_material_outreach_run_result(task, False)
             if bot._resolve_material_outreach_direct_failure(task.get("task_id"), executed, now=now):
                 changed = True
             continue
@@ -248,6 +286,7 @@ def run_due_fixed_material_outreach(bot, now=None):
             continue
         if bot._material_outreach_preface_is_queued(executed):
             continue
+        _log_material_outreach_run_result(task, True)
         if plan.get("repeat_mode") == "once":
             bot._disable_once_material_outreach_task(task.get("task_id"))
         plan = advance_task_plan_after_success(plan, now=now)
@@ -320,9 +359,10 @@ def run_due_random_material_outreach(bot, now=None):
             task=task,
             send_material_outreach=bot.send_material_outreach,
             log_info=lambda message: log(message=message),
-            log_error=lambda message: log(level="ERROR", message=message),
+            log_error=lambda message: log(level="WARNING", message=message),
         )
         if bot._material_outreach_result_failed(executed):
+            _log_material_outreach_run_result(task, False)
             if bot._resolve_material_outreach_direct_failure(task.get("task_id"), executed, now=now):
                 changed = True
             continue
@@ -330,6 +370,7 @@ def run_due_random_material_outreach(bot, now=None):
             continue
         if bot._material_outreach_preface_is_queued(executed):
             continue
+        _log_material_outreach_run_result(task, True)
         state["last_fire_date"] = now.date()
         state["next_fire"] = None
         if bot._sync_random_runtime_state(raw_task, state):
