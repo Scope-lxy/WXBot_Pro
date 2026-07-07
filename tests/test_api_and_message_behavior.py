@@ -191,6 +191,16 @@ class ApiBehaviorTests(unittest.TestCase):
 
 
 class MessageBehaviorTests(unittest.TestCase):
+    def test_reply_count_store_loads_utf8_bom_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = f"{tmp}/reply_count.json"
+            with open(path, "w", encoding="utf-8-sig") as f:
+                f.write('{"users":{"张三":{"count":2,"window_started_at":"2026-07-08T05:00:00"}}}')
+
+            store = ReplyCountStore(path)
+
+            self.assertEqual(store.get_user("张三")["count"], 2)
+
     def test_current_turn_user_message_places_runtime_time_next_to_message(self):
         result = build_current_turn_user_message("早，姐姐", now="2026-07-03 13:57")
 

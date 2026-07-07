@@ -63,7 +63,7 @@ class ReplyCountStore:
         if not os.path.exists(self.file_path):
             return self._empty_data()
         try:
-            with open(self.file_path, "r", encoding="utf-8") as f:
+            with open(self.file_path, "r", encoding="utf-8-sig") as f:
                 return self._normalize_data(json.load(f))
         except Exception as e:
             log(level="WARNING", message=f"加载 reply_count.json 失败: {e}")
