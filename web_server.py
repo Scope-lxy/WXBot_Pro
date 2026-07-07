@@ -7518,21 +7518,35 @@ def find_free_port(start_port=10001, max_port=11000):
 
 
 def _quiet_noisy_third_party_loggers():
+    wxauto_logger_names = {
+        'wxautox4',
+    }
     noisy_loggers = {
         'httpcore',
         'httpx',
         'openai',
         'openai._base_client',
-        'wxautox4',
     }
     wxautox_version = _get_wxautox_version()
     if wxautox_version:
-        noisy_loggers.add(f'wxautox4({wxautox_version})')
+        wxauto_logger_names.add(f'wxautox4({wxautox_version})')
     for logger_name in logging.root.manager.loggerDict:
         if str(logger_name).startswith('wxautox4('):
-            noisy_loggers.add(str(logger_name))
+            wxauto_logger_names.add(str(logger_name))
     for logger_name in noisy_loggers:
         logging.getLogger(logger_name).setLevel(logging.WARNING)
+    for logger_name in wxauto_logger_names:
+        logging.getLogger(logger_name).setLevel(logging.DEBUG)
+    try:
+        from wxautox4.logger import wxlog
+        console_handler = getattr(wxlog, 'console_handler', None)
+        if console_handler is not None:
+            console_handler.setLevel(logging.WARNING)
+        wx_logger = getattr(wxlog, 'logger', None)
+        if wx_logger is not None:
+            wx_logger.setLevel(logging.DEBUG)
+    except Exception:
+        pass
 
 
 def main():

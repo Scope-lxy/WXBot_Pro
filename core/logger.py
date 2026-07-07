@@ -14,6 +14,7 @@ def _base_dir():
 DATA_DIR = os.path.join(_base_dir(), "data")
 LOG_PATH = os.path.join(_base_dir(), "wxbot_logs")
 os.makedirs(LOG_PATH, exist_ok=True)
+UTF8_BOM = b"\xef\xbb\xbf"
 # 日志颜色映射
 LOG_COLORS = {
     'INFO': 'text-primary',
@@ -28,6 +29,13 @@ log_messages = []
 _log_lock = threading.Lock()
 _next_log_id = 0
 _thread_exception_logger_installed = False
+
+
+def _ensure_utf8_bom(path):
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return
+    with open(path, "ab") as f:
+        f.write(UTF8_BOM)
 
 MESSAGE_TYPE_LABELS = {
     "text": "文本",
@@ -215,7 +223,9 @@ def log(level="INFO", message=''):
     # 写入log到本地
     now_day = datetime.now().strftime("%y%m%d")
     try:
-        with open(os.path.join(LOG_PATH, f'log_{now_day}.txt'), 'a', encoding='utf-8-sig') as f:
+        log_path = os.path.join(LOG_PATH, f'log_{now_day}.txt')
+        _ensure_utf8_bom(log_path)
+        with open(log_path, 'a', encoding='utf-8') as f:
             f.write(f'[{timestamp}]: {message}' + '\n')
     except Exception as e:
         print(f"写入日志文件失败: {e}")
