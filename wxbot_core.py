@@ -472,6 +472,8 @@ class WXBot:
         self.config   = WXBotConfig()           # 加载配置
         self._local_wechat_reader_enabled = bool(getattr(self.config, "wechat_cli_enabled", False))
         self._voice_reply_state = load_voice_reply_state(self._voice_reply_state_path())
+        self._text_reply_limit_warning_keys = set()
+        self._voice_reply_limit_warning_keys = set()
 
         # 根据当前默认接口快照选择对应的 AI 接口
         self.api = self._init_api()
@@ -5553,7 +5555,6 @@ class WXBot:
                     self._flush_pending_private_voice_transcription,
                     chat,
                 )
-        log(message=f"私聊 {name}：语音识别{reason}，{VOICE_TRANSCRIPTION_RETRY_DELAY_SECONDS}s 后继续重读")
         return True
 
     def _queue_pending_private_voice_transcription(self, chat, message):
@@ -5596,8 +5597,6 @@ class WXBot:
                     chat,
                 )
                 created_task = True
-        if created_task:
-            log(message=f"私聊 {name}：语音识别结果暂未就绪，{VOICE_TRANSCRIPTION_RETRY_DELAY_SECONDS}s 后重读")
         return True
 
     def _flush_pending_private_voice_transcription(self, chat):
@@ -5660,10 +5659,8 @@ class WXBot:
             return True
         finally:
             lock.release()
-        handled_any = False
         pending_items = []
         expired_items = []
-        unblocked_batch = False
         for item in items:
             item_key = item.get("key")
             resolved = item.get("message")
@@ -5673,10 +5670,7 @@ class WXBot:
                     if item_key:
                         with self._chat_merge_lock:
                             self._drop_pending_private_voice_placeholder_locked(name, item_key)
-                            unblocked_batch = (
-                                self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
-                                or unblocked_batch
-                            )
+                            self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
                 else:
                     pending_items.append(item)
                 continue
@@ -5686,43 +5680,29 @@ class WXBot:
                 if item_key:
                     with self._chat_merge_lock:
                         replaced = self._replace_pending_private_voice_placeholder_locked(name, item_key, resolved)
-                        unblocked_batch = (
-                            self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
-                            or unblocked_batch
-                        )
+                        self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
                 if not replaced:
                     log(message=f"私聊 {name}：语音识别结果已过期，已静默忽略")
                     continue
                 self._save_private_incoming_memory_message(chat, resolved)
-                handled_any = True
             elif state == "failed":
                 if item_key:
                     with self._chat_merge_lock:
                         self._drop_pending_private_voice_placeholder_locked(name, item_key)
-                        unblocked_batch = (
-                            self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
-                            or unblocked_batch
-                        )
+                        self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
                 log(message=f"私聊 {name}：语音识别失败，未得到有效文字，已静默忽略")
             elif self._pending_voice_item_expired(item) or self._pending_voice_item_deadline_reached(item):
                 expired_items.append(item)
                 if item_key:
                     with self._chat_merge_lock:
                         self._drop_pending_private_voice_placeholder_locked(name, item_key)
-                        unblocked_batch = (
-                            self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
-                            or unblocked_batch
-                        )
+                        self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
             else:
                 pending_items.append(item)
         if pending_items:
             self._reschedule_pending_private_voice_transcription(chat, pending_items, reason="结果仍未就绪")
-        if handled_any:
-            log(message=f"私聊 {name}：语音识别延后重读已恢复部分待处理语音")
         if expired_items:
             log(message=f"私聊 {name}：{len(expired_items)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字，已静默忽略")
-        if unblocked_batch:
-            log(message=f"私聊 {name}：待识别语音已完成，继续关闭当前合并批次")
         return True
 
     def _save_private_incoming_memory_message(self, chat, message):
@@ -6586,7 +6566,6 @@ class WXBot:
             self._cancel_timer(pipeline.get("max_timer"))
             pipeline["idle_timer"] = None
             pipeline["max_timer"] = None
-            log(message=f"私聊 {name}：当前批次仍有语音等待识别，已暂缓合并回复")
             return False
         pipeline["open_messages"] = []
         pipeline["open_started_at"] = 0.0
@@ -7296,6 +7275,25 @@ class WXBot:
             "请确认已安装并加入 PATH，同时按 wxauto 文档把 Windows 输入设备切到 CABLE Output。"
         )
 
+    def _should_log_voice_reply_limit_warning(self, state_key, limiter, *, now, limit_count, limit_hours):
+        warning_keys = getattr(self, "_voice_reply_limit_warning_keys", None)
+        if warning_keys is None:
+            warning_keys = set()
+            self._voice_reply_limit_warning_keys = warning_keys
+        if len(warning_keys) > 1000:
+            warning_keys.clear()
+
+        state = getattr(limiter, "state", None)
+        item = getattr(state, "limits", {}).get(state_key, {}) if state is not None else {}
+        window_started_at = str(item.get("window_started_at", "") or "")
+        if not window_started_at:
+            window_started_at = now.isoformat(timespec="seconds")
+        key = (str(state_key or ""), str(limit_count or ""), str(limit_hours or ""), window_started_at)
+        if key in warning_keys:
+            return False
+        warning_keys.add(key)
+        return True
+
     def _try_send_voice_reply(
         self,
         chat,
@@ -7329,13 +7327,20 @@ class WXBot:
         ):
             if not limiter._passes_cooldown(state_key, now=now, cooldown_minutes=cooldown_minutes):
                 return False
-            log(
-                level="WARNING",
-                message=(
-                    f"{getattr(chat, 'who', '')} 语音回复触发上限，"
-                    f"当前 {limit_hours} 小时最多 {limit_count} 条，已降级文字回复"
-                ),
-            )
+            if self._should_log_voice_reply_limit_warning(
+                state_key,
+                limiter,
+                now=now,
+                limit_count=limit_count,
+                limit_hours=limit_hours,
+            ):
+                log(
+                    level="WARNING",
+                    message=(
+                        f"{getattr(chat, 'who', '')} 语音回复触发上限，"
+                        f"当前 {limit_hours} 小时最多 {limit_count} 条，已降级文字回复"
+                    ),
+                )
             return False
         audio_path = ""
         try:
@@ -7646,6 +7651,21 @@ class WXBot:
         reply = self._get_chat_api(chat.who).chat(content, prompt=prompt, history=history)
         return str(reply or '').strip()
 
+    def _should_log_text_reply_limit_warning(self, user_key, user_data, *, limit_count, limit_hours):
+        warning_keys = getattr(self, "_text_reply_limit_warning_keys", None)
+        if warning_keys is None:
+            warning_keys = set()
+            self._text_reply_limit_warning_keys = warning_keys
+        if len(warning_keys) > 1000:
+            warning_keys.clear()
+
+        window_started_at = str((user_data or {}).get("window_started_at", "") or "")
+        key = (str(user_key or ""), str(limit_count or ""), str(limit_hours or ""), window_started_at)
+        if key in warning_keys:
+            return False
+        warning_keys.add(key)
+        return True
+
     def _check_text_reply_limit(self, chat, user_key, message=None):
         """检查并处理私聊回复轮数超限；返回 (是否已处理, 发送结果)。"""
         if not self.config.text_reply_limit_switch or not user_key:
@@ -7661,10 +7681,16 @@ class WXBot:
         user_data = self.reply_count_store.get_user(user_key, limit_hours=limit_hours)
         if self.config.text_reply_limit_reply_once and user_data.get("limit_notified"):
             return True, True
-        log(
-            level="WARNING",
-            message=f"私聊 {chat.who} 触发回复上限：{limit_hours} 小时最多 {max_round} 轮",
-        )
+        if self._should_log_text_reply_limit_warning(
+            user_key,
+            user_data,
+            limit_count=max_round,
+            limit_hours=limit_hours,
+        ):
+            log(
+                level="WARNING",
+                message=f"私聊 {chat.who} 触发回复上限：{limit_hours} 小时最多 {max_round} 轮",
+            )
         reply_text = ""
         if getattr(self.config, 'text_reply_limit_ai_reply', False):
             try:

@@ -640,7 +640,7 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
                 handled = True
                 continue
             messages = list(current.get("messages") or [])
-            _bot_log(bot, level="SUCCESS", message=f"全局监听 {name}：轻量延后监听恢复成功，开始处理 {len(messages)} 条暂存消息")
+            _bot_log(bot, level="INFO", message=f"全局监听 {name}：轻量延后监听恢复成功，开始处理 {len(messages)} 条暂存消息")
             for msg in messages:
                 process_listen_message(bot, sub_chat, msg)
             handled = True

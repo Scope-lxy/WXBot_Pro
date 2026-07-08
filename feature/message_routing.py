@@ -89,8 +89,7 @@ def try_voice_to_text(bot, msg, chat=None) -> bool:
 
     try:
         text = converter()
-    except Exception as exc:
-        _bot_log(bot, level="INFO", message=f"语音转文字未就绪，等待后续重读：{exc}")
+    except Exception:
         return False
     finally:
         if acquired:

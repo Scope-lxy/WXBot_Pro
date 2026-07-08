@@ -862,6 +862,66 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertEqual(sent, ["先休息一下"])
             self.assertTrue(any(level == "WARNING" and "触发回复上限" in message for level, message in logs))
 
+    def test_text_reply_limit_warning_is_deduped_per_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                text_reply_limit_switch=True,
+                text_reply_limit_count=1,
+                text_reply_limit_hours=24,
+                text_reply_limit_reply_once=False,
+                text_reply_limit_ai_reply=False,
+                text_reply_limit_reply="先休息一下",
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot.reply_count_store.increment_ai_count("张三", limit_hours=24)
+            bot._record_replied_message_success = lambda: None
+            sent = []
+            bot._send_private_ai_reply_parts = lambda _chat, parts, **_kwargs: sent.extend(parts) or (True, True)
+            chat = SimpleNamespace(who="张三")
+            logs = []
+
+            with mock.patch("wxbot_core.log", side_effect=lambda *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):
+                for _ in range(2):
+                    handled, result = bot._check_text_reply_limit(chat, "张三")
+                    self.assertTrue(handled)
+                    self.assertTrue(result)
+
+            self.assertEqual(sent, ["先休息一下", "先休息一下"])
+            warning_logs = [message for level, message in logs if level == "WARNING" and "触发回复上限" in message]
+            self.assertEqual(len(warning_logs), 1)
+
+    def test_text_reply_limit_warning_logs_again_for_new_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                text_reply_limit_switch=True,
+                text_reply_limit_count=1,
+                text_reply_limit_hours=24,
+                text_reply_limit_reply_once=False,
+                text_reply_limit_ai_reply=False,
+                text_reply_limit_reply="先休息一下",
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot.reply_count_store.increment_ai_count("张三", limit_hours=24)
+            bot._record_replied_message_success = lambda: None
+            bot._send_private_ai_reply_parts = lambda _chat, parts, **_kwargs: (True, True)
+            chat = SimpleNamespace(who="张三")
+            logs = []
+
+            with mock.patch("wxbot_core.log", side_effect=lambda *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):
+                handled, result = bot._check_text_reply_limit(chat, "张三")
+                self.assertTrue(handled)
+                self.assertTrue(result)
+                user_data = bot.reply_count_store.get_user("张三", limit_hours=24)
+                user_data["window_started_at"] = "2099-01-01T00:00:00"
+                handled, result = bot._check_text_reply_limit(chat, "张三")
+                self.assertTrue(handled)
+                self.assertTrue(result)
+
+            warning_logs = [message for level, message in logs if level == "WARNING" and "触发回复上限" in message]
+            self.assertEqual(len(warning_logs), 2)
+
     def test_voice_reply_limit_logs_warning_and_falls_back_to_text(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
@@ -893,6 +953,83 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertTrue(any(level == "WARNING" and "语音回复触发上限" in message for level, message in logs))
+
+    def test_voice_reply_limit_warning_is_deduped_per_window(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
+        state = {
+            "limits": {
+                "private:张三": {
+                    "count": 1,
+                    "window_started_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            },
+            "private_sessions": {},
+        }
+        from feature.voice_reply import VoiceReplyState
+
+        bot._voice_reply_state = VoiceReplyState(limits=state["limits"], private_sessions={})
+        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
+        logs = []
+        chat = SimpleNamespace(who="张三")
+
+        with mock.patch("wxbot_core.log", side_effect=lambda *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):
+            for _ in range(2):
+                result = bot._try_send_voice_reply(
+                    chat,
+                    "你好",
+                    state_key="private:张三",
+                    cooldown_minutes=0,
+                    limit_count=1,
+                    limit_hours=24,
+                )
+                self.assertFalse(result)
+
+        warning_logs = [message for level, message in logs if level == "WARNING" and "语音回复触发上限" in message]
+        self.assertEqual(len(warning_logs), 1)
+
+    def test_voice_reply_limit_warning_logs_again_for_new_window(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
+        state = {
+            "limits": {
+                "private:张三": {
+                    "count": 1,
+                    "window_started_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            },
+            "private_sessions": {},
+        }
+        from feature.voice_reply import VoiceReplyState
+
+        bot._voice_reply_state = VoiceReplyState(limits=state["limits"], private_sessions={})
+        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
+        logs = []
+        chat = SimpleNamespace(who="张三")
+
+        with mock.patch("wxbot_core.log", side_effect=lambda *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):
+            result = bot._try_send_voice_reply(
+                chat,
+                "你好",
+                state_key="private:张三",
+                cooldown_minutes=0,
+                limit_count=1,
+                limit_hours=24,
+            )
+            self.assertFalse(result)
+            bot._voice_reply_state.limits["private:张三"]["window_started_at"] = "2099-01-01T00:00:00"
+            result = bot._try_send_voice_reply(
+                chat,
+                "你好",
+                state_key="private:张三",
+                cooldown_minutes=0,
+                limit_count=1,
+                limit_hours=24,
+            )
+            self.assertFalse(result)
+
+        warning_logs = [message for level, message in logs if level == "WARNING" and "语音回复触发上限" in message]
+        self.assertEqual(len(warning_logs), 2)
 
     def test_keyword_private_reply_registers_outbound_echoes(self):
         bot = WXBot.__new__(WXBot)
@@ -1084,6 +1221,34 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(getattr(msg, "_skip_memory", False))
         self.assertEqual(queued, [("张三", '语音2"秒')])
 
+    def test_prepare_pending_private_voice_to_text_exception_does_not_log_retry_noise(self):
+        queued = []
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AllListen_switch=False,
+            listen_list=["张三"],
+            group=[],
+            chat_image_recognition_switch=False,
+            chat_voice_recognition_switch=True,
+        )
+        bot._queue_pending_private_voice_transcription = lambda chat, msg: queued.append((chat.who, msg.content)) or True
+        msg = SimpleNamespace(
+            attr="friend",
+            sender="张三",
+            type="voice",
+            content='语音2"秒',
+            id="v1",
+            to_text=lambda: (_ for _ in ()).throw(RuntimeError("微信还没转好")),
+        )
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        with mock.patch("feature.message_routing.log") as log_mock:
+            message_routing.prepare_message_media(bot, msg, chat)
+
+        self.assertEqual(queued, [("张三", '语音2"秒')])
+        log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
+        self.assertFalse(any("等待后续重读" in message for message in log_messages))
+
     def test_prepare_failed_private_voice_uses_exact_status_texts(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
@@ -1190,6 +1355,47 @@ class MessageBehaviorTests(unittest.TestCase):
         pipeline = bot._private_message_pipelines["张三"]
         self.assertEqual([msg.content for msg in pipeline["open_messages"]], ["快写吧"])
         self.assertNotIn("张三", bot._pending_private_voice_transcription)
+
+    def test_pending_private_voice_only_logs_final_unrecognized_result(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(memory_switch=False)
+        bot._chat_merge_lock = threading.Lock()
+        bot._pending_private_voice_transcription = {}
+        bot.is_stop_requested = lambda: False
+
+        class TryLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        bot._get_wechat_action_lock = lambda: TryLock()
+        bot._enqueue_private_message_for_ai = lambda *_args, **_kwargs: self.fail("未识别语音不应进 AI")
+        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
+        original = SimpleNamespace(
+            id="v1",
+            attr="friend",
+            sender="张三",
+            type="voice",
+            content='语音4"秒',
+            to_text=lambda: "",
+        )
+        chat = SimpleNamespace(who="张三")
+
+        with mock.patch("wxbot_core.log") as log_mock:
+            self.assertTrue(bot._queue_pending_private_voice_transcription(chat, original))
+            item = next(iter(bot._pending_private_voice_transcription["张三"]["items"].values()))
+            item["reread_attempts"] = 2
+            bot._flush_pending_private_voice_transcription(chat)
+
+        log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
+        self.assertFalse(any("语音识别结果暂未就绪" in message for message in log_messages))
+        self.assertFalse(any("后继续重读" in message for message in log_messages))
+        self.assertEqual(
+            sum("重读 3 次仍未得到有效文字" in message for message in log_messages),
+            1,
+        )
 
     def test_pending_private_voice_reread_uses_to_text_before_waiting_again(self):
         bot = WXBot.__new__(WXBot)
