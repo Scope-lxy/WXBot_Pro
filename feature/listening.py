@@ -21,7 +21,7 @@ from core.wechat_observability import warn_slow_wechat_ui_action
 from feature.custom_forward import iter_custom_forward_listen_sources
 from feature.custom_forward_runtime import handle_custom_forward, handle_custom_forward_takeover
 from feature.material_outreach import iter_material_outreach_listen_sources
-from feature.message_routing import voice_content_state
+from feature.message_routing import prepare_message_media, voice_content_state
 from feature.new_friends import build_new_friend_remark, iter_new_friend_welcome_actions
 from feature.voice_reply import load_voice_reply_state
 from core.message_pipeline import message_unique_id, strip_voice_duration_metadata
@@ -59,6 +59,11 @@ def _bot_sleep(bot, seconds: float) -> None:
     module = sys.modules.get(getattr(bot.__class__, "__module__", ""))
     time_module = getattr(module, "time", time) if module else time
     time_module.sleep(seconds)
+
+
+def process_listen_message(bot, chat, message):
+    prepare_message_media(bot, message, chat)
+    return bot.process_message(chat, message)
 
 
 def ensure_listener_recovery_state(bot) -> None:
@@ -637,7 +642,7 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
             messages = list(current.get("messages") or [])
             _bot_log(bot, level="SUCCESS", message=f"全局监听 {name}：轻量延后监听恢复成功，开始处理 {len(messages)} 条暂存消息")
             for msg in messages:
-                bot.process_message(sub_chat, msg)
+                process_listen_message(bot, sub_chat, msg)
             handled = True
         return handled
     finally:
@@ -1162,7 +1167,7 @@ def listen_mode(bot):
     messages_dict = bot.wx.GetListenMessage()
     for chat in messages_dict:
         for message in messages_dict.get(chat, []):
-            bot.process_message(chat, message)
+            process_listen_message(bot, chat, message)
 
 
 def new_msg_get_plus(chat_records):
@@ -1293,9 +1298,11 @@ def alllisten_mode(bot, last_time, timeout=10):
                 if msg.type == "image":
                     if msg.id in next_callback_down_map:
                         msg.content = str(next_callback_down_map[msg.id])
+                        msg._wxbot_media_prepared = True
                 elif msg.type == "quote":
                     if msg.id in next_callback_down_map:
                         msg.content = msg.content + "+引用的图片:" + str(next_callback_down_map[msg.id])
+                        msg._wxbot_media_prepared = True
                 elif msg.type == "voice":
                     if not bot.config.chat_voice_recognition_switch:
                         msg._skip_ai_reply = True
@@ -1433,7 +1440,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                         _bot_log(bot, level="WARNING", message=f"全局监听 {chat}：临时接管窗口不可用，已清理运行状态并等待后续重试")
                     return
                 for msg in processed_msgs:
-                    bot.process_message(sub_chat, msg)
+                    process_listen_message(bot, sub_chat, msg)
 
     get_next_new_message()
 

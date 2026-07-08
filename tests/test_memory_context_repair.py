@@ -7,6 +7,7 @@ from core.memory import MemoryManager
 from core.memory_context_repair import (
     build_repair_plan,
     current_message_found_near_tail,
+    filter_model_repair_messages,
 )
 from wxbot_core import WXBot
 
@@ -123,6 +124,18 @@ class MemoryContextRepairCoreTests(unittest.TestCase):
         plan = build_repair_plan(local, remote, anchor_recent_count=5)
 
         self.assertEqual([item["content"] for item in plan.messages_to_append], ["你真好。"])
+
+    def test_filter_repair_messages_skips_duration_only_voice_placeholder(self):
+        messages = [
+            {"type": "text", "attr": "friend", "sender": "张三", "content": "前一句"},
+            {"type": "voice", "attr": "friend", "sender": "张三", "content": '语音8"秒'},
+            {"type": "voice", "attr": "friend", "sender": "张三", "content": '语音1"秒语音未能转换'},
+            {"type": "voice", "attr": "friend", "sender": "张三", "content": '语音8"秒我刚说的是这个'},
+        ]
+
+        kept = filter_model_repair_messages(messages)
+
+        self.assertEqual([item["content"] for item in kept], ["前一句", '语音8"秒我刚说的是这个'])
 
     def test_build_repair_plan_keeps_same_content_after_duplicate_window(self):
         local = [

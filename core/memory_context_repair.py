@@ -5,6 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from core.message_pipeline import (
+    UNRECOGNIZED_VOICE_TEXT,
+    is_failed_voice_transcription_text,
+    is_unrecognized_voice_placeholder,
+    voice_message_body,
+)
+
 
 DEFAULT_LOW_RISK_COOLDOWN_SECONDS = 300
 DEFAULT_HIGH_RISK_COOLDOWN_SECONDS = 3600
@@ -12,7 +19,6 @@ DEFAULT_ANCHOR_RECENT_COUNT = 5
 DEFAULT_VISIBLE_LIMIT = 30
 DEFAULT_HISTORY_LIMIT = 50
 NEARBY_DUPLICATE_WINDOW_SECONDS = 600
-UNRECOGNIZED_VOICE_TEXT = "一条语音消息（未识别出文字）"
 
 
 @dataclass(frozen=True)
@@ -56,9 +62,14 @@ def parse_message_time(value):
 def is_unrecognized_voice(item) -> bool:
     if not isinstance(item, dict):
         return False
+    if normalize_message_type(item.get("type")) != "voice":
+        return False
+    content = normalize_message_content(item.get("content"), "voice")
     return (
-        normalize_message_type(item.get("type")) == "voice"
-        and normalize_message_content(item.get("content"), "voice") == UNRECOGNIZED_VOICE_TEXT
+        not voice_message_body(content)
+        or content == UNRECOGNIZED_VOICE_TEXT
+        or is_failed_voice_transcription_text(content)
+        or is_unrecognized_voice_placeholder(content)
     )
 
 

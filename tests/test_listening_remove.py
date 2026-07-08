@@ -6,6 +6,18 @@ from feature import listening
 
 
 class RemoveListenChatTests(unittest.TestCase):
+    def test_process_listen_message_prepares_media_before_routing(self):
+        calls = []
+        message = SimpleNamespace(type="voice", attr="friend", sender="张三", content='语音8"秒')
+        chat = SimpleNamespace(who="张三", chat_type="private")
+        bot = SimpleNamespace(process_message=lambda _chat, _message: calls.append("process") or True)
+
+        with mock.patch.object(listening, "prepare_message_media", side_effect=lambda _bot, _msg, _chat: calls.append("prepare")):
+            result = listening.process_listen_message(bot, chat, message)
+
+        self.assertTrue(result)
+        self.assertEqual(calls, ["prepare", "process"])
+
     def test_remove_listen_chat_uses_wechat_action_lock(self):
         removed = []
         logs = []
@@ -292,6 +304,44 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertEqual(new_last_time, 9999999999)
         self.assertEqual(processed, [(sub_chat, "第一条"), (sub_chat, "第二条")])
+
+    def test_alllisten_dispatches_messages_through_unified_ingress(self):
+        dispatched = []
+        sub_chat = SimpleNamespace(who="张三", chat_type="private")
+        msg = SimpleNamespace(id="1", type="voice", attr="friend", sender="张三", content='语音8"秒')
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[],
+            config=SimpleNamespace(
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=True,
+                memory_switch=False,
+                custom_forward_switch=False,
+            ),
+            wx=SimpleNamespace(
+                chat_type="private",
+                GetNextNewMessage=lambda **_kwargs: {
+                    "chat_name": "张三",
+                    "chat_type": "private",
+                    "msg": [msg],
+                },
+            ),
+            memory_manager=None,
+            add_chat_to_listen=lambda chat: sub_chat,
+            is_chat_listened=lambda _chat: False,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            process_message=lambda _chat, _message: self.fail("应通过统一入口处理监听消息"),
+        )
+
+        with mock.patch.object(
+            listening,
+            "process_listen_message",
+            side_effect=lambda chat_bot, chat, message: dispatched.append((chat_bot, chat, message)) or True,
+        ):
+            listening.alllisten_mode(bot, last_time=9999999999)
+
+        self.assertEqual(dispatched, [(bot, sub_chat, msg)])
 
     def test_alllisten_reuses_cached_subwindow_when_chat_already_listened(self):
         processed = []

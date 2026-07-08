@@ -31,28 +31,31 @@ def _bot_time_module(bot):
 
 
 def _recognition_switches_for_chat(bot, chat):
-    is_group = chat.who in getattr(bot.config, "group", [])
+    config = getattr(bot, "config", None)
+    if config is None:
+        return False, False
+    is_group = chat.who in getattr(config, "group", [])
     if is_group:
         return (
-            bool(getattr(bot.config, "group_image_recognition_switch", False)),
-            bool(getattr(bot.config, "group_voice_recognition_switch", False)),
+            bool(getattr(config, "group_image_recognition_switch", False)),
+            bool(getattr(config, "group_voice_recognition_switch", False)),
         )
     if (
-        not getattr(bot.config, "AllListen_switch", False)
-        and chat.who in getattr(bot.config, "listen_list", [])
+        not getattr(config, "AllListen_switch", False)
+        and chat.who in getattr(config, "listen_list", [])
     ):
         return (
-            bool(getattr(bot.config, "chat_image_recognition_switch", False)),
-            bool(getattr(bot.config, "chat_voice_recognition_switch", False)),
+            bool(getattr(config, "chat_image_recognition_switch", False)),
+            bool(getattr(config, "chat_voice_recognition_switch", False)),
         )
     if (
-        getattr(bot.config, "AllListen_switch", False)
-        and chat.who not in getattr(bot.config, "global_blacklist", [])
+        getattr(config, "AllListen_switch", False)
+        and chat.who not in getattr(config, "global_blacklist", [])
         and getattr(chat, "chat_type", "") != "group"
     ):
         return (
-            bool(getattr(bot.config, "chat_image_recognition_switch", False)),
-            bool(getattr(bot.config, "chat_voice_recognition_switch", False)),
+            bool(getattr(config, "chat_image_recognition_switch", False)),
+            bool(getattr(config, "chat_voice_recognition_switch", False)),
         )
     return False, False
 
