@@ -2408,6 +2408,7 @@ class WXBot:
         run_kind="manual_standard",
         logical_start_name=None,
         switch_back_to_chat=True,
+        block_on_wechat_lock=True,
     ):
         return contacts.refresh_contact_profiles_single_batch(
             self,
@@ -2421,6 +2422,7 @@ class WXBot:
             run_kind=run_kind,
             logical_start_name=logical_start_name,
             switch_back_to_chat=switch_back_to_chat,
+            block_on_wechat_lock=block_on_wechat_lock,
         )
 
     def refresh_contact_profiles_batch(
@@ -2433,6 +2435,7 @@ class WXBot:
         count_override=None,
         run_to_completion=False,
         automatic=False,
+        block_on_wechat_lock=True,
     ):
         return contacts.refresh_contact_profiles_batch(
             self,
@@ -2443,6 +2446,7 @@ class WXBot:
             count_override=count_override,
             run_to_completion=run_to_completion,
             automatic=automatic,
+            block_on_wechat_lock=block_on_wechat_lock,
         )
 
     def _check_contact_directory_auto_maintenance(self, now=None):

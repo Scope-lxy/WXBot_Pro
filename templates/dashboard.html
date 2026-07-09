@@ -3286,23 +3286,23 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
             <div class="cfg-hint">滚动窗口计算；任一输入为 0 时表示不限制。此设置全局生效。</div>
           </div>
-        </div>
-        <div class="cfg-page-field">
-          <label class="cfg-label" for="text_reply_limit_reply">超出次数限制固定回复</label>
-          <div class="inline-check-field">
-            <input type="text" class="form-control" id="text_reply_limit_reply"
-                   value="{{ config.get('text_reply_limit_reply', '') }}"
-                   placeholder="不填写则静默不回复">
-            <label class="inline-check-suffix" for="text_reply_limit_ai_reply">
-              <input class="form-check-input" type="checkbox" id="text_reply_limit_ai_reply" {% if config.get('text_reply_limit_ai_reply', True) %}checked{% endif %}>
-              AI自动生成
-            </label>
-            <label class="inline-check-suffix" for="text_reply_limit_reply_once">
-              <input class="form-check-input" type="checkbox" id="text_reply_limit_reply_once" {% if config.get('text_reply_limit_reply_once', False) %}checked{% endif %}>
-              只回复一次
-            </label>
+          <div class="col-12 col-lg-8">
+            <label class="cfg-label" for="text_reply_limit_reply">超出次数限制固定回复</label>
+            <div class="inline-check-field">
+              <input type="text" class="form-control" id="text_reply_limit_reply"
+                     value="{{ config.get('text_reply_limit_reply', '') }}"
+                     placeholder="留空则不回复">
+              <label class="inline-check-suffix" for="text_reply_limit_ai_reply">
+                <input class="form-check-input" type="checkbox" id="text_reply_limit_ai_reply" {% if config.get('text_reply_limit_ai_reply', True) %}checked{% endif %}>
+                AI自动生成
+              </label>
+              <label class="inline-check-suffix" for="text_reply_limit_reply_once">
+                <input class="form-check-input" type="checkbox" id="text_reply_limit_reply_once" {% if config.get('text_reply_limit_reply_once', False) %}checked{% endif %}>
+                只回复一次
+              </label>
+            </div>
+            <div class="cfg-hint">当单个好友回复次数超限时，机器人将发送此固定回复；留空则不回复</div>
           </div>
-          <div class="cfg-hint">当单个好友回复次数超限时，机器人将发送此固定回复；留空则静默不回复</div>
         </div>
       </div>
     </div>
@@ -3315,50 +3315,51 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div class="inline-check-field">
           <input type="text" class="form-control" id="api_error_reply"
                  value="{{ config.get('api_error_reply', '') }}"
-                 placeholder="不填写则静默不回复">
+                 placeholder="留空则不回复">
           <label class="inline-check-suffix" for="api_error_reply_once">
             <input class="form-check-input" type="checkbox" id="api_error_reply_once" {% if config.get('api_error_reply_once', False) %}checked{% endif %}>
             只回复一次
           </label>
         </div>
-        <div class="cfg-hint">当调用 AI / 模型接口失败时，机器人将发送此固定回复；留空则静默不回复</div>
+        <div class="cfg-hint">当调用 AI / 模型接口失败时，机器人将发送此固定回复；留空则不回复</div>
         </div>
       </div>
     </div>
 
     <div class="cfg-card">
       <div class="ui-head ui-head--page">
-        <i class="bi bi-funnel"></i><h5>回复预处理</h5><span class="desc">发送前清洗和校验 AI 回复，避免把内部字段或超长内容发给用户</span>
+        <i class="bi bi-funnel"></i><h5>回复清洗校验</h5><span class="desc">发送前清洗和校验 AI 回复，避免把内部字段或超长内容发给用户</span>
       </div>
       <div id="reply-preprocess-settings" class="cfg-page-form">
-        <div class="cfg-page-field d-flex align-items-center justify-content-between gap-3">
-          <div>
-            <label class="cfg-label" for="clean_ai_reply_switch" style="font-weight:600;">自动清洗回复</label>
-            <div class="cfg-hint">自动清理模型回复中的思考标签、时间戳和异常格式</div>
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="cfg-label" for="clean_ai_reply_switch">自动清洗回复</label>
+            <select class="form-select" id="clean_ai_reply_switch">
+              {% set clean_ai_reply_enabled = config.get('clean_ai_reply_switch', True) %}
+              <option value="true" {% if clean_ai_reply_enabled %}selected{% endif %}>开启</option>
+              <option value="false" {% if not clean_ai_reply_enabled %}selected{% endif %}>关闭</option>
+            </select>
+            <div class="cfg-hint">自动清理标签、时间戳等异常格式</div>
           </div>
-          <label class="ui-switch ui-switch--l1" for="clean_ai_reply_switch" title="启用发送前清洗">
-            <input class="form-check-input" type="checkbox" id="clean_ai_reply_switch" {% if config.get('clean_ai_reply_switch', True) %}checked{% endif %}>
-            <span class="ui-switch-knob"></span>
-          </label>
-        </div>
-        <div class="cfg-page-field">
-        <label class="cfg-label" for="reply_preprocess_fallback_reply" style="font-weight:600;">异常兜底回复</label>
-        <div class="inline-check-field">
-          <input type="text" class="form-control" id="reply_preprocess_fallback_reply"
-                 value="{{ config.get('reply_preprocess_fallback_reply', '') }}"
-                 placeholder="不填写则静默不回复">
-          <label class="inline-check-suffix" for="reply_preprocess_fallback_once">
-            <input class="form-check-input" type="checkbox" id="reply_preprocess_fallback_once" {% if config.get('reply_preprocess_fallback_once', False) %}checked{% endif %}>
-            只回复一次
-          </label>
-        </div>
-        <div class="cfg-hint">当 AI 返回内容经清洗、拦截或重写后仍不适合发送时，发送此兜底回复；留空则静默不回复</div>
-        </div>
-        <div class="cfg-page-field">
-          <label class="cfg-label" for="reply_preprocess_max_chars" style="font-weight:600;">拦截超长输出（字，1 ~ 10000）</label>
-          <input type="number" class="form-control" id="reply_preprocess_max_chars" min="1" max="10000"
-                 value="{{ config.get('reply_preprocess_max_chars', 100) }}" placeholder="100">
-          <div class="cfg-hint">超过该字数的 AI 回复不会直接发送，会先尝试重写压缩；默认 100，不允许关闭</div>
+          <div class="col-md-4">
+            <label class="cfg-label" for="reply_preprocess_max_chars">拦截超长输出</label>
+            <input type="number" class="form-control" id="reply_preprocess_max_chars" min="1" max="10000"
+                   value="{{ config.get('reply_preprocess_max_chars', 100) }}" placeholder="100">
+            <div class="cfg-hint">超过字数的内容会被尝试重写压缩</div>
+          </div>
+          <div class="col-md-4">
+            <label class="cfg-label" for="reply_preprocess_fallback_reply">异常兜底回复</label>
+            <div class="inline-check-field">
+              <input type="text" class="form-control" id="reply_preprocess_fallback_reply"
+                     value="{{ config.get('reply_preprocess_fallback_reply', '') }}"
+                     placeholder="留空则不回复">
+              <label class="inline-check-suffix" for="reply_preprocess_fallback_once">
+                <input class="form-check-input" type="checkbox" id="reply_preprocess_fallback_once" {% if config.get('reply_preprocess_fallback_once', False) %}checked{% endif %}>
+                只回复一次
+              </label>
+            </div>
+            <div class="cfg-hint">内容不适合发送时，发送兜底回复</div>
+          </div>
         </div>
       </div>
     </div>
@@ -7701,7 +7702,7 @@ $(function(){
       $input.attr('placeholder', 'AI 自动生成结束语');
     }else{
       $input.prop('disabled', false);
-      $input.attr('placeholder', '不填写则静默不回复');
+      $input.attr('placeholder', '留空则不回复');
     }
   }
   $('#text_reply_limit_ai_reply').on('change', syncChatMaxRoundReplyMode);
@@ -11911,7 +11912,7 @@ $(function(){
       group_image_recognition_api:parseInt($('#group_image_recognition_api').val())||0,
       api_error_reply:$('#api_error_reply').val().trim(),
       api_error_reply_once:$('#api_error_reply_once').is(':checked'),
-      clean_ai_reply_switch:$('#clean_ai_reply_switch').is(':checked'),
+      clean_ai_reply_switch:$('#clean_ai_reply_switch').val() !== 'false',
       reply_preprocess_fallback_reply:$('#reply_preprocess_fallback_reply').val().trim(),
       reply_preprocess_fallback_once:$('#reply_preprocess_fallback_once').is(':checked'),
       reply_preprocess_max_chars:Math.max(1,Math.min(10000,parseInt($('#reply_preprocess_max_chars').val())||100)),

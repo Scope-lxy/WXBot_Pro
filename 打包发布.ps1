@@ -56,7 +56,10 @@ try {
         if (-not (Test-Path -LiteralPath $source)) {
             throw ("Missing required file: " + $relative)
         }
-        Copy-Item -LiteralPath $source -Destination $stage -Force
+        $parent = Split-Path -Path $relative -Parent
+        $destination = if ($parent) { Join-Path $stage $parent } else { $stage }
+        New-Item -ItemType Directory -Path $destination -Force | Out-Null
+        Copy-Item -LiteralPath $source -Destination $destination -Force
     }
 
     $venvPy = Join-Path $rootPath "venv\Scripts\python.exe"

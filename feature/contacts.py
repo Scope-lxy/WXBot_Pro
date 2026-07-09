@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timedelta
@@ -57,6 +60,7 @@ CONTACT_PROFILES_READING_ATTR = "_contact_profiles_reading_active"
 CONTACT_CURSOR_MATCH_SETTLE_SECONDS = 1.0
 CONTACT_READ_PROGRESS_LOG_INTERVAL = 20
 AUTO_MAINTENANCE_READ_TIMEOUT_SECONDS = 600
+AUTO_MAINTENANCE_COLLECT_HARD_TIMEOUT_SECONDS = 300
 AUTO_MAINTENANCE_ACTIVITY_GRACE_SECONDS = 10
 LOCAL_CONTACT_READ_LIMIT = 10000
 CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS = 1800
@@ -79,6 +83,184 @@ def _should_log_contact_read_progress(count: int) -> bool:
 
 def local_wechat_reader_enabled(bot) -> bool:
     return bool(getattr(bot, "_local_wechat_reader_enabled", False))
+
+
+def _runtime_base_dir() -> str:
+    return os.path.dirname(sys.executable) if hasattr(sys, "_MEIPASS") else os.path.abspath(".")
+
+
+def _contact_auto_collector_script_path() -> str:
+    base = _runtime_base_dir()
+    candidates = [
+        os.path.join(base, "feature", "contact_auto_collector_worker.py"),
+        os.path.join(os.path.abspath("."), "feature", "contact_auto_collector_worker.py"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return candidates[0]
+
+
+def _contact_auto_collector_python_executable() -> str:
+    if not hasattr(sys, "_MEIPASS"):
+        return sys.executable
+    base = _runtime_base_dir()
+    candidates = [
+        os.path.join(base, "runtime", "python", "python.exe"),
+        os.path.join(base, "venv", "Scripts", "python.exe"),
+        sys.executable,
+    ]
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return sys.executable
+
+
+def contact_auto_maintenance_collect_hard_timeout_seconds(count: Any) -> int:
+    return AUTO_MAINTENANCE_COLLECT_HARD_TIMEOUT_SECONDS
+
+
+def _contact_auto_collector_lock_path() -> str:
+    runtime_dir = os.path.join(_runtime_base_dir(), "runtime")
+    os.makedirs(runtime_dir, exist_ok=True)
+    return os.path.join(runtime_dir, "contact_auto_collector.lock")
+
+
+def _acquire_contact_auto_collector_process_lock():
+    path = _contact_auto_collector_lock_path()
+    handle = open(path, "a+b")
+    try:
+        handle.seek(0)
+        if not handle.read(1):
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                handle.close()
+                return None
+
+            def release():
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                finally:
+                    handle.close()
+
+            return release
+
+        import fcntl
+
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return None
+
+        def release():
+            try:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+        return release
+    except Exception:
+        try:
+            handle.close()
+        except Exception:
+            pass
+        raise
+
+
+def _terminate_contact_auto_collector_process(proc: Any) -> dict[str, Any]:
+    pid = getattr(proc, "pid", 0)
+    cleanup: dict[str, Any] = {
+        "pid": pid,
+        "kill_sent": False,
+        "taskkill_attempted": False,
+        "taskkill_returncode": None,
+        "taskkill_output": "",
+        "still_running": False,
+    }
+
+    try:
+        proc.kill()
+        cleanup["kill_sent"] = True
+    except Exception as exc:
+        cleanup["kill_error"] = str(exc)
+
+    try:
+        proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception as exc:
+        cleanup["wait_error"] = str(exc)
+
+    try:
+        still_running = proc.poll() is None
+    except Exception as exc:
+        cleanup["poll_error"] = str(exc)
+        still_running = True
+
+    if still_running and os.name == "nt" and pid:
+        cleanup["taskkill_attempted"] = True
+        taskkill_kwargs = {}
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            taskkill_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        try:
+            completed = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                timeout=10,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                **taskkill_kwargs,
+            )
+            cleanup["taskkill_returncode"] = completed.returncode
+            cleanup["taskkill_output"] = _clean_text(completed.stdout) or _clean_text(completed.stderr)
+        except Exception as exc:
+            cleanup["taskkill_error"] = str(exc)
+
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception as exc:
+            cleanup["post_taskkill_wait_error"] = str(exc)
+
+    try:
+        cleanup["still_running"] = proc.poll() is None
+    except Exception as exc:
+        cleanup["poll_error"] = str(exc)
+        cleanup["still_running"] = True
+    return cleanup
+
+
+def _contact_auto_collector_timeout_message(timeout_seconds: int, cleanup: dict[str, Any]) -> str:
+    status = "已发起强制终止但进程仍未退出" if cleanup.get("still_running") else "已终止本批次"
+    details = []
+    if cleanup.get("pid"):
+        details.append(f"PID {cleanup['pid']}")
+    if cleanup.get("kill_error"):
+        details.append(f"kill 失败：{cleanup['kill_error']}")
+    elif cleanup.get("kill_sent"):
+        details.append("kill 已发送")
+    if cleanup.get("taskkill_attempted"):
+        if cleanup.get("taskkill_returncode") == 0:
+            details.append("taskkill 已执行")
+        elif cleanup.get("taskkill_error"):
+            details.append(f"taskkill 异常：{cleanup['taskkill_error']}")
+        else:
+            details.append(f"taskkill 返回 {cleanup.get('taskkill_returncode')}")
+    if cleanup.get("still_running"):
+        details.append("进程仍未退出")
+    detail_text = f"（{'; '.join(details)}）" if details else ""
+    return f"通讯录采集超过 {timeout_seconds}s，{status}{detail_text}"
 
 
 def _acquire_wechat_action_lock(lock: Any, *, blocking: bool = True):
@@ -766,26 +948,126 @@ def prepare_contact_directory_window(bot) -> None:
     )
 
 
-def switch_contact_directory_back_to_chat(bot, *, use_lock: bool = False) -> None:
+def switch_contact_directory_back_to_chat(bot, *, use_lock: bool = False) -> bool:
     if not getattr(bot, "wx", None):
-        return
+        return False
     switch_to_chat = getattr(bot.wx, "SwitchToChat", None)
     if not callable(switch_to_chat):
-        return
+        return False
 
     def do_switch():
         try:
             switch_to_chat()
+            return True
         except Exception as exc:
             _bot_log(bot, level="WARNING", message=f"[通讯录维护] 切回聊天页失败：{exc}")
+            return False
 
     if use_lock:
         lock_fn = getattr(bot, "_get_wechat_action_lock", None)
         if callable(lock_fn):
             with lock_fn():
-                do_switch()
-            return
-    do_switch()
+                return do_switch()
+            return False
+    return do_switch()
+
+
+def restore_contact_directory_back_to_chat(bot) -> bool:
+    if switch_contact_directory_back_to_chat(bot):
+        return True
+
+    def strict_switch():
+        if not getattr(bot, "wx", None):
+            raise RuntimeError("微信客户端不可用，无法切回聊天页")
+        switch_to_chat = getattr(bot.wx, "SwitchToChat", None)
+        if not callable(switch_to_chat):
+            raise RuntimeError("当前微信客户端不支持切回聊天页")
+        switch_to_chat()
+        return True
+
+    try:
+        return bool(run_with_wechat_rebind_retry(
+            bot,
+            strict_switch,
+            attempts=2,
+            on_retry=lambda exc, _attempt: _bot_log(
+                bot,
+                level="WARNING",
+                message=f"[通讯录维护] 切回聊天页失败，准备重新初始化微信客户端后重试：{exc}",
+            ),
+        ))
+    except Exception as exc:
+        _bot_log(bot, level="ERROR", message=f"[通讯录维护] 切回聊天页最终失败：{exc}")
+        return False
+
+
+def run_contact_auto_maintenance_collector(
+    *,
+    start_name: str,
+    count: int,
+    timeout_seconds: int | None = None,
+) -> dict[str, Any]:
+    release_process_lock = _acquire_contact_auto_collector_process_lock()
+    if not release_process_lock:
+        raise RuntimeError("通讯录采集器正在运行，已跳过本次自动维护")
+    timeout_seconds = max(1, int(timeout_seconds or AUTO_MAINTENANCE_COLLECT_HARD_TIMEOUT_SECONDS))
+    try:
+        with tempfile.TemporaryDirectory(prefix="wxbot_contact_collect_") as temp_dir:
+            request_path = os.path.join(temp_dir, "request.json")
+            output_path = os.path.join(temp_dir, "output.json")
+            request_payload = {
+                "start_name": _clean_text(start_name),
+                "count": max(1, int(count or 1)),
+            }
+            with open(request_path, "w", encoding="utf-8") as f:
+                json.dump(request_payload, f, ensure_ascii=False)
+
+            cmd = [
+                _contact_auto_collector_python_executable(),
+                "-X",
+                "utf8",
+                _contact_auto_collector_script_path(),
+                "--request",
+                request_path,
+                "--output",
+                output_path,
+            ]
+            env = dict(os.environ)
+            env["PYTHONUTF8"] = "1"
+            run_kwargs = {}
+            if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+                run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            proc = subprocess.Popen(
+                cmd,
+                cwd=_runtime_base_dir(),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                **run_kwargs,
+            )
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired as exc:
+                cleanup = _terminate_contact_auto_collector_process(proc)
+                raise RuntimeError(_contact_auto_collector_timeout_message(timeout_seconds, cleanup)) from exc
+            completed = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+            payload: dict[str, Any] = {}
+            if os.path.exists(output_path):
+                try:
+                    with open(output_path, "r", encoding="utf-8") as f:
+                        payload = json.load(f)
+                except Exception as exc:
+                    raise RuntimeError(f"通讯录采集结果读取失败：{exc}") from exc
+            if completed.returncode != 0 or not payload.get("ok"):
+                detail = _clean_text(payload.get("error")) or _clean_text(completed.stderr) or _clean_text(completed.stdout)
+                raise RuntimeError(f"通讯录采集失败：{detail or '子进程未返回有效结果'}")
+            return payload
+    finally:
+        release_process_lock()
 
 
 def refresh_run_kind(mode: str, *, automatic: bool = False) -> str:
@@ -1295,30 +1577,61 @@ def refresh_contact_profiles_single_batch(
             raise RuntimeError("微信操作繁忙，已跳过本次通讯录维护")
         try:
             def read_friend_details():
+                nonlocal matched_name
                 if pause_requested():
                     _bot_log(bot, message="[通讯录维护] 检测到停止请求，跳过本次读取")
                     return []
-                prepare_window_fn = getattr(bot, "_prepare_contact_directory_window", None)
-                if callable(prepare_window_fn):
-                    prepare_window_fn()
-                else:
-                    prepare_contact_directory_window(bot)
+                if run_kind != "auto_maintenance":
+                    prepare_window_fn = getattr(bot, "_prepare_contact_directory_window", None)
+                    if callable(prepare_window_fn):
+                        prepare_window_fn()
+                    else:
+                        prepare_contact_directory_window(bot)
                 read_success = False
                 try:
                     with warn_slow_wechat_ui_action(f"GetFriendDetails(n={settings['count']})"):
-                        kwargs = {
-                            "n": settings["count"],
-                            "timeout": (
-                                contact_auto_maintenance_read_timeout_seconds(settings["count"])
-                                if run_kind == "auto_maintenance"
-                                else contact_read_timeout_seconds(settings["count"])
-                            ),
-                            "interval": read_interval,
-                            "save_head_image": False,
-                            "callback": callback,
-                        }
                         setattr(bot, CONTACT_PROFILES_READING_ATTR, True)
-                        result = bot.wx.GetFriendDetails(**kwargs)
+                        if run_kind == "auto_maintenance":
+                            timeout_seconds = contact_auto_maintenance_collect_hard_timeout_seconds(settings["count"])
+                            collector_fn = getattr(bot, "_run_contact_auto_maintenance_collector", None)
+                            if callable(collector_fn):
+                                payload = collector_fn(
+                                    start_name=callback_start_name,
+                                    count=settings["count"],
+                                    timeout_seconds=timeout_seconds,
+                                )
+                            else:
+                                payload = run_contact_auto_maintenance_collector(
+                                    start_name=callback_start_name,
+                                    count=settings["count"],
+                                    timeout_seconds=timeout_seconds,
+                                )
+                            child_callback_names = [
+                                _clean_text(name)
+                                for name in (payload.get("callback_names") or [])
+                                if _clean_text(name)
+                            ]
+                            if child_callback_names:
+                                callback_names.extend(child_callback_names)
+                                if not matched_name:
+                                    matched_name = _clean_text(payload.get("matched_name")) or child_callback_names[0]
+                                for name_text in child_callback_names:
+                                    if name_text in callback_seen_names:
+                                        continue
+                                    callback_seen_names.add(name_text)
+                                    read_count = len(callback_seen_names)
+                                    if _should_log_contact_read_progress(read_count):
+                                        _bot_log(bot, message=f"[通讯录维护] 已读取联系人 {read_count} 人，当前：{name_text}")
+                            result = payload.get("result") or []
+                        else:
+                            kwargs = {
+                                "n": settings["count"],
+                                "timeout": contact_read_timeout_seconds(settings["count"]),
+                                "interval": read_interval,
+                                "save_head_image": False,
+                                "callback": callback,
+                            }
+                            result = bot.wx.GetFriendDetails(**kwargs)
                         read_success = True
                         return result
                 except Exception:
@@ -1333,11 +1646,11 @@ def refresh_contact_profiles_single_batch(
                     except Exception:
                         pass
                     if switch_back_to_chat or not read_success:
-                        switch_contact_directory_back_to_chat(bot)
+                        restore_contact_directory_back_to_chat(bot)
             result = run_with_wechat_rebind_retry(
                 bot,
                 read_friend_details,
-                attempts=2,
+                attempts=1 if run_kind == "auto_maintenance" else 2,
                 on_retry=lambda exc, _attempt: _bot_log(
                     bot,
                     level="WARNING",
@@ -1485,6 +1798,7 @@ def refresh_contact_profiles_batch(
     count_override=None,
     run_to_completion=False,
     automatic=False,
+    block_on_wechat_lock=True,
 ):
     settings = refresh_batch_settings(mode, interval)
     run_kind_fn = getattr(bot, "_refresh_run_kind", None)
@@ -1502,6 +1816,7 @@ def refresh_contact_profiles_batch(
                 use_saved_position=use_saved_position,
                 count_override=count_override,
                 run_kind=run_kind,
+                block_on_wechat_lock=block_on_wechat_lock,
             )
         else:
             result = refresh_contact_profiles_single_batch(
@@ -1512,6 +1827,7 @@ def refresh_contact_profiles_batch(
                 use_saved_position=use_saved_position,
                 count_override=count_override,
                 run_kind=run_kind,
+                block_on_wechat_lock=block_on_wechat_lock,
             )
         result["run_kind"] = run_kind
         return result
@@ -1558,6 +1874,7 @@ def refresh_contact_profiles_batch(
                 run_kind=run_kind,
                 logical_start_name=current_start_name,
                 switch_back_to_chat=False,
+                block_on_wechat_lock=block_on_wechat_lock,
             )
         else:
             result = refresh_contact_profiles_single_batch(
@@ -1572,6 +1889,7 @@ def refresh_contact_profiles_batch(
                 run_kind=run_kind,
                 logical_start_name=current_start_name,
                 switch_back_to_chat=False,
+                block_on_wechat_lock=block_on_wechat_lock,
             )
         last_result = result
         total_count += int(result.get("count_returned", 0) or 0)
@@ -1762,9 +2080,11 @@ def check_contact_directory_auto_maintenance(bot, now=None):
     else:
         _bot_log(bot, message="[通讯录维护] 自动维护从通讯录头部开始")
 
-    release_wechat_lock = _acquire_wechat_action_lock(bot._get_wechat_action_lock(), blocking=False)
-    if not release_wechat_lock:
+    release_preflight_lock = _acquire_wechat_action_lock(bot._get_wechat_action_lock(), blocking=False)
+    if not release_preflight_lock:
         return False
+    release_preflight_lock()
+
     write_cycle_fn = getattr(bot, "_write_contact_directory_auto_cycle_state", None)
     save_directory_fn = getattr(bot, "_save_contact_profiles_directory", None)
     try:
@@ -1816,6 +2136,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                 count_override=batch_size,
                 run_to_completion=False,
                 automatic=True,
+                block_on_wechat_lock=False,
             )
         else:
             result = refresh_contact_profiles_batch(
@@ -1826,6 +2147,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                 count_override=batch_size,
                 run_to_completion=False,
                 automatic=True,
+                block_on_wechat_lock=False,
             )
         refreshed_directory = result.get("directory") or {}
         if callable(cycle_state_fn):
@@ -1991,7 +2313,6 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             save_contact_profiles_directory(bot, refreshed_directory)
         return True
     finally:
-        release_wechat_lock()
         flush_lightweight = getattr(bot, "_flush_lightweight_send_queue", None)
         if callable(flush_lightweight):
             flush_lightweight()

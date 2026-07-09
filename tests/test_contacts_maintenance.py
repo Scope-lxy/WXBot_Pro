@@ -1,5 +1,6 @@
 import unittest
 import json
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 from feature.contacts import analyze_refresh_batch
 from feature.contacts import auto_maintenance_is_due
+from feature.contacts import contact_auto_maintenance_collect_hard_timeout_seconds
 from feature.contacts import contact_auto_maintenance_read_timeout_seconds
 from feature.contacts import check_contact_directory_auto_maintenance
 from feature.contacts import edit_friend_info_via_chat_profile
@@ -19,6 +21,7 @@ from feature.contacts import normalize_auto_maintenance_batch_size
 from feature.contacts import refresh_batch_settings
 from feature.contacts import refresh_contact_profiles_batch
 from feature.contacts import refresh_contact_profiles_single_batch
+from feature.contacts import run_contact_auto_maintenance_collector
 from feature.contacts import set_contact_profiles_paused
 from web_server import (
     _contact_profiles_browser_contacts,
@@ -299,7 +302,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertIn(("flush_lightweight",), bot.calls)
         self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
 
-    def test_auto_maintenance_holds_wechat_lock_through_batch(self):
+    def test_auto_maintenance_preflights_lock_without_holding_through_batch(self):
         calls = []
 
         class GuardLock:
@@ -361,9 +364,9 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
             self.assertTrue(check_contact_directory_auto_maintenance(FakeBot(), now=datetime(2026, 6, 10, 21, 0, 0)))
 
-        self.assertIn(("batch_lock_held", True), calls)
+        self.assertIn(("batch_lock_held", False), calls)
         self.assertEqual(calls[0], ("lock_acquire", False))
-        self.assertEqual(calls[-1], ("lock_release",))
+        self.assertIn(("lock_release",), calls[:2])
 
     def test_auto_maintenance_falls_back_to_backup_cursor_after_primary_stalls(self):
         calls = []
@@ -440,6 +443,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             "count_override": 50,
             "run_to_completion": False,
             "automatic": True,
+            "block_on_wechat_lock": False,
         }))
         fallback_updates = [call[1] for call in calls if call[0] == "write_cycle"][-1]
         self.assertEqual(fallback_updates["auto_cycle_status"], "stalled")
@@ -522,6 +526,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             "count_override": 50,
             "run_to_completion": False,
             "automatic": True,
+            "block_on_wechat_lock": False,
         }))
         fallback_updates = [call[1] for call in calls if call[0] == "write_cycle"][-1]
         self.assertEqual(fallback_updates["auto_cycle_status"], "reset_required")
@@ -1033,8 +1038,54 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             now=datetime(2026, 6, 10, 21, 30, 0),
         ))
 
-    def test_auto_maintenance_read_timeout_is_ten_minutes(self):
+    def test_auto_maintenance_legacy_read_timeout_is_ten_minutes(self):
         self.assertEqual(contact_auto_maintenance_read_timeout_seconds(50), 600)
+
+    def test_auto_maintenance_collect_hard_timeout_is_five_minutes(self):
+        self.assertEqual(contact_auto_maintenance_collect_hard_timeout_seconds(50), 300)
+
+    def test_auto_maintenance_collector_timeout_attempts_taskkill_when_process_survives_kill(self):
+        calls = []
+
+        class FakeProcess:
+            pid = 4242
+            returncode = None
+
+            def communicate(self, timeout=None):
+                calls.append(("communicate", timeout))
+                raise subprocess.TimeoutExpired(cmd="collector", timeout=timeout)
+
+            def kill(self):
+                calls.append(("kill", self.pid))
+
+            def poll(self):
+                calls.append(("poll",))
+                return None
+
+        def fake_taskkill(cmd, **_kwargs):
+            calls.append(("taskkill", cmd))
+            return SimpleNamespace(returncode=0, stdout="SUCCESS", stderr="")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch("feature.contacts._acquire_contact_auto_collector_process_lock", return_value=lambda: calls.append(("release",))),
+                patch("feature.contacts._runtime_base_dir", return_value=temp_dir),
+                patch("feature.contacts._contact_auto_collector_python_executable", return_value="python"),
+                patch("feature.contacts._contact_auto_collector_script_path", return_value="collector.py"),
+                patch("feature.contacts.subprocess.Popen", return_value=FakeProcess()),
+                patch("feature.contacts.subprocess.run", side_effect=fake_taskkill),
+                patch("feature.contacts.os.name", "nt"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "PID 4242.*taskkill.*进程仍未退出"):
+                    run_contact_auto_maintenance_collector(
+                        start_name="阿英2",
+                        count=50,
+                        timeout_seconds=1,
+                    )
+
+        self.assertIn(("kill", 4242), calls)
+        self.assertIn(("taskkill", ["taskkill", "/PID", "4242", "/T", "/F"]), calls)
+        self.assertIn(("release",), calls)
 
     def test_contact_summary_continue_start_uses_existing_contact_tail(self):
         summary = _contact_profiles_summary({
@@ -1049,7 +1100,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(summary["continue_start_name"], "阿英4")
         self.assertNotIn("next_start_name", summary)
 
-    def test_auto_maintenance_single_batch_uses_ten_minute_timeout(self):
+    def test_auto_maintenance_single_batch_uses_minimal_collector(self):
         calls = []
 
         class FakeLock:
@@ -1060,13 +1111,8 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                 return False
 
         class FakeWeChat:
-            def GetFriendDetails(self, **kwargs):
-                calls.append(("GetFriendDetails", kwargs))
-                detail = {"备注": "阿英2"}
-                kwargs["callback"](detail)
-                return [detail]
-
             def SwitchToChat(self):
+                calls.append(("SwitchToChat",))
                 pass
 
         class FakeBot:
@@ -1081,15 +1127,34 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             def _prepare_contact_directory_window(self):
                 pass
 
+            def _run_contact_auto_maintenance_collector(self, **kwargs):
+                calls.append(("collector", kwargs))
+                return {
+                    "ok": True,
+                    "result": [{"备注": "阿英2"}],
+                    "callback_names": ["阿英2"],
+                    "matched_name": "阿英2",
+                }
+
         with (
             patch("feature.contacts.save_contact_directory"),
             patch("feature.contacts.load_contact_directory", return_value={"subjects": [], "maintenance": {}}),
         ):
-            refresh_contact_profiles_single_batch(FakeBot(), mode="standard", run_kind="auto_maintenance")
+            refresh_contact_profiles_single_batch(
+                FakeBot(),
+                mode="standard",
+                start_name="阿英2",
+                use_saved_position=True,
+                run_kind="auto_maintenance",
+            )
 
-        get_calls = [call for call in calls if call[0] == "GetFriendDetails"]
-        self.assertEqual(get_calls[0][1]["timeout"], 600)
-        self.assertEqual(get_calls[0][1]["interval"], 0)
+        collector_calls = [call for call in calls if call[0] == "collector"]
+        self.assertEqual(collector_calls[0][1], {
+            "start_name": "阿英2",
+            "count": 50,
+            "timeout_seconds": 300,
+        })
+        self.assertIn(("SwitchToChat",), calls)
 
     def test_contact_read_logs_from_callback_without_duplicate_result_logs(self):
         log_messages = []
@@ -1146,11 +1211,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                 return False
 
         class FakeWeChat:
-            def GetFriendDetails(self, **kwargs):
-                detail = {"备注": "阿英2"}
-                kwargs["callback"](detail)
-                return [detail]
-
             def SwitchToChat(self):
                 pass
 
@@ -1165,6 +1225,14 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def _prepare_contact_directory_window(self):
                 pass
+
+            def _run_contact_auto_maintenance_collector(self, **kwargs):
+                return {
+                    "ok": True,
+                    "result": [{"备注": "阿英2"}],
+                    "callback_names": ["阿英2"],
+                    "matched_name": "阿英2",
+                }
 
             def _sync_relationship_state_from_contact_directory(self, directory):
                 calls.append(("relationship_sync", directory))
