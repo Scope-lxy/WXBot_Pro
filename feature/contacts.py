@@ -32,6 +32,7 @@ from core.wechat_window import (
     run_with_wechat_rebind_retry,
 )
 from core.wechat_observability import warn_slow_wechat_ui_action
+from core import wechat_ui_actions
 from core.logger import log
 from feature import listening
 from feature import takeover_runtime
@@ -265,22 +266,6 @@ def _contact_auto_collector_timeout_message(timeout_seconds: int, cleanup: dict[
     return f"通讯录采集超过 {timeout_seconds}s，{status}{detail_text}"
 
 
-def _acquire_wechat_action_lock(lock: Any, *, blocking: bool = True):
-    acquire = getattr(lock, "acquire", None)
-    if callable(acquire):
-        if acquire(blocking=bool(blocking)):
-            return lambda: lock.release()
-        return None
-    if not blocking:
-        return None
-    enter = getattr(lock, "__enter__", None)
-    exit_ = getattr(lock, "__exit__", None)
-    if callable(enter) and callable(exit_):
-        enter()
-        return lambda: exit_(None, None, None)
-    raise RuntimeError("微信操作锁不可用")
-
-
 def friend_info_edit_noop(response: Any) -> bool:
     if not isinstance(response, dict):
         return False
@@ -491,7 +476,7 @@ def edit_friend_info_via_chat_profile(
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化，请先启动机器人并保持微信主窗口可用。")
 
-    with bot._get_wechat_action_lock():
+    with wechat_ui_actions.hold(bot):
         bring_wechat_to_front()
         chat_with = getattr(bot.wx, "ChatWith", None)
         if not callable(chat_with):
@@ -1570,10 +1555,7 @@ def refresh_contact_profiles_single_batch(
             )
 
     if not local_contact_source:
-        release_wechat_lock = _acquire_wechat_action_lock(
-            bot._get_wechat_action_lock(),
-            blocking=bool(block_on_wechat_lock),
-        )
+        release_wechat_lock = wechat_ui_actions.acquire(bot, blocking=bool(block_on_wechat_lock))
         if not release_wechat_lock:
             raise RuntimeError("微信操作繁忙，已跳过本次通讯录维护")
         try:
@@ -1747,7 +1729,10 @@ def refresh_contact_profiles_single_batch(
             if externally_paused:
                 _bot_log(bot, level="WARNING", message=f"[通讯录维护] {mode_label}已停止，本次读取 {len(raw_details)} 个好友")
             else:
-                _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] {mode_label}完成，本次读取 {len(raw_details)} 个好友")
+                if run_kind == "auto_maintenance":
+                    _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] 自动维护本批完成，本次读取 {len(raw_details)} 个好友")
+                else:
+                    _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] {mode_label}完成，本次读取 {len(raw_details)} 个好友")
         return {
             "mode": settings["mode"],
             "wx_id": wx_id,
@@ -2081,7 +2066,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
     else:
         _bot_log(bot, message="[通讯录维护] 自动维护从通讯录头部开始")
 
-    release_preflight_lock = _acquire_wechat_action_lock(bot._get_wechat_action_lock(), blocking=False)
+    release_preflight_lock = wechat_ui_actions.try_acquire(bot)
     if not release_preflight_lock:
         return False
     release_preflight_lock()
@@ -2175,6 +2160,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     bot,
                     message=f"[通讯录维护] 自动维护短批次后游标连续未推进，确认本轮完成：{cycle_start_name}",
                 )
+            _bot_log(bot, level="SUCCESS", message="[通讯录维护] 本轮自动维护完成，已扫到通讯录尾部")
             if callable(write_cycle_fn):
                 refreshed_directory = write_cycle_fn(
                     refreshed_directory,
@@ -2472,7 +2458,7 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
     else:
         records_file = contact_profiles_remark_repair_records_file(bot)
     _bot_log(bot, message=f"[通讯录维护] 开始备注修复，共 {len(candidates)} 个联系人")
-    with bot._get_wechat_action_lock():
+    with wechat_ui_actions.hold(bot):
         for index, candidate in enumerate(candidates, start=1):
             contact_key = str(candidate.get("contact_key") or "")
             suggested_remark = str(candidate.get("suggested_remark") or "").strip()

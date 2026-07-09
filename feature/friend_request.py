@@ -19,6 +19,7 @@ from core.contact_profiles import (
     normalize_tag_list,
 )
 from core.logger import log
+from core import wechat_ui_actions
 from feature.friend_request_senders import ConversationVerifySender
 
 
@@ -508,9 +509,8 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
         state.setdefault("runtime", {})["last_result"] = reason
         state = save_state(bot.config.DATA_DIR, state)
         return {"status": "skipped", "message": reason, "payload": friend_request_payload(state)}
-    lock = bot._get_wechat_action_lock()
-    acquired = lock.acquire(blocking=False)
-    if not acquired:
+    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
+    if not release_wechat_lock:
         message = "微信操作锁占用中，稍后会自动重试"
         candidate["last_result"] = message
         state.setdefault("runtime", {})["last_result"] = f"{candidate.get('name') or candidate.get('send_target')}: {message}"
@@ -532,7 +532,7 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
         except Exception as exc:
             result = {"status": "failed", "message": _clean_text(exc) or "好友申请发送异常"}
     finally:
-        lock.release()
+        release_wechat_lock()
     state = record_execution(state, candidate, result, addmsg=addmsg, now=now)
     state = save_execution_state(bot.config.DATA_DIR, state)
     try:

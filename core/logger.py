@@ -226,7 +226,7 @@ def log(level="INFO", message=''):
         log_path = os.path.join(LOG_PATH, f'log_{now_day}.txt')
         _ensure_utf8_bom(log_path)
         with open(log_path, 'a', encoding='utf-8') as f:
-            f.write(f'[{timestamp}]: {message}' + '\n')
+            f.write(f'[{timestamp}] [{level}]: {message}' + '\n')
     except Exception as e:
         print(f"写入日志文件失败: {e}")
 

@@ -6,9 +6,13 @@ from unittest.mock import patch
 
 from core.account_storage import account_area_dir
 from core.contact_profiles import (
+    contact_display_label,
+    contact_public_view,
+    contact_send_target,
     dismiss_identity_calibration_pending as dismiss_contact_profile_pending,
     load_directory as load_contact_directory,
     merge_directory,
+    save_directory as save_contact_directory,
     sync_identity_calibration_from_directory,
 )
 from core.contact_identity import (
@@ -380,6 +384,62 @@ class ContactIdentityTests(unittest.TestCase):
         self.assertEqual(subject["contact_key"], "legacy:1")
         self.assertEqual(subject["remark"], "好友")
         self.assert_no_legacy_contact_keys(directory_payload)
+
+    def test_contact_public_view_and_target_helpers_expose_v2_fields_only(self):
+        subject = {
+            "contact_key": "wechat_id:wx_zhang",
+            "remark": "张三",
+            "nickname": "三三",
+            "wechat_id": "wx_zhang",
+            "display_name": "旧显示名",
+            "send_name": "旧发送名",
+            "send_target": "接口发送名",
+            "name": "接口显示名",
+            "tags": ["客户"],
+            "warnings": ["duplicate_send_name"],
+        }
+
+        view = contact_public_view(subject)
+
+        self.assertEqual(view["name"], "张三")
+        self.assertEqual(view["send_target"], "张三")
+        self.assertNotIn("display_name", view)
+        self.assertNotIn("send_name", view)
+        self.assertEqual(contact_send_target(subject), "张三")
+        self.assertEqual(contact_display_label(subject), "张三")
+        self.assertEqual(contact_send_target(view), "张三")
+        self.assertEqual(contact_display_label(view), "张三")
+
+    def test_v2_save_directory_strips_legacy_contact_archive_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "contacts.json"
+            save_contact_directory(path, {
+                "schema_version": 2,
+                "wx_id": "wxid_test",
+                "identity_calibration": {
+                    "actions": [],
+                    "pending": [{
+                        "fingerprint": "fp1",
+                        "old_name": "旧",
+                        "new_name": "新",
+                        "old_snapshot": {"current_chat_name": "旧"},
+                    }],
+                    "dismissed_pairs": [],
+                },
+                "subjects": [{
+                    "contact_key": "wechat_id:wx_zhang",
+                    "remark": "张三",
+                    "display_name": "旧显示名",
+                    "send_name": "旧发送名",
+                    "raw_detail": {"备注": "张三"},
+                    "status": "active",
+                }],
+            })
+
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["schema_version"], 2)
+        self.assert_no_legacy_contact_keys(saved)
 
     def assert_no_legacy_contact_keys(self, payload):
         legacy_keys = {

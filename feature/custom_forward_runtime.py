@@ -6,6 +6,7 @@ from core.logger import log
 from core.reply_count_store import ReplyCountStore
 from core.runtime_chat_state import pause_message_reply, send_text_to_target
 from core.wechat_observability import warn_slow_wechat_ui_action
+from core import wechat_ui_actions
 from feature.custom_forward import iter_custom_forward_actions, plan_custom_forward_takeover
 from feature.material_outreach import is_forward_result_success
 
@@ -19,7 +20,7 @@ def send_custom_forward_action(bot, action, chat, message):
     error = ""
     if action.get("kind") == "forward":
         source_message = action.get("source_message")
-        with bot._get_wechat_action_lock():
+        with wechat_ui_actions.hold(bot):
             with warn_slow_wechat_ui_action(f"message.forward({target})"):
                 if source_message:
                     result = message.forward(target, message=source_message)

@@ -62,7 +62,9 @@ from core.memory import read_memory_original_name, resolve_memory_storage_name
 from core.chat_history_format import format_memory_record_for_display
 from core.contact_profiles import (
     contact_display_name,
+    contact_public_view,
     contact_send_name,
+    contact_send_target,
     default_directory as default_contact_directory,
     dismiss_identity_calibration_pending,
     directory_path as contact_directory_path,
@@ -5781,7 +5783,7 @@ def _contact_profiles_continue_start_name(directory):
             continue
         if subject.get('status', 'active') != 'active':
             continue
-        value = contact_send_name(subject) or contact_display_name(subject)
+        value = contact_send_target(subject)
         if value:
             return value
     return ''
@@ -5834,16 +5836,16 @@ def _contact_profiles_browser_contacts(directory):
             continue
         if subject.get('status', 'active') != 'active':
             continue
-        name = contact_display_name(subject)
+        view = contact_public_view(subject)
         contacts.append({
-            'contact_key': str(subject.get('contact_key', '') or ''),
-            'name': name,
-            'send_target': contact_send_name(subject),
-            'nickname': str(subject.get('nickname', '') or ''),
-            'remark': str(subject.get('remark', '') or ''),
-            'wechat_id': str(subject.get('wechat_id', '') or ''),
-            'wxid': str(subject.get('wxid', '') or ''),
-            'tags': list(subject.get('tags', []) or []),
+            'contact_key': view['contact_key'],
+            'name': view['name'],
+            'send_target': view['send_target'],
+            'nickname': view['nickname'],
+            'remark': view['remark'],
+            'wechat_id': view['wechat_id'],
+            'wxid': view['wxid'],
+            'tags': view['tags'],
         })
     contacts.sort(key=lambda item: (
         _wechat_name_sort_key(item.get('nickname') or item.get('name') or item.get('wechat_id')),
@@ -6020,12 +6022,13 @@ def _contact_profiles_picker_options(wx_id=''):
             continue
         if subject.get('status', 'active') != 'active':
             continue
+        view = contact_public_view(subject)
         contacts.append({
-            'contact_key': str(subject.get('contact_key', '') or ''),
-            'name': contact_display_name(subject),
-            'send_target': contact_send_name(subject),
-            'tags': list(subject.get('tags', []) or []),
-            'warnings': list(subject.get('warnings', []) or []),
+            'contact_key': view['contact_key'],
+            'name': view['name'],
+            'send_target': view['send_target'],
+            'tags': view['tags'],
+            'warnings': view['warnings'],
         })
     return {
         'wx_ids': wx_ids,

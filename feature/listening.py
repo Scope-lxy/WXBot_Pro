@@ -6,10 +6,9 @@ import os
 import random
 import sys
 import time
-from contextlib import nullcontext
 from wxautox4 import WeChat
 
-from core import runtime_chat_state
+from core import runtime_chat_state, wechat_ui_actions
 from core.account_storage import account_area_dir, migrate_default_account
 from core.logger import log
 from core.memory import MemoryManager
@@ -137,13 +136,6 @@ def listen_add_action_label(label):
     if label.endswith("监听"):
         return f"添加{label}"
     return f"添加{label}监听"
-
-
-def _wechat_action_lock_context(bot):
-    lock_getter = getattr(bot, "_get_wechat_action_lock", None)
-    if not callable(lock_getter):
-        return nullcontext()
-    return lock_getter()
 
 
 def subwindow_who(chat):
@@ -297,7 +289,7 @@ def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
     log_level = "WARNING" if label_text in quiet_labels else "ERROR"
 
     def add_action():
-        with bot._get_wechat_action_lock():
+        with wechat_ui_actions.hold(bot):
             with warn_slow_wechat_ui_action(f"AddListenChat({nickname})"):
                 return bot.wx.AddListenChat(nickname=nickname, callback=bot.message_handle_callback)
 
@@ -604,12 +596,8 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
                 handled = True
                 continue
             if not sub_chat:
-                lock_getter = getattr(bot, "_get_wechat_action_lock", None)
-                lock = lock_getter() if callable(lock_getter) else None
-                acquired = True
-                if lock is not None:
-                    acquired = lock.acquire(blocking=False)
-                if not acquired:
+                release_wechat_lock = wechat_ui_actions.try_acquire(bot)
+                if not release_wechat_lock:
                     bot._lightweight_delayed_listen_tasks[name] = current
                     continue
                 try:
@@ -620,8 +608,7 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
                         else:
                             sub_chat = add_chat_to_listen(bot, name)
                 finally:
-                    if lock is not None:
-                        lock.release()
+                    release_wechat_lock()
             if not sub_chat:
                 if _reschedule_lightweight_delayed_listen(bot, name, current, now_ts):
                     handled = True
@@ -965,19 +952,19 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
     if not force and last_at and now_ts - last_at < interval:
         return []
 
-    lock = bot._get_wechat_action_lock()
-    if not lock.acquire(blocking=False):
+    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
+    if not release_wechat_lock:
         return []
     try:
         reopened = reconcile_listener_subwindows(bot, retry_count=retry_count)
         bot._listener_reconcile_last_at = now_ts
         return reopened
     finally:
-        lock.release()
+        release_wechat_lock()
 
 
 def remove_listen_chat_verified(bot, nickname, *, log_success=True):
-    with _wechat_action_lock_context(bot):
+    with wechat_ui_actions.hold(bot):
         return _remove_listen_chat_verified_locked(bot, nickname, log_success=log_success)
 
 
@@ -1094,14 +1081,14 @@ def send_group_welcome_msg(bot, chat, message):
         new_friend = find_new_group_friend(message.content, 1)
         _bot_log(bot, message=f"{chat.who} 新群友:" + new_friend)
         _bot_sleep(bot, 5)
-        with bot._get_wechat_action_lock():
+        with wechat_ui_actions.hold(bot):
             with bot._get_chat_send_lock(chat.who):
                 result = chat.SendMsg(msg=bot.config.group_welcome_msg, at=new_friend)
     elif "加入了群聊" in message.content and random.random() < bot.config.group_welcome_random:
         new_friend = find_new_group_friend(message.content, 3)
         _bot_log(bot, message=f"{chat.who} 新群友:" + new_friend)
         _bot_sleep(bot, 5)
-        with bot._get_wechat_action_lock():
+        with wechat_ui_actions.hold(bot):
             with bot._get_chat_send_lock(chat.who):
                 result = chat.SendMsg(msg=bot.config.group_welcome_msg, at=new_friend)
 
@@ -1109,8 +1096,8 @@ def send_group_welcome_msg(bot, chat, message):
 
 
 def pass_new_friends(bot):
-    lock = bot._get_wechat_action_lock()
-    if not lock.acquire(blocking=False):
+    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
+    if not release_wechat_lock:
         _bot_log(bot, message="新好友检测跳过：微信操作锁占用中")
         return False
     try:
@@ -1164,7 +1151,7 @@ def pass_new_friends(bot):
         _bot_sleep(bot, 1)
         return True
     finally:
-        lock.release()
+        release_wechat_lock()
 
 
 def listen_mode(bot):
@@ -1206,7 +1193,7 @@ def new_msg_get_plus(chat_records):
 
 
 def next_message_handle(bot):
-    with bot._get_wechat_action_lock():
+    with wechat_ui_actions.hold(bot):
         all_message = bot.wx.GetAllMessage()
     return new_msg_get_plus(all_message)
 

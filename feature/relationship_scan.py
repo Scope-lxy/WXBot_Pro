@@ -20,6 +20,7 @@ from core.contact_profiles import (
 from core.logger import log
 from core.local_wechat_reader import read_local_sessions_with_status
 from core.wechat_observability import warn_slow_wechat_ui_action
+from core import wechat_ui_actions
 from feature.contacts import modify_friend_tags_via_chat_profile
 
 
@@ -607,8 +608,7 @@ def scan_current_sessions(bot, *, mode: str = "manual", acquire_lock: bool = Tru
         if sessions is None:
             log(level="WARNING", message="[关系扫描] 手动扫描回退微信界面读取会话")
             scan_source = "wxauto_ui"
-            lock = bot._get_wechat_action_lock()
-            with lock:
+            with wechat_ui_actions.hold(bot):
                 sessions = _read_sessions(bot, prefer_local=False)
     state = _load_bot_state(bot)
     state = update_state_from_sessions(state, sessions, source="session_preview")
@@ -732,13 +732,12 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_r
     scrolled_rounds = 0
     started = False
     finished = False
-    lock = bot._get_wechat_action_lock()
     try:
         log(level="WARNING", message="[关系扫描] 全量扫描回退微信界面滚动读取会话")
         max_rounds = max(1, int(max_scrolls or 1))
         slice_rounds = max(1, min(FULL_SCAN_LOCK_SLICE_SCROLLS, max_rounds))
         while not finished and scrolled_rounds < max_rounds:
-            with lock:
+            with wechat_ui_actions.hold(bot):
                 session_box = getattr(bot.wx, "SessionBox", None)
                 roll_down = getattr(session_box, "roll_down", None)
                 if not started:
@@ -783,7 +782,7 @@ def scan_full_sessions(bot, *, max_scrolls: int = FULL_SCAN_MAX_SCROLLS, allow_r
             if not finished:
                 time.sleep(FULL_SCAN_LOCK_RELEASE_SETTLE_SECONDS)
                 _flush_after_full_scan_lock_release(bot)
-        with lock:
+        with wechat_ui_actions.hold(bot):
             _safe_session_box_go_top(bot)
     finally:
         state = _load_bot_state(bot)
@@ -871,8 +870,8 @@ def check_auto_scan(bot, *, now: Any = None) -> bool:
     if sessions is None:
         if _has_pending_private_outbound_echoes(bot):
             return False
-        lock = bot._get_wechat_action_lock()
-        if not lock.acquire(blocking=False):
+        release_wechat_lock = wechat_ui_actions.try_acquire(bot)
+        if not release_wechat_lock:
             log(level="WARNING", message="[关系扫描] 自动扫描未取得微信操作锁，本轮跳过")
             process_pending_wechat_tag_sync(bot, now=now)
             return False
@@ -881,7 +880,7 @@ def check_auto_scan(bot, *, now: Any = None) -> bool:
             sessions = _read_sessions(bot, prefer_local=False)
             scan_source = "wxauto_ui"
         finally:
-            lock.release()
+            release_wechat_lock()
     state = update_state_from_sessions(state, sessions, source="session_preview")
     state = apply_state_to_local_contacts(bot, state)
     runtime = state.setdefault("runtime", {})
@@ -1021,8 +1020,8 @@ def process_pending_wechat_tag_sync(bot, *, limit: int | None = None, now: Any =
         return {"processed": 0, "success": 0, "failed": 0}
     if not force and _has_pending_private_outbound_echoes(bot):
         return {"processed": 0, "success": 0, "failed": 0}
-    lock = bot._get_wechat_action_lock()
-    if not lock.acquire(blocking=False):
+    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
+    if not release_wechat_lock:
         return {"processed": 0, "success": 0, "failed": 0}
     processed = success = failed = 0
     try:
@@ -1152,4 +1151,4 @@ def process_pending_wechat_tag_sync(bot, *, limit: int | None = None, now: Any =
             )
         return {"processed": processed, "success": success, "failed": failed}
     finally:
-        lock.release()
+        release_wechat_lock()

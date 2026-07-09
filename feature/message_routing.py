@@ -7,7 +7,7 @@ import time
 from contextlib import nullcontext
 from datetime import datetime
 
-from core import runtime_chat_state
+from core import runtime_chat_state, wechat_ui_actions
 from core.logger import log
 from core.message_pipeline import (
     is_failed_voice_transcription_text,
@@ -78,25 +78,16 @@ def try_voice_to_text(bot, msg, chat=None) -> bool:
     if not callable(converter):
         return False
 
-    lock = None
-    acquired = False
-    get_lock = getattr(bot, "_get_wechat_action_lock", None)
-    if callable(get_lock):
-        lock = get_lock()
-        if lock is not None and not lock.acquire(blocking=False):
-            return False
-        acquired = lock is not None
+    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
+    if not release_wechat_lock:
+        return False
 
     try:
         text = converter()
     except Exception:
         return False
     finally:
-        if acquired:
-            try:
-                lock.release()
-            except Exception:
-                pass
+        release_wechat_lock()
 
     state = voice_content_state(text)
     if state == "pending":

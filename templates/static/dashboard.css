@@ -30,6 +30,7 @@
   --sidebar-w: 160px;
   --topbar-h: 56px;
   --logbar-h: 44px;
+  --log-panel-expanded-h: 300px;
   --sidebar-bg: #2C2C2C;
   --sidebar-fg: #C8C8C8;
   --cfg-inline-gap: 10px;
@@ -134,7 +135,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 }
 
 /* ===== Main Content ===== */
-.main { margin-left: var(--sidebar-w); margin-top: var(--topbar-h); padding: 24px 28px 340px 28px; min-height: calc(100vh - var(--topbar-h)); overflow-y: auto; }
+.main { margin-left: var(--sidebar-w); margin-top: var(--topbar-h); padding: 24px 28px calc(var(--log-panel-expanded-h) + 32px) 28px; min-height: calc(100vh - var(--topbar-h)); overflow-y: auto; }
 
 /* ===== Action Bar ===== */
 .action-bar { display: flex; gap: 10px; margin-bottom: 24px; flex-wrap: wrap; align-items: center; }
@@ -1108,7 +1109,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 /* ===== Log Panel ===== */
 .log-panel { position: fixed; bottom: 0; left: var(--sidebar-w); right: 0; z-index: 80; background: #1a1a1a; border-top: 1px solid #333; transition: height .3s ease; }
 .log-panel.collapsed { height: var(--logbar-h); }
-.log-panel.expanded { height: 400px; }
+.log-panel.expanded { height: var(--log-panel-expanded-h); }
 .log-toolbar { height: var(--logbar-h); display: flex; align-items: center; justify-content: space-between; padding: 0 16px; cursor: pointer; user-select: none; }
 .log-toolbar .log-title { color: #888; font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .log-toolbar .log-title i { font-size: 14px; }
@@ -1806,6 +1807,9 @@ body.mobile-nav-open { overflow: hidden; }
 
 /* ===== Responsive ===== */
 @media (max-width: 900px) {
+  :root {
+    --log-panel-expanded-h: min(260px, 36vh);
+  }
   .listen-top-grid {
     grid-template-columns: 1fr;
   }
@@ -1921,7 +1925,7 @@ body.mobile-nav-open { overflow: hidden; }
   .main {
     margin-left: 0;
     margin-top: var(--topbar-h);
-    padding: 16px 14px 240px;
+    padding: 16px 14px calc(var(--log-panel-expanded-h) + 28px);
     min-height: calc(100vh - var(--topbar-h));
   }
 
@@ -2144,7 +2148,7 @@ body.mobile-nav-open { overflow: hidden; }
     text-align: center;
   }
   .log-panel.expanded {
-    height: 42vh;
+    height: var(--log-panel-expanded-h);
   }
   .log-panel.expanded .mobile-log-preview {
     display: none;
@@ -2218,6 +2222,9 @@ body.mobile-nav-open { overflow: hidden; }
 }
 
 @media (max-width: 560px) {
+  :root {
+    --log-panel-expanded-h: min(220px, 34vh);
+  }
   .topbar {
     padding: 0 10px;
   }
@@ -2248,7 +2255,7 @@ body.mobile-nav-open { overflow: hidden; }
     display: none;
   }
   .main {
-    padding: 14px 10px 220px;
+    padding: 14px 10px calc(var(--log-panel-expanded-h) + 24px);
   }
   .action-bar .ui-btn {
     flex-basis: 100%;

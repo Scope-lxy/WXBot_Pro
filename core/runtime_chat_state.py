@@ -1,5 +1,7 @@
 """Runtime chat listener registry and single-chat takeover helpers."""
 
+from core import wechat_ui_actions
+
 
 def normalize_chat_name(chat_who):
     return str(chat_who or "").strip()
@@ -79,27 +81,6 @@ def listen_chat_has_method(chat, method_name):
     return bool(chat and not isinstance(chat, dict) and callable(getattr(chat, method_name, None)))
 
 
-def _acquire_wechat_action_lock(bot):
-    getter = getattr(bot, "_get_wechat_action_lock", None)
-    if not callable(getter):
-        return None, True
-    lock = getter()
-    if lock is None:
-        return None, True
-    acquire = getattr(lock, "acquire", None)
-    release = getattr(lock, "release", None)
-    if not (callable(acquire) and callable(release)):
-        return None, True
-    if not acquire(blocking=False):
-        return None, False
-    return lock, True
-
-
-def _release_wechat_action_lock(lock):
-    if lock is not None:
-        lock.release()
-
-
 def remove_listen_chat(bot, name):
     if not hasattr(bot, "_listen_chats") or bot._listen_chats is None:
         bot._listen_chats = {}
@@ -107,8 +88,8 @@ def remove_listen_chat(bot, name):
 
 
 def send_text_to_target(bot, target, msg):
-    lock, acquired = _acquire_wechat_action_lock(bot)
-    if not acquired:
+    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
+    if not release_wechat_lock:
         sender = getattr(bot, "_send_text_to_target_without_child", None)
         if callable(sender):
             return sender(target, msg)
@@ -140,12 +121,12 @@ def send_text_to_target(bot, target, msg):
             return sender(target, msg)
         return False
     finally:
-        _release_wechat_action_lock(lock)
+        release_wechat_lock()
 
 
 def send_file_to_target(bot, target, path):
-    lock, acquired = _acquire_wechat_action_lock(bot)
-    if not acquired:
+    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
+    if not release_wechat_lock:
         sender = getattr(bot, "_send_file_to_target_without_child", None)
         if callable(sender):
             return sender(target, path)
@@ -177,4 +158,4 @@ def send_file_to_target(bot, target, path):
             return sender(target, path)
         return False
     finally:
-        _release_wechat_action_lock(lock)
+        release_wechat_lock()

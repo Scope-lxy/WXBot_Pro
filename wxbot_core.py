@@ -86,7 +86,7 @@ from core.account_storage import (
     migrate_default_account,
     resolve_account_id,
 )
-from core import runtime_chat_state
+from core import runtime_chat_state, wechat_ui_actions
 from core.chat_history_format import (
     build_model_visible_history,
     format_history_message,
@@ -165,8 +165,8 @@ from feature.voice_reply import (
     save_voice_reply_state,
 )
 from core.contact_profiles import (
-    contact_display_name,
-    contact_send_name,
+    contact_display_label,
+    contact_send_target,
     directory_path as contact_directory_path,
     load_directory as load_contact_directory,
     mark_history_target_status,
@@ -470,7 +470,7 @@ class _WechatActionLockedChat:
 
     def _send_with_lock(self, method_name, *args, **kwargs):
         who = str(getattr(self._chat, "who", "") or "").strip()
-        with self._bot._get_wechat_action_lock():
+        with wechat_ui_actions.hold(self._bot):
             method = getattr(self._chat, method_name)
             if who:
                 with self._bot._get_chat_send_lock(who):
@@ -953,20 +953,6 @@ class WXBot:
         if not hasattr(self, "_lightweight_send_queue_flushing"):
             self._lightweight_send_queue_flushing = False
 
-    def _wechat_action_lock_is_busy(self):
-        lock = self._get_wechat_action_lock()
-        acquired = lock.acquire(blocking=False)
-        if acquired:
-            lock.release()
-            return False
-        return True
-
-    def _try_acquire_wechat_action_lock(self):
-        lock = self._get_wechat_action_lock()
-        if lock.acquire(blocking=False):
-            return lambda: lock.release()
-        return None
-
     def _wechat_action_locked_chat(self, chat):
         if chat is None:
             return None
@@ -1006,8 +992,8 @@ class WXBot:
             return chat
         if chat:
             runtime_chat_state.remove_listen_chat(self, target)
-        lock = self._get_wechat_action_lock()
-        if not lock.acquire(blocking=False):
+        release_wechat_lock = wechat_ui_actions.try_acquire(self)
+        if not release_wechat_lock:
             return None
         try:
             chat = runtime_chat_state.get_listen_chat(self, target)
@@ -1027,7 +1013,7 @@ class WXBot:
             log(level="WARNING", message=f"[轻量发送队列] 自动恢复监听子窗口异常：{target}，{exc}")
             return None
         finally:
-            lock.release()
+            release_wechat_lock()
 
     def _listen_chat_matches_target(self, chat, target):
         target = str(target or "").strip()
@@ -1103,7 +1089,7 @@ class WXBot:
 
     def _flush_lightweight_send_queue(self, *, limit=20):
         self._ensure_lightweight_send_queue_state()
-        if self._wechat_action_lock_is_busy():
+        if wechat_ui_actions.is_busy(self):
             return False
         with self._lightweight_send_queue_lock:
             if self._lightweight_send_queue_flushing:
@@ -1121,7 +1107,7 @@ class WXBot:
                         self._lightweight_send_queue.pop(target, None)
                         log(message=f"[轻量发送队列] {target} 已有新消息，丢弃上一轮过期回复")
                         continue
-                release_wechat_lock = self._try_acquire_wechat_action_lock()
+                release_wechat_lock = wechat_ui_actions.try_acquire(self)
                 if not release_wechat_lock:
                     break
                 try:
@@ -1151,7 +1137,7 @@ class WXBot:
         target = str(target or "").strip()
         if not target:
             return False
-        release_wechat_lock = self._try_acquire_wechat_action_lock()
+        release_wechat_lock = wechat_ui_actions.try_acquire(self)
         if not release_wechat_lock:
             return self._queue_lightweight_send(
                 target,
@@ -1215,7 +1201,7 @@ class WXBot:
         path = str(path or "").strip()
         if not target or not path:
             return False
-        release_wechat_lock = self._try_acquire_wechat_action_lock()
+        release_wechat_lock = wechat_ui_actions.try_acquire(self)
         if not release_wechat_lock:
             return self._queue_lightweight_send(
                 target,
@@ -2042,7 +2028,7 @@ class WXBot:
 
         def target_send_name(contact):
             if isinstance(contact, dict):
-                return str(contact.get("send_target") or contact_send_name(contact) or contact_display_name(contact) or "").strip()
+                return contact_send_target(contact)
             return str(contact or "").strip()
 
         if mode not in {"all", "include", "exclude"}:
@@ -2259,7 +2245,7 @@ class WXBot:
         )
 
     def _execute_moments_publish_task(self, task):
-        with self._get_wechat_action_lock():
+        with wechat_ui_actions.hold(self):
             return execute_moments_publish_task(
                 task=task,
                 open_moments=self._open_moments_with_recovery,
@@ -2274,7 +2260,7 @@ class WXBot:
 
     def _open_moments_with_recovery(self):
         def open_moments():
-            with self._get_wechat_action_lock():
+            with wechat_ui_actions.hold(self):
                 with warn_slow_wechat_ui_action("Moments()"):
                     return self.wx.Moments()
 
@@ -2612,7 +2598,7 @@ class WXBot:
                 mode = "all"
         def target_send_name(contact):
             if isinstance(contact, dict):
-                return str(contact.get("send_target") or contact_send_name(contact) or contact_display_name(contact) or "").strip()
+                return contact_send_target(contact)
             return str(contact or "").strip()
         if manual_names:
             manual = resolve_manual_target_names(directory, manual_names)
@@ -2694,7 +2680,7 @@ class WXBot:
         if missing:
             for item in missing:
                 contact = item.get("contact") if isinstance(item.get("contact"), dict) else {}
-                target = contact.get("name") or contact_display_name(contact) or contact.get("contact_key") or ""
+                target = contact_display_label(contact) or contact.get("contact_key") or ""
                 skip = build_skip_record(
                     snapshot_task.get("task_id"),
                     target,
@@ -2784,13 +2770,13 @@ class WXBot:
         return all_success
 
     def _send_material_outreach_action_with_batch_lock(self, task, action, materials):
-        lock = self._get_wechat_action_lock()
-        if not lock.acquire(blocking=False):
+        release_wechat_lock = wechat_ui_actions.try_acquire(self)
+        if not release_wechat_lock:
             return self._material_outreach_lock_busy_result()
         try:
             return self._send_material_outreach_action(task, action, materials)
         finally:
-            lock.release()
+            release_wechat_lock()
 
     def _material_outreach_lock_busy_result(self):
         log(message="[素材转发] 微信 UI 正忙，本批次稍后重试")
@@ -2898,7 +2884,7 @@ class WXBot:
             )
 
         with self._get_material_source_read_lock(source):
-            with self._get_wechat_action_lock():
+            with wechat_ui_actions.hold(self):
                 source_chat = self._ensure_material_source_chat(source)
                 for source_reader, source_strategy in self._material_history_readers(
                     source_chat,
@@ -3086,7 +3072,7 @@ class WXBot:
                     return subwindow
             except Exception:
                 pass
-        with self._get_wechat_action_lock():
+        with wechat_ui_actions.hold(self):
             cached = self._material_source_chats.get(source)
             if self._material_source_chat_is_usable(cached):
                 return cached
@@ -3308,7 +3294,7 @@ class WXBot:
         return self._forward_material_message_unlocked(message, targets, preface=preface)
 
     def _forward_material_message_unlocked(self, message, targets, *, preface=""):
-        with self._get_wechat_action_lock():
+        with wechat_ui_actions.hold(self):
             target_label = "、".join(str(item or "").strip() for item in (targets or []) if str(item or "").strip())
             with warn_slow_wechat_ui_action(f"message.forward({target_label or 'unknown'})"):
                 roll_into_view = getattr(message, "roll_into_view", None)
@@ -4664,7 +4650,7 @@ class WXBot:
             _quote = self.config.group_reply_quote
             sent_any = False
             last_index = max(0, len(parts) - 1)
-            with self._get_wechat_action_lock():
+            with wechat_ui_actions.hold(self):
                 with self._get_chat_send_lock(chat.who):
                     for i, part in enumerate(parts):
                         if self.is_stop_requested():
@@ -5689,8 +5675,8 @@ class WXBot:
         items = list((task.get("items") or {}).values())
         if not items or self.is_stop_requested():
             return True
-        lock = self._get_wechat_action_lock()
-        if not lock.acquire(blocking=False):
+        release_wechat_lock = wechat_ui_actions.try_acquire(self)
+        if not release_wechat_lock:
             expired = [
                 item for item in items
                 if self._pending_voice_item_expired(item) or self._pending_voice_item_deadline_reached(item)
@@ -5734,7 +5720,7 @@ class WXBot:
                 log(message=f"私聊 {name}：{len(expired)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字，已静默忽略，最后一次重读失败：{exc}")
             return True
         finally:
-            lock.release()
+            release_wechat_lock()
         pending_items = []
         expired_items = []
         for item in items:
@@ -6228,8 +6214,8 @@ class WXBot:
                             fallback_text="等待下次补洞再启用微信 UI 兜底",
                         )
                         return False
-                    lock = self._get_wechat_action_lock()
-                    if not lock.acquire(blocking=False):
+                    release_wechat_lock = wechat_ui_actions.try_acquire(self)
+                    if not release_wechat_lock:
                         self._log_context_repair_cli_failure(
                             "group",
                             chat_name,
@@ -6247,16 +6233,16 @@ class WXBot:
                         local_messages = self._read_low_risk_context_messages(chat, cfg["visible_limit"])
                         context_repair_source = "ui_fallback"
                     finally:
-                        lock.release()
+                        release_wechat_lock()
                 elif local_disabled:
-                    lock = self._get_wechat_action_lock()
-                    if not lock.acquire(blocking=False):
+                    release_wechat_lock = wechat_ui_actions.try_acquire(self)
+                    if not release_wechat_lock:
                         return False
                     try:
                         local_messages = self._read_low_risk_context_messages(chat, cfg["visible_limit"])
                         context_repair_source = "ui"
                     finally:
-                        lock.release()
+                        release_wechat_lock()
                 else:
                     return False
             local_entries = [
@@ -6285,8 +6271,8 @@ class WXBot:
                 return True
             if cfg["high_enabled"]:
                 if self._context_repair_cooldown_allows(cooldown_key, "high", cfg["high_cooldown"]):
-                    high_lock = self._get_wechat_action_lock()
-                    if high_lock.acquire(blocking=False):
+                    release_high_lock = wechat_ui_actions.try_acquire(self)
+                    if release_high_lock:
                         try:
                             history_messages = self._read_high_risk_context_messages(chat, cfg["history_limit"])
                             history_entries = [
@@ -6328,7 +6314,7 @@ class WXBot:
                         except Exception as exc:
                             log(level="WARNING", message=f"群聊 {chat_name}：高风险上下文补洞失败，已继续原回复流程，详情：{exc}")
                         finally:
-                            high_lock.release()
+                            release_high_lock()
                     else:
                         with self._memory_context_repair_lock:
                             self._memory_context_repair_last_high_risk_at.pop(cooldown_key, None)
@@ -6394,8 +6380,8 @@ class WXBot:
                             fallback_text="等待下次补洞再启用微信 UI 兜底",
                         )
                         return False
-                lock = self._get_wechat_action_lock()
-                if not lock.acquire(blocking=False):
+                release_wechat_lock = wechat_ui_actions.try_acquire(self)
+                if not release_wechat_lock:
                     if local_cli_failed:
                         self._log_context_repair_cli_failure(
                             "private",
@@ -6415,7 +6401,7 @@ class WXBot:
                     visible_messages = self._read_low_risk_context_messages(chat, cfg["visible_limit"])
                     context_repair_source = "ui_fallback" if local_cli_failed else "ui"
                 finally:
-                    lock.release()
+                    release_wechat_lock()
         except Exception as exc:
             log(level="WARNING", message=f"私聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")
             return False
@@ -6452,8 +6438,8 @@ class WXBot:
 
             if not plan.anchor_found and cfg["high_enabled"]:
                 if self._context_repair_cooldown_allows(chat_name, "high", cfg["high_cooldown"]):
-                    high_lock = self._get_wechat_action_lock()
-                    if high_lock.acquire(blocking=False):
+                    release_high_lock = wechat_ui_actions.try_acquire(self)
+                    if release_high_lock:
                         try:
                             history_messages = self._read_high_risk_context_messages(chat, cfg["history_limit"])
                             history_entries = [
@@ -6492,7 +6478,7 @@ class WXBot:
                         except Exception as exc:
                             log(level="WARNING", message=f"私聊 {chat_name}：高风险上下文补洞失败，已退回低风险结果，详情：{exc}")
                         finally:
-                            high_lock.release()
+                            release_high_lock()
                     else:
                         with self._memory_context_repair_lock:
                             self._memory_context_repair_last_high_risk_at.pop(chat_name, None)
@@ -7512,7 +7498,7 @@ class WXBot:
             send_audio = getattr(chat, 'SendAudio', None)
             if not callable(send_audio):
                 return False
-            release_wechat_lock = self._try_acquire_wechat_action_lock()
+            release_wechat_lock = wechat_ui_actions.try_acquire(self)
             if not release_wechat_lock:
                 return False
             try:
@@ -7549,7 +7535,7 @@ class WXBot:
         if not self._private_reply_can_continue(chat, expected_sequence=expected_sequence):
             return False, True
         target = str(getattr(chat, "who", "") or "").strip()
-        release_wechat_lock = self._try_acquire_wechat_action_lock()
+        release_wechat_lock = wechat_ui_actions.try_acquire(self)
         if not release_wechat_lock:
             queued = self._queue_text_reply_until_target_verified(
                 target,
@@ -7651,7 +7637,7 @@ class WXBot:
             return False, True
         release_wechat_lock = None
         if private_chat:
-            release_wechat_lock = self._try_acquire_wechat_action_lock()
+            release_wechat_lock = wechat_ui_actions.try_acquire(self)
             if not release_wechat_lock:
                 queued = self._queue_keyword_reply_until_target_verified(chat.who, actions)
                 log(level="INFO", message=f"关键词回复 {chat.who} 微信 UI 正忙，已进入延迟发送队列")
@@ -8661,7 +8647,7 @@ class WXBot:
             return self._wechat_action_locked_chat(chat)
         if getattr(self, "wx", None) and hasattr(self.wx, "ChatWith"):
             try:
-                with self._get_wechat_action_lock():
+                with wechat_ui_actions.hold(self):
                     target = self.wx.ChatWith(who=self.config.cmd)
                 if target is not None:
                     return self._wechat_action_locked_chat(target)

@@ -141,14 +141,14 @@ def _build_contact_key(wechat_id: str, remark: str, nickname: str, raw_detail: d
     return _local_contact_key("unknown", raw_fingerprint), "low"
 
 
-def _choose_send_name(wechat_id: str, remark: str, nickname: str) -> tuple[str, str]:
+def _choose_send_name(wechat_id: str, remark: str, nickname: str) -> str:
     if remark:
-        return remark, "remark"
+        return remark
     if nickname:
-        return nickname, "nickname"
+        return nickname
     if wechat_id and not is_default_wechat_id(wechat_id):
-        return wechat_id, "wechat_id"
-    return "", "none"
+        return wechat_id
+    return ""
 
 
 def contact_display_name(contact: dict[str, Any] | None) -> str:
@@ -163,12 +163,30 @@ def contact_display_name(contact: dict[str, Any] | None) -> str:
 
 def contact_send_name(contact: dict[str, Any] | None) -> str:
     contact = contact if isinstance(contact, dict) else {}
-    send_name, _source = _choose_send_name(
+    return _choose_send_name(
         _clean_text(contact.get("wechat_id")),
         _clean_text(contact.get("remark")),
         _clean_text(contact.get("nickname")),
     )
-    return send_name
+
+
+def contact_send_target(contact: dict[str, Any] | None) -> str:
+    contact = contact if isinstance(contact, dict) else {}
+    derived = contact_send_name(contact) or contact_display_name(contact)
+    if derived:
+        return derived
+    return (
+        _clean_text(contact.get("send_target"))
+        or _clean_text(contact.get("name"))
+    )
+
+
+def contact_display_label(contact: dict[str, Any] | None) -> str:
+    contact = contact if isinstance(contact, dict) else {}
+    derived = contact_display_name(contact) or contact_send_name(contact)
+    if derived:
+        return derived
+    return _clean_text(contact.get("name")) or _clean_text(contact.get("display_name")) or contact_send_target(contact)
 
 
 def contact_name_values(contact: dict[str, Any] | None) -> set[str]:
@@ -272,7 +290,7 @@ def normalize_friend_detail(
     warnings = list(existing.get("warnings") or [])
     warnings = _without_warning(warnings, WARNING_SEND_NAME_UNSEARCHABLE)
     warnings = _without_warning(warnings, WARNING_DUPLICATE_SEND_NAME)
-    send_name, _send_name_source = _choose_send_name(wechat_id, remark, nickname)
+    send_name = _choose_send_name(wechat_id, remark, nickname)
     if not is_searchable_send_name(send_name):
         _append_warning(warnings, WARNING_SEND_NAME_UNSEARCHABLE)
 
@@ -375,7 +393,7 @@ def _refresh_names_from_identity(contact: dict[str, Any]) -> None:
     wechat_id = _clean_text(contact.get("wechat_id"))
     remark = _clean_text(contact.get("remark"))
     nickname = _clean_text(contact.get("nickname"))
-    send_name, _send_name_source = _choose_send_name(wechat_id, remark, nickname)
+    send_name = _choose_send_name(wechat_id, remark, nickname)
     warnings = list(contact.get("warnings") or [])
     warnings = _without_warning(warnings, WARNING_SEND_NAME_UNSEARCHABLE)
     if not is_searchable_send_name(send_name):
