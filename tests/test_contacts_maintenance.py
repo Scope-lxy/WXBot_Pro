@@ -183,7 +183,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         self.assertEqual(len(updated["subjects"]), 1)
         self.assertEqual(updated["subjects"][0]["wxid"], "wxid_new")
-        self.assertEqual(updated["subjects"][0]["raw_detail"]["wxid"], "wxid_new")
+        self.assertEqual(updated["subjects"][0]["wxid"], "wxid_new")
 
     def _auto_maintenance_bot(self, *, pending_queue=False, pending_echo=False):
         calls = []

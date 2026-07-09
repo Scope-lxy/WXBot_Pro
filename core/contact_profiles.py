@@ -17,17 +17,15 @@ from typing import Any
 
 from core.account_storage import account_area_dir
 from core.contact_identity import (
-    default_calibration_state as default_contact_calibration_state,
     dismiss_pending as dismiss_contact_identity_pending,
     list_chat_memory_names,
     list_memory_chat_names,
     normalize_calibration_state as normalize_contact_calibration_state,
     reconcile_contact_storage as reconcile_contact_storage_names,
-    update_calibration_from_directory as update_contact_identity_from_directory,
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DIRECTORY_FILENAME = "contacts.json"
 
 WARNING_DUPLICATE_SEND_NAME = "duplicate_send_name"
@@ -155,6 +153,100 @@ def _choose_send_name(wechat_id: str, remark: str, nickname: str) -> tuple[str, 
     return "", "none"
 
 
+def contact_display_name(contact: dict[str, Any] | None) -> str:
+    contact = contact if isinstance(contact, dict) else {}
+    return (
+        _clean_text(contact.get("remark"))
+        or _clean_text(contact.get("nickname"))
+        or _clean_text(contact.get("wechat_id"))
+        or _clean_text(contact.get("wxid"))
+    )
+
+
+def contact_send_name(contact: dict[str, Any] | None) -> str:
+    contact = contact if isinstance(contact, dict) else {}
+    send_name, _source = _choose_send_name(
+        _clean_text(contact.get("wechat_id")),
+        _clean_text(contact.get("remark")),
+        _clean_text(contact.get("nickname")),
+    )
+    return send_name
+
+
+def contact_name_values(contact: dict[str, Any] | None) -> set[str]:
+    contact = contact if isinstance(contact, dict) else {}
+    values = {
+        contact_display_name(contact),
+        contact_send_name(contact),
+        _clean_text(contact.get("remark")),
+        _clean_text(contact.get("nickname")),
+        _clean_text(contact.get("wechat_id")),
+        _clean_text(contact.get("wxid")),
+    }
+    return {value for value in values if value}
+
+
+def _raw_detail_value(raw_detail: dict[str, Any], keys: tuple[str, ...]) -> str:
+    return _first_text(raw_detail if isinstance(raw_detail, dict) else {}, keys)
+
+
+def _profile_field(raw_detail: dict[str, Any], existing: dict[str, Any], field: str, keys: tuple[str, ...]) -> str:
+    return _raw_detail_value(raw_detail, keys) or _clean_text(existing.get(field))
+
+
+def contact_public_view(contact: dict[str, Any] | None) -> dict[str, Any]:
+    contact = contact if isinstance(contact, dict) else {}
+    return {
+        "contact_key": contact_identity_key(contact),
+        "name": contact_display_name(contact),
+        "send_target": contact_send_name(contact),
+        "remark": _clean_text(contact.get("remark")),
+        "nickname": _clean_text(contact.get("nickname")),
+        "wechat_id": _clean_text(contact.get("wechat_id")),
+        "wxid": _clean_text(contact.get("wxid")),
+        "region": _clean_text(contact.get("region")),
+        "source": _clean_text(contact.get("source")),
+        "added_at": _clean_text(contact.get("added_at")),
+        "signature": _clean_text(contact.get("signature")),
+        "tags": list(contact.get("tags") or []),
+        "status": _clean_text(contact.get("status")) or "active",
+        "warnings": list(contact.get("warnings") or []),
+        "last_seen_at": _clean_text(contact.get("last_seen_at")),
+    }
+
+
+def _contact_chat_name(contact: dict[str, Any] | None) -> str:
+    return contact_display_name(contact) or contact_send_name(contact)
+
+
+def _rename_action(old_contact: dict[str, Any] | None, new_contact: dict[str, Any] | None, reason: str) -> dict[str, str] | None:
+    old_name = _contact_chat_name(old_contact)
+    new_name = _contact_chat_name(new_contact)
+    if not old_name or not new_name or old_name == new_name:
+        return None
+    return {
+        "type": "rename",
+        "reason": reason,
+        "contact_key": contact_identity_key(new_contact or old_contact or {}),
+        "old_chat_name": old_name,
+        "new_chat_name": new_name,
+    }
+
+
+def _append_contact_action(directory: dict[str, Any], action: dict[str, str] | None) -> None:
+    if not action:
+        return
+    actions = directory.setdefault("identity_calibration", {}).setdefault("actions", [])
+    fingerprint = "|".join([action.get("type", ""), action.get("old_chat_name", ""), action.get("new_chat_name", "")])
+    seen = {
+        "|".join([str(item.get("type", "")), str(item.get("old_chat_name", "")), str(item.get("new_chat_name", ""))])
+        for item in actions
+        if isinstance(item, dict)
+    }
+    if fingerprint not in seen:
+        actions.append(action)
+
+
 def normalize_friend_detail(
     raw_detail: dict[str, Any],
     *,
@@ -165,43 +257,55 @@ def normalize_friend_detail(
     raw_detail = dict(raw_detail or {})
     existing = existing or {}
 
-    nickname = _first_text(raw_detail, ("昵称", "nickname", "NickName", "name", "Name"))
-    remark = _first_text(raw_detail, ("备注", "remark", "Remark", "alias", "Alias"))
-    wechat_id = _first_text(raw_detail, ("微信号", "微信ID", "wechat_id", "wxid", "wx_id", "WeChatId"))
-    wxid = _first_text(raw_detail, ("wxid", "wx_id", "username", "UserName"))
+    nickname = _profile_field(raw_detail, existing, "nickname", ("昵称", "nickname", "NickName", "name", "Name"))
+    remark = _profile_field(raw_detail, existing, "remark", ("备注", "remark", "Remark", "alias", "Alias"))
+    wechat_id = _profile_field(raw_detail, existing, "wechat_id", ("微信号", "微信ID", "wechat_id", "wxid", "wx_id", "WeChatId"))
+    wxid = _profile_field(raw_detail, existing, "wxid", ("wxid", "wx_id", "username", "UserName"))
     if not wxid and is_default_wechat_id(wechat_id):
         wxid = wechat_id
     raw_tags = _first_value(raw_detail, ("标签", "tags", "Tags", "tag", "Tag"))
-    tags = normalize_tag_list(raw_tags)
-    send_name, send_name_source = _choose_send_name(wechat_id, remark, nickname)
-    display_name = remark or nickname or send_name or wechat_id
-    contact_key, confidence = _build_contact_key(wechat_id, remark, nickname, raw_detail)
+    tags = normalize_tag_list(raw_tags if raw_tags is not None else existing.get("tags"))
+    region = _profile_field(raw_detail, existing, "region", ("地区", "region", "Region"))
+    source = _profile_field(raw_detail, existing, "source", ("来源", "source", "Source"))
+    added_at = _profile_field(raw_detail, existing, "added_at", ("添加时间", "added_at", "AddedAt", "added_time"))
+    signature = _profile_field(raw_detail, existing, "signature", ("个性签名", "signature", "Signature"))
+    contact_key, _confidence = _build_contact_key(wechat_id, remark, nickname, raw_detail)
 
     warnings = list(existing.get("warnings") or [])
     warnings = _without_warning(warnings, WARNING_SEND_NAME_UNSEARCHABLE)
     warnings = _without_warning(warnings, WARNING_DUPLICATE_SEND_NAME)
+    send_name, _send_name_source = _choose_send_name(wechat_id, remark, nickname)
     if not is_searchable_send_name(send_name):
         _append_warning(warnings, WARNING_SEND_NAME_UNSEARCHABLE)
 
     contact = {
-        "subject_type": "friend",
         "contact_key": contact_key,
-        "identity_confidence": confidence,
         "wechat_id": wechat_id,
         "wxid": wxid,
         "nickname": nickname,
         "remark": remark,
-        "display_name": display_name,
-        "send_name": send_name,
-        "send_name_source": send_name_source,
+        "region": region,
+        "source": source,
+        "added_at": added_at,
+        "signature": signature,
         "tags": tags,
-        "raw_tags": raw_tags if raw_tags is not None else "",
         "status": "active",
         "warnings": warnings,
         "stable_suffix": existing.get("stable_suffix") or "",
         "last_seen_at": _iso_timestamp(now),
-        "raw_detail": raw_detail,
     }
+    for key in (
+        "last_cli_contact_basics_synced_at",
+        "wxid_status",
+        "wxid_source",
+        "last_history_success_at",
+        "relationship_status",
+        "relationship_evidence",
+        "relationship_updated_at",
+    ):
+        value = existing.get(key)
+        if value not in (None, "", [], {}):
+            contact[key] = value
     contact["stable_suffix"] = stable_suffix_for_contact(contact)
     return contact
 
@@ -209,12 +313,8 @@ def normalize_friend_detail(
 def contact_history_target(contact: dict[str, Any]) -> str:
     if not isinstance(contact, dict):
         return ""
-    raw_detail = contact.get("raw_detail") if isinstance(contact.get("raw_detail"), dict) else {}
     for value in (
         contact.get("wxid"),
-        raw_detail.get("wxid"),
-        raw_detail.get("wx_id"),
-        raw_detail.get("username"),
         contact.get("wechat_id"),
     ):
         text = _clean_text(value)
@@ -238,26 +338,6 @@ def _cli_contact_basics_values(raw_detail: dict[str, Any]) -> dict[str, str]:
         "nickname": nickname,
         "remark": remark,
     }
-
-
-def _merge_cli_raw_detail(existing_raw: dict[str, Any], raw_detail: dict[str, Any], values: dict[str, str]) -> dict[str, Any]:
-    merged = copy.deepcopy(existing_raw) if isinstance(existing_raw, dict) else {}
-    if values["wxid"]:
-        merged["wxid"] = values["wxid"]
-        merged["username"] = values["wxid"]
-    if values["wechat_id"]:
-        merged["微信号"] = values["wechat_id"]
-        merged["wechat_id"] = values["wechat_id"]
-    if values["nickname"]:
-        merged["昵称"] = values["nickname"]
-        merged["nickname"] = values["nickname"]
-    if values["remark"]:
-        merged["备注"] = values["remark"]
-        merged["remark"] = values["remark"]
-    for key in ("alias", "description", "avatar", "verify_flag", "local_type"):
-        if key in raw_detail and raw_detail.get(key) not in (None, ""):
-            merged[key] = raw_detail.get(key)
-    return merged
 
 
 def _find_existing_contact_for_cli_basics(
@@ -285,8 +365,7 @@ def _find_existing_contact_for_cli_basics(
         old_matches = [
             item for item in old_subjects
             if _clean_text(item.get(field)) == name
-            or _clean_text(item.get("display_name")) == name
-            or _clean_text(item.get("send_name")) == name
+            or name in contact_name_values(item)
         ]
         incoming_matches = [item for item in incoming_values if item.get(field) == name]
         if len(old_matches) == 1 and len(incoming_matches) <= 1:
@@ -298,10 +377,7 @@ def _refresh_names_from_identity(contact: dict[str, Any]) -> None:
     wechat_id = _clean_text(contact.get("wechat_id"))
     remark = _clean_text(contact.get("remark"))
     nickname = _clean_text(contact.get("nickname"))
-    send_name, send_name_source = _choose_send_name(wechat_id, remark, nickname)
-    contact["display_name"] = remark or nickname or send_name or wechat_id or contact_history_target(contact)
-    contact["send_name"] = send_name
-    contact["send_name_source"] = send_name_source
+    send_name, _send_name_source = _choose_send_name(wechat_id, remark, nickname)
     warnings = list(contact.get("warnings") or [])
     warnings = _without_warning(warnings, WARNING_SEND_NAME_UNSEARCHABLE)
     if not is_searchable_send_name(send_name):
@@ -324,6 +400,7 @@ def merge_cli_contact_basics(
 
     updated_by_key: dict[str, dict[str, Any]] = {}
     new_key_order: list[str] = []
+    actions: list[dict[str, str]] = []
     for raw_detail in (raw_details or []):
         if not isinstance(raw_detail, dict):
             continue
@@ -352,20 +429,20 @@ def merge_cli_contact_basics(
             for field in ("wechat_id", "nickname", "remark"):
                 if values[field]:
                     contact[field] = values[field]
-            contact["raw_detail"] = _merge_cli_raw_detail(contact.get("raw_detail") or {}, raw_detail, values)
         else:
-            raw_for_new = _merge_cli_raw_detail({}, raw_detail, values)
-            contact = normalize_friend_detail(raw_for_new, now=timestamp)
+            contact = normalize_friend_detail(raw_detail, now=timestamp)
             if values["wxid"]:
                 contact["wxid"] = values["wxid"]
             key = contact_identity_key(contact)
 
-        contact["identity_source"] = "cli_basic"
         contact["last_cli_contact_basics_synced_at"] = timestamp
         contact["last_seen_at"] = timestamp
         if contact_history_target(contact) and not _clean_text(contact.get("wxid_status")):
             contact["wxid_status"] = "recent_cli"
         _refresh_names_from_identity(contact)
+        action = _rename_action(old_contact, contact, "cli_contact_basics")
+        if action:
+            actions.append(action)
         updated_by_key[key] = contact
         if key not in new_key_order:
             new_key_order.append(key)
@@ -386,25 +463,14 @@ def merge_cli_contact_basics(
     merged = _normalize_directory_shape(existing, wx_id)
     merged["updated_at"] = timestamp
     merged["subjects"] = merged_subjects
+    for action in actions:
+        _append_contact_action(merged, action)
     return mark_send_name_conflicts(merged)
 
 
 def _contact_lookup_names(contact: dict[str, Any]) -> set[str]:
-    raw_detail = contact.get("raw_detail") if isinstance(contact.get("raw_detail"), dict) else {}
     values = {
-        _clean_text(contact.get("remark")),
-        _clean_text(contact.get("nickname")),
-        _clean_text(contact.get("display_name")),
-        _clean_text(contact.get("send_name")),
-        _clean_text(contact.get("wechat_id")),
-        _clean_text(contact.get("wxid")),
-        _clean_text(raw_detail.get("remark")),
-        _clean_text(raw_detail.get("nickname")),
-        _clean_text(raw_detail.get("备注")),
-        _clean_text(raw_detail.get("昵称")),
-        _clean_text(raw_detail.get("微信号")),
-        _clean_text(raw_detail.get("wxid")),
-        _clean_text(raw_detail.get("username")),
+        *contact_name_values(contact),
     }
     return {value for value in values if value}
 
@@ -482,13 +548,8 @@ def mark_history_target_status(
     match["wxid_source"] = _clean_text(source) or "history_success"
     match["last_history_success_at"] = timestamp
     match["last_seen_at"] = timestamp
-    raw_detail = dict(match.get("raw_detail") or {})
-    raw_detail["wxid"] = target
-    raw_detail["username"] = target
-    if _clean_text(chat_name) and not (_clean_text(raw_detail.get("昵称")) or _clean_text(raw_detail.get("nickname"))):
-        raw_detail["昵称"] = _clean_text(chat_name)
-        raw_detail["nickname"] = _clean_text(chat_name)
-    match["raw_detail"] = raw_detail
+    if _clean_text(chat_name) and not (_clean_text(match.get("remark")) or _clean_text(match.get("nickname"))):
+        match["nickname"] = _clean_text(chat_name)
     match["warnings"] = _without_warning(list(match.get("warnings") or []), WARNING_WXID_CONFLICT)
     match.pop("wxid_conflict", None)
     _refresh_names_from_identity(match)
@@ -510,14 +571,14 @@ def contact_identity_key(contact: dict[str, Any]) -> str:
     nickname = _clean_text(contact.get("nickname"))
     if nickname:
         return _local_contact_key("nickname", nickname)
-    raw_detail = contact.get("raw_detail") if isinstance(contact.get("raw_detail"), dict) else {}
-    raw_fingerprint = json.dumps(raw_detail, ensure_ascii=False, sort_keys=True)
-    return _local_contact_key("unknown", raw_fingerprint)
+    wxid = _clean_text(contact.get("wxid"))
+    if wxid:
+        return f"wxid:{wxid}"
+    return _local_contact_key("unknown", json.dumps(contact or {}, ensure_ascii=False, sort_keys=True))
 
 
 def _contact_raw_text(contact: dict[str, Any], keys: tuple[str, ...]) -> str:
-    raw_detail = contact.get("raw_detail") if isinstance(contact.get("raw_detail"), dict) else {}
-    return _first_text(raw_detail, keys)
+    return _first_text(contact if isinstance(contact, dict) else {}, keys)
 
 
 def _contact_source(contact: dict[str, Any]) -> str:
@@ -591,7 +652,7 @@ def stable_suffix_for_contact(contact: dict[str, Any]) -> str:
     existing = _clean_text(contact.get("stable_suffix"))
     if existing:
         return existing
-    source = contact_identity_key(contact) or _clean_text(contact.get("send_name")) or "contact"
+    source = contact_identity_key(contact) or contact_send_name(contact) or "contact"
     number = int(hashlib.sha1(source.encode("utf-8")).hexdigest()[:8], 16) % 10000
     return f"{number:04d}"
 
@@ -611,12 +672,39 @@ def default_directory(wx_id: str) -> dict[str, Any]:
             "paused": False,
         },
         "identity_calibration": {
-            "identities": [],
+            "actions": [],
             "pending": [],
             "dismissed_pairs": [],
         },
         "subjects": [],
     }
+
+
+def _normalize_subject_shape(contact: dict[str, Any], *, now: Any = None) -> dict[str, Any]:
+    raw_detail = contact.get("raw_detail") if isinstance(contact.get("raw_detail"), dict) else {}
+    normalized = normalize_friend_detail(raw_detail or contact, existing=contact, now=contact.get("last_seen_at") or now)
+    for key in (
+        "contact_key",
+        "status",
+        "warnings",
+        "stable_suffix",
+        "last_seen_at",
+        "last_cli_contact_basics_synced_at",
+        "wxid_status",
+        "wxid_source",
+        "last_history_success_at",
+        "relationship_status",
+        "relationship_evidence",
+        "relationship_updated_at",
+    ):
+        if key in contact:
+            normalized[key] = copy.deepcopy(contact.get(key))
+    normalized["contact_key"] = contact_identity_key(normalized)
+    normalized["tags"] = normalize_tag_list(contact.get("tags") or contact.get("raw_tags"))
+    normalized["warnings"] = list(contact.get("warnings") or normalized.get("warnings") or [])
+    normalized["status"] = _clean_text(normalized.get("status")) or "active"
+    normalized["stable_suffix"] = stable_suffix_for_contact(normalized)
+    return normalized
 
 
 def _normalize_directory_shape(directory: Any, wx_id: str = "") -> dict[str, Any]:
@@ -625,7 +713,7 @@ def _normalize_directory_shape(directory: Any, wx_id: str = "") -> dict[str, Any
         return fallback
 
     normalized = copy.deepcopy(fallback)
-    normalized["schema_version"] = directory.get("schema_version") or SCHEMA_VERSION
+    normalized["schema_version"] = SCHEMA_VERSION
     normalized["wx_id"] = _clean_text(directory.get("wx_id")) or _clean_text(wx_id)
     normalized["updated_at"] = _clean_text(directory.get("updated_at"))
 
@@ -635,10 +723,23 @@ def _normalize_directory_shape(directory: Any, wx_id: str = "") -> dict[str, Any
 
     identity_calibration = directory.get("identity_calibration")
     if isinstance(identity_calibration, dict):
-        normalized["identity_calibration"] = normalize_contact_calibration_state(identity_calibration, wx_id=normalized["wx_id"])
+        state = normalize_contact_calibration_state(identity_calibration, wx_id=normalized["wx_id"])
+        normalized["identity_calibration"] = {
+            "actions": [
+                copy.deepcopy(item)
+                for item in (identity_calibration.get("actions") or [])
+                if isinstance(item, dict)
+            ],
+            "pending": list(state.get("pending") or []),
+            "dismissed_pairs": list(state.get("dismissed_pairs") or []),
+        }
 
     subjects = directory.get("subjects")
-    normalized["subjects"] = copy.deepcopy(subjects) if isinstance(subjects, list) else []
+    normalized["subjects"] = [
+        _normalize_subject_shape(item)
+        for item in (subjects if isinstance(subjects, list) else [])
+        if isinstance(item, dict)
+    ]
     return normalized
 
 
@@ -657,6 +758,7 @@ def merge_directory(
 
     updated_by_key: dict[str, dict[str, Any]] = {}
     new_key_order: list[str] = []
+    actions: list[dict[str, str]] = []
     incoming_items = [
         (raw_detail, normalize_friend_detail(raw_detail, now=timestamp))
         for raw_detail in (raw_details or [])
@@ -666,6 +768,9 @@ def merge_directory(
         old_contact = _find_existing_contact_for_probe(probe, old_subjects, incoming_probes)
         key = contact_identity_key(old_contact) if old_contact else contact_identity_key(probe)
         normalized = normalize_friend_detail(raw_detail, existing=old_contact, now=timestamp)
+        action = _rename_action(old_contact, normalized, "contact_profiles")
+        if action:
+            actions.append(action)
         updated_by_key[key] = normalized
         if key not in new_key_order:
             new_key_order.append(key)
@@ -693,6 +798,8 @@ def merge_directory(
     merged["wx_id"] = _clean_text(wx_id) or merged.get("wx_id", "")
     merged["updated_at"] = timestamp
     merged["subjects"] = merged_subjects
+    for action in actions:
+        _append_contact_action(merged, action)
     return mark_send_name_conflicts(merged)
 
 
@@ -730,19 +837,23 @@ def sync_identity_calibration_from_directory(
     wx_id: str = "",
     now: Any = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Refresh embedded identity calibration state from the contact directory."""
+    """Return pending contact rename actions and keep calibration state slim."""
     updated = _normalize_directory_shape(directory or {}, wx_id)
-    index = normalize_contact_calibration_state(
-        updated.get("identity_calibration") or default_contact_calibration_state(updated.get("wx_id", "")),
-        wx_id=updated.get("wx_id", ""),
-    )
-    next_index, actions = update_contact_identity_from_directory(
-        index,
-        updated,
-        wx_id=updated.get("wx_id", ""),
-        now=now,
-    )
-    updated["identity_calibration"] = next_index
+    index = updated.get("identity_calibration") if isinstance(updated.get("identity_calibration"), dict) else {}
+    actions = [
+        copy.deepcopy(item)
+        for item in (index.get("actions") or [])
+        if isinstance(item, dict)
+    ]
+    updated["identity_calibration"] = {
+        "actions": [],
+        "pending": [
+            copy.deepcopy(item)
+            for item in (index.get("pending") or [])
+            if isinstance(item, dict)
+        ],
+        "dismissed_pairs": list(index.get("dismissed_pairs") or []),
+    }
     updated["updated_at"] = _iso_timestamp(now)
     return updated, actions
 
@@ -756,7 +867,7 @@ def dismiss_identity_calibration_pending(directory: dict[str, Any], fingerprint:
 
 
 def _is_active_friend(contact: dict[str, Any]) -> bool:
-    return contact.get("subject_type") == "friend" and contact.get("status", "active") == "active"
+    return contact.get("subject_type", "friend") == "friend" and contact.get("status", "active") == "active"
 
 
 def mark_send_name_conflicts(directory: dict[str, Any]) -> dict[str, Any]:
@@ -770,14 +881,14 @@ def mark_send_name_conflicts(directory: dict[str, Any]) -> dict[str, Any]:
         warnings = list(contact.get("warnings") or [])
         contact["warnings"] = _without_warning(warnings, WARNING_DUPLICATE_SEND_NAME)
         if _is_active_friend(contact):
-            send_name = _clean_text(contact.get("send_name"))
+            send_name = contact_send_name(contact)
             if send_name:
                 name_counts[send_name] = name_counts.get(send_name, 0) + 1
 
     for contact in marked["subjects"]:
         if not isinstance(contact, dict) or not _is_active_friend(contact):
             continue
-        send_name = _clean_text(contact.get("send_name"))
+        send_name = contact_send_name(contact)
         if send_name and name_counts.get(send_name, 0) > 1:
             contact["warnings"] = _append_warning(list(contact.get("warnings") or []), WARNING_DUPLICATE_SEND_NAME)
 
@@ -791,7 +902,7 @@ def remark_repair_text(contact: dict[str, Any]) -> str:
         base = current_remark
     else:
         nickname = _clean_text(contact.get("nickname"))
-        send_name = _clean_text(contact.get("send_name"))
+        send_name = contact_send_name(contact)
         if is_searchable_send_name(nickname):
             base = nickname
         elif is_searchable_send_name(send_name):
@@ -824,7 +935,7 @@ def repair_candidates(directory: dict[str, Any]) -> list[dict[str, Any]]:
         candidates.append(
             {
                 "contact_key": contact.get("contact_key", ""),
-                "display_name": contact.get("display_name", ""),
+                "name": contact_display_name(contact),
                 "current_remark": contact.get("remark", ""),
                 "suggested_remark": remark_repair_text(contact),
                 "reasons": reasons,
@@ -852,19 +963,14 @@ def apply_repaired_remark(
             continue
         if contact_identity_key(contact) != target_key:
             continue
+        action = _rename_action(contact, {**contact, "remark": remark}, "remark_repair")
         contact["remark"] = remark
-        contact["display_name"] = remark
-        contact["send_name"] = remark
-        contact["send_name_source"] = "remark"
         contact["last_seen_at"] = _iso_timestamp(now)
         warnings = list(contact.get("warnings") or [])
         warnings = _without_warning(warnings, WARNING_SEND_NAME_UNSEARCHABLE)
         warnings = _without_warning(warnings, WARNING_DUPLICATE_SEND_NAME)
         contact["warnings"] = warnings
-        raw_detail = dict(contact.get("raw_detail") or {})
-        raw_detail["备注"] = remark
-        raw_detail["remark"] = remark
-        contact["raw_detail"] = raw_detail
+        _append_contact_action(updated, action)
         break
 
     updated["updated_at"] = _iso_timestamp(now)
@@ -880,13 +986,7 @@ def _tag_set(value: Any) -> set[str]:
 
 
 def _manual_match_values(contact: dict[str, Any]) -> set[str]:
-    values = {
-        _clean_text(contact.get("remark")),
-        _clean_text(contact.get("nickname")),
-        _clean_text(contact.get("display_name")),
-        _clean_text(contact.get("send_name")),
-    }
-    return {value for value in values if value}
+    return contact_name_values(contact)
 
 
 def resolve_manual_target_names(directory: dict[str, Any], names: Any) -> dict[str, Any]:
@@ -924,7 +1024,7 @@ def resolve_manual_target_names(directory: dict[str, Any], names: Any) -> dict[s
             warnings.append(
                 {
                     "contact_key": match.get("contact_key", ""),
-                    "send_name": match.get("send_name", ""),
+                    "name": contact_display_name(match),
                     "warning": warning,
                     "input": name,
                 }
@@ -967,10 +1067,9 @@ def resolve_target_selector(directory: dict[str, Any], selector: dict[str, Any] 
         excluded.append(
             {
                 "contact": {
-                    "subject_type": "friend",
                     "contact_key": key,
-                    "send_name": "",
-                    "display_name": key,
+                    "name": key,
+                    "send_target": "",
                     "tags": [],
                     "warnings": [],
                 },
@@ -1013,7 +1112,7 @@ def resolve_target_selector(directory: dict[str, Any], selector: dict[str, Any] 
             warnings.append(
                 {
                     "contact_key": contact.get("contact_key", ""),
-                    "send_name": contact.get("send_name", ""),
+                    "name": contact_display_name(contact),
                     "warning": warning,
                 }
             )

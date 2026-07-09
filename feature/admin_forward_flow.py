@@ -41,9 +41,7 @@ def top_contact_tags(directory, *, limit=9):
     for subject in (directory or {}).get("subjects") or []:
         if not isinstance(subject, dict):
             continue
-        if subject.get("subject_type", "friend") != "friend":
-            continue
-        if subject.get("status", "active") != "active":
+        if subject.get("subject_type", "friend") != "friend" or subject.get("status", "active") != "active":
             continue
         for tag in subject.get("tags") or []:
             text = str(tag or "").strip()

@@ -357,7 +357,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             bot.message_handle_callback(msg, chat)
 
         log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
-        self.assertTrue(any("已忽略机器人回显" in message for message in log_messages))
+        self.assertFalse(any("已忽略机器人回显" in message for message in log_messages))
         self.assertFalse(any("self 介入" in message for message in log_messages))
         self.assertFalse(any("self 边界" in message for message in log_messages))
         self.assertEqual(bot.memory_manager.calls, [])

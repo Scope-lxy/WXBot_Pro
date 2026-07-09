@@ -2995,14 +2995,17 @@ class MessageBehaviorTests(unittest.TestCase):
         expected_sequence = bot._get_private_message_sequence("张三")
         chat = FakeChat(bot)
 
-        self.assertEqual(
-            bot._send_private_ai_reply_parts(
-                chat,
-                ["第一段", "第二段", "第三段"],
-                expected_sequence=expected_sequence,
-            ),
-            (True, True),
-        )
+        with mock.patch("wxbot_core.log") as log_mock:
+            self.assertEqual(
+                bot._send_private_ai_reply_parts(
+                    chat,
+                    ["第一段", "第二段", "第三段"],
+                    expected_sequence=expected_sequence,
+                ),
+                (True, True),
+            )
+        log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
+        self.assertFalse(any("已停止发送上一轮剩余回复" in message for message in log_messages))
         self.assertEqual(chat.sent, ["第一段"])
 
     def test_reset_stop_request_allows_next_start(self):

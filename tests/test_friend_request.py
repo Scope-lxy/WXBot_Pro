@@ -26,7 +26,7 @@ class FriendRequestLogicTest(unittest.TestCase):
 
         candidates = friend_request.build_candidates_from_directory(directory, settings)
 
-        self.assertEqual([item["display_name"] for item in candidates], ["瑞东（私人号）", "追梦瑞弟"])
+        self.assertEqual([item["name"] for item in candidates], ["瑞东（私人号）", "追梦瑞弟"])
         self.assertEqual(candidates[0]["sender_kind"], "conversation_verify")
         self.assertEqual(candidates[0]["add_object"], "deleted_me")
 

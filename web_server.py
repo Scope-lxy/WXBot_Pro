@@ -61,6 +61,8 @@ from core.runtime_metrics import RuntimeMetricsStore
 from core.memory import read_memory_original_name, resolve_memory_storage_name
 from core.chat_history_format import format_memory_record_for_display
 from core.contact_profiles import (
+    contact_display_name,
+    contact_send_name,
     default_directory as default_contact_directory,
     dismiss_identity_calibration_pending,
     directory_path as contact_directory_path,
@@ -5777,14 +5779,11 @@ def _contact_profiles_continue_start_name(directory):
     for subject in reversed(subjects or []):
         if not isinstance(subject, dict):
             continue
-        if subject.get('subject_type', 'friend') != 'friend':
+        if subject.get('subject_type', 'friend') != 'friend' or subject.get('status', 'active') != 'active':
             continue
-        if subject.get('status', 'active') != 'active':
-            continue
-        for key in ('send_name', 'remark', 'display_name', 'nickname', 'wechat_id'):
-            value = str(subject.get(key, '') or '').strip()
-            if value:
-                return value
+        value = contact_send_name(subject) or contact_display_name(subject)
+        if value:
+            return value
     return ''
 
 
@@ -5833,24 +5832,21 @@ def _contact_profiles_browser_contacts(directory):
     for subject in directory.get('subjects', []) or []:
         if not isinstance(subject, dict):
             continue
-        if subject.get('subject_type', 'friend') != 'friend':
+        if subject.get('subject_type', 'friend') != 'friend' or subject.get('status', 'active') != 'active':
             continue
-        if subject.get('status', 'active') != 'active':
-            continue
+        name = contact_display_name(subject)
         contacts.append({
             'contact_key': str(subject.get('contact_key', '') or ''),
-            'nickname': str(
-                subject.get('nickname')
-                or subject.get('display_name')
-                or subject.get('send_name')
-                or ''
-            ),
+            'name': name,
+            'send_target': contact_send_name(subject),
+            'nickname': str(subject.get('nickname', '') or ''),
             'remark': str(subject.get('remark', '') or ''),
             'wechat_id': str(subject.get('wechat_id', '') or ''),
+            'wxid': str(subject.get('wxid', '') or ''),
             'tags': list(subject.get('tags', []) or []),
         })
     contacts.sort(key=lambda item: (
-        _wechat_name_sort_key(item.get('nickname') or item.get('wechat_id')),
+        _wechat_name_sort_key(item.get('nickname') or item.get('name') or item.get('wechat_id')),
         str(item.get('contact_key') or ''),
     ))
     return contacts
@@ -5870,19 +5866,12 @@ def _manual_identity_calibration_candidates(wx_id):
 
     directory = _load_contact_profiles_directory(wx_id)
     for subject in directory.get('subjects', []) or []:
-        if not isinstance(subject, dict) or subject.get('subject_type', 'friend') != 'friend':
+        if not isinstance(subject, dict):
             continue
-        if subject.get('status', 'active') != 'active':
+        if subject.get('subject_type', 'friend') != 'friend' or subject.get('status', 'active') != 'active':
             continue
-        for key in ('remark', 'nickname', 'display_name', 'send_name', 'wechat_id'):
-            add_name(subject.get(key), '通讯录')
-
-    identity_state = directory.get('identity_calibration') if isinstance(directory.get('identity_calibration'), dict) else {}
-    for identity in identity_state.get('identities') or []:
-        if not isinstance(identity, dict):
-            continue
-        for key in ('current_chat_name', 'remark', 'nickname', 'display_name', 'send_name', 'wechat_id'):
-            add_name(identity.get(key), '通讯录身份')
+        for value in (contact_display_name(subject), contact_send_name(subject), subject.get('remark'), subject.get('nickname'), subject.get('wechat_id')):
+            add_name(value, '通讯录')
 
     for name in list_memory_chat_names(DATA_DIR, wx_id):
         add_name(name, '聊天记录')
@@ -6002,11 +5991,6 @@ def _contact_profiles_remove_tag(wx_id, tag):
         if new_tags == old_tags:
             continue
         subject['tags'] = new_tags
-        raw_tags = subject.get('raw_tags')
-        if isinstance(raw_tags, (list, tuple, set)):
-            subject['raw_tags'] = new_tags
-        else:
-            subject['raw_tags'] = '，'.join(new_tags)
         changed = True
     if changed:
         directory['updated_at'] = datetime.now().replace(microsecond=0).isoformat()
@@ -6034,14 +6018,12 @@ def _contact_profiles_picker_options(wx_id=''):
     for subject in directory.get('subjects', []) or []:
         if not isinstance(subject, dict):
             continue
-        if subject.get('subject_type', 'friend') != 'friend':
-            continue
-        if subject.get('status', 'active') != 'active':
+        if subject.get('subject_type', 'friend') != 'friend' or subject.get('status', 'active') != 'active':
             continue
         contacts.append({
             'contact_key': str(subject.get('contact_key', '') or ''),
-            'display_name': str(subject.get('display_name', '') or subject.get('send_name', '') or ''),
-            'send_name': str(subject.get('send_name', '') or ''),
+            'name': contact_display_name(subject),
+            'send_target': contact_send_name(subject),
             'tags': list(subject.get('tags', []) or []),
             'warnings': list(subject.get('warnings', []) or []),
         })
@@ -6358,29 +6340,6 @@ def contact_profiles_identity_calibration_merge(fingerprint):
         )
         new_identity_id = str(target.get('new_identity_id') or '').strip()
         old_identity_id = str(target.get('old_identity_id') or '').strip()
-        merged_identities = []
-        for identity in index.get('identities') or []:
-            identity_id = str(identity.get('identity_id') or '').strip()
-            if new_identity_id and identity_id == new_identity_id:
-                continue
-            if identity_id == old_identity_id:
-                identity.update({
-                    'current_chat_name': new_name,
-                    'storage_name': resolve_memory_storage_name(new_name),
-                    'wechat_id': str(new_snapshot.get('wechat_id') or ''),
-                    'remark': str(new_snapshot.get('remark') or ''),
-                    'nickname': str(new_snapshot.get('nickname') or ''),
-                    'display_name': str(new_snapshot.get('display_name') or new_name),
-                    'send_name': str(new_snapshot.get('send_name') or new_name),
-                    'region': str(new_snapshot.get('region') or ''),
-                    'source': str(new_snapshot.get('source') or ''),
-                    'added_at': str(new_snapshot.get('added_at') or ''),
-                    'signature': str(new_snapshot.get('signature') or ''),
-                    'last_seen_at': str(new_snapshot.get('last_seen_at') or identity.get('last_seen_at') or ''),
-                    'updated_at': datetime.now().replace(microsecond=0).isoformat(),
-                })
-            merged_identities.append(identity)
-        index['identities'] = merged_identities
         new_fingerprint_snapshot = json.dumps(new_snapshot, ensure_ascii=False, sort_keys=True)
         index['pending'] = [
             item for item in (index.get('pending') or [])

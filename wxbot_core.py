@@ -165,6 +165,8 @@ from feature.voice_reply import (
     save_voice_reply_state,
 )
 from core.contact_profiles import (
+    contact_display_name,
+    contact_send_name,
     directory_path as contact_directory_path,
     load_directory as load_contact_directory,
     mark_history_target_status,
@@ -1975,6 +1977,11 @@ class WXBot:
                     emitted.add(send_name)
             return names
 
+        def target_send_name(contact):
+            if isinstance(contact, dict):
+                return str(contact.get("send_target") or contact.get("send_name") or contact_send_name(contact) or contact_display_name(contact) or "").strip()
+            return str(contact or "").strip()
+
         if mode not in {"all", "include", "exclude"}:
             return unique_send_names(list(task.get("targets") or []) + manual_names)
         directory, _directory_file, _wx_id = self._load_contact_profiles_directory()
@@ -1988,7 +1995,7 @@ class WXBot:
                 if not isinstance(contact, dict):
                     continue
                 key = str(contact.get("contact_key") or "").strip()
-                send_name = str(contact.get("send_name") or "").strip()
+                send_name = target_send_name(contact)
                 if key:
                     selected_by_key.add(key)
                 if send_name:
@@ -2000,7 +2007,7 @@ class WXBot:
                     if not isinstance(contact, dict):
                         continue
                     key = str(contact.get("contact_key") or "").strip()
-                    send_name = str(contact.get("send_name") or "").strip()
+                    send_name = target_send_name(contact)
                     if key:
                         excluded_keys.add(key)
                     if send_name:
@@ -2013,7 +2020,7 @@ class WXBot:
                     contact for contact in selected
                     if not (
                         str(contact.get("contact_key") or "").strip() in excluded_keys
-                        or str(contact.get("send_name") or "").strip() in excluded_names
+                        or target_send_name(contact) in excluded_names
                     )
                 ]
             else:
@@ -2021,7 +2028,7 @@ class WXBot:
                     if not isinstance(contact, dict):
                         continue
                     key = str(contact.get("contact_key") or "").strip()
-                    send_name = str(contact.get("send_name") or "").strip()
+                    send_name = target_send_name(contact)
                     if (key and key in selected_by_key) or (send_name and send_name in selected_by_send_name):
                         continue
                     selected.append(contact)
@@ -2032,12 +2039,12 @@ class WXBot:
                 for name in manual.get("missing") or []:
                     send_name = str(name or "").strip()
                     if send_name and send_name not in selected_by_send_name:
-                        selected.append({"send_name": send_name})
+                        selected.append({"send_target": send_name, "name": send_name})
                         selected_by_send_name.add(send_name)
         return unique_send_names([
-            str(contact.get("send_name") or "").strip()
+            target_send_name(contact)
             for contact in selected
-            if str(contact.get("send_name") or "").strip()
+            if target_send_name(contact)
         ])
 
     def _run_due_scheduled_message_tasks(self, now=None):
@@ -2540,6 +2547,10 @@ class WXBot:
                 mode = "exclude"
             else:
                 mode = "all"
+        def target_send_name(contact):
+            if isinstance(contact, dict):
+                return str(contact.get("send_target") or contact.get("send_name") or contact_send_name(contact) or contact_display_name(contact) or "").strip()
+            return str(contact or "").strip()
         if manual_names:
             manual = resolve_manual_target_names(directory, manual_names)
             selected = list(resolved.get("selected") or [])
@@ -2550,7 +2561,7 @@ class WXBot:
                     if not isinstance(contact, dict):
                         continue
                     key = str(contact.get("contact_key") or "")
-                    send_name = str(contact.get("send_name") or "")
+                    send_name = target_send_name(contact)
                     if key:
                         excluded_keys.add(key)
                     if send_name:
@@ -2563,7 +2574,7 @@ class WXBot:
                     contact for contact in selected
                     if not (
                         str(contact.get("contact_key") or "") in excluded_keys
-                        or str(contact.get("send_name") or "") in excluded_names
+                        or target_send_name(contact) in excluded_names
                     )
                 ]
             else:
@@ -2573,15 +2584,15 @@ class WXBot:
                     if isinstance(item, dict) and str(item.get("contact_key") or "")
                 }
                 seen_names = {
-                    str(item.get("send_name") or "")
+                    target_send_name(item)
                     for item in selected
-                    if isinstance(item, dict) and str(item.get("send_name") or "")
+                    if isinstance(item, dict) and target_send_name(item)
                 }
                 for contact in manual.get("selected") or []:
                     if not isinstance(contact, dict):
                         continue
                     key = str(contact.get("contact_key") or "")
-                    send_name = str(contact.get("send_name") or "")
+                    send_name = target_send_name(contact)
                     if (key and key in seen_keys) or (send_name and send_name in seen_names):
                         continue
                     selected.append(contact)
@@ -2595,10 +2606,9 @@ class WXBot:
                         continue
                     selected.append(
                         {
-                            "subject_type": "friend",
                             "contact_key": "",
-                            "send_name": send_name,
-                            "display_name": send_name,
+                            "send_target": send_name,
+                            "name": send_name,
                             "tags": [],
                             "warnings": [],
                         }
@@ -2621,7 +2631,7 @@ class WXBot:
         if missing:
             for item in missing:
                 contact = item.get("contact") if isinstance(item.get("contact"), dict) else {}
-                target = contact.get("display_name") or contact.get("contact_key") or ""
+                target = contact.get("name") or contact_display_name(contact) or contact.get("contact_key") or ""
                 skip = build_skip_record(
                     snapshot_task.get("task_id"),
                     target,
@@ -4010,7 +4020,6 @@ class WXBot:
             except Exception:
                 expected_sequence = None
             if expected_sequence is not None and self._get_private_message_sequence(target) != expected_sequence:
-                log(message=f"{log_prefix} {target}：收到新的用户消息，已停止发送上一轮剩余回复")
                 return False
         return True
 
@@ -6938,9 +6947,6 @@ class WXBot:
             else:
                 self._private_outbound_echoes.pop(name, None)
         if matched:
-            source = str(matched.get("source") or "unknown").strip()
-            echo_type = str(matched.get("type") or kind).strip()
-            log(message=f"私聊 {name}：已忽略机器人回显 source={source},type={echo_type}")
             return True
         return False
 

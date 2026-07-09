@@ -11,6 +11,7 @@ from typing import Any
 
 from core.account_storage import account_area_file
 from core.contact_profiles import (
+    contact_name_values,
     contact_identity_key,
     load_directory as load_contact_directory,
     normalize_tag_list,
@@ -348,14 +349,7 @@ def update_state_from_sessions(
 
 
 def _contact_match_values(contact: dict[str, Any]) -> set[str]:
-    values = {
-        _clean_text(contact.get("remark")),
-        _clean_text(contact.get("nickname")),
-        _clean_text(contact.get("display_name")),
-        _clean_text(contact.get("send_name")),
-        _clean_text(contact.get("wechat_id")),
-    }
-    return {value for value in values if value}
+    return contact_name_values(contact)
 
 
 def _relationship_contact_match_map(contacts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -414,7 +408,10 @@ def merge_state_into_contact_directory(directory: dict[str, Any], state: dict[st
     timestamp = _iso_timestamp(now)
     matched_names: dict[str, str] = {}
     changed = False
-    contacts = [contact for contact in (updated.get("subjects") or []) if isinstance(contact, dict)]
+    contacts = [
+        contact for contact in (updated.get("subjects") or [])
+        if isinstance(contact, dict) and contact.get("subject_type", "friend") == "friend"
+    ]
     match_map = _relationship_contact_match_map(contacts)
     for matched_record in records:
         contact = _matched_contact_for_record(matched_record, match_map)
@@ -425,7 +422,6 @@ def merge_state_into_contact_directory(directory: dict[str, Any], state: dict[st
         next_tags = _apply_tags(contact.get("tags"), add_tags=add_tags, remove_tags=remove_tags)
         if next_tags != list(contact.get("tags") or []):
             contact["tags"] = next_tags
-            contact["raw_tags"] = "，".join(next_tags)
             changed = True
         contact["relationship_status"] = status
         contact["relationship_evidence"] = matched_record["evidence"]

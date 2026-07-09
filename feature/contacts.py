@@ -15,7 +15,9 @@ from typing import Any
 
 from core.contact_profiles import (
     apply_repaired_remark,
+    contact_display_name,
     directory_path as contact_directory_path,
+    contact_send_name,
     load_directory as load_contact_directory,
     merge_cli_contact_basics,
     merge_directory as merge_contact_directory,
@@ -423,17 +425,15 @@ def coerce_detail_list(result: Any) -> list[Any]:
 
 def contact_edit_target_name(contact: dict[str, Any]) -> str:
     contact = contact or {}
-    for key in ("send_name", "remark", "nickname", "display_name", "wechat_id"):
-        value = _clean_text(contact.get(key))
-        if value:
-            return value
-    return ""
+    return contact_send_name(contact) or contact_display_name(contact)
 
 
 def contact_expected_chat_names(contact: dict[str, Any], target_name: str = "") -> set[str]:
     contact = contact or {}
     names = {_clean_text(target_name)}
-    for key in ("remark", "nickname", "display_name", "send_name", "wechat_id"):
+    names.add(contact_display_name(contact))
+    names.add(contact_send_name(contact))
+    for key in ("remark", "nickname", "wechat_id", "wxid"):
         names.add(_clean_text(contact.get(key)))
     return {name for name in names if name}
 
@@ -2429,7 +2429,7 @@ def set_contact_profiles_paused(bot, paused=True):
 
 def contact_repair_before_display(contact):
     contact = contact or {}
-    nickname = str(contact.get("nickname") or contact.get("display_name") or "").strip()
+    nickname = contact_display_name(contact)
     wechat_id = str(contact.get("wechat_id") or "").strip()
     parts = [part for part in (nickname, wechat_id) if part]
     return " | ".join(parts) or "未命名联系人"

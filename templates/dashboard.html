@@ -4909,7 +4909,7 @@ $(function(){
     }
     return '' +
       '<div class="contact-directory-contact-item">' +
-        renderValue(contact.nickname) +
+        renderValue(contact.name) +
         renderValue(contact.remark) +
         renderValue(contact.wechat_id) +
       '</div>';
@@ -5054,7 +5054,7 @@ $(function(){
   }
   function identityCalibrationSnapshotLabel(snapshot){
     snapshot = snapshot || {};
-    var name = String(snapshot.current_chat_name || snapshot.remark || snapshot.nickname || snapshot.wechat_id || '').trim() || '未命名';
+    var name = String(snapshot.name || snapshot.old_name || snapshot.new_name || snapshot.remark || snapshot.nickname || snapshot.wechat_id || '').trim() || '未命名';
     var meta = [];
     if(snapshot.remark) meta.push('备注：' + snapshot.remark);
     if(snapshot.nickname) meta.push('昵称：' + snapshot.nickname);
@@ -5481,7 +5481,7 @@ $(function(){
   }
   function renderFriendRequestCandidate(candidate){
     candidate = candidate || {};
-    var name = String(candidate.display_name || candidate.send_name || candidate.conversation_keyword || '未命名').trim();
+    var name = String(candidate.name || candidate.send_target || candidate.conversation_keyword || '未命名').trim();
     var tags = Array.isArray(candidate.tags) ? candidate.tags.join('，') : '';
     var result = String(candidate.last_result || '').trim();
     var displayStatus = candidate.can_run === true ? 'pending' : candidate.status;
@@ -5502,7 +5502,7 @@ $(function(){
   }
   function renderFriendRequestExecution(item){
     item = item || {};
-    var target = String(item.display_name || item.target || '未命名').trim();
+    var target = String(item.name || item.target || '未命名').trim();
     var message = String(item.message || '').trim();
     return ''+
       '<div class="ai-moments-runtime-row friend-request-runtime-row">'+

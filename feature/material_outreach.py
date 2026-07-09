@@ -7,6 +7,7 @@ import random
 import re
 
 from core.media import image_content_hash, is_image_path
+from core.contact_profiles import contact_display_name, contact_send_name
 from feature.material_outreach_preface import normalize_preface_pending_queue
 from feature.task_workbench_runtime_summary import runtime_snapshot
 from core.scheduled_tasks import (
@@ -619,10 +620,12 @@ def _progress_status_label(status, reason):
 
 def _snapshot_contact(contact):
     contact = contact or {}
+    send_name = str(contact.get("send_name") or contact.get("send_target") or contact_send_name(contact) or "").strip()
+    display_name = str(contact.get("display_name") or contact.get("name") or contact_display_name(contact) or send_name).strip()
     return {
         "contact_key": str(contact.get("contact_key") or ""),
-        "send_name": str(contact.get("send_name") or ""),
-        "display_name": str(contact.get("display_name") or contact.get("send_name") or ""),
+        "send_name": send_name,
+        "display_name": display_name,
         "tags": list(contact.get("tags") or []),
         "warnings": list(contact.get("warnings") or []),
     }

@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import Any
 
 from core.account_storage import account_area_file
-from core.contact_profiles import contact_identity_key, directory_path, load_directory, normalize_tag_list
+from core.contact_profiles import (
+    contact_display_name,
+    contact_identity_key,
+    contact_send_name,
+    directory_path,
+    load_directory,
+    normalize_tag_list,
+)
 from core.logger import log
 from feature.friend_request_senders import ConversationVerifySender
 
@@ -229,24 +236,29 @@ def save_state(base_dir: str | Path, state: dict[str, Any]) -> dict[str, Any]:
 
 def normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     tags = normalize_tag_list(candidate.get("tags"))
-    display_name = _clean_text(candidate.get("display_name")) or _clean_text(candidate.get("send_name"))
-    send_name = _clean_text(candidate.get("send_name")) or display_name
-    candidate_id = _clean_text(candidate.get("candidate_id")) or _clean_text(candidate.get("contact_key")) or send_name
+    name = (
+        _clean_text(candidate.get("name"))
+        or _clean_text(candidate.get("display_name"))
+        or _clean_text(candidate.get("send_target"))
+        or _clean_text(candidate.get("send_name"))
+    )
+    send_target = _clean_text(candidate.get("send_target")) or _clean_text(candidate.get("send_name")) or name
+    candidate_id = _clean_text(candidate.get("candidate_id")) or _clean_text(candidate.get("contact_key")) or send_target
     status = _clean_text(candidate.get("status")) or "pending"
     if status not in {"pending", "sent", "skipped", "failed", "accepted", "archived"}:
         status = "pending"
     return {
         "candidate_id": candidate_id,
         "contact_key": _clean_text(candidate.get("contact_key")) or candidate_id,
-        "display_name": display_name,
-        "send_name": send_name,
+        "name": name,
+        "send_target": send_target,
         "remark": _clean_text(candidate.get("remark")),
         "nickname": _clean_text(candidate.get("nickname")),
         "wechat_id": _clean_text(candidate.get("wechat_id")),
         "tags": tags,
         "sender_kind": _clean_text(candidate.get("sender_kind")) or "conversation_verify",
         "add_object": _clean_text(candidate.get("add_object")) or ADD_OBJECT_DELETED_ME,
-        "conversation_keyword": _clean_text(candidate.get("conversation_keyword")) or send_name or display_name,
+        "conversation_keyword": _clean_text(candidate.get("conversation_keyword")) or send_target or name,
         "status": status,
         "last_result": _clean_text(candidate.get("last_result")),
         "last_attempt_at": _clean_text(candidate.get("last_attempt_at")),
@@ -284,19 +296,20 @@ def build_candidates_from_directory(directory: dict[str, Any], settings: dict[st
         if key in seen:
             continue
         seen.add(key)
-        send_name = _clean_text(subject.get("send_name")) or _clean_text(subject.get("remark")) or _clean_text(subject.get("nickname"))
+        send_name = contact_send_name(subject)
+        name = contact_display_name(subject)
         candidates.append(normalize_candidate({
             "candidate_id": key,
             "contact_key": key,
-            "display_name": _clean_text(subject.get("display_name")) or send_name,
-            "send_name": send_name,
+            "name": name,
+            "send_target": send_name,
             "remark": _clean_text(subject.get("remark")),
             "nickname": _clean_text(subject.get("nickname")),
             "wechat_id": _clean_text(subject.get("wechat_id")),
             "tags": tags,
             "sender_kind": "conversation_verify",
             "add_object": ADD_OBJECT_DELETED_ME,
-            "conversation_keyword": send_name or _clean_text(subject.get("display_name")),
+            "conversation_keyword": send_name or name,
             "status": "pending",
         }))
     return candidates
@@ -456,12 +469,12 @@ def record_execution(state: dict[str, Any], candidate: dict[str, Any], result: d
         runtime["today_failed"] = int(runtime.get("today_failed", 0) or 0) + 1
     candidate["last_attempt_at"] = timestamp
     candidate["last_result"] = message
-    runtime["last_result"] = f"{candidate.get('display_name') or candidate.get('send_name')}: {message}"
+    runtime["last_result"] = f"{candidate.get('name') or candidate.get('send_target')}: {message}"
     execution = {
         "at": timestamp,
         "candidate_id": candidate.get("candidate_id"),
         "target": candidate.get("conversation_keyword"),
-        "display_name": candidate.get("display_name"),
+        "name": candidate.get("name"),
         "status": status,
         "message": message,
         "addmsg": addmsg,
@@ -500,7 +513,7 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
     if not acquired:
         message = "微信操作锁占用中，稍后会自动重试"
         candidate["last_result"] = message
-        state.setdefault("runtime", {})["last_result"] = f"{candidate.get('display_name') or candidate.get('send_name')}: {message}"
+        state.setdefault("runtime", {})["last_result"] = f"{candidate.get('name') or candidate.get('send_target')}: {message}"
         state = save_state(bot.config.DATA_DIR, state)
         return {"status": "skipped", "message": message, "payload": friend_request_payload(state)}
     addmsg = ""
@@ -512,7 +525,7 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
                 bot,
                 candidate.get("conversation_keyword"),
                 addmsg=addmsg,
-                remark=candidate.get("remark") or candidate.get("display_name") or candidate.get("conversation_keyword"),
+                remark=candidate.get("remark") or candidate.get("name") or candidate.get("conversation_keyword"),
                 tags=settings.get("success_tags") or [],
                 permission=settings.get("permission") or "不设置",
             )
@@ -531,8 +544,8 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
         pass
     status = _clean_text(result.get("status"))
     target_label = (
-        _clean_text(candidate.get("display_name"))
-        or _clean_text(candidate.get("send_name"))
+        _clean_text(candidate.get("name"))
+        or _clean_text(candidate.get("send_target"))
         or _clean_text(candidate.get("conversation_keyword"))
         or "未知好友"
     )

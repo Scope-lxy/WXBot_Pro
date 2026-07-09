@@ -119,7 +119,7 @@
 
 私聊好友输入在 `_enqueue_private_message_for_ai()` 里会先调用 `_save_private_incoming_memory_message()` 落到本地聊天记录，再进入连续消息合并队列；这只是对方输入的预写，不是提前写 AI 输出。随后 `wx_send_ai()` 在 `_get_model_context_history()` 之前调用 `_repair_private_context_before_ai()`，让模型拿到的 history 尽量贴近微信窗口真实尾部。普通私聊 `self` 消息只在排除机器人回复回显后作为手动接管处理：写入本地聊天记录、推进该好友消息序号并清旧 AI 回复，不主动触发 AI；下一条好友消息会重新走 AI 流程，并在 history 里带上这条手动 `self`。
 
-机器人自己发出的私聊消息用内存态 outbound echo 账本过滤微信 `self` 回调，避免语音、图片、文件、关键词回复、定时消息、素材转发或自定义转发被误判成手机手动回复。登记只面向普通私聊，不作用于管理员窗口和群聊；文本按同好友 + 完全文本匹配，非文本按同好友 + 类型匹配并只消费一次；文本 TTL 为 60 秒，已知非文本 TTL 为 60 秒，未知非文本 TTL 为 30 秒，每个好友最多保留 20 条。成功忽略时日志格式为 `私聊 {name}：已忽略机器人回显 source=...,type=...`。覆盖入口包括 AI 文本 / 语音回复、轻量延后发送队列、运行时发送、关键词回复、定时消息、自定义转发、普通素材转发和 AI 自动素材转发。自动通讯录维护、关系自动扫描回退微信 UI、自动微信标签同步这类低优先级 UI 任务启动前会检查是否还有未消费 outbound echo；有则跳过本轮或延后，echo 被消费或过期后再启动，避免刚发出的机器人消息还没回显就被长 UI 任务抢走窗口。定时消息虽然按最多 9 人分批，但真实发送层仍逐好友逐内容调用 `send_text_to_target` / `send_file_to_target`，所以逐目标登记；素材转发可能一次 `message.forward(targets)` 发给 1-9 人，整批成功后会对每个目标分别登记。微信 `forward` 返回值如果只给整批成败，代码无法区分批内个别目标失败，这是微信自动化接口返回粒度边界；不要为了这个边界把素材转发改成逐人转发，除非未来确认微信接口能稳定暴露逐目标结果。
+机器人自己发出的私聊消息用内存态 outbound echo 账本过滤微信 `self` 回调，避免语音、图片、文件、关键词回复、定时消息、素材转发或自定义转发被误判成手机手动回复。登记只面向普通私聊，不作用于管理员窗口和群聊；文本按同好友 + 完全文本匹配，非文本按同好友 + 类型匹配并只消费一次；文本 TTL 为 60 秒，已知非文本 TTL 为 60 秒，未知非文本 TTL 为 30 秒，每个好友最多保留 20 条。成功忽略回显时不写日志。覆盖入口包括 AI 文本 / 语音回复、轻量延后发送队列、运行时发送、关键词回复、定时消息、自定义转发、普通素材转发和 AI 自动素材转发。自动通讯录维护、关系自动扫描回退微信 UI、自动微信标签同步这类低优先级 UI 任务启动前会检查是否还有未消费 outbound echo；有则跳过本轮或延后，echo 被消费或过期后再启动，避免刚发出的机器人消息还没回显就被长 UI 任务抢走窗口。定时消息虽然按最多 9 人分批，但真实发送层仍逐好友逐内容调用 `send_text_to_target` / `send_file_to_target`，所以逐目标登记；素材转发可能一次 `message.forward(targets)` 发给 1-9 人，整批成功后会对每个目标分别登记。微信 `forward` 返回值如果只给整批成败，代码无法区分批内个别目标失败，这是微信自动化接口返回粒度边界；不要为了这个边界把素材转发改成逐人转发，除非未来确认微信接口能稳定暴露逐目标结果。
 
 ### 6. 保存配置后的运行中同步
 
@@ -171,7 +171,7 @@
 - `data/system_prompts/`：系统 Prompt 片段及其备份
 - `data/accounts/<wx_id>/memory/`：聊天记录
 - `data/accounts/<wx_id>/chat_memory/`：会话记忆 JSON 真源
-- `data/accounts/<wx_id>/contact_profiles/contacts.json`：通讯录档案真源，内嵌联系人身份校准状态和等待校准项
+- `data/accounts/<wx_id>/contact_profiles/contacts.json`：通讯录档案真源，使用 schema v2 瘦身结构；联系人只落盘 `contact_key`、`wechat_id`、`wxid`、`remark`、`nickname`、地区/来源/添加时间/签名、标签、状态、告警和必要运行时间戳。不要再把 `display_name`、`send_name`、`send_name_source`、`current_chat_name`、`storage_name`、`raw_detail`、`raw_tags` 或完整 `identities` 表写回通讯录。
 - `data/accounts/<wx_id>/contact_merge_backups/`：联系人合并前的账号级保险备份
 - `data/accounts/<wx_id>/tasks/keyword_reply/`、`custom_forward/`、`scheduled_message/`、`material_outreach/`、`moments/`：各任务模块的规则、运行态和历史记录
 - `data/accounts/<wx_id>/relationship_scan/relationships.json`：关系扫描结果
@@ -193,6 +193,7 @@
 - 高风险补洞默认关闭；只在低风险补洞无法对齐、`memory_context_repair_high_risk_switch=True`、高风险冷却允许、微信操作锁可用时触发。UI 历史读取内部上限 `50`，同会话冷却 `3600` 秒；它允许滚动当前微信窗口，属于用户显式选择的高风险 UI 补洞。
 - 补洞日志要克制且按来源统一：CLI 直接成功只写 `上下文 CLI 补洞完成，补入 N 条`，不输出 target/source/elapsed 等诊断详情；CLI 最终失败写 `WARNING`，格式为 `上下文 CLI 补洞失败，原因：...；...`，常见 wechat-cli 英文错误先转成可读中文；第二次连续失败切换低风险 UI 兜底时，再写 `上下文 UI 兜底补洞完成，补入 N 条`。成功 TTL / 高风险冷却中属于正常让路，不写日志；低风险 `GetAllMessage()` 超过 `20` 秒仍保留 `WARNING` 慢操作告警，方便观察微信 UI 卡顿；真正失败和高风险读取异常继续告警。
 - 通讯录维护只有一个事实源：`contact_profiles/contacts.json`。`wechat_cli_enabled=true` 时，手动 `立即建档` 优先使用 `wechat-cli contacts` 提取最多 `10000` 个可读好友的基础资料并直接合并进通讯录；CLI 不可用或禁用时回退 wxautox4 分批读取。自动维护仍固定走微信界面分批读取完整资料，但 UI 采集必须通过 `feature/contact_auto_collector_worker.py` 最小子进程执行；主进程负责非阻塞拿微信 UI 锁、5 分钟硬超时、PID 级 `kill` / Windows `taskkill /T /F` 兜底和 `SwitchToChat` 恢复，拿到 raw 数据后再做本地合并、游标推进和身份同步，不要把本地保存重新塞回 UI 锁内。CLI 基础资料自动同步只在 CLI 开启时按通讯录状态或间隔到期触发；失败后冷却 30 分钟再试。CLI 同步只更新昵称、备注、wxid 等基础字段，不写 `last_full_scan_completed_at`，也不清空 UI 才能拿到的地区、来源、添加时间、标签、个性签名等资料。发送、改备注、打标签等写操作仍只能走 wxautox4。
+- 通讯录 v2 的展示名和发送目标必须通过 `core.contact_profiles.contact_display_name()` / `contact_send_name()` 派生；通讯录相关新接口返回 `name` / `send_target`，不要继续新增或恢复 `display_name` / `send_name` 作为联系人接口字段。素材转发等历史运行记录里已有的旧字段只作为任务历史兼容读取，不代表联系人事实源。
 - 关系扫描在 CLI 开启时优先使用本地会话快照：自动 CLI 扫描固定 `1000` 会话 / `6000` 秒，手动立即扫描 `1000` 会话，手动全量扫描最多 `10000` 会话。CLI 禁用或自动扫描本地源失败时，后台自动扫描只尝试非阻塞 wxauto 当前会话列表兜底，不滚动、不抢锁；手动全量扫描才允许滚动微信界面。删除 / 拉黑状态只看会话最后一条消息是否命中对应提示，不搜索旧历史。
 - 图片回复先为本地记忆生成结构化视觉笔记，再按“最终回复接口是否支持视觉”分两条路径：支持视觉时把 `image_path/image_paths` 传给回复接口；不支持视觉时复用视觉笔记，把它贴近当前 user 消息交给主回复模型。`image_parse.md` 只放图片处理规则，不再塞具体图片解析结果。
 - 图片消息本地记忆使用 `[图片]` + `image_paths` + `visual_notes`。AI 可见 `history` 统一走 `core/chat_history_format.py::build_model_visible_history(...)` 渲染，不把本地绝对路径喂给 AI；历史图片等媒体消息作为最近 N 条真实消息的一部分保留，不再按媒体条数单独裁剪。语音在面板展示保留 `[语音]文本`，AI 可见 history 和当前轮输入只传转写正文，不带 `[语音]` 标签或语音时长；旧回复若已把 `[语音]` 当普通文本写入记忆，模型可见层会剥掉开头标签，不需要清库。语音转文字失败或空内容不作为普通聊天内容污染 history。链接、小程序、视频、名片等保留必要类型壳和语义内容，视频去掉“下载”按钮字样但保留时长。
