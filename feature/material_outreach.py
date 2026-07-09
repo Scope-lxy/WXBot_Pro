@@ -620,8 +620,18 @@ def _progress_status_label(status, reason):
 
 def _snapshot_contact(contact):
     contact = contact or {}
-    send_name = str(contact.get("send_name") or contact.get("send_target") or contact_send_name(contact) or "").strip()
-    display_name = str(contact.get("display_name") or contact.get("name") or contact_display_name(contact) or send_name).strip()
+    send_name = str(
+        contact.get("send_target")
+        or contact.get("send_name")
+        or contact_send_name(contact)
+        or ""
+    ).strip()
+    display_name = str(
+        contact.get("name")
+        or contact.get("display_name")
+        or contact_display_name(contact)
+        or send_name
+    ).strip()
     return {
         "contact_key": str(contact.get("contact_key") or ""),
         "send_name": send_name,

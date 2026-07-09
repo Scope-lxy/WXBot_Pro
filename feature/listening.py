@@ -1094,12 +1094,16 @@ def send_group_welcome_msg(bot, chat, message):
         new_friend = find_new_group_friend(message.content, 1)
         _bot_log(bot, message=f"{chat.who} 新群友:" + new_friend)
         _bot_sleep(bot, 5)
-        result = chat.SendMsg(msg=bot.config.group_welcome_msg, at=new_friend)
+        with bot._get_wechat_action_lock():
+            with bot._get_chat_send_lock(chat.who):
+                result = chat.SendMsg(msg=bot.config.group_welcome_msg, at=new_friend)
     elif "加入了群聊" in message.content and random.random() < bot.config.group_welcome_random:
         new_friend = find_new_group_friend(message.content, 3)
         _bot_log(bot, message=f"{chat.who} 新群友:" + new_friend)
         _bot_sleep(bot, 5)
-        result = chat.SendMsg(msg=bot.config.group_welcome_msg, at=new_friend)
+        with bot._get_wechat_action_lock():
+            with bot._get_chat_send_lock(chat.who):
+                result = chat.SendMsg(msg=bot.config.group_welcome_msg, at=new_friend)
 
     return result
 
@@ -1202,7 +1206,8 @@ def new_msg_get_plus(chat_records):
 
 
 def next_message_handle(bot):
-    all_message = bot.wx.GetAllMessage()
+    with bot._get_wechat_action_lock():
+        all_message = bot.wx.GetAllMessage()
     return new_msg_get_plus(all_message)
 
 

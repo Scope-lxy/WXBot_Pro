@@ -5045,30 +5045,36 @@ $(function(){
     reason = String(reason || '').trim();
     if(reason === 'conflict_wechat_id') return '微信号重复';
     if(reason === 'conflict_remark') return '备注重复';
-    if(reason === 'conflict_no_remark_snapshot') return '昵称+来源+添加时间重复';
-    if(reason === 'same_no_remark_snapshot') return '无备注资料相同';
     if(reason === 'same_nickname_source_added') return '昵称+来源+添加时间相同';
     if(reason === 'same_remark') return '备注相同';
     if(reason === 'same_wechat_id') return '微信号相同';
     return reason || '需要确认';
   }
-  function identityCalibrationSnapshotLabel(snapshot){
-    snapshot = snapshot || {};
-    var name = String(snapshot.name || snapshot.old_name || snapshot.new_name || snapshot.remark || snapshot.nickname || snapshot.wechat_id || '').trim() || '未命名';
+  function identityCalibrationPersonLabel(person){
+    person = person || {};
+    var name = String(person.name || person.old_name || person.new_name || person.remark || person.nickname || person.wechat_id || '').trim() || '未命名';
     var meta = [];
-    if(snapshot.remark) meta.push('备注：' + snapshot.remark);
-    if(snapshot.nickname) meta.push('昵称：' + snapshot.nickname);
-    if(snapshot.wechat_id) meta.push('微信号：' + snapshot.wechat_id);
+    if(person.remark) meta.push('备注：' + person.remark);
+    if(person.nickname) meta.push('昵称：' + person.nickname);
+    if(person.wechat_id) meta.push('微信号：' + person.wechat_id);
     return '<strong title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</strong>' +
       (meta.length ? '<small title="'+escapeHtml(meta.join(' / '))+'">'+escapeHtml(meta.join(' / '))+'</small>' : '');
   }
   function renderIdentityCalibrationItem(item){
     item = item || {};
     var fingerprint = String(item.fingerprint || '').trim();
+    var newPerson = {
+      name: item.new_name || '',
+      wechat_id: item.new_wechat_id || ''
+    };
+    var oldPerson = {
+      name: item.old_name || '',
+      wechat_id: item.old_wechat_id || ''
+    };
     return ''+
       '<div class="relationship-scan-row identity-calibration-row" data-identity-fingerprint="'+escapeHtml(fingerprint)+'">'+
-        '<span class="identity-calibration-person">'+identityCalibrationSnapshotLabel(item.new_snapshot || {})+'</span>'+
-        '<span class="identity-calibration-person">'+identityCalibrationSnapshotLabel(item.old_snapshot || {})+'</span>'+
+        '<span class="identity-calibration-person">'+identityCalibrationPersonLabel(newPerson)+'</span>'+
+        '<span class="identity-calibration-person">'+identityCalibrationPersonLabel(oldPerson)+'</span>'+
         '<span title="'+escapeHtml(item.reason || '')+'">'+escapeHtml(identityCalibrationReasonLabel(item.reason))+'</span>'+
         '<span class="identity-calibration-actions">'+
           '<button type="button" class="ui-btn ui-btn--primary ui-btn--l4" data-identity-calibration-merge="'+escapeHtml(fingerprint)+'">合并</button>'+

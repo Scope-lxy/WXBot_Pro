@@ -286,7 +286,7 @@ def build_candidates_from_directory(directory: dict[str, Any], settings: dict[st
     for subject in directory.get("subjects") or []:
         if not isinstance(subject, dict):
             continue
-        if subject.get("subject_type", "friend") != "friend" or subject.get("status", "active") != "active":
+        if subject.get("status", "active") != "active":
             continue
         tags = normalize_tag_list(subject.get("tags"))
         tag_set = set(tags)

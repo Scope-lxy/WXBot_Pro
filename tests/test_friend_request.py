@@ -14,10 +14,10 @@ class FriendRequestLogicTest(unittest.TestCase):
     def test_build_candidates_from_directory_filters_tags(self):
         directory = {
             "subjects": [
-                {"subject_type": "friend", "status": "active", "remark": "瑞东（私人号）", "tags": ["删除我的人"]},
-                {"subject_type": "friend", "status": "active", "remark": "追梦瑞弟", "tags": ["删除我的人", "黑名单"]},
-                {"subject_type": "friend", "status": "active", "remark": "普通好友", "tags": ["普通"]},
-                {"subject_type": "group", "status": "active", "remark": "群", "tags": ["删除我的人"]},
+                {"status": "active", "remark": "瑞东（私人号）", "tags": ["删除我的人"]},
+                {"status": "active", "remark": "追梦瑞弟", "tags": ["删除我的人", "黑名单"]},
+                {"status": "active", "remark": "普通好友", "tags": ["普通"]},
+                {"status": "missing", "remark": "旧联系人", "tags": ["删除我的人"]},
             ]
         }
         settings = friend_request.normalize_settings({

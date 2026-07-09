@@ -5,32 +5,20 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.account_storage import account_area_dir
-from core.contact_profiles import merge_directory
+from core.contact_profiles import (
+    dismiss_identity_calibration_pending as dismiss_contact_profile_pending,
+    load_directory as load_contact_directory,
+    merge_directory,
+    sync_identity_calibration_from_directory,
+)
 from core.contact_identity import (
-    add_pending,
-    default_calibration_state,
-    dismiss_pending,
-    match_identity,
     reconcile_contact_storage,
     sync_contact_task_names,
     sync_relationship_scan_names,
-    update_calibration_from_directory,
 )
 from core.memory import resolve_memory_storage_name
 import web_server
-
-
-def snapshot(**kwargs):
-    base = {
-        "current_chat_name": kwargs.get("current_chat_name", kwargs.get("remark") or kwargs.get("nickname") or ""),
-        "wechat_id": kwargs.get("wechat_id", ""),
-        "remark": kwargs.get("remark", ""),
-        "nickname": kwargs.get("nickname", ""),
-        "source": kwargs.get("source", ""),
-        "added_at": kwargs.get("added_at", ""),
-    }
-    base.update(kwargs)
-    return base
+from wxbot_core import WXBot
 
 
 def directory(*contacts):
@@ -44,112 +32,17 @@ def contact(**kwargs):
     remark = kwargs.get("remark", "")
     nickname = kwargs.get("nickname", "")
     wechat_id = kwargs.get("wechat_id", "")
-    raw = {
-        "备注": remark,
-        "昵称": nickname,
-        "微信号": wechat_id,
-        "来源": kwargs.get("source", ""),
-        "添加时间": kwargs.get("added_at", ""),
-    }
     return {
-        "subject_type": "friend",
         "status": "active",
         "remark": remark,
         "nickname": nickname,
         "wechat_id": wechat_id,
-        "display_name": remark or nickname or wechat_id,
-        "send_name": remark or nickname or wechat_id,
-        "raw_detail": raw,
+        "source": kwargs.get("source", ""),
+        "added_at": kwargs.get("added_at", ""),
     }
 
 
 class ContactIdentityTests(unittest.TestCase):
-    def test_same_wechat_id_matches_after_name_change(self):
-        old = snapshot(current_chat_name="A0-努力", wechat_id="wxid_1", remark="A0-努力", nickname="皖君")
-        new = snapshot(current_chat_name="A0-努力加油", wechat_id="wxid_1", remark="A0-努力加油", nickname="皖君")
-
-        matched, reason = match_identity(new, [old])
-
-        self.assertEqual(reason, "wechat_id")
-        self.assertEqual(matched["current_chat_name"], "A0-努力")
-
-    def test_unique_remark_matches_but_duplicate_remark_conflicts(self):
-        new = snapshot(current_chat_name="A0-努力", wechat_id="wxid_new", remark="A0-努力", nickname="新昵称")
-        matched, reason = match_identity(new, [snapshot(current_chat_name="旧名", wechat_id="wxid_old", remark="A0-努力")])
-        self.assertEqual(reason, "unique_remark")
-        self.assertEqual(matched["remark"], "A0-努力")
-
-        duplicated, duplicate_reason = match_identity(new, [
-            snapshot(current_chat_name="旧名1", wechat_id="wxid_1", remark="A0-努力"),
-            snapshot(current_chat_name="旧名2", wechat_id="wxid_2", remark="A0-努力"),
-        ])
-        self.assertIsNone(duplicated)
-        self.assertEqual(duplicate_reason, "conflict_remark")
-
-    def test_no_remark_nickname_source_added_matches_only_when_unique_and_only_wechat_id_changed(self):
-        old = snapshot(current_chat_name="努力", wechat_id="wxid_old", nickname="努力", source="通过扫一扫添加", added_at="2024-10-17")
-        new = snapshot(current_chat_name="努力", wechat_id="wxid_new", nickname="努力", source="通过扫一扫添加", added_at="2024-10-17")
-
-        matched, reason = match_identity(new, [old], incoming_snapshots=[new])
-
-        self.assertEqual(reason, "no_remark_snapshot")
-        self.assertEqual(matched["wechat_id"], "wxid_old")
-
-        changed_nickname = snapshot(current_chat_name="摸鱼", wechat_id="wxid_new", nickname="摸鱼", source="通过扫一扫添加", added_at="2024-10-17")
-        matched, reason = match_identity(changed_nickname, [old], incoming_snapshots=[changed_nickname])
-        self.assertIsNone(matched)
-        self.assertEqual(reason, "new_or_pending")
-
-    def test_no_remark_missing_wechat_id_reuses_identical_snapshot_without_pending(self):
-        first, actions = update_calibration_from_directory(default_calibration_state("wxid_test"), directory(
-            contact(nickname="努力", source="通过扫一扫添加", added_at="2024-10-17"),
-        ), wx_id="wxid_test")
-        repeated, actions = update_calibration_from_directory(first, directory(
-            contact(nickname="努力", source="通过扫一扫添加", added_at="2024-10-17"),
-        ), wx_id="wxid_test")
-
-        self.assertEqual(actions, [])
-        self.assertEqual(len(repeated["identities"]), 1)
-        self.assertEqual([item for item in repeated["pending"] if item.get("status") == "pending"], [])
-
-    def test_weak_source_added_or_nickname_alone_does_not_create_pending(self):
-        index = {
-            **default_calibration_state("wxid_test"),
-            "identities": [
-                snapshot(current_chat_name="旧1", wechat_id="wxid_1", nickname="同昵称"),
-                snapshot(current_chat_name="旧2", wechat_id="wxid_2", nickname="其他", source="通过扫一扫添加", added_at="2024-10-17"),
-            ],
-        }
-        updated, actions = update_calibration_from_directory(index, directory(
-            contact(wechat_id="wxid_3", nickname="同昵称"),
-            contact(wechat_id="wxid_4", nickname="新人", source="通过扫一扫添加", added_at="2024-10-17"),
-        ), wx_id="wxid_test")
-
-        self.assertEqual(actions, [])
-        self.assertEqual([item for item in updated["pending"] if item.get("status") == "pending"], [])
-
-    def test_conflict_generates_pending_and_dismiss_prevents_reprompt(self):
-        index = {
-            **default_calibration_state("wxid_test"),
-            "identities": [
-                snapshot(current_chat_name="旧1", wechat_id="wxid_1", remark="同备注"),
-                snapshot(current_chat_name="旧2", wechat_id="wxid_2", remark="同备注"),
-            ],
-        }
-        updated, _actions = update_calibration_from_directory(index, directory(
-            contact(wechat_id="wxid_3", remark="同备注", nickname="新"),
-        ), wx_id="wxid_test")
-
-        pending = [item for item in updated["pending"] if item.get("status") == "pending"]
-        self.assertEqual(len(pending), 2)
-
-        dismissed = dismiss_pending(updated, pending[0]["fingerprint"])
-        repeated, _actions = update_calibration_from_directory(dismissed, directory(
-            contact(wechat_id="wxid_4", remark="同备注", nickname="新2"),
-        ), wx_id="wxid_test")
-        fingerprints = {item["fingerprint"] for item in repeated["pending"] if item.get("status") == "pending"}
-        self.assertNotIn(pending[0]["fingerprint"], fingerprints)
-
     def test_reconcile_storage_merges_memory_conversation_config_and_relationship_scan(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -402,19 +295,6 @@ class ContactIdentityTests(unittest.TestCase):
             self.assertEqual(record["evidence"], "新证据")
             self.assertEqual(record["changed_at"], "2026-06-15T10:00:00")
 
-    def test_pending_item_records_new_identity_id_for_manual_merge(self):
-        index = default_calibration_state("wxid_test")
-        index["identities"] = [snapshot(current_chat_name="旧", wechat_id="wxid_old", remark="同备注")]
-        index = add_pending(
-            index,
-            index["identities"][0],
-            snapshot(current_chat_name="新", wechat_id="wxid_new", remark="同备注"),
-            reason="conflict_remark",
-            new_identity_id="person_new",
-        )
-
-        self.assertEqual(index["pending"][0]["new_identity_id"], "person_new")
-
     def test_sync_contact_task_names_replaces_exact_values_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -434,6 +314,164 @@ class ContactIdentityTests(unittest.TestCase):
             self.assertEqual(data[0]["sources"], ["新"])
             self.assertEqual(data[0]["targets"], ["新", "新"])
             self.assertEqual(data[0]["note"], "旧同学")
+
+    def test_v2_dismiss_keeps_actions_and_does_not_restore_identity_table(self):
+        directory_payload = {
+            "schema_version": 2,
+            "wx_id": "wxid_test",
+            "subjects": [],
+            "identity_calibration": {
+                "actions": [{"type": "rename", "old_chat_name": "旧", "new_chat_name": "新"}],
+                "pending": [{
+                    "fingerprint": "fp1",
+                    "status": "pending",
+                    "old_name": "旧",
+                    "new_name": "新",
+                }],
+                "dismissed_pairs": [],
+            },
+        }
+
+        updated = dismiss_contact_profile_pending(directory_payload, "fp1")
+
+        state = updated["identity_calibration"]
+        self.assertEqual(state["actions"], [{"type": "rename", "old_chat_name": "旧", "new_chat_name": "新"}])
+        self.assertNotIn("identities", state)
+        self.assertEqual(state["dismissed_pairs"], ["fp1"])
+        self.assertEqual(state["pending"][0]["status"], "dismissed")
+
+    def test_v2_load_directory_strips_legacy_contact_archive_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "contacts.json"
+            path.write_text(json.dumps({
+                "schema_version": 2,
+                "wx_id": "wxid_test",
+                "identity_calibration": {
+                    "actions": [],
+                    "pending": [{
+                        "fingerprint": "fp1",
+                        "status": "pending",
+                        "reason": "conflict",
+                        "old_name": "旧",
+                        "new_name": "新",
+                        "old_snapshot": {"current_chat_name": "旧"},
+                        "new_snapshot": {"current_chat_name": "新"},
+                    }],
+                    "dismissed_pairs": [],
+                },
+                "subjects": [
+                    {
+                        "subject_type": "group",
+                        "contact_key": "legacy:1",
+                        "remark": "好友",
+                        "display_name": "旧显示名",
+                        "send_name": "旧发送名",
+                        "raw_detail": {"备注": "旧详情"},
+                        "raw_tags": ["旧标签"],
+                        "status": "active",
+                    },
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+
+            directory_payload = load_contact_directory(path, wx_id="wxid_test")
+
+        self.assertEqual(len(directory_payload["subjects"]), 1)
+        subject = directory_payload["subjects"][0]
+        self.assertEqual(subject["contact_key"], "legacy:1")
+        self.assertEqual(subject["remark"], "好友")
+        self.assert_no_legacy_contact_keys(directory_payload)
+
+    def assert_no_legacy_contact_keys(self, payload):
+        legacy_keys = {
+            "subject_type",
+            "display_name",
+            "send_name",
+            "send_name_source",
+            "raw_detail",
+            "raw_tags",
+            "identity_confidence",
+            "identity_source",
+            "current_chat_name",
+            "storage_name",
+            "identities",
+            "old_snapshot",
+            "new_snapshot",
+            "old_identity_id",
+            "new_identity_id",
+        }
+
+        def walk(value, path="root"):
+            if isinstance(value, dict):
+                for key, item in value.items():
+                    self.assertNotIn(key, legacy_keys, f"{path}.{key}")
+                    walk(item, f"{path}.{key}")
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    walk(item, f"{path}[{index}]")
+
+        walk(payload)
+
+    def test_failed_identity_action_is_kept_for_retry(self):
+        class FakeBot:
+            wx_id = "wxid_test"
+
+            def __init__(self):
+                self.saved_directory = None
+
+            def _reconcile_identity_storage(self, *_args, **_kwargs):
+                return None
+
+            def _save_contact_profiles_directory(self, directory_payload):
+                self.saved_directory = directory_payload
+
+        bot = FakeBot()
+        directory_payload = {
+            "wx_id": "wxid_test",
+            "subjects": [],
+            "identity_calibration": {
+                "actions": [{"type": "rename", "old_chat_name": "旧", "new_chat_name": "新"}],
+                "pending": [],
+                "dismissed_pairs": [],
+            },
+        }
+
+        updated = WXBot._sync_contact_identity_from_contact_directory(bot, directory_payload)
+
+        self.assertIs(updated, bot.saved_directory)
+        actions = updated["identity_calibration"]["actions"]
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["old_chat_name"], "旧")
+        self.assertEqual(actions[0]["new_chat_name"], "新")
+        self.assertEqual(actions[0]["last_error"], "reconcile_failed")
+
+    def test_successful_identity_action_is_removed_after_storage_merge(self):
+        class FakeBot:
+            wx_id = "wxid_test"
+
+            def __init__(self):
+                self.saved_directory = None
+
+            def _reconcile_identity_storage(self, *_args, **_kwargs):
+                return {"changed": True}
+
+            def _save_contact_profiles_directory(self, directory_payload):
+                self.saved_directory = directory_payload
+
+        bot = FakeBot()
+        directory_payload = {
+            "wx_id": "wxid_test",
+            "subjects": [],
+            "identity_calibration": {
+                "actions": [{"type": "rename", "old_chat_name": "旧", "new_chat_name": "新"}],
+                "pending": [],
+                "dismissed_pairs": [],
+            },
+        }
+
+        updated = WXBot._sync_contact_identity_from_contact_directory(bot, directory_payload)
+
+        self.assertIs(updated, bot.saved_directory)
+        self.assertEqual(updated["identity_calibration"]["actions"], [])
 
 
 if __name__ == "__main__":

@@ -79,6 +79,27 @@ def listen_chat_has_method(chat, method_name):
     return bool(chat and not isinstance(chat, dict) and callable(getattr(chat, method_name, None)))
 
 
+def _acquire_wechat_action_lock(bot):
+    getter = getattr(bot, "_get_wechat_action_lock", None)
+    if not callable(getter):
+        return None, True
+    lock = getter()
+    if lock is None:
+        return None, True
+    acquire = getattr(lock, "acquire", None)
+    release = getattr(lock, "release", None)
+    if not (callable(acquire) and callable(release)):
+        return None, True
+    if not acquire(blocking=False):
+        return None, False
+    return lock, True
+
+
+def _release_wechat_action_lock(lock):
+    if lock is not None:
+        lock.release()
+
+
 def remove_listen_chat(bot, name):
     if not hasattr(bot, "_listen_chats") or bot._listen_chats is None:
         bot._listen_chats = {}
@@ -86,56 +107,74 @@ def remove_listen_chat(bot, name):
 
 
 def send_text_to_target(bot, target, msg):
-    chat = get_listen_chat(bot, target)
-    if listen_chat_has_method(chat, "SendMsg"):
-        with bot._get_chat_send_lock(target):
-            result = chat.SendMsg(msg)
-            remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
-            if callable(remember_echo):
-                remember_echo(target, result, "text", msg, source="runtime_send")
-            return result
-    verifier = getattr(bot, "_verified_send_chat", None)
-    if callable(verifier):
-        verified = verifier(target, chat)
-        if verified:
-            remember_listen_chat(bot, target, verified)
+    lock, acquired = _acquire_wechat_action_lock(bot)
+    if not acquired:
+        sender = getattr(bot, "_send_text_to_target_without_child", None)
+        if callable(sender):
+            return sender(target, msg)
+        return False
+    try:
+        chat = get_listen_chat(bot, target)
+        if listen_chat_has_method(chat, "SendMsg"):
             with bot._get_chat_send_lock(target):
-                result = verified.SendMsg(msg)
+                result = chat.SendMsg(msg)
                 remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
                 if callable(remember_echo):
                     remember_echo(target, result, "text", msg, source="runtime_send")
                 return result
-        if chat:
-            remove_listen_chat(bot, target)
-    sender = getattr(bot, "_send_text_to_target_without_child", None)
-    if callable(sender):
-        return sender(target, msg)
-    return False
+        verifier = getattr(bot, "_verified_send_chat", None)
+        if callable(verifier):
+            verified = verifier(target, chat)
+            if verified:
+                remember_listen_chat(bot, target, verified)
+                with bot._get_chat_send_lock(target):
+                    result = verified.SendMsg(msg)
+                    remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
+                    if callable(remember_echo):
+                        remember_echo(target, result, "text", msg, source="runtime_send")
+                    return result
+            if chat:
+                remove_listen_chat(bot, target)
+        sender = getattr(bot, "_send_text_to_target_without_child", None)
+        if callable(sender):
+            return sender(target, msg)
+        return False
+    finally:
+        _release_wechat_action_lock(lock)
 
 
 def send_file_to_target(bot, target, path):
-    chat = get_listen_chat(bot, target)
-    if listen_chat_has_method(chat, "SendFiles"):
-        with bot._get_chat_send_lock(target):
-            result = chat.SendFiles(filepath=path)
-            remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
-            if callable(remember_echo):
-                remember_echo(target, result, "file", source="runtime_send", path=path)
-            return result
-    verifier = getattr(bot, "_verified_send_chat", None)
-    if callable(verifier):
-        verified = verifier(target, chat)
-        if verified:
-            remember_listen_chat(bot, target, verified)
+    lock, acquired = _acquire_wechat_action_lock(bot)
+    if not acquired:
+        sender = getattr(bot, "_send_file_to_target_without_child", None)
+        if callable(sender):
+            return sender(target, path)
+        return False
+    try:
+        chat = get_listen_chat(bot, target)
+        if listen_chat_has_method(chat, "SendFiles"):
             with bot._get_chat_send_lock(target):
-                result = verified.SendFiles(filepath=path)
+                result = chat.SendFiles(filepath=path)
                 remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
                 if callable(remember_echo):
                     remember_echo(target, result, "file", source="runtime_send", path=path)
                 return result
-        if chat:
-            remove_listen_chat(bot, target)
-    sender = getattr(bot, "_send_file_to_target_without_child", None)
-    if callable(sender):
-        return sender(target, path)
-    return False
+        verifier = getattr(bot, "_verified_send_chat", None)
+        if callable(verifier):
+            verified = verifier(target, chat)
+            if verified:
+                remember_listen_chat(bot, target, verified)
+                with bot._get_chat_send_lock(target):
+                    result = verified.SendFiles(filepath=path)
+                    remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
+                    if callable(remember_echo):
+                        remember_echo(target, result, "file", source="runtime_send", path=path)
+                    return result
+            if chat:
+                remove_listen_chat(bot, target)
+        sender = getattr(bot, "_send_file_to_target_without_child", None)
+        if callable(sender):
+            return sender(target, path)
+        return False
+    finally:
+        _release_wechat_action_lock(lock)

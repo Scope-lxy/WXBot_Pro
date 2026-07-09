@@ -71,6 +71,62 @@ class RuntimeChatStateSendTests(unittest.TestCase):
         self.assertEqual(sends, [("fallback", "阿英2", "你好")])
         self.assertNotIn("阿英2", bot._listen_chats)
 
+    def test_send_text_queues_when_wechat_action_lock_is_busy_even_with_cached_chat(self):
+        sends = []
+
+        class CachedChat:
+            def SendMsg(self, msg):
+                sends.append(("cached", msg))
+                return True
+
+        class BusyLock:
+            def acquire(self, blocking=True):
+                return False
+
+            def release(self):
+                raise AssertionError("busy lock should not be released")
+
+        bot = SimpleNamespace(
+            _listen_chats={"阿英2": CachedChat()},
+            _get_wechat_action_lock=lambda: BusyLock(),
+            _send_text_to_target_without_child=lambda target, msg: sends.append(("queued", target, msg)) or {
+                "status": "queued"
+            },
+        )
+
+        result = runtime_chat_state.send_text_to_target(bot, "阿英2", "你好")
+
+        self.assertEqual(result, {"status": "queued"})
+        self.assertEqual(sends, [("queued", "阿英2", "你好")])
+
+    def test_send_file_queues_when_wechat_action_lock_is_busy_even_with_cached_chat(self):
+        sends = []
+
+        class CachedChat:
+            def SendFiles(self, filepath=None):
+                sends.append(("cached", filepath))
+                return True
+
+        class BusyLock:
+            def acquire(self, blocking=True):
+                return False
+
+            def release(self):
+                raise AssertionError("busy lock should not be released")
+
+        bot = SimpleNamespace(
+            _listen_chats={"阿英2": CachedChat()},
+            _get_wechat_action_lock=lambda: BusyLock(),
+            _send_file_to_target_without_child=lambda target, path: sends.append(("queued", target, path)) or {
+                "status": "queued"
+            },
+        )
+
+        result = runtime_chat_state.send_file_to_target(bot, "阿英2", r"C:\tmp\a.pdf")
+
+        self.assertEqual(result, {"status": "queued"})
+        self.assertEqual(sends, [("queued", "阿英2", r"C:\tmp\a.pdf")])
+
 
 if __name__ == "__main__":
     unittest.main()

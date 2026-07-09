@@ -2,6 +2,7 @@ import unittest
 import json
 import subprocess
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -58,7 +59,6 @@ class WeChatNameSortTests(unittest.TestCase):
         contacts = _contact_profiles_browser_contacts({
             "subjects": [
                 {
-                    "subject_type": "friend",
                     "status": "active",
                     "contact_key": "1",
                     "nickname": "王玉芹",
@@ -66,7 +66,6 @@ class WeChatNameSortTests(unittest.TestCase):
                     "wechat_id": "w1",
                 },
                 {
-                    "subject_type": "friend",
                     "status": "active",
                     "contact_key": "2",
                     "nickname": "阿风",
@@ -82,7 +81,6 @@ class WeChatNameSortTests(unittest.TestCase):
         contacts = _contact_profiles_browser_contacts({
             "subjects": [
                 {
-                    "subject_type": "friend",
                     "status": "active",
                     "contact_key": "blank",
                     "nickname": "",
@@ -90,7 +88,6 @@ class WeChatNameSortTests(unittest.TestCase):
                     "wechat_id": "",
                 },
                 {
-                    "subject_type": "friend",
                     "status": "active",
                     "contact_key": "named",
                     "nickname": "阿风",
@@ -158,17 +155,13 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         directory = {
             "wx_id": "scope_rui",
             "subjects": [{
-                "subject_type": "friend",
                 "status": "active",
                 "contact_key": "wechat_id:wxid_old",
                 "wechat_id": "wxid_old",
                 "wxid": "wxid_old",
                 "remark": "张三",
                 "nickname": "三三",
-                "display_name": "张三",
-                "send_name": "张三",
                 "warnings": [],
-                "raw_detail": {"wxid": "wxid_old", "备注": "张三"},
             }],
             "maintenance": {},
         }
@@ -182,7 +175,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         )
 
         self.assertEqual(len(updated["subjects"]), 1)
-        self.assertEqual(updated["subjects"][0]["wxid"], "wxid_new")
         self.assertEqual(updated["subjects"][0]["wxid"], "wxid_new")
 
     def _auto_maintenance_bot(self, *, pending_queue=False, pending_echo=False):
@@ -1091,9 +1083,9 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         summary = _contact_profiles_summary({
             "maintenance": {"next_start_name": "旧游标"},
             "subjects": [
-                {"subject_type": "friend", "status": "active", "send_name": "阿英2"},
-                {"subject_type": "friend", "status": "missing", "send_name": "阿英3"},
-                {"subject_type": "friend", "status": "active", "remark": "阿英4"},
+                {"status": "active", "remark": "阿英2"},
+                {"status": "missing", "remark": "阿英3"},
+                {"status": "active", "remark": "阿英4"},
             ],
         })
 
@@ -1399,6 +1391,12 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         class FakeBot:
             wx = FakeWeChat()
 
+            def __init__(self):
+                self._lock = threading.RLock()
+
+            def _get_wechat_action_lock(self):
+                return self._lock
+
         with patch("feature.contacts.bring_wechat_to_front", return_value=1):
             with self.assertRaisesRegex(RuntimeError, "未返回明确成功"):
                 edit_friend_info_via_chat_profile(
@@ -1428,6 +1426,12 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         class FakeBot:
             wx = FakeWeChat()
+
+            def __init__(self):
+                self._lock = threading.RLock()
+
+            def _get_wechat_action_lock(self):
+                return self._lock
 
         with patch("feature.contacts.bring_wechat_to_front", return_value=1):
             result = modify_friend_tags_via_chat_profile(
@@ -1462,7 +1466,11 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             wx = FakeWeChat()
 
             def __init__(self):
+                self._lock = threading.RLock()
                 self.all_Mode_listen_list = [["阿英2", 1]]
+
+            def _get_wechat_action_lock(self):
+                return self._lock
 
             def _close_dynamic_listener_subwindows(self, names):
                 calls.append(("CloseDynamic", list(names)))
@@ -1498,6 +1506,12 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         class FakeBot:
             wx = FakeWeChat()
 
+            def __init__(self):
+                self._lock = threading.RLock()
+
+            def _get_wechat_action_lock(self):
+                return self._lock
+
         with patch("feature.contacts.bring_wechat_to_front", return_value=1):
             result = modify_friend_tags_via_chat_profile(
                 FakeBot(),
@@ -1528,6 +1542,12 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         class FakeBot:
             wx = FakeWeChat()
+
+            def __init__(self):
+                self._lock = threading.RLock()
+
+            def _get_wechat_action_lock(self):
+                return self._lock
 
         with (
             patch("feature.contacts.bring_wechat_to_front", return_value=1),

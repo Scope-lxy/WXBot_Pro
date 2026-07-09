@@ -147,6 +147,27 @@ class MaterialSourceReaderTests(unittest.TestCase):
             "子窗口内部 ChatBox.get_msgs_from_history",
         )
 
+    def test_material_source_read_holds_source_lock_before_global_wechat_lock(self):
+        events = []
+        source_messages = [msg("link", "[链接]子窗口素材")]
+        source_chat = FakeSourceChat(chat_box=FakeChatBox(source_messages))
+        bot = make_bot(source_chat, FakeMainWindow([msg("link", "[链接]主窗口素材")]))
+        bot._material_source_read_locks = {"素材源": RecordingLock("source", events)}
+        bot._wechat_action_lock = RecordingLock("global", events)
+
+        messages = bot._read_material_source_messages("素材源", 5, goback=True)
+
+        self.assertIs(messages[0], source_messages[0])
+        self.assertEqual(
+            events,
+            [
+                "enter:source",
+                "enter:global",
+                "exit:global",
+                "exit:source",
+            ],
+        )
+
     def test_prefers_subwindow_internal_history_before_subwindow_public_history(self):
         internal_messages = [msg("link", "[链接]内部素材")]
         public_messages = [msg("link", "[链接]公开素材")]

@@ -410,7 +410,7 @@ def merge_state_into_contact_directory(directory: dict[str, Any], state: dict[st
     changed = False
     contacts = [
         contact for contact in (updated.get("subjects") or [])
-        if isinstance(contact, dict) and contact.get("subject_type", "friend") == "friend"
+        if isinstance(contact, dict)
     ]
     match_map = _relationship_contact_match_map(contacts)
     for matched_record in records:

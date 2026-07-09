@@ -84,12 +84,9 @@ class RelationshipScanTests(unittest.TestCase):
         directory = {
             "wx_id": "wxid_test",
             "subjects": [{
-                "subject_type": "friend",
                 "contact_key": "remark:1",
                 "remark": "阿英2",
                 "nickname": "",
-                "display_name": "阿英2",
-                "send_name": "阿英2",
                 "wechat_id": "",
                 "tags": [TAG_BLOCKED],
                 "warnings": [],
@@ -119,19 +116,13 @@ class RelationshipScanTests(unittest.TestCase):
             "wx_id": "wxid_test",
             "subjects": [
                 {
-                    "subject_type": "friend",
                     "contact_key": "remark:1",
                     "remark": "张姐",
-                    "display_name": "张姐",
-                    "send_name": "张姐",
                     "tags": [],
                 },
                 {
-                    "subject_type": "friend",
                     "contact_key": "remark:2",
                     "remark": "张姐",
-                    "display_name": "张姐",
-                    "send_name": "张姐",
                     "tags": [],
                 },
             ],
@@ -156,19 +147,13 @@ class RelationshipScanTests(unittest.TestCase):
             "wx_id": "wxid_test",
             "subjects": [
                 {
-                    "subject_type": "friend",
                     "contact_key": "remark:1",
                     "remark": "张姐",
-                    "display_name": "张姐",
-                    "send_name": "张姐",
                     "tags": [],
                 },
                 {
-                    "subject_type": "friend",
                     "contact_key": "remark:2",
                     "remark": "张姐",
-                    "display_name": "张姐",
-                    "send_name": "张姐",
                     "tags": [],
                 },
             ],

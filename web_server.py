@@ -5779,7 +5779,7 @@ def _contact_profiles_continue_start_name(directory):
     for subject in reversed(subjects or []):
         if not isinstance(subject, dict):
             continue
-        if subject.get('subject_type', 'friend') != 'friend' or subject.get('status', 'active') != 'active':
+        if subject.get('status', 'active') != 'active':
             continue
         value = contact_send_name(subject) or contact_display_name(subject)
         if value:
@@ -5832,7 +5832,7 @@ def _contact_profiles_browser_contacts(directory):
     for subject in directory.get('subjects', []) or []:
         if not isinstance(subject, dict):
             continue
-        if subject.get('subject_type', 'friend') != 'friend' or subject.get('status', 'active') != 'active':
+        if subject.get('status', 'active') != 'active':
             continue
         name = contact_display_name(subject)
         contacts.append({
@@ -5868,7 +5868,7 @@ def _manual_identity_calibration_candidates(wx_id):
     for subject in directory.get('subjects', []) or []:
         if not isinstance(subject, dict):
             continue
-        if subject.get('subject_type', 'friend') != 'friend' or subject.get('status', 'active') != 'active':
+        if subject.get('status', 'active') != 'active':
             continue
         for value in (contact_display_name(subject), contact_send_name(subject), subject.get('remark'), subject.get('nickname'), subject.get('wechat_id')):
             add_name(value, '通讯录')
@@ -6018,7 +6018,7 @@ def _contact_profiles_picker_options(wx_id=''):
     for subject in directory.get('subjects', []) or []:
         if not isinstance(subject, dict):
             continue
-        if subject.get('subject_type', 'friend') != 'friend' or subject.get('status', 'active') != 'active':
+        if subject.get('status', 'active') != 'active':
             continue
         contacts.append({
             'contact_key': str(subject.get('contact_key', '') or ''),
@@ -6325,10 +6325,8 @@ def contact_profiles_identity_calibration_merge(fingerprint):
                 break
         if not target:
             return jsonify({'status': 'error', 'message': '待确认项不存在'}), 404
-        old_snapshot = target.get('old_snapshot') if isinstance(target.get('old_snapshot'), dict) else {}
-        new_snapshot = target.get('new_snapshot') if isinstance(target.get('new_snapshot'), dict) else {}
-        old_name = str(old_snapshot.get('current_chat_name') or '').strip()
-        new_name = str(new_snapshot.get('current_chat_name') or '').strip()
+        old_name = str(target.get('old_name') or '').strip()
+        new_name = str(target.get('new_name') or '').strip()
         if not old_name or not new_name:
             return jsonify({'status': 'error', 'message': '待确认项缺少可合并的会话名'}), 400
         manifest = reconcile_contact_storage_names(
@@ -6338,18 +6336,18 @@ def contact_profiles_identity_calibration_merge(fingerprint):
             new_name,
             reason='manual_identity_calibration',
         )
-        new_identity_id = str(target.get('new_identity_id') or '').strip()
-        old_identity_id = str(target.get('old_identity_id') or '').strip()
-        new_fingerprint_snapshot = json.dumps(new_snapshot, ensure_ascii=False, sort_keys=True)
         index['pending'] = [
             item for item in (index.get('pending') or [])
             if not (
                 isinstance(item, dict)
                 and (
                     str(item.get('fingerprint') or '') == str(fingerprint or '')
-                    or (old_identity_id and str(item.get('old_identity_id') or '') == old_identity_id)
-                    or (new_identity_id and str(item.get('new_identity_id') or '') == new_identity_id)
-                    or json.dumps(item.get('new_snapshot') if isinstance(item.get('new_snapshot'), dict) else {}, ensure_ascii=False, sort_keys=True) == new_fingerprint_snapshot
+                    or (
+                        old_name
+                        and new_name
+                        and str(item.get('old_name') or '').strip() == old_name
+                        and str(item.get('new_name') or '').strip() == new_name
+                    )
                 )
             )
         ]

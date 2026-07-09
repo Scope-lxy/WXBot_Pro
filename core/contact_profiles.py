@@ -17,10 +17,8 @@ from typing import Any
 
 from core.account_storage import account_area_dir
 from core.contact_identity import (
-    dismiss_pending as dismiss_contact_identity_pending,
     list_chat_memory_names,
     list_memory_chat_names,
-    normalize_calibration_state as normalize_contact_calibration_state,
     reconcile_contact_storage as reconcile_contact_storage_names,
 )
 
@@ -681,14 +679,31 @@ def default_directory(wx_id: str) -> dict[str, Any]:
 
 
 def _normalize_subject_shape(contact: dict[str, Any], *, now: Any = None) -> dict[str, Any]:
-    raw_detail = contact.get("raw_detail") if isinstance(contact.get("raw_detail"), dict) else {}
-    normalized = normalize_friend_detail(raw_detail or contact, existing=contact, now=contact.get("last_seen_at") or now)
+    contact = contact if isinstance(contact, dict) else {}
+    normalized = {
+        "contact_key": _clean_text(contact.get("contact_key")),
+        "wechat_id": _clean_text(contact.get("wechat_id")),
+        "wxid": _clean_text(contact.get("wxid")),
+        "nickname": _clean_text(contact.get("nickname")),
+        "remark": _clean_text(contact.get("remark")),
+        "region": _clean_text(contact.get("region")),
+        "source": _clean_text(contact.get("source")),
+        "added_at": _clean_text(contact.get("added_at")),
+        "signature": _clean_text(contact.get("signature")),
+        "tags": normalize_tag_list(contact.get("tags")),
+        "status": _clean_text(contact.get("status")) or "active",
+        "warnings": [
+            _clean_text(item)
+            for item in (contact.get("warnings") or [])
+            if _clean_text(item)
+        ],
+        "stable_suffix": _clean_text(contact.get("stable_suffix")),
+        "last_seen_at": _clean_text(contact.get("last_seen_at")) or _iso_timestamp(now),
+    }
+    if not normalized["wxid"] and is_default_wechat_id(normalized["wechat_id"]):
+        normalized["wxid"] = normalized["wechat_id"]
+    normalized["contact_key"] = contact_identity_key(normalized)
     for key in (
-        "contact_key",
-        "status",
-        "warnings",
-        "stable_suffix",
-        "last_seen_at",
         "last_cli_contact_basics_synced_at",
         "wxid_status",
         "wxid_source",
@@ -696,15 +711,64 @@ def _normalize_subject_shape(contact: dict[str, Any], *, now: Any = None) -> dic
         "relationship_status",
         "relationship_evidence",
         "relationship_updated_at",
+        "wxid_conflict",
     ):
-        if key in contact:
-            normalized[key] = copy.deepcopy(contact.get(key))
-    normalized["contact_key"] = contact_identity_key(normalized)
-    normalized["tags"] = normalize_tag_list(contact.get("tags") or contact.get("raw_tags"))
-    normalized["warnings"] = list(contact.get("warnings") or normalized.get("warnings") or [])
-    normalized["status"] = _clean_text(normalized.get("status")) or "active"
+        value = contact.get(key)
+        if value not in (None, "", [], {}):
+            normalized[key] = copy.deepcopy(value)
+    _refresh_names_from_identity(normalized)
     normalized["stable_suffix"] = stable_suffix_for_contact(normalized)
     return normalized
+
+
+def _normalize_calibration_v2(index: dict[str, Any] | None, *, wx_id: str = "") -> dict[str, Any]:
+    index = index if isinstance(index, dict) else {}
+
+    def normalize_pending(item: dict[str, Any]) -> dict[str, Any] | None:
+        fingerprint = _clean_text(item.get("fingerprint"))
+        old_name = _clean_text(item.get("old_name"))
+        new_name = _clean_text(item.get("new_name"))
+        if not fingerprint:
+            source = "|".join([old_name, new_name, _clean_text(item.get("reason"))])
+            fingerprint = _short_hash(source) if source.strip("|") else ""
+        if not fingerprint:
+            return None
+        normalized = {
+            "fingerprint": fingerprint,
+            "status": _clean_text(item.get("status")) or "pending",
+            "reason": _clean_text(item.get("reason")),
+            "old_name": old_name,
+            "new_name": new_name,
+            "created_at": _clean_text(item.get("created_at")),
+            "updated_at": _clean_text(item.get("updated_at")),
+        }
+        for key in ("old_contact_key", "new_contact_key", "old_wechat_id", "new_wechat_id"):
+            value = _clean_text(item.get(key))
+            if value:
+                normalized[key] = value
+        return normalized
+
+    pending = []
+    for item in index.get("pending") or []:
+        if not isinstance(item, dict):
+            continue
+        normalized_item = normalize_pending(item)
+        if normalized_item:
+            pending.append(normalized_item)
+
+    return {
+        "actions": [
+            copy.deepcopy(item)
+            for item in (index.get("actions") or [])
+            if isinstance(item, dict)
+        ],
+        "pending": pending,
+        "dismissed_pairs": [
+            _clean_text(item)
+            for item in (index.get("dismissed_pairs") or [])
+            if _clean_text(item)
+        ],
+    }
 
 
 def _normalize_directory_shape(directory: Any, wx_id: str = "") -> dict[str, Any]:
@@ -723,16 +787,7 @@ def _normalize_directory_shape(directory: Any, wx_id: str = "") -> dict[str, Any
 
     identity_calibration = directory.get("identity_calibration")
     if isinstance(identity_calibration, dict):
-        state = normalize_contact_calibration_state(identity_calibration, wx_id=normalized["wx_id"])
-        normalized["identity_calibration"] = {
-            "actions": [
-                copy.deepcopy(item)
-                for item in (identity_calibration.get("actions") or [])
-                if isinstance(item, dict)
-            ],
-            "pending": list(state.get("pending") or []),
-            "dismissed_pairs": list(state.get("dismissed_pairs") or []),
-        }
+        normalized["identity_calibration"] = _normalize_calibration_v2(identity_calibration, wx_id=normalized["wx_id"])
 
     subjects = directory.get("subjects")
     normalized["subjects"] = [
@@ -828,7 +883,8 @@ def load_directory(path: str | Path, wx_id: str = "") -> dict[str, Any]:
 def save_directory(path: str | Path, directory: dict[str, Any]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(directory, ensure_ascii=False, indent=2), encoding="utf-8")
+    normalized = _normalize_directory_shape(directory or {}, _clean_text((directory or {}).get("wx_id")) if isinstance(directory, dict) else "")
+    path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def sync_identity_calibration_from_directory(
@@ -845,29 +901,41 @@ def sync_identity_calibration_from_directory(
         for item in (index.get("actions") or [])
         if isinstance(item, dict)
     ]
-    updated["identity_calibration"] = {
-        "actions": [],
-        "pending": [
-            copy.deepcopy(item)
-            for item in (index.get("pending") or [])
-            if isinstance(item, dict)
-        ],
-        "dismissed_pairs": list(index.get("dismissed_pairs") or []),
-    }
+    next_state = _normalize_calibration_v2(index, wx_id=updated.get("wx_id", ""))
+    next_state["actions"] = []
+    updated["identity_calibration"] = next_state
     updated["updated_at"] = _iso_timestamp(now)
     return updated, actions
 
 
 def dismiss_identity_calibration_pending(directory: dict[str, Any], fingerprint: Any) -> dict[str, Any]:
     updated = _normalize_directory_shape(directory or {}, _clean_text((directory or {}).get("wx_id")) if isinstance(directory, dict) else "")
-    index = dismiss_contact_identity_pending(updated.get("identity_calibration") or {}, _clean_text(fingerprint))
-    updated["identity_calibration"] = normalize_contact_calibration_state(index, wx_id=updated.get("wx_id", ""))
+    current = _normalize_calibration_v2(updated.get("identity_calibration") or {}, wx_id=updated.get("wx_id", ""))
+    target = _clean_text(fingerprint)
+    timestamp = _iso_timestamp()
+    dismissed_pairs = list(current.get("dismissed_pairs") or [])
+    if target and target not in dismissed_pairs:
+        dismissed_pairs.append(target)
+    pending = []
+    for item in current.get("pending") or []:
+        if not isinstance(item, dict):
+            continue
+        next_item = copy.deepcopy(item)
+        if target and _clean_text(next_item.get("fingerprint")) == target:
+            next_item["status"] = "dismissed"
+            next_item["updated_at"] = timestamp
+        pending.append(next_item)
+    updated["identity_calibration"] = {
+        "actions": current.get("actions") or [],
+        "pending": pending,
+        "dismissed_pairs": dismissed_pairs,
+    }
     updated["updated_at"] = _iso_timestamp()
     return updated
 
 
 def _is_active_friend(contact: dict[str, Any]) -> bool:
-    return contact.get("subject_type", "friend") == "friend" and contact.get("status", "active") == "active"
+    return contact.get("status", "active") == "active"
 
 
 def mark_send_name_conflicts(directory: dict[str, Any]) -> dict[str, Any]:

@@ -491,59 +491,60 @@ def edit_friend_info_via_chat_profile(
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化，请先启动机器人并保持微信主窗口可用。")
 
-    bring_wechat_to_front()
-    chat_with = getattr(bot.wx, "ChatWith", None)
-    if not callable(chat_with):
-        raise RuntimeError("当前微信客户端不支持打开好友聊天窗口")
-    with warn_slow_wechat_ui_action(f"ChatWith({target_name})"):
-        chat_with(target_name, exact=True)
-    bring_wechat_to_front()
-    move_cursor_to_wechat_main_window_center()
+    with bot._get_wechat_action_lock():
+        bring_wechat_to_front()
+        chat_with = getattr(bot.wx, "ChatWith", None)
+        if not callable(chat_with):
+            raise RuntimeError("当前微信客户端不支持打开好友聊天窗口")
+        with warn_slow_wechat_ui_action(f"ChatWith({target_name})"):
+            chat_with(target_name, exact=True)
+        bring_wechat_to_front()
+        move_cursor_to_wechat_main_window_center()
 
-    chat_info = {}
-    get_chat_info = getattr(bot.wx, "ChatInfo", None)
-    if callable(get_chat_info):
-        chat_info = get_chat_info() or {}
-        if isinstance(chat_info, dict):
-            chat_type = _clean_text(chat_info.get("chat_type"))
-            chat_name = _clean_text(chat_info.get("chat_name"))
-            allowed_names = {name for name in (expected_names or set()) if _clean_text(name)}
-            allowed_names.add(target_name)
-            if chat_type and chat_type != "friend":
-                raise RuntimeError(f"当前会话不是好友会话：{chat_type}")
-            if chat_name and allowed_names and chat_name not in allowed_names:
-                raise RuntimeError(f"当前会话不是目标好友：{chat_name}")
-            if remark is None and _tags_update_is_noop(_chat_info_tags(chat_info), add_tags=add_tags, remove_tags=remove_tags):
-                return {
-                    "status": "成功",
-                    "message": "标签已满足要求，未进行任何修改",
-                    "noop": True,
-                }
+        chat_info = {}
+        get_chat_info = getattr(bot.wx, "ChatInfo", None)
+        if callable(get_chat_info):
+            chat_info = get_chat_info() or {}
+            if isinstance(chat_info, dict):
+                chat_type = _clean_text(chat_info.get("chat_type"))
+                chat_name = _clean_text(chat_info.get("chat_name"))
+                allowed_names = {name for name in (expected_names or set()) if _clean_text(name)}
+                allowed_names.add(target_name)
+                if chat_type and chat_type != "friend":
+                    raise RuntimeError(f"当前会话不是好友会话：{chat_type}")
+                if chat_name and allowed_names and chat_name not in allowed_names:
+                    raise RuntimeError(f"当前会话不是目标好友：{chat_name}")
+                if remark is None and _tags_update_is_noop(_chat_info_tags(chat_info), add_tags=add_tags, remove_tags=remove_tags):
+                    return {
+                        "status": "成功",
+                        "message": "标签已满足要求，未进行任何修改",
+                        "noop": True,
+                    }
 
-    bring_wechat_to_front()
-    move_cursor_to_wechat_main_window_center()
-    with warn_slow_wechat_ui_action(f"EditFriendInfo({target_name})"):
-        response = bot.wx.EditFriendInfo(
-            remark=remark,
-            add_tags=add_tags,
-            remove_tags=remove_tags,
-            tag_wait=0.8,
-        )
-    if friend_info_edit_noop(response):
-        response = dict(response)
-        response["status"] = "成功"
-        response["noop"] = True
-    elif not friend_info_edit_success(response):
-        raise RuntimeError(f"修改好友信息未返回明确成功：{response}")
-    if close_dynamic_listener:
-        close_dynamic_listener_after_friend_edit(
-            bot,
-            target_name,
-            expected_names=expected_names,
-            remark=remark,
-            log_prefix=log_prefix,
-        )
-    return response
+        bring_wechat_to_front()
+        move_cursor_to_wechat_main_window_center()
+        with warn_slow_wechat_ui_action(f"EditFriendInfo({target_name})"):
+            response = bot.wx.EditFriendInfo(
+                remark=remark,
+                add_tags=add_tags,
+                remove_tags=remove_tags,
+                tag_wait=0.8,
+            )
+        if friend_info_edit_noop(response):
+            response = dict(response)
+            response["status"] = "成功"
+            response["noop"] = True
+        elif not friend_info_edit_success(response):
+            raise RuntimeError(f"修改好友信息未返回明确成功：{response}")
+        if close_dynamic_listener:
+            close_dynamic_listener_after_friend_edit(
+                bot,
+                target_name,
+                expected_names=expected_names,
+                remark=remark,
+                log_prefix=log_prefix,
+            )
+        return response
 
 
 def modify_friend_tags_via_chat_profile(

@@ -4,8 +4,10 @@ from types import SimpleNamespace
 
 from feature.runtime_task_runner import run_due_fixed_material_outreach
 from feature.material_outreach import (
+    build_target_snapshot,
     collect_material_source_message,
     rebuild_material_pool_for_source,
+    send_names_from_target_snapshot,
 )
 from wxbot_core import WXBot
 
@@ -15,6 +17,30 @@ def msg(msg_type, content):
 
 
 class MaterialOutreachPoolTests(unittest.TestCase):
+    def test_target_snapshot_keeps_v2_contact_names_in_progress_records(self):
+        snapshot = build_target_snapshot(
+            {"task_id": "task_1"},
+            {
+                "selected": [
+                    {
+                        "contact_key": "wechat_id:wx_zhang",
+                        "remark": "张三",
+                        "nickname": "三三",
+                        "wechat_id": "wx_zhang",
+                        "tags": ["客户"],
+                        "warnings": [],
+                    }
+                ],
+                "excluded": [],
+            },
+            now=datetime(2026, 7, 10, 10, 0, 0),
+        )
+
+        self.assertEqual(send_names_from_target_snapshot(snapshot), ["张三"])
+        self.assertEqual(snapshot["targets"][0]["send_name"], "张三")
+        self.assertEqual(snapshot["progress_records"][0]["send_name"], "张三")
+        self.assertEqual(snapshot["progress_records"][0]["display_name"], "张三")
+
     def test_collect_refreshes_same_source_and_stable_signature(self):
         existing = {
             "id": "mat_old",

@@ -1031,6 +1031,155 @@ class MessageBehaviorTests(unittest.TestCase):
         warning_logs = [message for level, message in logs if level == "WARNING" and "语音回复触发上限" in message]
         self.assertEqual(len(warning_logs), 2)
 
+    def test_voice_reply_does_not_send_audio_when_wechat_ui_lock_is_busy(self):
+        class BusyLock:
+            def acquire(self, blocking=True):
+                return False
+
+            def release(self):
+                raise AssertionError("busy lock should not be released")
+
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
+        bot._voice_reply_state = None
+        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
+        bot._active_tts_config = lambda _user="": {"provider": "fake"}
+        bot._record_tts_api_request = lambda: None
+        bot._remove_temp_audio_file = lambda _path: None
+        bot._get_wechat_action_lock = lambda: BusyLock()
+
+        synth_calls = []
+
+        class FakeTtsClient:
+            def synthesize(self, text, audio_path):
+                synth_calls.append((text, audio_path))
+
+        chat = SimpleNamespace(
+            who="张三",
+            SendAudio=lambda *_args, **_kwargs: self.fail("微信 UI 锁忙时不应发送语音"),
+        )
+
+        with mock.patch("wxbot_core.create_tts_client", return_value=FakeTtsClient()):
+            result = bot._try_send_voice_reply(
+                chat,
+                "你好",
+                state_key="private:张三",
+                cooldown_minutes=0,
+                limit_count=99,
+                limit_hours=24,
+            )
+
+        self.assertFalse(result)
+        self.assertEqual(len(synth_calls), 1)
+
+    def test_voice_reply_sends_audio_while_holding_wechat_ui_lock(self):
+        events = []
+
+        class RecordingLock:
+            locked = False
+
+            def acquire(self, blocking=True):
+                events.append(("acquire", blocking))
+                self.locked = True
+                return True
+
+            def release(self):
+                events.append(("release",))
+                self.locked = False
+
+        lock = RecordingLock()
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
+        bot._voice_reply_state = None
+        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
+        bot._active_tts_config = lambda _user="": {"provider": "fake"}
+        bot._record_tts_api_request = lambda: None
+        bot._remove_temp_audio_file = lambda _path: None
+        bot._get_wechat_action_lock = lambda: lock
+        bot._remember_private_outbound_echo = lambda *_args, **_kwargs: True
+        bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
+
+        class FakeTtsClient:
+            def synthesize(self, _text, _audio_path):
+                pass
+
+        def send_audio(**_kwargs):
+            events.append(("send_audio", lock.locked))
+            return True
+
+        chat = SimpleNamespace(who="张三", SendAudio=send_audio)
+
+        with mock.patch("wxbot_core.create_tts_client", return_value=FakeTtsClient()):
+            result = bot._try_send_voice_reply(
+                chat,
+                "你好",
+                state_key="private:张三",
+                cooldown_minutes=0,
+                limit_count=99,
+                limit_hours=24,
+            )
+
+        self.assertTrue(result)
+        self.assertIn(("send_audio", True), events)
+        self.assertEqual(events[-1], ("release",))
+
+    def test_admin_command_reply_sends_while_holding_wechat_ui_lock(self):
+        class RecordingLock:
+            locked = False
+
+            def __enter__(self):
+                self.locked = True
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.locked = False
+                return False
+
+        lock = RecordingLock()
+        bot = WXBot.__new__(WXBot)
+        bot._get_wechat_action_lock = lambda: lock
+        bot._get_chat_send_lock = lambda _name: threading.Lock()
+        sent = []
+        chat = SimpleNamespace(
+            who="文件传输助手",
+            SendMsg=lambda text: sent.append((text, lock.locked)) or True,
+        )
+        message = SimpleNamespace(content="/帮助", attr="self")
+
+        self.assertTrue(bot.process_command(chat, message))
+
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(sent[0][1])
+
+    def test_wechat_action_locked_chat_wraps_file_and_audio_sends(self):
+        class RecordingLock:
+            locked = False
+
+            def __enter__(self):
+                self.locked = True
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.locked = False
+                return False
+
+        lock = RecordingLock()
+        bot = WXBot.__new__(WXBot)
+        bot._get_wechat_action_lock = lambda: lock
+        bot._get_chat_send_lock = lambda _name: threading.Lock()
+        sent = []
+        chat = SimpleNamespace(
+            who="文件传输助手",
+            SendFiles=lambda filepath=None, **_kwargs: sent.append(("file", filepath, lock.locked)) or True,
+            SendAudio=lambda filepath=None, **_kwargs: sent.append(("audio", filepath, lock.locked)) or True,
+        )
+
+        locked_chat = bot._wechat_action_locked_chat(chat)
+        self.assertTrue(locked_chat.SendFiles(filepath="a.png"))
+        self.assertTrue(locked_chat.SendAudio(filepath="a.mp3"))
+
+        self.assertEqual(sent, [("file", "a.png", True), ("audio", "a.mp3", True)])
+
     def test_keyword_private_reply_registers_outbound_echoes(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
@@ -2387,6 +2536,77 @@ class MessageBehaviorTests(unittest.TestCase):
         wrapped.assert_called_once_with("张三: 测试")
         self.assertEqual(captured_messages, ["WRAPPED_GROUP_TURN"])
         self.assertEqual(sent, [("群回复", None)])
+
+    def test_group_text_reply_sends_while_holding_wechat_ui_lock(self):
+        class RecordingLock:
+            locked = False
+
+            def __enter__(self):
+                self.locked = True
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.locked = False
+                return False
+
+        lock = RecordingLock()
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AtMe="",
+            cmd="文件传输助手",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=False,
+            group_listen_only=False,
+            group_image_recognition_switch=False,
+            group_split_reply_switch=False,
+            group_split_max_count=4,
+            group_split_max_chars=100,
+            group_reply_at_msg=False,
+            group_reply_quote=False,
+            memory_switch=False,
+            memory_context_switch=False,
+            clean_ai_reply_switch=False,
+            reply_preprocess_fallback_reply="",
+            reply_preprocess_fallback_once=False,
+            text_reply_limit_hours=24,
+            group_voice_reply_switch=False,
+            split_long_text=lambda text: [text],
+        )
+        bot.reply_count_store = ReplyCountStore("")
+        bot.memory_manager = None
+        bot._pause_group_reply = False
+        bot.is_stop_requested = lambda: False
+        bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: "群回复")
+        bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+        bot._get_chat_send_lock = lambda _name: threading.Lock()
+        bot._get_wechat_action_lock = lambda: lock
+        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+        bot._record_replied_message_success = lambda: None
+
+        sent = []
+        chat = SimpleNamespace(
+            who="测试群",
+            chat_type="group",
+            SendMsg=lambda msg, at=None: sent.append((msg, at, lock.locked)) or True,
+        )
+        message = SimpleNamespace(
+            type="text",
+            attr="group",
+            sender="张三",
+            content="测试",
+            quote=lambda text, at=None: sent.append((text, at, lock.locked)) or True,
+        )
+
+        self.assertTrue(bot.process_message(chat, message))
+
+        self.assertEqual(sent, [("群回复", None, True)])
 
     def test_group_preprocess_rewrite_api_error_skips_voice_reply(self):
         bot = WXBot.__new__(WXBot)

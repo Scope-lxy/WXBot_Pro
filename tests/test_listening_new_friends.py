@@ -81,5 +81,38 @@ class PassNewFriendsTests(unittest.TestCase):
         self.assertFalse(any(call[0] in {"SendMsg", "SendFiles"} for call in bot.calls))
 
 
+class GroupWelcomeTests(unittest.TestCase):
+    def test_group_welcome_sends_while_holding_wechat_ui_lock(self):
+        class RecordingLock:
+            locked = False
+
+            def __enter__(self):
+                self.locked = True
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.locked = False
+                return False
+
+        lock = RecordingLock()
+        sent = []
+        bot = SimpleNamespace(
+            config=SimpleNamespace(group_welcome_random=1, group_welcome_msg="欢迎"),
+            _get_wechat_action_lock=lambda: lock,
+            _get_chat_send_lock=lambda _name: threading.Lock(),
+        )
+        chat = SimpleNamespace(
+            who="测试群",
+            SendMsg=lambda msg=None, at=None: sent.append((msg, at, lock.locked)) or True,
+        )
+        message = SimpleNamespace(content='"张三"加入群聊')
+
+        with patch("feature.listening.time.sleep", return_value=None):
+            result = listening.send_group_welcome_msg(bot, chat, message)
+
+        self.assertTrue(result)
+        self.assertEqual(sent, [("欢迎", "张三", True)])
+
+
 if __name__ == "__main__":
     unittest.main()
