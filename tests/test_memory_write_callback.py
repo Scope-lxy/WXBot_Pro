@@ -12,7 +12,12 @@ from core.message_pipeline import (
     strip_voice_duration_metadata,
 )
 from core.memory import MemoryManager
-from core.sending import clean_ai_reply_text
+from core.sending import (
+    clean_ai_reply_text,
+    describe_reply_preprocess_rejection,
+    evaluate_reply_preprocess_admission,
+    reply_preprocess_rejection_label,
+)
 from wxbot_core import WXBot
 
 
@@ -511,8 +516,8 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             chat_split_max_count=4,
             chat_split_max_chars=100,
             clean_ai_reply_switch=False,
-            meta_reply_blocked_reply="",
-            meta_reply_blocked_reply_once=False,
+            reply_preprocess_fallback_reply="",
+            reply_preprocess_fallback_once=False,
             api_error_reply_once=False,
             text_reply_limit_switch=False,
             text_reply_limit_hours=24,
@@ -668,6 +673,42 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             {"role": "assistant", "content": "你这些话我都听进去了。"},
         )
         self.assertEqual(clean_ai_reply_text("[语音]你这些话我都听进去了。"), "你这些话我都听进去了。")
+
+    def test_reply_preprocess_admission_blocks_only_clear_internal_output(self):
+        self.assertEqual(
+            evaluate_reply_preprocess_admission("基础人设：温柔成熟", max_chars=100),
+            (False, "internal_marker"),
+        )
+        self.assertEqual(
+            evaluate_reply_preprocess_admission("最终回复正文：我也很爱你", max_chars=100),
+            (False, "internal_field"),
+        )
+        self.assertEqual(
+            evaluate_reply_preprocess_admission("嗯，藏青色好，经典又耐看。", max_chars=100),
+            (True, ""),
+        )
+        self.assertEqual(
+            evaluate_reply_preprocess_admission("1. 新疆\n2. 云南\n3. 贵州", max_chars=100),
+            (True, ""),
+        )
+
+    def test_reply_preprocess_admission_blocks_configured_overlong_output(self):
+        self.assertEqual(
+            evaluate_reply_preprocess_admission("想你像晚风落在心口，轻轻的，却一直不走。", max_chars=10),
+            (False, "too_long"),
+        )
+
+    def test_reply_preprocess_rejection_description_keeps_rule_detail(self):
+        self.assertEqual(reply_preprocess_rejection_label("too_long"), "超长")
+        self.assertEqual(reply_preprocess_rejection_label("internal_field"), "命中内部字段")
+        self.assertEqual(
+            describe_reply_preprocess_rejection("想你像晚风落在心口，轻轻的，却一直不走。", max_chars=10),
+            "字数 20/10",
+        )
+        self.assertEqual(
+            describe_reply_preprocess_rejection("最终回复正文：我也很爱你", max_chars=100),
+            "命中字段：最终回复正文：",
+        )
 
     def test_emotion_history_preserves_readable_meaning(self):
         record = {

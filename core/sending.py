@@ -59,6 +59,24 @@ CHINESE_SPACE_REPLY_RE = re.compile(r"^[\u4e00-\u9fff\s，。！？!?；;：:、
 PLAIN_TERMINAL_PUNCTUATION = "，,。.;；、"
 AUTO_SPLIT_MIN_LINES = 2
 AUTO_SPLIT_MAX_LINE_CHARS = 20
+REPLY_PREPROCESS_DEFAULT_MAX_CHARS = 100
+REPLY_PREPROCESS_REASON_LABELS = {
+    "empty": "空回复",
+    "too_long": "超长",
+    "internal_marker": "命中内部标记",
+    "internal_field": "命中内部字段",
+}
+INTERNAL_REPLY_MARKERS = (
+    "基础人设",
+    "人设近况",
+    "会话记忆",
+    "回复规则",
+    "最终检查",
+    "回复草稿",
+)
+INTERNAL_REPLY_FIELD_RE = re.compile(
+    r"(?m)^\s*[^。\n！？!?：:]{0,12}(?:回复|回应|内容|正文|答案|结果)[^。\n！？!?：:]{0,12}\s*[:：]"
+)
 INLINE_STAGE_DIRECTION_HINTS = (
     "声音",
     "声线",
@@ -364,6 +382,61 @@ def _merge_segments_by_limits(segments, *, max_count, soft_max_chars):
 
 def _split_reply_text_length(part_text):
     return len(re.sub(r"\s+", "", str(part_text or "")))
+
+
+def _coerce_reply_preprocess_max_chars(value):
+    try:
+        return max(1, min(10000, int(value)))
+    except (TypeError, ValueError):
+        return REPLY_PREPROCESS_DEFAULT_MAX_CHARS
+
+
+def reply_preprocess_text_length(text):
+    return _split_reply_text_length(text)
+
+
+def evaluate_reply_preprocess_admission(text, *, max_chars=REPLY_PREPROCESS_DEFAULT_MAX_CHARS):
+    snippet = str(text or "").strip()
+    if not snippet:
+        return False, "empty"
+
+    max_chars = _coerce_reply_preprocess_max_chars(max_chars)
+    if reply_preprocess_text_length(snippet) > max_chars:
+        return False, "too_long"
+
+    if any(marker in snippet for marker in INTERNAL_REPLY_MARKERS):
+        return False, "internal_marker"
+
+    if INTERNAL_REPLY_FIELD_RE.search(snippet):
+        return False, "internal_field"
+
+    return True, ""
+
+
+def reply_preprocess_rejection_label(reason):
+    return REPLY_PREPROCESS_REASON_LABELS.get(str(reason or "").strip(), str(reason or "").strip() or "未知")
+
+
+def describe_reply_preprocess_rejection(text, *, max_chars=REPLY_PREPROCESS_DEFAULT_MAX_CHARS):
+    snippet = str(text or "").strip()
+    if not snippet:
+        return "清洗后为空"
+
+    max_chars = _coerce_reply_preprocess_max_chars(max_chars)
+    text_length = reply_preprocess_text_length(snippet)
+    if text_length > max_chars:
+        return f"字数 {text_length}/{max_chars}"
+
+    for marker in INTERNAL_REPLY_MARKERS:
+        if marker in snippet:
+            return f"命中词：{marker}"
+
+    match = INTERNAL_REPLY_FIELD_RE.search(snippet)
+    if match:
+        field = re.sub(r"\s+", " ", match.group(0).strip())
+        return f"命中字段：{field[:30]}"
+
+    return ""
 
 
 def _build_rebalanced_target_lengths(total_length, *, group_count, soft_max_chars):

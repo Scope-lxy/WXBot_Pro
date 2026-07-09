@@ -325,8 +325,9 @@ class WXBotConfig:
                     "group_image_recognition_api": 0,
                     "api_error_reply": "",
                     "api_error_reply_once": False,
-                    "meta_reply_blocked_reply": "",
-                    "meta_reply_blocked_reply_once": False,
+                    "reply_preprocess_fallback_reply": "",
+                    "reply_preprocess_fallback_once": False,
+                    "reply_preprocess_max_chars": 100,
                     "text_reply_limit_switch": False,
                     "text_reply_limit_count": 99,
                     "text_reply_limit_hours": 24,
@@ -1117,8 +1118,11 @@ class WXBotConfig:
         # 接口调用失败时的固定回复
         self.api_error_reply = str(self.config.get('api_error_reply', '') or '').strip()
         self.api_error_reply_once = bool(self.config.get('api_error_reply_once', False))
-        self.meta_reply_blocked_reply = str(self.config.get('meta_reply_blocked_reply', '') or '').strip()
-        self.meta_reply_blocked_reply_once = bool(self.config.get('meta_reply_blocked_reply_once', False))
+        self.reply_preprocess_fallback_reply = str(self.config.get('reply_preprocess_fallback_reply', '') or '').strip()
+        self.reply_preprocess_fallback_once = bool(self.config.get('reply_preprocess_fallback_once', False))
+        self.reply_preprocess_max_chars = self._coerce_int_range(
+            self.config.get('reply_preprocess_max_chars', 100), 100, 1, 10000
+        )
 
         # 单用户最大回复轮数限制配置
         self.text_reply_limit_switch = bool(self.config.get('text_reply_limit_switch', False))

@@ -2057,8 +2057,8 @@ class MessageBehaviorTests(unittest.TestCase):
             chat_split_max_count=4,
             chat_split_max_chars=100,
             clean_ai_reply_switch=False,
-            meta_reply_blocked_reply="",
-            meta_reply_blocked_reply_once=False,
+            reply_preprocess_fallback_reply="",
+            reply_preprocess_fallback_once=False,
             api_error_reply_once=False,
             text_reply_limit_switch=False,
             text_reply_limit_hours=24,
@@ -2096,7 +2096,7 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(captured_messages, ["WRAPPED_CURRENT_TURN"])
         self.assertEqual(sent, ["正常回复"])
 
-    def test_meta_reply_blocked_reply_once_resets_with_reply_window(self):
+    def test_reply_preprocess_fallback_once_resets_with_reply_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
@@ -2109,8 +2109,8 @@ class MessageBehaviorTests(unittest.TestCase):
                 chat_split_max_count=4,
                 chat_split_max_chars=100,
                 clean_ai_reply_switch=True,
-                meta_reply_blocked_reply="换个说法吧",
-                meta_reply_blocked_reply_once=True,
+                reply_preprocess_fallback_reply="换个说法吧",
+                reply_preprocess_fallback_once=True,
                 api_error_reply_once=False,
                 text_reply_limit_switch=False,
                 text_reply_limit_hours=24,
@@ -2161,8 +2161,8 @@ class MessageBehaviorTests(unittest.TestCase):
             chat_split_max_count=4,
             chat_split_max_chars=100,
             clean_ai_reply_switch=False,
-            meta_reply_blocked_reply="",
-            meta_reply_blocked_reply_once=False,
+            reply_preprocess_fallback_reply="",
+            reply_preprocess_fallback_once=False,
             api_error_reply="接口忙，稍后再聊",
             api_error_reply_once=False,
             text_reply_limit_switch=False,
@@ -2199,7 +2199,7 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(bot.wx_send_ai(chat, message))
         self.assertEqual(sent, [(["接口忙，稍后再聊"], None)])
 
-    def test_group_meta_reply_blocked_reply_once_uses_sender_window(self):
+    def test_group_reply_preprocess_fallback_once_uses_sender_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
@@ -2224,8 +2224,8 @@ class MessageBehaviorTests(unittest.TestCase):
                 memory_switch=False,
                 memory_context_switch=False,
                 clean_ai_reply_switch=True,
-                meta_reply_blocked_reply="换个说法吧",
-                meta_reply_blocked_reply_once=True,
+                reply_preprocess_fallback_reply="换个说法吧",
+                reply_preprocess_fallback_once=True,
                 text_reply_limit_hours=24,
                 split_long_text=lambda text: [text],
             )
@@ -2264,7 +2264,7 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertTrue(bot.process_message(chat, message))
             self.assertEqual(sent, [("换个说法吧", None), ("换个说法吧", None)])
 
-    def test_group_meta_reply_blocked_reply_once_does_not_mark_failed_send(self):
+    def test_group_reply_preprocess_fallback_once_does_not_mark_failed_send(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
@@ -2289,8 +2289,8 @@ class MessageBehaviorTests(unittest.TestCase):
                 memory_switch=False,
                 memory_context_switch=False,
                 clean_ai_reply_switch=True,
-                meta_reply_blocked_reply="换个说法吧",
-                meta_reply_blocked_reply_once=True,
+                reply_preprocess_fallback_reply="换个说法吧",
+                reply_preprocess_fallback_once=True,
                 text_reply_limit_hours=24,
                 split_long_text=lambda text: [text],
             )
@@ -2322,7 +2322,7 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertFalse(bot.process_message(chat, message))
             self.assertEqual(attempts, [("换个说法吧", None), ("换个说法吧", None)])
             user_data = bot.reply_count_store.get_user("group:测试群:张三")
-            self.assertFalse(user_data.get("meta_reply_blocked_notified"))
+            self.assertFalse(user_data.get("preprocess_fallback_notified"))
 
     def test_group_text_reply_sends_current_turn_context_to_api(self):
         bot = WXBot.__new__(WXBot)
@@ -2348,8 +2348,8 @@ class MessageBehaviorTests(unittest.TestCase):
             memory_switch=False,
             memory_context_switch=False,
             clean_ai_reply_switch=False,
-            meta_reply_blocked_reply="",
-            meta_reply_blocked_reply_once=False,
+            reply_preprocess_fallback_reply="",
+            reply_preprocess_fallback_once=False,
             text_reply_limit_hours=24,
             group_voice_reply_switch=False,
             split_long_text=lambda text: [text],
@@ -2388,6 +2388,69 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(captured_messages, ["WRAPPED_GROUP_TURN"])
         self.assertEqual(sent, [("群回复", None)])
 
+    def test_group_preprocess_rewrite_api_error_skips_voice_reply(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AtMe="",
+            cmd="文件传输助手",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=False,
+            group_listen_only=False,
+            group_image_recognition_switch=False,
+            group_split_reply_switch=False,
+            group_split_max_count=4,
+            group_split_max_chars=100,
+            group_reply_at_msg=False,
+            group_reply_quote=False,
+            memory_switch=False,
+            memory_context_switch=False,
+            clean_ai_reply_switch=True,
+            reply_preprocess_max_chars=10,
+            reply_preprocess_fallback_reply="",
+            reply_preprocess_fallback_once=False,
+            api_error_reply="接口忙",
+            api_error_reply_once=False,
+            text_reply_limit_hours=24,
+            group_voice_reply_switch=True,
+            group_voice_reply_request_keywords=["语音"],
+            split_long_text=lambda text: [text],
+        )
+        bot.reply_count_store = ReplyCountStore("")
+        bot.memory_manager = None
+        bot._pause_group_reply = False
+        bot.is_stop_requested = lambda: False
+        replies = iter(["这是一段明显超过限制的回复内容", API_ERROR_REPLY_TEXT])
+        bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: next(replies))
+        bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+        bot._get_chat_send_lock = lambda _name: threading.Lock()
+        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+        bot._record_replied_message_success = lambda: None
+        bot._try_send_voice_reply = lambda *_args, **_kwargs: self.fail("接口错误回复不应进入语音发送")
+
+        sent = []
+        chat = SimpleNamespace(
+            who="测试群",
+            chat_type="group",
+            SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
+        )
+        message = SimpleNamespace(
+            type="text",
+            attr="group",
+            sender="张三",
+            content="发语音说一下",
+            quote=lambda text, at=None: sent.append((text, at)) or True,
+        )
+
+        self.assertTrue(bot.process_message(chat, message))
+        self.assertEqual(sent, [("接口忙", None)])
+
     def test_group_api_error_reply_once_resets_with_reply_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
@@ -2413,8 +2476,8 @@ class MessageBehaviorTests(unittest.TestCase):
                 memory_switch=False,
                 memory_context_switch=False,
                 clean_ai_reply_switch=True,
-                meta_reply_blocked_reply="",
-                meta_reply_blocked_reply_once=False,
+                reply_preprocess_fallback_reply="",
+                reply_preprocess_fallback_once=False,
                 api_error_reply="接口忙",
                 api_error_reply_once=True,
                 text_reply_limit_hours=24,
@@ -2530,8 +2593,8 @@ class MessageBehaviorTests(unittest.TestCase):
             memory_switch=False,
             memory_context_switch=False,
             clean_ai_reply_switch=False,
-            meta_reply_blocked_reply="",
-            meta_reply_blocked_reply_once=False,
+            reply_preprocess_fallback_reply="",
+            reply_preprocess_fallback_once=False,
             group_voice_reply_switch=False,
             split_long_text=lambda text: [text],
         )
@@ -2603,8 +2666,8 @@ class MessageBehaviorTests(unittest.TestCase):
             memory_switch=False,
             memory_context_switch=False,
             clean_ai_reply_switch=False,
-            meta_reply_blocked_reply="",
-            meta_reply_blocked_reply_once=False,
+            reply_preprocess_fallback_reply="",
+            reply_preprocess_fallback_once=False,
             group_voice_reply_switch=False,
             split_long_text=lambda text: [text],
         )

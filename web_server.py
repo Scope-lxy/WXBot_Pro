@@ -2260,8 +2260,9 @@ def dashboard():
     config.setdefault('chat_memory_protected_recent_count', 20)
     config.setdefault('api_error_reply', '')               # 接口调用失败时的固定回复，留空=静默
     config.setdefault('api_error_reply_once', False)       # 接口失败固定回复是否同一用户只发一次
-    config.setdefault('meta_reply_blocked_reply', '')      # 命中元话术后的固定回复，留空=静默
-    config.setdefault('meta_reply_blocked_reply_once', False)  # 命中元话术固定回复是否同一用户只发一次
+    config.setdefault('reply_preprocess_fallback_reply', '')     # 预处理异常兜底回复，留空=静默
+    config.setdefault('reply_preprocess_fallback_once', False)   # 预处理异常兜底是否同一用户只发一次
+    config.setdefault('reply_preprocess_max_chars', 100)         # AI 回复发送前最长字数
     config.setdefault('text_reply_limit_switch', False)      # 单用户文本回复次数限制开关
     config.setdefault('text_reply_limit_count', 99)          # 默认最多回复次数
     config.setdefault('text_reply_limit_hours', 24)          # 滚动小时窗口，0=关闭限制
@@ -3315,7 +3316,7 @@ def _coerce_bool_fields(merged_config):
         'group_voice_reply_switch',
         'siver_panel_enabled',
         'api_error_reply_once',             # API错误只回复一次
-        'meta_reply_blocked_reply_once',    # 元话术固定回复只回复一次
+        'reply_preprocess_fallback_once',   # 预处理异常兜底只回复一次
         'text_reply_limit_switch',          # 单用户文本回复次数限制开关
         'text_reply_limit_ai_reply',        # 超限后AI自动生成结束语
         'text_reply_limit_reply_once',      # 超限后只回复一次
@@ -3426,6 +3427,7 @@ def _coerce_int_range_fields(merged_config):
         'group_voice_reply_cooldown_minutes': (0, 1440, 0),
         'group_voice_reply_limit_count': (0, 99, 99),
         'group_voice_reply_limit_hours': (0, 720, 24),
+        'reply_preprocess_max_chars': (1, 10000, 100),
     }
     for field, (lo, hi, default) in int_range_fields.items():
         if field in merged_config:
@@ -7639,8 +7641,9 @@ def main():
                 "chat_memory_interval_hours": 12,
                 "api_error_reply": "",
                 "api_error_reply_once": False,
-                "meta_reply_blocked_reply": "",
-                "meta_reply_blocked_reply_once": False,
+                "reply_preprocess_fallback_reply": "",
+                "reply_preprocess_fallback_once": False,
+                "reply_preprocess_max_chars": 100,
                 "text_reply_limit_switch": False,
                 "text_reply_limit_count": 99,
                 "text_reply_limit_hours": 24,

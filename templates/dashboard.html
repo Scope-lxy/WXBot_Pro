@@ -3328,25 +3328,37 @@ html.icons-pref-local [class*=" bi-"]::before {
 
     <div class="cfg-card">
       <div class="ui-head ui-head--page">
-        <i class="bi bi-funnel"></i><h5>自动清洗回复</h5><span class="desc">自动清理模型回复中的思考标签、时间戳和异常格式，避免将内部内容发送给用户</span>
-        <label class="ui-switch ui-switch--l1 ui-head-switch" for="clean_ai_reply_switch" title="启用发送前清洗">
-          <input class="form-check-input" type="checkbox" id="clean_ai_reply_switch" {% if config.get('clean_ai_reply_switch', True) %}checked{% endif %}>
-          <span class="ui-switch-knob"></span>
-        </label>
+        <i class="bi bi-funnel"></i><h5>回复预处理</h5><span class="desc">发送前清洗和校验 AI 回复，避免把内部字段或超长内容发给用户</span>
       </div>
-      <div id="clean-ai-reply-settings" class="cfg-page-form" style="{% if not config.get('clean_ai_reply_switch', True) %}display:none;{% endif %}">
+      <div id="reply-preprocess-settings" class="cfg-page-form">
+        <div class="cfg-page-field d-flex align-items-center justify-content-between gap-3">
+          <div>
+            <label class="cfg-label" for="clean_ai_reply_switch" style="font-weight:600;">自动清洗回复</label>
+            <div class="cfg-hint">自动清理模型回复中的思考标签、时间戳和异常格式</div>
+          </div>
+          <label class="ui-switch ui-switch--l1" for="clean_ai_reply_switch" title="启用发送前清洗">
+            <input class="form-check-input" type="checkbox" id="clean_ai_reply_switch" {% if config.get('clean_ai_reply_switch', True) %}checked{% endif %}>
+            <span class="ui-switch-knob"></span>
+          </label>
+        </div>
         <div class="cfg-page-field">
-        <label class="cfg-label" for="meta_reply_blocked_reply" style="font-weight:600;">命中元话术固定回复</label>
+        <label class="cfg-label" for="reply_preprocess_fallback_reply" style="font-weight:600;">异常兜底回复</label>
         <div class="inline-check-field">
-          <input type="text" class="form-control" id="meta_reply_blocked_reply"
-                 value="{{ config.get('meta_reply_blocked_reply', '') }}"
+          <input type="text" class="form-control" id="reply_preprocess_fallback_reply"
+                 value="{{ config.get('reply_preprocess_fallback_reply', '') }}"
                  placeholder="不填写则静默不回复">
-          <label class="inline-check-suffix" for="meta_reply_blocked_reply_once">
-            <input class="form-check-input" type="checkbox" id="meta_reply_blocked_reply_once" {% if config.get('meta_reply_blocked_reply_once', False) %}checked{% endif %}>
+          <label class="inline-check-suffix" for="reply_preprocess_fallback_once">
+            <input class="form-check-input" type="checkbox" id="reply_preprocess_fallback_once" {% if config.get('reply_preprocess_fallback_once', False) %}checked{% endif %}>
             只回复一次
           </label>
         </div>
-        <div class="cfg-hint">当发送前清洗判定整段回复属于“对不起，我不能…”“作为AI…”这类元话术且没有可保留正文时，发送此固定回复；留空则静默不回复；勾选后同一好友在回复循环窗口内只发送一次</div>
+        <div class="cfg-hint">当 AI 返回内容经清洗、拦截或重写后仍不适合发送时，发送此兜底回复；留空则静默不回复</div>
+        </div>
+        <div class="cfg-page-field">
+          <label class="cfg-label" for="reply_preprocess_max_chars" style="font-weight:600;">拦截超长输出（字，1 ~ 10000）</label>
+          <input type="number" class="form-control" id="reply_preprocess_max_chars" min="1" max="10000"
+                 value="{{ config.get('reply_preprocess_max_chars', 100) }}" placeholder="100">
+          <div class="cfg-hint">超过该字数的 AI 回复不会直接发送，会先尝试重写压缩；默认 100，不允许关闭</div>
         </div>
       </div>
     </div>
@@ -7695,11 +7707,6 @@ $(function(){
   $('#text_reply_limit_ai_reply').on('change', syncChatMaxRoundReplyMode);
   syncChatMaxRoundReplyMode();
 
-  // ===== 发送前清洗开关联动 =====
-  $('#clean_ai_reply_switch').on('change', function(){
-    $('#clean-ai-reply-settings').toggle(this.checked);
-  });
-
   // ===== Remove List Item =====
   $(document).on('click','.btn-remove-item',function(){
     if($(this).closest('.material-source-item').length){
@@ -11905,8 +11912,9 @@ $(function(){
       api_error_reply:$('#api_error_reply').val().trim(),
       api_error_reply_once:$('#api_error_reply_once').is(':checked'),
       clean_ai_reply_switch:$('#clean_ai_reply_switch').is(':checked'),
-      meta_reply_blocked_reply:$('#meta_reply_blocked_reply').val().trim(),
-      meta_reply_blocked_reply_once:$('#meta_reply_blocked_reply_once').is(':checked'),
+      reply_preprocess_fallback_reply:$('#reply_preprocess_fallback_reply').val().trim(),
+      reply_preprocess_fallback_once:$('#reply_preprocess_fallback_once').is(':checked'),
+      reply_preprocess_max_chars:Math.max(1,Math.min(10000,parseInt($('#reply_preprocess_max_chars').val())||100)),
       text_reply_limit_switch:$('#text_reply_limit_switch').is(':checked'),
       text_reply_limit_count:Math.max(0,Math.min(99999,parseInt($('#text_reply_limit_count').val())||0)),
       text_reply_limit_hours:Math.max(0,Math.min(720,parseInt($('#text_reply_limit_hours').val())||0)),
