@@ -1675,6 +1675,63 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(bot._private_outbound_echo_ttl("voice"), 60)
         self.assertEqual(bot._private_outbound_echo_ttl("unknown"), 30)
 
+    def test_persisted_private_outbound_echo_keeps_original_match_window(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="管理员", group=[])
+        bot._ensure_message_runtime_state()
+
+        with mock.patch("wxbot_core.time.time", return_value=100.0):
+            group_id = bot._reserve_private_outbound_echo_for_send(
+                "张三", "text", "机器人回复", source="private_ai_reply"
+            )
+        original_expiry = bot._private_outbound_echoes["张三"][0]["expires_at"]
+
+        with mock.patch("wxbot_core.time.time", return_value=101.0):
+            self.assertTrue(bot._mark_private_outbound_echo_group_persisted(group_id))
+
+        echo = bot._private_outbound_echoes["张三"][0]
+        self.assertTrue(echo["memory_persisted"])
+        self.assertEqual(echo["expires_at"], original_expiry)
+
+    def test_persisted_echo_matches_once_then_same_text_new_id_is_manual(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="管理员", group=[])
+        bot._ensure_message_runtime_state()
+
+        with mock.patch("wxbot_core.time.time", return_value=100.0):
+            group_id = bot._reserve_private_outbound_echo_for_send(
+                "张三", "text", "相同内容", source="private_ai_reply"
+            )
+            bot._mark_private_outbound_echo_group_persisted(group_id)
+
+        with mock.patch("wxbot_core.time.time", return_value=106.0):
+            robot_echo = bot._consume_private_outbound_echo(
+                "张三",
+                message=MessageEnvelope(
+                    id="robot-echo",
+                    type="text",
+                    attr="self",
+                    sender="self",
+                    content="相同内容",
+                ),
+                return_match=True,
+            )
+        with mock.patch("wxbot_core.time.time", return_value=107.0):
+            manual_message = bot._consume_private_outbound_echo(
+                "张三",
+                message=MessageEnvelope(
+                    id="manual-message",
+                    type="text",
+                    attr="self",
+                    sender="self",
+                    content="相同内容",
+                ),
+                return_match=True,
+            )
+
+        self.assertTrue(robot_echo.get("dedupe_only"))
+        self.assertIsNone(manual_message)
+
     def test_private_outbound_echoes_keep_last_twenty_per_chat(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
@@ -1711,6 +1768,32 @@ class MessageBehaviorTests(unittest.TestCase):
         with mock.patch("wxbot_core.time.time", return_value=102.0):
             self.assertFalse(bot._has_pending_private_outbound_echoes())
         self.assertEqual(bot._private_outbound_echoes, {})
+
+    def test_claimed_private_outbound_echo_stays_pending_until_callback_settles(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="管理员", group=[])
+        bot._ensure_message_runtime_state()
+
+        with mock.patch("wxbot_core.time.time", return_value=100.0):
+            bot._remember_private_outbound_echo("张三", "text", "机器人回复", source="test")
+            match = bot._consume_private_outbound_echo(
+                "张三",
+                message=MessageEnvelope(
+                    id="echo-1",
+                    type="text",
+                    attr="self",
+                    sender="self",
+                    content="机器人回复",
+                ),
+                return_match=True,
+            )
+            self.assertTrue(bot._has_pending_private_outbound_echoes())
+
+        callback = MessageEnvelope()
+        callback._wxbot_outbound_echo_reservation = match["reservation_id"]
+        with mock.patch("wxbot_core.time.time", return_value=101.0):
+            self.assertTrue(bot._commit_private_outbound_echo_reservation(callback))
+            self.assertFalse(bot._has_pending_private_outbound_echoes())
 
     def test_prepare_voice_uses_existing_wechat_auto_text_without_reconverting(self):
         bot = WXBot.__new__(WXBot)

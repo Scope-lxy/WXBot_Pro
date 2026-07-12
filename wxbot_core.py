@@ -5028,10 +5028,6 @@ class WXBot:
         name = str(getattr(chat, "who", "") or "").strip()
         if not name:
             return False
-        try:
-            log(message=f"运行事件：人工介入已确认 runtime_id={self._runtime_instance_id}")
-        except Exception:
-            pass
         self._ensure_message_runtime_state()
         with self._chat_merge_lock:
             pipeline = self._private_message_pipelines.get(name)
@@ -5043,6 +5039,10 @@ class WXBot:
             has_voice_transcription = name in (getattr(self, "_pending_private_voice_transcription", {}) or {})
         if has_committed_batch or self._has_private_ai_lightweight_send_queue(name):
             result = self._invalidate_private_ai_reply_turn(name)
+            try:
+                log(message=f"运行事件：人工介入已确认 runtime_id={self._runtime_instance_id}")
+            except Exception:
+                pass
             dropped_queue = bool(result.get("dropped_lightweight_queue"))
             suffix = "，已清理延迟发送队列" if dropped_queue else ""
             log(message=f"私聊 {name}：检测到 self 介入，已停止当前 AI 回复{suffix}")
@@ -5050,6 +5050,10 @@ class WXBot:
 
         if has_open_batch or has_voice_transcription:
             self._invalidate_private_ai_reply_turn(name)
+            try:
+                log(message=f"运行事件：人工介入已确认 runtime_id={self._runtime_instance_id}")
+            except Exception:
+                pass
             log(message=f"私聊 {name}：检测到 self 边界，已切分待回复批次")
         else:
             log(message=f"私聊 {name}：检测到 self 消息，当前无待回复任务，已作为历史记录保留")
@@ -7731,6 +7735,7 @@ class WXBot:
                 content = getattr(message, "content", "")
         kind = self._normalize_private_outbound_echo_type(msg_type)
         text = str(content or "").strip()
+        message_id = str(getattr(message, "id", "") or "").strip() if message is not None else ""
         self._ensure_message_runtime_state()
         now = time.time()
         matched = None
@@ -7740,6 +7745,7 @@ class WXBot:
                 if isinstance(item, dict) and float(item.get("expires_at", 0) or 0) >= now
             ]
             candidates = []
+            duplicate_candidates = []
             for index, item in enumerate(echoes):
                 expected = str(item.get("type") or "unknown").strip().lower() or "unknown"
                 if kind == "text":
@@ -7757,16 +7763,32 @@ class WXBot:
                         or text in expected_content
                     )
                 )
+                remaining = max(0, int(item.get("remaining", 1) or 0))
+                if item.get("reservation_id") or remaining <= 0:
+                    matched_message_id = str(item.get("matched_message_id") or "").strip()
+                    same_callback = bool(
+                        (message_id and matched_message_id and message_id == matched_message_id)
+                        or (
+                            not message_id
+                            and not matched_message_id
+                            and (
+                                expected_content == text
+                                or (not expected_content and not text)
+                            )
+                        )
+                    )
+                    if same_callback:
+                        duplicate_candidates.append((index, item, content_match))
+                    continue
                 candidates.append((index, item, content_match))
-            available = [candidate for candidate in candidates if not candidate[1].get("reservation_id")]
             selected = None
-            if available:
+            if candidates:
                 exact_matches = [
                     candidate
-                    for candidate in available
+                    for candidate in candidates
                     if str(candidate[1].get("content") or "").strip() == text and text
                 ]
-                substring_matches = [candidate for candidate in available if candidate[2]]
+                substring_matches = [candidate for candidate in candidates if candidate[2]]
                 if exact_matches:
                     selected = exact_matches[0]
                 elif len(substring_matches) == 1:
@@ -7783,31 +7805,37 @@ class WXBot:
                     ]
                     if len(longest_matches) == 1:
                         selected = longest_matches[0]
-                elif not text or all(not str(candidate[1].get("content") or "").strip() for candidate in available):
-                    selected = available[0]
+                elif not text or all(not str(candidate[1].get("content") or "").strip() for candidate in candidates):
+                    selected = candidates[0]
             if selected is not None:
                 index, item, _content_match = selected
                 matched = dict(item)
                 if item.get("primary_memory_writer"):
                     matched["primary_memory_writer"] = True
-                    if message is not None and return_match and not item.get("memory_persisted"):
-                        reservation_id = uuid.uuid4().hex
-                        item["reservation_id"] = reservation_id
-                        matched["reservation_id"] = reservation_id
-                elif message is not None and return_match and not item.get("memory_persisted"):
+                if message is not None and return_match and not item.get("memory_persisted"):
                     reservation_id = uuid.uuid4().hex
                     item["reservation_id"] = reservation_id
+                    item["matched_message_id"] = message_id
+                    item["remaining"] = max(0, int(item.get("remaining", 1) or 1) - 1)
                     matched["reservation_id"] = reservation_id
                 elif item.get("memory_persisted"):
                     matched["dedupe_only"] = True
+                    item["matched_message_id"] = message_id
+                    remaining = max(0, int(item.get("remaining", 1) or 1) - 1)
+                    item["remaining"] = remaining
+                    if remaining <= 0:
+                        item["expires_at"] = min(
+                            float(item.get("expires_at", now + 2) or now + 2),
+                            now + 2,
+                        )
                 else:
                     remaining = max(0, int(item.get("remaining", 1) or 1)) - 1
                     if remaining > 0:
                         item["remaining"] = remaining
                     else:
                         del echoes[index]
-            elif not available and candidates:
-                _index, item, _content_match = candidates[0]
+            elif duplicate_candidates:
+                _index, item, _content_match = duplicate_candidates[0]
                 matched = dict(item)
                 matched["duplicate_reservation"] = True
             if echoes:
@@ -7832,7 +7860,13 @@ class WXBot:
                     item.pop("reservation_id", None)
                     item["memory_persisted"] = True
                     item["fallback_content"] = ""
-                    item["expires_at"] = now + 2
+                    if max(0, int(item.get("remaining", 0) or 0)) <= 0:
+                        item["expires_at"] = min(
+                            float(item.get("expires_at", now + 2) or now + 2),
+                            now + 2,
+                        )
+                    else:
+                        item.pop("matched_message_id", None)
                     return True
         return False
 
@@ -7840,7 +7874,6 @@ class WXBot:
         group_id = str(echo_group_id or "").strip()
         if not group_id:
             return False
-        now = time.time()
         changed = False
         with self._chat_merge_lock:
             for echoes in self._private_outbound_echoes.values():
@@ -7849,7 +7882,6 @@ class WXBot:
                         continue
                     item["memory_persisted"] = True
                     item["fallback_content"] = ""
-                    item["expires_at"] = now + 2
                     changed = True
         return changed
 
@@ -8106,10 +8138,15 @@ class WXBot:
                         continue
                     try:
                         expires_at = float(item.get("expires_at", 0) or 0)
-                        remaining = int(item.get("remaining", 1) or 1)
+                        remaining = int(item.get("remaining", 1))
                     except (TypeError, ValueError):
                         continue
-                    if expires_at >= now and remaining > 0:
+                    claimed = bool(
+                        item.get("reservation_id")
+                        or item.get("callback_write_id")
+                        or item.get("fallback_write_id")
+                    )
+                    if expires_at >= now and (remaining > 0 or claimed):
                         kept.append(item)
                 if kept:
                     next_echoes[name] = kept[-PRIVATE_OUTBOUND_ECHO_MAX_PER_CHAT:]

@@ -424,6 +424,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.callback_is_die = False
         bot.wx = SimpleNamespace(nickname="bot")
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+        bot._runtime_instance_id = "a" * 32
         bot.is_stop_requested = lambda: False
         timer_calls = []
         bot._schedule_private_message_timer = lambda seconds, callback, chat: timer_calls.append((seconds, callback, chat)) or SimpleNamespace(cancel=lambda: None)
@@ -441,6 +442,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
 
         log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
         self.assertTrue(any("self 边界" in message for message in log_messages))
+        self.assertTrue(any("人工介入已确认" in message for message in log_messages))
         self.assertFalse(any("检测到手动 self" in message for message in log_messages))
         self.assertEqual(bot._get_private_message_sequence("张三"), 3)
         self.assertNotIn("张三", bot._private_message_pipelines)
@@ -460,6 +462,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.callback_is_die = False
         bot.wx = SimpleNamespace(nickname="bot")
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+        bot._runtime_instance_id = "a" * 32
         bot._ensure_message_runtime_state()
         bot._private_message_sequence_by_chat["张三"] = 7
 
@@ -470,6 +473,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
 
         log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
         self.assertTrue(any("作为历史记录保留" in message for message in log_messages))
+        self.assertFalse(any("人工介入已确认" in message for message in log_messages))
         self.assertFalse(any("检测到手动 self" in message for message in log_messages))
         self.assertEqual(bot._get_private_message_sequence("张三"), 7)
         self.assertNotIn("张三", bot._private_message_pipelines)
