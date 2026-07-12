@@ -29,6 +29,12 @@ log_messages = []
 _log_lock = threading.Lock()
 _next_log_id = 0
 _thread_exception_logger_installed = False
+_thread_exception_observer = None
+
+
+def set_thread_exception_observer(observer):
+    global _thread_exception_observer
+    _thread_exception_observer = observer if callable(observer) else None
 
 
 def _ensure_utf8_bom(path):
@@ -142,15 +148,49 @@ def format_log_message(message):
 
     return text
 
+
+def format_panel_log_message(message, level="INFO", max_length=260):
+    """Keep the panel concise while the file log retains full diagnostics."""
+    text = format_log_message(message)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    summary = lines[0]
+    if len(lines) > 1 and _normalize_level(level) in {"WARNING", "ERROR"}:
+        summary += "（详情见本地日志）"
+    if len(summary) > max_length:
+        summary = summary[: max_length - 1].rstrip() + "…"
+    return summary
+
+
+def _is_test_process():
+    if str(os.environ.get("WXBOT_TESTING", "") or "").strip().lower() in {"1", "true", "yes"}:
+        return True
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    args = [str(item or "").replace("\\", "/").lower() for item in sys.argv]
+    return any(
+        "unittest" in item
+        or "/tests/" in item
+        or os.path.basename(item).startswith("test_")
+        for item in args
+    )
+
+
+def _daily_log_path(now_day):
+    root = os.path.join(LOG_PATH, "tests") if _is_test_process() else LOG_PATH
+    os.makedirs(root, exist_ok=True)
+    return os.path.join(root, f"log_{now_day}.txt")
+
 def log_server(level, msg):
     """
     记录日志到内存和文件
     :param level: 日志级别 (INFO, WARNING, ERROR, DEBUG, SUCCESS)
     :param msg: 日志消息
     """
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    timestamp = datetime.now().strftime('%H:%M:%S')
     level = _normalize_level(level)
-    msg = format_log_message(msg)
+    msg = str(msg or "").strip()
     global _next_log_id
     with _log_lock:
         _next_log_id += 1
@@ -216,14 +256,17 @@ def log(level="INFO", message=''):
     main_window.textEdit_log.append(formatted_message)
     scrollbar = main_window.textEdit_log.verticalScrollBar()
     scrollbar.setValue(scrollbar.maximum())"""
-    # server端日志输出
-    log_server(level, message)
+    # DEBUG 只进入诊断文件；面板保留用户可感知的运营事件与故障摘要。
+    if level != "DEBUG":
+        panel_message = format_panel_log_message(message, level=level)
+        if panel_message:
+            log_server(level, panel_message)
     # 终端日志输出
     # print(f'[{timestamp}]: {message}')
     # 写入log到本地
     now_day = datetime.now().strftime("%y%m%d")
     try:
-        log_path = os.path.join(LOG_PATH, f'log_{now_day}.txt')
+        log_path = _daily_log_path(now_day)
         _ensure_utf8_bom(log_path)
         with open(log_path, 'a', encoding='utf-8') as f:
             f.write(f'[{timestamp}] [{level}]: {message}' + '\n')
@@ -257,6 +300,12 @@ def install_thread_exception_logger():
             level="ERROR",
             message=f"[后台线程异常] {thread_name}: {exc_name}: {exc_value}\n{tb_text}",
         )
+        observer = _thread_exception_observer
+        if callable(observer):
+            try:
+                observer(args)
+            except Exception as observer_exc:
+                log(level="ERROR", message=f"后台线程异常观察器处理失败：{observer_exc}")
         if callable(previous_hook) and previous_hook is not _log_thread_exception:
             try:
                 previous_hook(args)

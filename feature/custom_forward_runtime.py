@@ -28,15 +28,31 @@ def send_custom_forward_action(bot, action, chat, message):
     error = ""
     if action.get("kind") == "forward":
         source_message = action.get("source_message")
-        if getattr(bot, "_ui_owner", None) is None and callable(getattr(message, "forward", None)):
-            with wechat_ui_actions.hold(bot):
-                with warn_slow_wechat_ui_action(f"message.forward({target})"):
-                    if source_message:
-                        result = message.forward(target, message=source_message)
-                    else:
-                        result = message.forward(target)
-        else:
-            try:
+        remember_group = getattr(bot, "_remember_material_outbound_echoes", None)
+        discard_group = getattr(bot, "_discard_private_outbound_echo_group", None)
+        mark_reported_failed = getattr(bot, "_mark_private_outbound_echo_group_reported_failed", None)
+        schedule_fallback = getattr(bot, "_schedule_private_outbound_echo_fallback", None)
+        echo_group_id = ""
+        if callable(remember_group):
+            echo_group_id = remember_group(
+                [target],
+                getattr(message, "type", "unknown"),
+                preface=source_message,
+                material_title=str(
+                    getattr(message, "original_content", "") or getattr(message, "content", "") or ""
+                ),
+                source="custom_forward",
+                schedule_fallback=False,
+            )
+        try:
+            if getattr(bot, "_ui_owner", None) is None and callable(getattr(message, "forward", None)):
+                with wechat_ui_actions.hold(bot):
+                    with warn_slow_wechat_ui_action(f"message.forward({target})"):
+                        if source_message:
+                            result = message.forward(target, message=source_message)
+                        else:
+                            result = message.forward(target)
+            else:
                 result = bot._ui_forward_message(
                     chat,
                     message,
@@ -46,15 +62,21 @@ def send_custom_forward_action(bot, action, chat, message):
                     task_version=task_version,
                     delivery_id=delivery_id,
                 )
-            except wechat_ui_actions.IntentCancelled:
-                log(message=f"[自定义转发] 规则已更新或关闭，已取消 {chat.who} → {target} 的旧转发")
-                return
-        remember_echo = getattr(bot, "_remember_private_outbound_echo", None)
+        except wechat_ui_actions.IntentCancelled:
+            if callable(discard_group):
+                discard_group(echo_group_id)
+            log(message=f"[自定义转发] 规则已更新或关闭，已取消 {chat.who} → {target} 的旧转发")
+            return
+        except Exception:
+            if callable(schedule_fallback):
+                schedule_fallback("")
+            raise
         success, error = is_forward_result_success(result)
-        if success and callable(remember_echo):
-            if source_message:
-                remember_echo(target, "text", source_message, source="custom_forward")
-            remember_echo(target, getattr(message, "type", "unknown"), source="custom_forward")
+        if success:
+            if callable(schedule_fallback):
+                schedule_fallback("")
+        elif callable(mark_reported_failed):
+            mark_reported_failed(echo_group_id)
     else:
         send_actions = getattr(bot, "_send_actions_to_target_without_child", None)
         if getattr(bot, "_ui_owner", None) is not None and callable(send_actions):

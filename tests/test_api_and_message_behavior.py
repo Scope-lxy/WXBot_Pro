@@ -194,6 +194,22 @@ class ApiBehaviorTests(unittest.TestCase):
 
 
 class MessageBehaviorTests(unittest.TestCase):
+    def test_listener_thread_exception_arms_lightweight_recovery(self):
+        bot = WXBot.__new__(WXBot)
+        bot.is_stop_requested = lambda: False
+        calls = []
+        bot._arm_listener_auto_recovery = lambda exc, source="": calls.append((exc, source)) or True
+        bot.callback_is_die = False
+        error = RuntimeError("事件无法调用任何订户")
+
+        handled = bot._handle_background_thread_exception(
+            SimpleNamespace(thread=SimpleNamespace(name="Thread-1 (_listener_listen)"), exc_value=error)
+        )
+
+        self.assertTrue(handled)
+        self.assertEqual(calls, [(error, "wxautox监听线程")])
+        self.assertFalse(bot.callback_is_die)
+
     def test_reply_count_store_loads_utf8_bom_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = f"{tmp}/reply_count.json"
@@ -600,8 +616,24 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._enqueue_ui_message(conversation, manual)
 
         self.assertEqual(bot._get_private_message_sequence("张三"), 1)
-        self.assertTrue(echo._wxbot_private_reply_persisted_echo)
+        self.assertTrue(echo._wxbot_private_outbound_echo)
+        self.assertFalse(getattr(echo, "_wxbot_private_reply_persisted_echo", False))
         self.assertTrue(manual._wxbot_sequence_advanced)
+
+    def test_duplicate_private_self_callback_id_is_ignored(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(group=[], cmd="管理员")
+        bot._ui_ingress_queue = queue.Queue()
+        bot._stop_requested_event = threading.Event()
+        conversation = ConversationRef("张三", "private")
+        bot._remember_private_outbound_echo("张三", "text", "机器人回复", source="test")
+
+        first = MessageEnvelope(id="self-1", type="text", attr="self", sender="self", content="机器人回复")
+        duplicate = MessageEnvelope(id="self-1", type="text", attr="self", sender="self", content="机器人回复")
+        bot._enqueue_ui_message(conversation, first)
+        bot._enqueue_ui_message(conversation, duplicate)
+
+        self.assertEqual(bot._ui_ingress_queue.qsize(), 1)
 
     def test_uncertain_send_runtime_echo_does_not_invalidate_remaining_bubbles(self):
         bot = WXBot.__new__(WXBot)
@@ -685,7 +717,6 @@ class MessageBehaviorTests(unittest.TestCase):
 
     def test_owner_lightweight_actions_are_individually_versioned(self):
         calls = []
-        echoes = []
 
         class Owner:
             def call(self, intent, timeout):
@@ -697,9 +728,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot.config = SimpleNamespace(
             chat_split_reply_switch=True,
             chat_split_reply_delay_switch=True,
-        )
-        bot._remember_private_outbound_echo_for_send_result = (
-            lambda *args, **kwargs: echoes.append((args, kwargs)) or True
         )
         actions = [
             {"type": "text", "text": "第一条"},
@@ -723,11 +751,10 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertEqual(intent.payload["delivery_id"], f"delivery-1:{index}")
             self.assertEqual([dict(item) for item in intent.payload["actions"]], [actions[index]])
             self.assertIs(timeout, wechat_ui_actions.UI_CALL_WAIT_TIMEOUT)
-        self.assertEqual(len(echoes), 3)
+        self.assertEqual(len(bot._private_outbound_echoes["张三"]), 3)
 
     def test_owner_lightweight_actions_stop_before_unsent_items_after_new_message(self):
         calls = []
-        echoes = []
 
         class Owner:
             def call(self, intent, _timeout):
@@ -738,9 +765,6 @@ class MessageBehaviorTests(unittest.TestCase):
 
         bot = WXBot.__new__(WXBot)
         bot._ui_owner = Owner()
-        bot._remember_private_outbound_echo_for_send_result = (
-            lambda *args, **kwargs: echoes.append((args, kwargs)) or True
-        )
 
         with self.assertRaises(wechat_ui_actions.IntentCancelled):
             bot._send_lightweight_actions_to_child(
@@ -756,7 +780,77 @@ class MessageBehaviorTests(unittest.TestCase):
             )
 
         self.assertEqual(len(calls), 2)
-        self.assertEqual(len(echoes), 1)
+        self.assertEqual(len(bot._private_outbound_echoes["张三"]), 1)
+
+    def test_owner_text_send_reserves_echo_before_synchronous_self_callback(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="管理员", group=[], memory_switch=True)
+        bot._ui_ingress_queue = queue.Queue()
+        bot._ui_ingress_stop = threading.Event()
+        bot._ensure_message_runtime_state()
+
+        class Owner:
+            is_running = True
+
+            def call(self, _intent, _timeout):
+                bot._enqueue_ui_message(
+                    ConversationRef("张三", "private"),
+                    MessageEnvelope(type="text", attr="self", sender="self", content="同步回复"),
+                )
+                return True
+
+        bot._ui_owner = Owner()
+        self.assertTrue(bot._send_text_to_target_without_child("张三", "同步回复"))
+
+        _conversation, callback = bot._ui_ingress_queue.get_nowait()
+        self.assertTrue(callback._wxbot_private_outbound_echo)
+        self.assertEqual(bot._get_private_message_sequence("张三"), 0)
+
+    def test_synchronous_primary_echo_is_released_to_callback_when_result_is_unknown(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="管理员", group=[], memory_switch=True)
+        bot._ui_ingress_queue = queue.Queue()
+        bot._ui_ingress_stop = threading.Event()
+        bot._ensure_message_runtime_state()
+        group_id = bot._reserve_private_outbound_echo_for_send(
+            "张三",
+            "text",
+            "结果未知",
+            source="private_ai_reply",
+            fallback_content="结果未知",
+            primary_memory_writer=True,
+        )
+        bot._enqueue_ui_message(
+            ConversationRef("张三", "private"),
+            MessageEnvelope(type="text", attr="self", sender="self", content="结果未知"),
+        )
+        bot._release_private_outbound_echo_group_to_callback(group_id)
+
+        _conversation, callback = bot._ui_ingress_queue.get_nowait()
+        chat = SimpleNamespace(who="张三", chat_type="private")
+        self.assertTrue(callback._wxbot_private_outbound_echo_duplicate)
+        self.assertFalse(bot._should_skip_message_memory(chat, callback))
+
+    def test_reported_failed_send_still_recognizes_late_self_callback(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="管理员", group=[], memory_switch=True)
+        bot._ui_ingress_queue = queue.Queue()
+        bot._ui_ingress_stop = threading.Event()
+        bot._ensure_message_runtime_state()
+        group_id = bot._reserve_private_outbound_echo_for_send(
+            "张三", "text", "晚到回调", source="test", fallback_content="晚到回调"
+        )
+        self.assertFalse(bot._settle_private_outbound_echo_send(group_id, False))
+
+        bot._enqueue_ui_message(
+            ConversationRef("张三", "private"),
+            MessageEnvelope(type="text", attr="self", sender="self", content="晚到回调"),
+        )
+
+        _conversation, callback = bot._ui_ingress_queue.get_nowait()
+        self.assertTrue(callback._wxbot_private_outbound_echo)
+        self.assertEqual(bot._get_private_message_sequence("张三"), 0)
+        self.assertEqual(bot._private_outbound_echoes["张三"][0]["fallback_content"], "")
 
     def test_queued_private_ai_reply_skips_first_delay_but_keeps_split_delays(self):
         events = []
@@ -1309,7 +1403,7 @@ class MessageBehaviorTests(unittest.TestCase):
 
     def test_voice_reply_limit_warning_logs_again_for_new_window(self):
         bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
+        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="", group=[])
         state = {
             "limits": {
                 "private:张三": {
@@ -1415,8 +1509,11 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._record_tts_api_request = lambda: None
         bot._remove_temp_audio_file = lambda _path: None
         bot._get_wechat_action_lock = lambda: lock
-        bot._remember_private_outbound_echo = lambda *_args, **_kwargs: True
-        bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
+        saved = []
+        bot._save_private_reply_memory_message = lambda *_args, **_kwargs: saved.append(True) or True
+        bot._ui_ingress_queue = queue.Queue()
+        bot._ui_ingress_stop = threading.Event()
+        bot._ensure_message_runtime_state()
 
         class FakeTtsClient:
             def synthesize(self, _text, _audio_path):
@@ -1424,6 +1521,10 @@ class MessageBehaviorTests(unittest.TestCase):
 
         def send_audio(**_kwargs):
             events.append(("send_audio", lock.locked))
+            bot._enqueue_ui_message(
+                ConversationRef("张三", "private"),
+                MessageEnvelope(type="voice", attr="self", sender="self", content="[语音]"),
+            )
             return True
 
         chat = SimpleNamespace(who="张三", SendAudio=send_audio)
@@ -1441,6 +1542,10 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertIn(("send_audio", True), events)
         self.assertEqual(events[-1], ("release",))
+        self.assertEqual(saved, [True])
+        _conversation, callback = bot._ui_ingress_queue.get_nowait()
+        self.assertTrue(callback._wxbot_private_outbound_echo_duplicate)
+        self.assertEqual(bot._get_private_message_sequence("张三"), 0)
 
     def test_voice_reply_does_not_fallback_after_send_result_becomes_uncertain(self):
         class RecordingLock:
@@ -1452,7 +1557,7 @@ class MessageBehaviorTests(unittest.TestCase):
 
         statuses = []
         bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
+        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="", group=[], memory_switch=True)
         bot._voice_reply_state = None
         bot._private_reply_can_continue = lambda *_args, **_kwargs: True
         bot._active_tts_config = lambda _user="": {"provider": "fake"}
@@ -3739,6 +3844,32 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(saved, [])
         self.assertTrue(bot._consume_private_reply_runtime_echo("张三", "结果未知的回复"))
         self.assertFalse(bot._consume_private_reply_runtime_echo("张三", "结果未知的回复"))
+
+    def test_private_reply_self_callback_before_send_return_does_not_duplicate_memory(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="管理员", group=[], chat_listen_only=False)
+        bot.is_stop_requested = lambda: False
+        bot._pause_chat_reply = False
+        bot._verified_send_chat = lambda _target, candidate: candidate
+        bot._get_chat_send_lock = lambda _name: threading.Lock()
+        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+        saved = []
+        callback_skips = []
+        bot._save_private_reply_memory_message = lambda _chat, text: saved.append(text) or True
+        bot._ensure_message_runtime_state()
+
+        class FakeChat:
+            who = "张三"
+            chat_type = "private"
+
+            def SendMsg(self, text):
+                callback = SimpleNamespace(attr="self", sender="self", type="text", content=text)
+                callback_skips.append(bot._should_skip_message_memory(self, callback))
+                return True
+
+        self.assertEqual(bot._send_private_ai_reply_parts(FakeChat(), ["只保存一次"]), (True, True))
+        self.assertEqual(callback_skips, [True])
+        self.assertEqual(saved, ["只保存一次"])
 
     def test_reset_stop_request_allows_next_start(self):
         bot = WXBot.__new__(WXBot)

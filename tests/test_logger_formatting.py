@@ -1,6 +1,10 @@
+import os
+import tempfile
 import unittest
+from unittest import mock
 
-from core.logger import format_log_message
+from core import logger
+from core.logger import format_log_message, format_panel_log_message
 
 
 class LogFormattingTest(unittest.TestCase):
@@ -35,6 +39,52 @@ class LogFormattingTest(unittest.TestCase):
             format_log_message("张三 删除监听返回: 未找到监听对象"),
             "监听管理 张三：删除监听结果：未找到监听对象",
         )
+
+    def test_panel_keeps_only_error_summary_for_multiline_traceback(self):
+        self.assertEqual(
+            format_panel_log_message(
+                "后台线程异常：监听线程退出\nTraceback (most recent call last):\nRuntimeError: boom",
+                level="ERROR",
+            ),
+            "后台线程异常：监听线程退出（详情见本地日志）",
+        )
+
+    def test_debug_is_file_only_and_test_logs_use_separate_directory(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(logger, "LOG_PATH", temp_dir), mock.patch.object(
+                logger, "_is_test_process", return_value=True
+            ):
+                with logger._log_lock:
+                    original = list(logger.log_messages)
+                    logger.log_messages.clear()
+                try:
+                    logger.log(level="DEBUG", message="内部诊断")
+                    self.assertEqual(logger.get_recent_logs(), [])
+                    path = os.path.join(temp_dir, "tests", "log_" + logger.datetime.now().strftime("%y%m%d") + ".txt")
+                    self.assertTrue(os.path.isfile(path))
+                    with open(path, encoding="utf-8-sig") as log_file:
+                        self.assertIn("[DEBUG]: 内部诊断", log_file.read())
+                finally:
+                    with logger._log_lock:
+                        logger.log_messages[:] = original
+
+    def test_panel_log_uses_short_time_and_chinese_ui_keeps_internal_level(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(logger, "LOG_PATH", temp_dir), mock.patch.object(
+                logger, "_is_test_process", return_value=True
+            ):
+                with logger._log_lock:
+                    original = list(logger.log_messages)
+                    logger.log_messages.clear()
+                try:
+                    logger.log(level="SUCCESS", message="监听器已就绪")
+                    item = logger.get_recent_logs(limit=1)[0]
+                    self.assertRegex(item["time"], r"^\d{2}:\d{2}:\d{2}$")
+                    self.assertEqual(item["level"], "SUCCESS")
+                    self.assertEqual(item["message"], "监听器已就绪")
+                finally:
+                    with logger._log_lock:
+                        logger.log_messages[:] = original
 
 
 if __name__ == "__main__":

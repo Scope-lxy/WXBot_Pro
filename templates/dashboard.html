@@ -3495,11 +3495,11 @@ html.icons-pref-local [class*=" bi-"]::before {
   <div class="log-toolbar" id="logToolbar">
     <div class="log-title"><i class="bi bi-terminal"></i><span class="log-title-main">运行日志</span><span class="log-title-sub">已收起</span></div>
     <div class="log-actions">
-      <button class="filter-btn active" data-level="ALL">ALL</button>
-      <button class="filter-btn" data-level="INFO">INFO</button>
-      <button class="filter-btn" data-level="SUCCESS">SUCCESS</button>
-      <button class="filter-btn" data-level="WARNING">WARNING</button>
-      <button class="filter-btn" data-level="ERROR">ERROR</button>
+      <button class="filter-btn active" data-level="ALL">全部</button>
+      <button class="filter-btn" data-level="INFO">信息</button>
+      <button class="filter-btn" data-level="SUCCESS">成功</button>
+      <button class="filter-btn" data-level="WARNING">警告</button>
+      <button class="filter-btn" data-level="ERROR">错误</button>
       <button class="icon-btn" id="btnClearLog" title="清空日志"><i class="bi bi-trash"></i></button>
       <button class="icon-btn" id="btnToggleLog" title="收起日志" aria-expanded="true"><i class="bi bi-chevron-down"></i></button>
     </div>
@@ -3514,9 +3514,10 @@ html.icons-pref-local [class*=" bi-"]::before {
     {% elif lvl == 'ERROR' %}{% set badge_cls = 'log-error' %}
     {% elif lvl == 'DEBUG' %}{% set badge_cls = 'log-debug' %}
     {% endif %}
+    {% set badge_label = {'INFO':'信息','SUCCESS':'成功','WARNING':'警告','ERROR':'错误'}.get(lvl, lvl) %}
     <div class="log-entry" data-level="{{ lvl }}" data-log-id="{{ log.id|default(0) }}">
       <span class="log-time">{{ log.time }}</span>
-      <span class="log-badge {{ badge_cls }}">{{ lvl }}</span>
+      <span class="log-badge {{ badge_cls }}">{{ badge_label }}</span>
       <span class="log-msg">{{ log.message }}</span>
     </div>
     {% endfor %}
@@ -13539,11 +13540,12 @@ $(function(){
   function buildLogEntryHtml(log){
     var lvl = String(log.level||'INFO').toUpperCase().replace(/[^A-Z]/g, '').slice(0, 16) || 'INFO';
     var levelMap={INFO:'log-info',SUCCESS:'log-success',WARNING:'log-warning',ERROR:'log-error',DEBUG:'log-debug'};
+    var levelLabel={INFO:'信息',SUCCESS:'成功',WARNING:'警告',ERROR:'错误'};
     var cls = levelMap[lvl]||'log-info';
     var logId = parseLogId(log.id);
     return '<div class="log-entry" data-level="'+lvl+'" data-log-id="'+logId+'">'+
       '<span class="log-time">'+escapeLogHtml(log.time)+'</span>'+
-      '<span class="log-badge '+cls+'">'+escapeLogHtml(lvl)+'</span>'+
+      '<span class="log-badge '+cls+'">'+escapeLogHtml(levelLabel[lvl]||lvl)+'</span>'+
       '<span class="log-msg">'+escapeLogHtml(log.message)+'</span></div>';
   }
   var lastLogId = (function(){

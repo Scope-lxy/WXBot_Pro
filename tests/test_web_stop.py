@@ -18,6 +18,8 @@ class WebStopTests(unittest.TestCase):
                 _ui_owner=SimpleNamespace(is_running=True),
                 is_stop_requested=lambda: False,
                 _runtime_instance_id='a' * 32,
+                _listener_auto_recovery_active=False,
+                callback_is_die=False,
             )
             web_server.bot_thread = SimpleNamespace(is_alive=lambda: True)
             web_server._set_bot_startup_state('success', '机器人已启动')
@@ -33,6 +35,13 @@ class WebStopTests(unittest.TestCase):
                 'bot_running': True,
                 'runtime_id': 'a' * 32,
             })
+            web_server.bot._listener_auto_recovery_active = True
+            recovering = web_server.app.test_client().get('/runtime_health')
+            self.assertFalse(recovering.get_json()['bot_running'])
+            web_server.bot._listener_auto_recovery_active = False
+            web_server.bot.callback_is_die = True
+            listener_dead = web_server.app.test_client().get('/runtime_health')
+            self.assertFalse(listener_dead.get_json()['bot_running'])
             self.assertEqual(remote.status_code, 404)
             self.assertEqual(remote.get_json(), {'status': 'error'})
         finally:

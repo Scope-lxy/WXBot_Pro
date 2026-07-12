@@ -4638,6 +4638,8 @@ def runtime_health():
     owner = getattr(bot, '_ui_owner', None) if bot is not None else None
     owner_running = bool(getattr(owner, 'is_running', False))
     stop_requested = bool(bot.is_stop_requested()) if bot is not None else True
+    listener_recovery_active = bool(getattr(bot, '_listener_auto_recovery_active', False)) if bot is not None else False
+    callback_is_die = bool(getattr(bot, 'callback_is_die', False)) if bot is not None else True
     bot_running = bool(
         bot_thread
         and bot_thread.is_alive()
@@ -4645,6 +4647,8 @@ def runtime_health():
         and snapshot.get('status') == 'success'
         and owner_running
         and not stop_requested
+        and not listener_recovery_active
+        and not callback_is_die
     )
     return jsonify({
         'status': 'ok',
@@ -7167,7 +7171,7 @@ def time_start_stop():
         if everyday_start_stop_bot_switch:
             log('INFO', f'启动定时启停线程，启动时间：{start_hour}:{start_minute}，停止时间：{stop_hour}:{stop_minute}')
         else:
-            log('INFO', '定时启停未启用，未启用')
+            log('DEBUG', '定时启停未启用')
 
         while True:
             if update_config_status: # 保存配置后更新定时启停状态
@@ -7181,7 +7185,7 @@ def time_start_stop():
                 if everyday_start_stop_bot_switch:
                     log('INFO', f'配置更新，启动定时启停线程，启动时间：{start_hour}:{start_minute}，停止时间：{stop_hour}:{stop_minute}')
                 else:
-                    log('INFO', '配置更新，定时启停未启用')
+                    log('DEBUG', '配置更新，定时启停未启用')
             if everyday_start_stop_bot_switch:
                 if is_target_time(start_hour, start_minute): # 启动时间
                     if _scheduled_start_is_suppressed():
@@ -7393,7 +7397,7 @@ def main():
                 json.dump(default_config, f, ensure_ascii=False, indent=4)
             _ensure_prompt_dir()
             log('WARNING', '配置文件不存在，已创建默认配置文件')
-        log('INFO', '服务5s后启动')
+        log('DEBUG', '服务5s后启动')
         # 启动时自动备份检查
         try:
             _check_and_auto_backup()

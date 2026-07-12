@@ -276,6 +276,29 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(probe.call_count, 2)
         self.assertEqual(probe.call_args_list[1].kwargs, {"force_rebind": True})
 
+    def test_listener_auto_recovery_keeps_waiting_after_transient_rebuild_error(self):
+        bot = SimpleNamespace(
+            wx=object(),
+            _listener_auto_recovery_active=True,
+            _listener_auto_recovery_attempted=False,
+            _listener_auto_recovery_probe_after=0.0,
+            _listener_auto_recovery_last_error="desktop unavailable",
+            _listener_auto_recovery_source="test",
+            callback_is_die=False,
+        )
+        with (
+            patch("feature.listening.probe_listener_recovery_client", return_value=bot.wx),
+            patch(
+                "feature.listening.rebuild_listener_runtime",
+                side_effect=RuntimeError("事件无法调用任何订户"),
+            ),
+        ):
+            result = listening.process_listener_auto_recovery(bot)
+
+        self.assertEqual(result, "waiting")
+        self.assertTrue(bot._listener_auto_recovery_active)
+        self.assertGreater(bot._listener_auto_recovery_probe_after, 0)
+
     def test_rebind_recreates_client_and_restores_listener_names(self):
         first = FakeClient()
         second = FakeClient()

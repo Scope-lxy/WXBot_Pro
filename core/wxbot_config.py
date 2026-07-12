@@ -183,7 +183,7 @@ class WXBotConfig:
                 self._load_account_scoped_scheduled_message_tasks()
                 self._load_account_scoped_material_outreach_tasks()
                 self._load_account_scoped_moments_tasks()
-                log(message="配置文件加载成功")
+                log(level="DEBUG", message="配置文件加载成功")
         except Exception as e:
             log(level="ERROR", message="打开配置文件失败，请检查配置文件！" + str(e))
             # 配置文件损坏或缺失时阻塞程序，避免带着错误配置继续运行
@@ -1099,7 +1099,7 @@ class WXBotConfig:
             self.save_config()
             log(message='已自动补充 SiverPanel 远程访问配置默认值')
 
-        log(message="全局配置更新完成")
+        log(level="DEBUG", message="全局配置更新完成")
 
     def set_config(self, id, new_content):
         """修改指定配置项并保存"""

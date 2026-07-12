@@ -258,6 +258,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(bot.memory_manager.calls, [])
         self.assertEqual(bot._get_private_message_sequence("张三"), 1)
         self.assertIn("张三", bot._private_message_pipelines)
+        self.assertTrue(getattr(msg, "_wxbot_private_outbound_echo", False))
         self.assertTrue(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
 
     def test_private_voice_echo_self_callback_does_not_interrupt_ai_reply(self):
@@ -302,7 +303,8 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(bot.memory_manager.calls, [])
         self.assertEqual(bot._get_private_message_sequence("张三"), 1)
         self.assertIn("张三", bot._private_message_pipelines)
-        self.assertTrue(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
+        self.assertTrue(getattr(msg, "_wxbot_private_outbound_echo", False))
+        self.assertFalse(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
 
     def test_private_image_echo_self_callback_does_not_interrupt_ai_reply(self):
         bot = WXBot.__new__(WXBot)
@@ -323,8 +325,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.callback_is_die = False
         bot.wx = SimpleNamespace(nickname="bot")
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
-        bot._save_incoming_image_memory_message = lambda _chat, _msg: self.fail("机器人图片回显不应重复写入记忆")
-        bot._mark_chat_memory_dirty = lambda _chat, _msg: self.fail("机器人图片回显不应标记记忆")
+        bot._save_incoming_image_memory_message = lambda _chat, _msg: True
         bot._ensure_message_runtime_state()
         bot._private_message_sequence_by_chat["张三"] = 1
         bot._private_message_pipelines["张三"] = {
@@ -347,7 +348,9 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(bot.memory_manager.calls, [])
         self.assertEqual(bot._get_private_message_sequence("张三"), 1)
         self.assertIn("张三", bot._private_message_pipelines)
-        self.assertTrue(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
+        self.assertTrue(getattr(msg, "_wxbot_private_outbound_echo", False))
+        self.assertFalse(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
+        self.assertTrue(getattr(msg, "_wxbot_memory_persisted", False))
 
     def test_private_reply_echo_during_active_ai_work_does_not_trigger_self_boundary(self):
         bot = WXBot.__new__(WXBot)

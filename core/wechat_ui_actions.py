@@ -78,7 +78,7 @@ def _log_runtime_event(message: str, runtime_id: str) -> None:
     if len(runtime_id) != 32 or any(char not in "0123456789abcdef" for char in runtime_id):
         return
     try:
-        log(message=f"{message} runtime_id={runtime_id}")
+        log(level="DEBUG", message=f"{message} runtime_id={runtime_id}")
     except Exception:
         pass
 

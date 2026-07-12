@@ -1,7 +1,11 @@
 import unittest
+import queue
+import threading
+import time
 from contextlib import nullcontext
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest import mock
 
 from feature.runtime_task_runner import run_due_fixed_material_outreach
 from feature.material_outreach import (
@@ -12,6 +16,7 @@ from feature.material_outreach import (
     send_names_from_target_snapshot,
 )
 from wxbot_core import WXBot
+from core.message_pipeline import ConversationRef, MessageEnvelope
 
 
 def msg(msg_type, content):
@@ -19,6 +24,21 @@ def msg(msg_type, content):
 
 
 class MaterialOutreachPoolTests(unittest.TestCase):
+    def _material_history_bot(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            cmd="管理员",
+            group=[],
+            memory_switch=True,
+            memory_max_count=5000,
+        )
+        calls = []
+        bot.memory_manager = SimpleNamespace(save_message=lambda **kwargs: calls.append(kwargs))
+        bot._mark_chat_memory_dirty = lambda *_args, **_kwargs: True
+        bot._schedule_private_outbound_echo_fallback = lambda _target: True
+        bot._ensure_message_runtime_state()
+        return bot, calls
+
     def test_target_snapshot_keeps_v2_contact_names_in_progress_records(self):
         snapshot = build_target_snapshot(
             {"task_id": "task_1"},
@@ -410,7 +430,10 @@ class MaterialOutreachPoolTests(unittest.TestCase):
 
     def test_ai_material_outreach_success_registers_outbound_echoes(self):
         bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
+        bot.config = SimpleNamespace(
+            cmd="文件传输助手",
+            group=[],
+        )
         bot._ensure_message_runtime_state()
         material = {
             "id": "mat_1",
@@ -418,15 +441,26 @@ class MaterialOutreachPoolTests(unittest.TestCase):
             "type": "miniapp",
             "type_bucket": "miniapp",
             "stable_signature": "sig_1",
+            "content_preview": "小程序测试作品",
         }
         bot._find_material_by_stable_signature = lambda signature: material if signature == "sig_1" else None
         bot._material_runtime_message = lambda item, refresh_missing=True: (item, object(), [item])
         bot._material_forward_error_needs_refresh = lambda _error: False
         bot._append_material_send_record = lambda *_args, **_kwargs: None
         forwards = []
-        bot._forward_material_message = (
-            lambda message, targets, **kwargs: forwards.append((targets, kwargs)) or (True, "")
-        )
+
+        def forward(message, targets, **kwargs):
+            forwards.append((targets, kwargs))
+            bot._remember_material_outbound_echoes(
+                targets,
+                kwargs.get("material_type"),
+                preface=kwargs.get("preface"),
+                material_title=kwargs.get("material_title"),
+                source=kwargs.get("echo_source"),
+            )
+            return True, ""
+
+        bot._forward_material_message = forward
 
         success, error = bot._send_ai_material_outreach_record(
             {
@@ -435,6 +469,7 @@ class MaterialOutreachPoolTests(unittest.TestCase):
                 "preface_enabled": True,
                 "preface": "这个你可能会喜欢",
                 "material_type": "miniapp",
+                "material_title": "小程序测试作品",
             }
         )
 
@@ -442,9 +477,298 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         self.assertEqual(error, "")
         self.assertEqual(forwards[0][0], ["张三"])
         echoes = bot._private_outbound_echoes["张三"]
-        self.assertEqual([item["type"] for item in echoes], ["text", "miniapp"])
-        self.assertEqual(echoes[0]["content"], "这个你可能会喜欢")
+        self.assertEqual([item["type"] for item in echoes], ["miniapp", "text"])
+        self.assertEqual(echoes[0]["fallback_content"], "小程序测试作品")
+        self.assertEqual(echoes[1]["content"], "这个你可能会喜欢")
         self.assertTrue(all(item["source"] == "ai_material_outreach" for item in echoes))
+        self.assertTrue(all(not item["memory_persisted"] for item in echoes))
+
+        chat = SimpleNamespace(who="张三", chat_type="private")
+        material_echo = SimpleNamespace(type="miniapp", attr="self", content="小程序测试作品")
+        preface_echo = SimpleNamespace(type="text", attr="self", content="这个你可能会喜欢")
+        self.assertFalse(bot._should_skip_message_memory(chat, material_echo))
+        self.assertFalse(bot._should_skip_message_memory(chat, preface_echo))
+
+    def test_material_callbacks_are_saved_in_actual_callback_order(self):
+        for callback_types in (("miniapp", "text"), ("text", "miniapp")):
+            with self.subTest(callback_types=callback_types):
+                bot, calls = self._material_history_bot()
+                bot._remember_material_outbound_echoes(
+                    ["张三"],
+                    "miniapp",
+                    preface="附加文案",
+                    material_title="素材标题",
+                )
+                chat = SimpleNamespace(who="张三", chat_type="private")
+                messages = {
+                    "miniapp": SimpleNamespace(type="miniapp", attr="self", sender="self", content="微信里的素材"),
+                    "text": SimpleNamespace(type="text", attr="self", sender="self", content="附加文案"),
+                }
+
+                for kind in callback_types:
+                    self.assertTrue(bot._save_incoming_memory_message(chat, messages[kind]))
+
+                self.assertEqual([item["msg_type"] for item in calls], list(callback_types))
+                self.assertEqual(
+                    [item["content"] for item in calls],
+                    [messages[kind].content for kind in callback_types],
+                )
+
+    def test_missing_material_callbacks_fall_back_to_material_then_preface(self):
+        bot, calls = self._material_history_bot()
+        bot._remember_material_outbound_echoes(
+            ["张三"],
+            "miniapp",
+            preface="附加文案",
+            material_title="素材标题",
+        )
+        for echo in bot._private_outbound_echoes["张三"]:
+            echo["expires_at"] = 1
+
+        self.assertEqual(bot._flush_expired_private_outbound_echo_fallbacks("张三", now=2), 2)
+        self.assertEqual([item["msg_type"] for item in calls], ["miniapp", "text"])
+        self.assertEqual([item["content"] for item in calls], ["素材标题", "附加文案"])
+        self.assertTrue(all(item["memory_persisted"] for item in bot._private_outbound_echoes["张三"]))
+
+    def test_forward_registers_echo_before_synchronous_self_callback(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="管理员", group=[], memory_switch=False)
+        bot._ui_owner = None
+        bot._ui_ingress_queue = queue.Queue()
+        bot._stop_requested_event = threading.Event()
+        bot._ensure_message_runtime_state()
+        callback_message = MessageEnvelope(
+            id="self-material-1",
+            type="miniapp",
+            attr="self",
+            sender="self",
+            content="素材标题",
+        )
+
+        class ForwardMessage:
+            type = "miniapp"
+            content = "素材标题"
+
+            def forward(self, targets, message=""):
+                bot._enqueue_ui_message(ConversationRef("张三", "private"), callback_message)
+                return True
+
+        with mock.patch("wxbot_core.wechat_ui_actions.hold", return_value=nullcontext()), mock.patch(
+            "wxbot_core.warn_slow_wechat_ui_action", return_value=nullcontext()
+        ):
+            success, error = bot._forward_material_message_unlocked(
+                ForwardMessage(),
+                ["张三"],
+                preface="附加文案",
+                material_type="miniapp",
+                material_title="素材标题",
+            )
+
+        self.assertTrue(success)
+        self.assertEqual(error, "")
+        self.assertTrue(callback_message._wxbot_private_outbound_echo)
+        self.assertFalse(getattr(callback_message, "_wxbot_sequence_advanced", False))
+
+    def test_failed_callback_memory_write_remains_available_for_fallback(self):
+        bot, calls = self._material_history_bot()
+        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材标题")
+        bot.memory_manager = SimpleNamespace(save_message=lambda **_kwargs: (_ for _ in ()).throw(OSError("disk")))
+        chat = SimpleNamespace(who="张三", chat_type="private")
+        callback = SimpleNamespace(type="miniapp", attr="self", sender="self", content="素材标题")
+
+        self.assertFalse(bot._save_incoming_memory_message(chat, callback))
+        self.assertTrue(bot._private_outbound_echoes["张三"][0].get("reservation_id"))
+        bot.memory_manager = SimpleNamespace(save_message=lambda **kwargs: calls.append(kwargs))
+        bot._private_outbound_echoes["张三"][0]["expires_at"] = 1
+
+        self.assertEqual(bot._flush_expired_private_outbound_echo_fallbacks("张三", now=2), 1)
+        self.assertEqual([item["content"] for item in calls], ["素材标题"])
+
+    def test_duplicate_callback_without_id_is_saved_once(self):
+        bot, calls = self._material_history_bot()
+        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材标题")
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        for _index in range(2):
+            callback = SimpleNamespace(type="miniapp", attr="self", sender="self", content="素材标题")
+            bot._save_incoming_memory_message(chat, callback)
+
+        self.assertEqual([item["content"] for item in calls], ["素材标题"])
+
+    def test_same_type_material_callbacks_match_titles_when_reversed(self):
+        bot, calls = self._material_history_bot()
+        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材A")
+        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材B")
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        for title in ("[小程序] 素材B", "[小程序] 素材A"):
+            callback = SimpleNamespace(type="miniapp", attr="self", sender="self", content=title)
+            self.assertTrue(bot._save_incoming_memory_message(chat, callback))
+
+        self.assertEqual([item["content"] for item in calls], ["[小程序] 素材B", "[小程序] 素材A"])
+
+    def test_material_echo_prefers_exact_or_unique_longest_overlapping_title(self):
+        bot, _calls = self._material_history_bot()
+        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材A")
+        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材AB")
+
+        exact = bot._consume_private_outbound_echo(
+            "张三", msg_type="miniapp", content="素材AB", return_match=True
+        )
+        self.assertEqual(exact.get("content"), "素材AB")
+        bot._commit_private_outbound_echo_reservation(
+            SimpleNamespace(_wxbot_outbound_echo_reservation=exact.get("reservation_id"))
+        )
+        remaining = bot._consume_private_outbound_echo(
+            "张三", msg_type="miniapp", content="卡片：素材A", return_match=True
+        )
+        self.assertEqual(remaining.get("content"), "素材A")
+
+    def test_fallback_flush_is_single_flight_across_threads(self):
+        bot, _calls = self._material_history_bot()
+        bot._remember_private_outbound_echo(
+            "张三", "text", "回复", fallback_content="回复", source="test"
+        )
+        bot._private_outbound_echoes["张三"][0]["expires_at"] = 1
+        started = threading.Event()
+        release = threading.Event()
+        writes = []
+
+        def save_once(_name, _echo):
+            writes.append("write")
+            started.set()
+            release.wait(1)
+            return True
+
+        bot._save_private_outbound_echo_fallback = save_once
+        worker = threading.Thread(
+            target=lambda: bot._flush_expired_private_outbound_echo_fallbacks("张三", now=2)
+        )
+        worker.start()
+        self.assertTrue(started.wait(1))
+        self.assertEqual(bot._flush_expired_private_outbound_echo_fallbacks("张三", now=2), 0)
+        release.set()
+        worker.join(1)
+
+        self.assertEqual(writes, ["write"])
+
+    def test_stop_cancels_pending_fallback_without_starting_disk_write(self):
+        bot, calls = self._material_history_bot()
+        bot._remember_private_outbound_echo(
+            "张三", "text", "回复", fallback_content="回复", source="test"
+        )
+
+        class Timer:
+            cancelled = False
+
+            def cancel(self):
+                self.cancelled = True
+
+        timer = Timer()
+        bot._private_outbound_echo_fallback_timer = timer
+        bot._private_outbound_echo_fallback_deadline = time.time() + 10
+        bot._finalize_private_outbound_echo_fallbacks_on_stop()
+
+        self.assertTrue(timer.cancelled)
+        self.assertIsNone(bot._private_outbound_echo_fallback_timer)
+        self.assertEqual(calls, [])
+        self.assertEqual(bot._private_outbound_echoes, {})
+
+    def test_stop_waits_for_callback_writer_without_duplicate_fallback(self):
+        bot, calls = self._material_history_bot()
+        bot._remember_private_outbound_echo(
+            "张三", "text", "回复", fallback_content="回复", source="test"
+        )
+        callback = SimpleNamespace(type="text", attr="self", sender="self", content="回复")
+        match = bot._consume_private_outbound_echo(
+            "张三", message=callback, return_match=True
+        )
+        callback._wxbot_private_outbound_echo = True
+        callback._wxbot_outbound_echo_reservation = match["reservation_id"]
+        started = threading.Event()
+        release = threading.Event()
+
+        def save_message(**kwargs):
+            started.set()
+            release.wait(1)
+            calls.append(kwargs)
+
+        bot.memory_manager = SimpleNamespace(save_message=save_message)
+        chat = SimpleNamespace(who="张三", chat_type="private")
+        callback_writer = threading.Thread(target=lambda: bot._save_incoming_memory_message(chat, callback))
+        callback_writer.start()
+        self.assertTrue(started.wait(1))
+        finalizer = threading.Thread(target=bot._finalize_private_outbound_echo_fallbacks_on_stop)
+        finalizer.start()
+        self.assertTrue(finalizer.is_alive())
+        release.set()
+        callback_writer.join(1)
+        finalizer.join(1)
+
+        self.assertFalse(finalizer.is_alive())
+        self.assertEqual([item["content"] for item in calls], ["回复"])
+
+    def test_running_fallback_timer_cannot_reschedule_after_stop(self):
+        bot, _calls = self._material_history_bot()
+        delattr(bot, "_schedule_private_outbound_echo_fallback")
+        bot._remember_private_outbound_echo(
+            "张三", "text", "回复", fallback_content="回复", source="test"
+        )
+        bot._private_outbound_echoes["张三"][0]["expires_at"] = 0
+        started = threading.Event()
+        release = threading.Event()
+
+        def save_once(_name, _echo):
+            started.set()
+            release.wait(1)
+            return True
+
+        bot._save_private_outbound_echo_fallback = save_once
+        timer_worker = threading.Thread(target=bot._run_private_outbound_echo_fallback_timer)
+        timer_worker.start()
+        self.assertTrue(started.wait(1))
+        finalizer = threading.Thread(target=bot._finalize_private_outbound_echo_fallbacks_on_stop)
+        finalizer.start()
+        release.set()
+        timer_worker.join(1)
+        finalizer.join(1)
+
+        self.assertTrue(bot._private_outbound_echo_fallback_stopped)
+        self.assertIsNone(bot._private_outbound_echo_fallback_timer)
+
+    def test_unknown_text_send_uses_success_record_fallback(self):
+        bot, calls = self._material_history_bot()
+
+        with self.assertRaisesRegex(RuntimeError, "result lost"):
+            bot._run_private_outbound_echo_send(
+                "张三",
+                {"type": "text", "text": "已提交但结果未知"},
+                lambda: (_ for _ in ()).throw(RuntimeError("result lost")),
+                source="test",
+            )
+        bot._private_outbound_echoes["张三"][0]["expires_at"] = 0
+        self.assertEqual(bot._flush_expired_private_outbound_echo_fallbacks("张三"), 1)
+        bot._finalize_private_outbound_echo_fallbacks_on_stop()
+
+        self.assertEqual([item["content"] for item in calls], ["已提交但结果未知"])
+
+    def test_stop_history_write_timeout_does_not_block_exit(self):
+        bot, _calls = self._material_history_bot()
+        attempts = []
+
+        class BusyLock:
+            def acquire(self, *, timeout):
+                attempts.append(timeout)
+                return False
+
+            def release(self):
+                raise AssertionError("未获取锁时不得 release")
+
+        bot._private_outbound_history_write_lock = BusyLock()
+        self.assertFalse(bot._finalize_private_outbound_echo_fallbacks_on_stop())
+        self.assertEqual(len(attempts), 1)
+        self.assertGreater(attempts[0], 0)
+        self.assertTrue(bot._private_outbound_echo_fallback_stopped)
 
 
 if __name__ == "__main__":

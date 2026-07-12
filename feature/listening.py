@@ -174,7 +174,7 @@ def get_verified_subwindow_with_retry(bot, nickname, retry_count=3, interval=LIG
         sub_chat = get_verified_subwindow(bot, nickname)
         if sub_chat:
             if attempt > 1:
-                _bot_log(bot, message=f"监听管理 {nickname}：第 {attempt} 次验证获取到监听子窗口")
+                _bot_log(bot, level="DEBUG", message=f"监听管理 {nickname}：第 {attempt} 次验证获取到监听子窗口")
             return sub_chat
         if attempt < attempts:
             _bot_sleep(bot, interval)
@@ -318,7 +318,7 @@ def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
         return None
     if result:
         if label_text not in quiet_labels:
-            _bot_log(bot, message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用成功")
+            _bot_log(bot, level="DEBUG", message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用成功")
     else:
         _bot_log(bot, level=log_level, message=f"监听管理 {nickname}：{listen_add_action_label(label)}失败，详情：{listen_add_error(result)}")
     return result
@@ -664,7 +664,7 @@ def add_and_verify_subwindow(bot, nickname, retry_count=3):
     result = add_listen_chat_once(bot, name, "动态监听")
     if is_target_chat(result, name):
         runtime_chat_state.remember_listen_chat(bot, name, result)
-        _bot_log(bot, message=f"监听管理 {name}：AddListenChat 返回可用子窗口，已直接接管")
+        _bot_log(bot, level="DEBUG", message=f"监听管理 {name}：AddListenChat 返回可用子窗口，已直接接管")
         return result
     sub_chat = get_verified_subwindow_with_retry(bot, name, retry_count=retry_count)
     if sub_chat:
@@ -792,7 +792,7 @@ def rebuild_listener_runtime(
     if not getattr(bot, "wx", None):
         raise RuntimeError("当前未绑定微信客户端，无法重建监听器")
 
-    _bot_log(bot, message="启动wxautox监听器...")
+    _bot_log(bot, level="DEBUG", message="启动wxautox监听器...")
     if clear_runtime_cache:
         bot._listen_chats = {}
         bot._material_source_chats = {}
@@ -866,6 +866,11 @@ def process_listener_auto_recovery(bot):
         )
     except Exception as exc:
         bot._listener_auto_recovery_last_error = str(exc or "")
+        if is_listener_recovery_desktop_error(exc):
+            bot._listener_auto_recovery_active = True
+            bot._listener_auto_recovery_probe_after = time.time() + LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS
+            _bot_log(bot, level="WARNING", message=f"监听器自动恢复遇到临时桌面异常，稍后继续：{exc}")
+            return "waiting"
         clear_listener_auto_recovery(bot)
         _bot_log(bot, level="ERROR", message=f"监听器自动恢复失败：{exc}")
         return "failed"
@@ -1017,7 +1022,7 @@ def verify_initial_listeners(bot, expected_chats, retry_count=3):
             if sub_chat:
                 runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
     if not missing:
-        _bot_log(bot, message="监听管理：初始化监听子窗口校验通过")
+        _bot_log(bot, level="DEBUG", message="监听管理：初始化监听子窗口校验通过")
         return
 
     for name in missing:
@@ -1032,7 +1037,7 @@ def init_wx_listeners(bot):
         specs = listener_registration_specs(bot)
         identity = bot._bootstrap_ui_owner([name for _label, name, _cache_material in specs])
         bot.config.AtMe = "@" + str(identity.get("nickname") or "")
-        _bot_log(bot, message="绑定@：" + bot.config.AtMe)
+        _bot_log(bot, level="DEBUG", message="绑定微信：" + bot.config.AtMe)
         wx_id = str(identity.get("wx_id") or identity.get("nickname") or "")
         bot.wx_id = wx_id
         try:
@@ -1060,7 +1065,7 @@ def init_wx_listeners(bot):
         if callable(drain_recovery):
             drain_recovery()
         bot._register_runtime_task_schedules()
-        _bot_log(bot, level="SUCCESS", message="监听器初始化完成")
+        _bot_log(bot, level="DEBUG", message="监听器初始化完成")
         return runtime_chat_state.get_listen_chat(bot, bot.config.cmd)
 
     if not getattr(bot, "wx", None):
@@ -1068,7 +1073,7 @@ def init_wx_listeners(bot):
     bind_wechat_client(bot, force_rebind=not getattr(bot, "wx", None))
 
     bot.config.AtMe = "@" + bot.wx.nickname
-    _bot_log(bot, message="绑定@：" + bot.config.AtMe)
+    _bot_log(bot, level="DEBUG", message="绑定微信：" + bot.config.AtMe)
 
     try:
         my_info = bot.wx.GetMyInfo()

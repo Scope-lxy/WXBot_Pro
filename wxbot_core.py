@@ -67,7 +67,7 @@ from core.api import (
     select_tts_config,
     set_chat_api_app_version,
 )
-from core.logger import install_thread_exception_logger, log
+from core.logger import install_thread_exception_logger, log, set_thread_exception_observer
 from core.wechat_observability import warn_slow_wechat_ui_action
 from core.prompt_system import (
     CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
@@ -221,6 +221,8 @@ PRIVATE_REPLY_ECHO_DEDUPE_SECONDS = 60
 PRIVATE_OUTBOUND_ECHO_NON_TEXT_SECONDS = 60
 PRIVATE_OUTBOUND_ECHO_UNKNOWN_SECONDS = 30
 PRIVATE_OUTBOUND_ECHO_MAX_PER_CHAT = 20
+PRIVATE_OUTBOUND_REPORTED_FAILED_CALLBACK_SECONDS = 2
+PRIVATE_OUTBOUND_HISTORY_STOP_WAIT_SECONDS = 5
 CHAT_MEMORY_BACKGROUND_INTERVAL_SECONDS = 30
 PRIVATE_MESSAGE_PIPELINE_MAX_QUEUED_BATCHES = 1
 from feature import runtime_task_runner
@@ -551,6 +553,17 @@ class WXBot:
         self._chat_memory_dirty_chats = {}
         self._chat_memory_worker_running = False
         self._start_wxauto_save_cache_cleanup()
+        set_thread_exception_observer(self._handle_background_thread_exception)
+
+    def _handle_background_thread_exception(self, args):
+        thread_name = str(getattr(getattr(args, "thread", None), "name", "") or "")
+        if "_listener_listen" not in thread_name or self.is_stop_requested():
+            return False
+        exc = getattr(args, "exc_value", None)
+        if self._arm_listener_auto_recovery(exc, source="wxautox监听线程"):
+            return True
+        self.callback_is_die = True
+        return False
 
     def _enqueue_ui_message(self, conversation, message):
         if self.is_stop_requested():
@@ -574,8 +587,28 @@ class WXBot:
             and getattr(message, "attr", "") == "self"
             and conversation.who != getattr(self.config, "cmd", "")
         ):
-            if self._consume_private_outbound_echo(conversation.who, message=message):
-                message._wxbot_private_reply_persisted_echo = True
+            if not self._mark_message_seen(conversation.who, message):
+                return True
+            message._wxbot_seen_at_ingress = True
+            outbound_echo = self._consume_private_outbound_echo(
+                conversation.who,
+                message=message,
+                return_match=True,
+            )
+            if outbound_echo:
+                message._wxbot_private_outbound_echo = True
+                if outbound_echo.get("reservation_id"):
+                    message._wxbot_outbound_echo_reservation = outbound_echo["reservation_id"]
+                if (
+                    outbound_echo.get("duplicate_reservation")
+                    or outbound_echo.get("dedupe_only")
+                    or outbound_echo.get("primary_memory_writer")
+                ):
+                    message._wxbot_private_outbound_echo_duplicate = True
+                if outbound_echo.get("primary_memory_writer"):
+                    message._wxbot_private_outbound_echo_primary = True
+                if outbound_echo.get("memory_persisted"):
+                    message._wxbot_private_reply_persisted_echo = True
             elif self._matches_private_reply_runtime_echo(conversation.who, getattr(message, "content", "")):
                 message._wxbot_runtime_reply_echo = True
             else:
@@ -1565,6 +1598,7 @@ class WXBot:
                                 and getattr(getattr(self, "config", None), "chat_split_reply_delay_switch", True)
                             ),
                         )
+                echo_group_id = self._reserve_private_outbound_echo_for_action(target, action, source=source)
                 try:
                     results = self._ui_owner.call(
                         wechat_ui_actions.UIIntent(
@@ -1580,22 +1614,21 @@ class WXBot:
                     )
                 except wechat_ui_actions.ActionBatchInterrupted as exc:
                     partial = list(exc.completed_results)
-                    self._remember_lightweight_action_results(
-                        target,
-                        [action][:len(partial)],
-                        partial,
-                        source=source,
-                    )
+                    if partial:
+                        self._settle_private_outbound_echo_send(echo_group_id, partial[-1])
+                    else:
+                        self._discard_private_outbound_echo_group(echo_group_id)
+                    raise
+                except wechat_ui_actions.IntentCancelled:
+                    self._discard_private_outbound_echo_group(echo_group_id)
+                    raise
+                except Exception:
+                    self._settle_private_outbound_echo_send(echo_group_id, None)
                     raise
                 action_results = list(results) if isinstance(results, (list, tuple)) else [results]
                 action_result = action_results[-1] if action_results else True
                 completed_results.append(action_result)
-                self._remember_lightweight_action_results(
-                    target,
-                    [action],
-                    [action_result],
-                    source=source,
-                )
+                self._settle_private_outbound_echo_send(echo_group_id, action_result)
             return completed_results[-1] if completed_results else True
         chat = runtime_chat_state.get_listen_chat(self, target)
         if not (runtime_chat_state.listen_chat_has_method(chat, "SendMsg") and self._listen_chat_matches_target(chat, target)):
@@ -1613,9 +1646,11 @@ class WXBot:
                     send_files = getattr(chat, "SendFiles", None)
                     if not callable(send_files):
                         return False
-                    result = send_files(filepath=path)
-                    self._remember_private_outbound_echo_for_send_result(
-                        target, result, "file", source=source, path=path
+                    result = self._run_private_outbound_echo_send(
+                        target,
+                        {"type": "file", "path": path},
+                        lambda: send_files(filepath=path),
+                        source=source,
                     )
                 elif action_type in {"voice", "audio"}:
                     path = str((action or {}).get("path") or "").strip()
@@ -1624,50 +1659,42 @@ class WXBot:
                     send_audio = getattr(chat, "SendAudio", None)
                     if not callable(send_audio):
                         return False
-                    try:
-                        result = send_audio(filepath=path, duration=None)
-                    except TypeError:
-                        result = send_audio(path)
-                    self._remember_private_outbound_echo_for_send_result(
-                        target, result, "voice", source=source, path=path
+                    def send_voice():
+                        try:
+                            return send_audio(filepath=path, duration=None)
+                        except TypeError:
+                            return send_audio(path)
+
+                    result = self._run_private_outbound_echo_send(
+                        target,
+                        {"type": "voice", "path": path},
+                        send_voice,
+                        source=source,
                     )
                 else:
                     text = str((action or {}).get("text") or "").strip()
                     if not text:
                         continue
-                    result = chat.SendMsg(text)
-                    self._remember_private_outbound_echo_for_send_result(
-                        target, result, "text", text, source=source
+                    result = self._run_private_outbound_echo_send(
+                        target,
+                        {"type": "text", "text": text},
+                        lambda: chat.SendMsg(text),
+                        source=source,
                     )
         return result
 
-    def _remember_lightweight_action_results(self, target, actions, results, *, source):
-        for action, action_result in zip(actions or [], results or []):
-            action_type = str((action or {}).get("type") or "text").strip().lower()
-            if action_type == "file":
-                self._remember_private_outbound_echo_for_send_result(
-                    target,
-                    action_result,
-                    "file",
-                    source=source,
-                    path=str((action or {}).get("path") or ""),
-                )
-            elif action_type in {"voice", "audio"}:
-                self._remember_private_outbound_echo_for_send_result(
-                    target,
-                    action_result,
-                    "voice",
-                    source=source,
-                    path=str((action or {}).get("path") or ""),
-                )
-            else:
-                self._remember_private_outbound_echo_for_send_result(
-                    target,
-                    action_result,
-                    "text",
-                    str((action or {}).get("text") or (action or {}).get("content") or ""),
-                    source=source,
-                )
+    def _run_private_outbound_echo_send(self, target, action, sender, *, source):
+        echo_group_id = self._reserve_private_outbound_echo_for_action(target, action, source=source)
+        try:
+            result = sender()
+        except wechat_ui_actions.IntentCancelled:
+            self._discard_private_outbound_echo_group(echo_group_id)
+            raise
+        except Exception:
+            self._settle_private_outbound_echo_send(echo_group_id, None)
+            raise
+        self._settle_private_outbound_echo_send(echo_group_id, result)
+        return result
 
     def _flush_lightweight_send_queue(self, *, limit=20):
         self._ensure_lightweight_send_queue_state()
@@ -1747,22 +1774,24 @@ class WXBot:
             return False
         if getattr(self, "_ui_owner", None) is not None:
             text = str(msg or "")
-            result = self._ui_owner.call(
-                wechat_ui_actions.UIIntent(
-                    wechat_ui_actions.UIIntentKind.SEND_TEXT,
-                    {
-                        "conversation": target,
-                        "contact_key": str(contact_key or ""),
-                        "task_key": str(task_key or ""),
-                        "require_contact_key": bool(require_contact_key),
-                        "text": text,
-                    },
-                    task_version=task_version,
+            result = self._run_private_outbound_echo_send(
+                target,
+                {"type": "text", "text": text},
+                lambda: self._ui_owner.call(
+                    wechat_ui_actions.UIIntent(
+                        wechat_ui_actions.UIIntentKind.SEND_TEXT,
+                        {
+                            "conversation": target,
+                            "contact_key": str(contact_key or ""),
+                            "task_key": str(task_key or ""),
+                            "require_contact_key": bool(require_contact_key),
+                            "text": text,
+                        },
+                        task_version=task_version,
+                    ),
+                    wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
                 ),
-                wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
-            )
-            self._remember_private_outbound_echo_for_send_result(
-                target, result, "text", text, source="text"
+                source="text",
             )
             return result
         release_wechat_lock = wechat_ui_actions.try_acquire(self)
@@ -1781,12 +1810,10 @@ class WXBot:
                     source="text",
                 )
             with self._get_chat_send_lock(target):
-                result = chat.SendMsg(str(msg or ""))
-                self._remember_private_outbound_echo_for_send_result(
+                result = self._run_private_outbound_echo_send(
                     target,
-                    result,
-                    "text",
-                    str(msg or ""),
+                    {"type": "text", "text": str(msg or "")},
+                    lambda: chat.SendMsg(str(msg or "")),
                     source="text",
                 )
                 return result
@@ -1848,22 +1875,24 @@ class WXBot:
         if not target or not path:
             return False
         if getattr(self, "_ui_owner", None) is not None:
-            result = self._ui_owner.call(
-                wechat_ui_actions.UIIntent(
-                    wechat_ui_actions.UIIntentKind.SEND_FILE,
-                    {
-                        "conversation": target,
-                        "contact_key": str(contact_key or ""),
-                        "task_key": str(task_key or ""),
-                        "require_contact_key": bool(require_contact_key),
-                        "path": path,
-                    },
-                    task_version=task_version,
+            result = self._run_private_outbound_echo_send(
+                target,
+                {"type": "file", "path": path},
+                lambda: self._ui_owner.call(
+                    wechat_ui_actions.UIIntent(
+                        wechat_ui_actions.UIIntentKind.SEND_FILE,
+                        {
+                            "conversation": target,
+                            "contact_key": str(contact_key or ""),
+                            "task_key": str(task_key or ""),
+                            "require_contact_key": bool(require_contact_key),
+                            "path": path,
+                        },
+                        task_version=task_version,
+                    ),
+                    wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
                 ),
-                wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
-            )
-            self._remember_private_outbound_echo_for_send_result(
-                target, result, "file", source="file", path=path
+                source="file",
             )
             return result
         release_wechat_lock = wechat_ui_actions.try_acquire(self)
@@ -1882,13 +1911,11 @@ class WXBot:
                     source="file",
                 )
             with self._get_chat_send_lock(target):
-                result = chat.SendFiles(filepath=path)
-                self._remember_private_outbound_echo_for_send_result(
+                result = self._run_private_outbound_echo_send(
                     target,
-                    result,
-                    "file",
+                    {"type": "file", "path": path},
+                    lambda: chat.SendFiles(filepath=path),
                     source="file",
-                    path=path,
                 )
                 return result
         finally:
@@ -1909,25 +1936,30 @@ class WXBot:
         actions = [dict(action or {}) for action in (actions or [])]
         if not target or not actions or getattr(self, "_ui_owner", None) is None:
             return False
-        results = OwnedChat(self._ui_owner, target).SendActions(
-            actions,
-            contact_key=contact_key,
-            task_key=task_key,
-            task_version=task_version,
-            delivery_id=delivery_id,
-            require_contact_key=require_contact_key,
-        )
-        results = list(results or []) if isinstance(results, (list, tuple)) else [results]
-        for action, result in zip(actions, results):
-            action_type = str(action.get("type") or "text").strip().lower()
-            self._remember_private_outbound_echo_for_send_result(
-                target,
-                result,
-                "file" if action_type == "file" else "text",
-                str(action.get("text") or ""),
-                source="runtime_send",
-                path=str(action.get("path") or ""),
+        echo_group_ids = [
+            self._reserve_private_outbound_echo_for_action(target, action, source="runtime_send")
+            for action in actions
+        ]
+        try:
+            results = OwnedChat(self._ui_owner, target).SendActions(
+                actions,
+                contact_key=contact_key,
+                task_key=task_key,
+                task_version=task_version,
+                delivery_id=delivery_id,
+                require_contact_key=require_contact_key,
             )
+        except wechat_ui_actions.IntentCancelled:
+            for echo_group_id in echo_group_ids:
+                self._discard_private_outbound_echo_group(echo_group_id)
+            raise
+        except Exception:
+            for echo_group_id in echo_group_ids:
+                self._settle_private_outbound_echo_send(echo_group_id, None)
+            raise
+        results = list(results or []) if isinstance(results, (list, tuple)) else [results]
+        for echo_group_id, result in zip(echo_group_ids, results):
+            self._settle_private_outbound_echo_send(echo_group_id, result)
         return results
 
     def _prepare_contact_directory_window(self):
@@ -2071,10 +2103,10 @@ class WXBot:
             self.config.current_api_config = api_config
         sdk = api_config.sdk
         if sdk == "OpenAI SDK":
-            log(message="聊天接口：OpenAI 已加载")
+            log(level="DEBUG", message="聊天接口：OpenAI 已加载")
             return OpenAIAPI(api_config)
         elif sdk == "DusAPI":
-            log(message="聊天接口：DusAPI 已加载")
+            log(level="DEBUG", message="聊天接口：DusAPI 已加载")
             return DusAPI(api_config)
         else:
             raise ValueError(f"不支持的聊天接口 SDK：{sdk or '（空）'}")
@@ -2097,7 +2129,7 @@ class WXBot:
         )
         sdk = tmp.sdk
 
-        log(message=f"聊天接口已就绪：接口{idx + 1}，{sdk}，模型 {tmp.model}")
+        log(level="DEBUG", message=f"聊天接口已就绪：接口{idx + 1}，{sdk}，模型 {tmp.model}")
         if sdk == "OpenAI SDK":
             return OpenAIAPI(tmp)
         elif sdk == "DusAPI":
@@ -2207,7 +2239,7 @@ class WXBot:
         self._random_material_outreach_state = {}
 
     def _register_runtime_task_schedules(self):
-        log(message="启动阶段：定时任务扫描已就绪")
+        log(level="DEBUG", message="启动阶段：定时任务扫描已就绪")
 
     def _task_storage_data_dir(self):
         config_data_dir = str(getattr(getattr(self, "config", None), "DATA_DIR", "") or "").strip()
@@ -4079,60 +4111,169 @@ class WXBot:
             return material, message, materials
         return self._refresh_material_runtime_message(material, materials)
 
-    def _forward_material_message(self, message, targets, *, preface="", material_source=""):
+    def _forward_material_message(
+        self,
+        message,
+        targets,
+        *,
+        preface="",
+        material_source="",
+        material_type="",
+        material_title="",
+        echo_source="material_outreach",
+    ):
         material_source = str(material_source or "").strip()
         if material_source:
             with self._get_material_source_read_lock(material_source):
                 return self._forward_material_message_unlocked(
-                    message, targets, preface=preface, material_source=material_source
+                    message,
+                    targets,
+                    preface=preface,
+                    material_source=material_source,
+                    material_type=material_type,
+                    material_title=material_title,
+                    echo_source=echo_source,
                 )
         return self._forward_material_message_unlocked(
-            message, targets, preface=preface, material_source=material_source
+            message,
+            targets,
+            preface=preface,
+            material_source=material_source,
+            material_type=material_type,
+            material_title=material_title,
+            echo_source=echo_source,
         )
 
-    def _forward_material_message_unlocked(self, message, targets, *, preface="", material_source=""):
+    def _forward_material_message_unlocked(
+        self,
+        message,
+        targets,
+        *,
+        preface="",
+        material_source="",
+        material_type="",
+        material_title="",
+        echo_source="material_outreach",
+    ):
         with wechat_ui_actions.hold(self):
             target_label = "、".join(str(item or "").strip() for item in (targets or []) if str(item or "").strip())
-            with warn_slow_wechat_ui_action(f"message.forward({target_label or 'unknown'})"):
-                if getattr(self, "_ui_owner", None) is not None:
-                    try:
-                        result = self._ui_forward_message(
-                            OwnedChat(self._ui_owner, material_source),
-                            message,
-                            targets,
-                            preface=preface,
-                        )
-                    except wechat_ui_actions.IntentCancelled:
-                        return False, "素材转发任务已更新或取消"
-                else:
-                    roll_into_view = getattr(message, "roll_into_view", None)
-                    if callable(roll_into_view):
-                        roll_into_view()
-                    if not callable(getattr(message, "forward", None)):
-                        raise RuntimeError("素材消息不可转发")
-                    result = message.forward(targets, message=preface) if preface else message.forward(targets)
+            echo_group_id = self._remember_material_outbound_echoes(
+                targets,
+                material_type or getattr(message, "type", ""),
+                preface=preface,
+                material_title=material_title or getattr(message, "content", ""),
+                source=echo_source,
+                schedule_fallback=False,
+            )
+            try:
+                with warn_slow_wechat_ui_action(f"message.forward({target_label or 'unknown'})"):
+                    if getattr(self, "_ui_owner", None) is not None:
+                        try:
+                            result = self._ui_forward_message(
+                                OwnedChat(self._ui_owner, material_source),
+                                message,
+                                targets,
+                                preface=preface,
+                            )
+                        except wechat_ui_actions.IntentCancelled:
+                            self._discard_private_outbound_echo_group(echo_group_id)
+                            return False, "素材转发任务已更新或取消"
+                    else:
+                        roll_into_view = getattr(message, "roll_into_view", None)
+                        if callable(roll_into_view):
+                            roll_into_view()
+                        if not callable(getattr(message, "forward", None)):
+                            raise RuntimeError("素材消息不可转发")
+                        result = message.forward(targets, message=preface) if preface else message.forward(targets)
+            except Exception:
+                self._schedule_private_outbound_echo_fallback("")
+                raise
             success, result_error = is_forward_result_success(result)
+            if success:
+                self._schedule_private_outbound_echo_fallback("")
+            else:
+                self._mark_private_outbound_echo_group_reported_failed(echo_group_id)
             return success, result_error
 
-    def _remember_material_outbound_echoes(self, targets, material_type="", *, preface="", source="material_outreach"):
+    def _remember_material_outbound_echoes(
+        self,
+        targets,
+        material_type="",
+        *,
+        preface="",
+        material_title="",
+        source="material_outreach",
+        schedule_fallback=True,
+    ):
         kind = str(material_type or "").strip().lower() or "unknown"
         preface = str(preface or "").strip()
+        material_title = str(material_title or "").strip()
+        echo_group_id = uuid.uuid4().hex
         for target in targets or []:
             target = str(target or "").strip()
             if not target:
                 continue
+            self._remember_private_outbound_echo(
+                target,
+                kind,
+                source=source,
+                echo_group_id=echo_group_id,
+                content=material_title,
+                fallback_content=material_title or "[素材]",
+            )
             if preface:
                 self._remember_private_outbound_echo(
                     target,
                     "text",
                     preface,
                     source=source,
+                    echo_group_id=echo_group_id,
+                    fallback_content=preface,
                 )
-            self._remember_private_outbound_echo(
-                target,
-                kind,
-                source=source,
-            )
+        if schedule_fallback:
+            self._schedule_private_outbound_echo_fallback("")
+        return echo_group_id
+
+    def _discard_private_outbound_echo_group(self, echo_group_id):
+        group_id = str(echo_group_id or "").strip()
+        if not group_id:
+            return False
+        kept_reserved = False
+        with self._chat_merge_lock:
+            next_echoes = {}
+            for name, echoes in self._private_outbound_echoes.items():
+                kept = []
+                for item in echoes or []:
+                    if not isinstance(item, dict) or item.get("echo_group_id") != group_id:
+                        kept.append(item)
+                        continue
+                    if item.get("reservation_id"):
+                        kept.append(item)
+                        kept_reserved = True
+                if kept:
+                    next_echoes[name] = kept
+            self._private_outbound_echoes = next_echoes
+        if kept_reserved:
+            self._schedule_private_outbound_echo_fallback("")
+        return True
+
+    def _mark_private_outbound_echo_group_reported_failed(self, echo_group_id):
+        group_id = str(echo_group_id or "").strip()
+        if not group_id:
+            return False
+        now = time.time()
+        changed = False
+        with self._chat_merge_lock:
+            for echoes in self._private_outbound_echoes.values():
+                for item in echoes or []:
+                    if not isinstance(item, dict) or item.get("echo_group_id") != group_id:
+                        continue
+                    item["reported_failed"] = True
+                    item["fallback_content"] = ""
+                    item["primary_memory_writer"] = False
+                    item["expires_at"] = now + PRIVATE_OUTBOUND_REPORTED_FAILED_CALLBACK_SECONDS
+                    changed = True
+        return changed
 
     def _append_material_outreach_preface_progress(self, record, status, *, reason="", detail="", now=None):
         now = now or datetime.now()
@@ -4273,6 +4414,8 @@ class WXBot:
                 [record.get("target")],
                 preface=preface,
                 material_source=material.get("source") or record.get("material_source", ""),
+                material_type=material.get("type_bucket") or material.get("type") or record.get("material_type"),
+                material_title=title,
             )
             if not success and self._material_forward_error_needs_refresh(error):
                 log(level="WARNING", message=f"[素材转发] 素材句柄失效，已刷新来源子窗口后重试：{title}")
@@ -4285,6 +4428,8 @@ class WXBot:
                         [record.get("target")],
                         preface=preface,
                         material_source=material.get("source") or record.get("material_source", ""),
+                        material_type=material.get("type_bucket") or material.get("type") or record.get("material_type"),
+                        material_title=title,
                     )
         except Exception as exc:
             error = str(exc)
@@ -4300,6 +4445,8 @@ class WXBot:
                             [record.get("target")],
                             preface=preface,
                             material_source=material.get("source") or record.get("material_source", ""),
+                            material_type=material.get("type_bucket") or material.get("type") or record.get("material_type"),
+                            material_title=title,
                         )
                 except Exception as retry_exc:
                     error = str(retry_exc)
@@ -4340,13 +4487,6 @@ class WXBot:
             detail=error,
             now=now,
         )
-        if success:
-            self._remember_material_outbound_echoes(
-                [record.get("target")],
-                material.get("type_bucket") or material.get("type") or record.get("material_type"),
-                preface=preface,
-                source="material_outreach",
-            )
         material["forward_test_status"] = "success" if success else "failed"
         material["last_error"] = "" if success else error
         self._save_material_outreach_materials(materials)
@@ -4499,6 +4639,8 @@ class WXBot:
                 targets,
                 preface=preface,
                 material_source=material_source,
+                material_type=material_type,
+                material_title=title,
             )
             if not success and self._material_forward_error_needs_refresh(error):
                 log(level="WARNING", message=f"[素材转发] 素材句柄失效，已刷新来源子窗口后重试：{title}")
@@ -4513,6 +4655,8 @@ class WXBot:
                         targets,
                         preface=preface,
                         material_source=material_source,
+                        material_type=material_type,
+                        material_title=title,
                     )
         except Exception as exc:
             error = str(exc)
@@ -4530,6 +4674,8 @@ class WXBot:
                             targets,
                             preface=preface,
                             material_source=material_source,
+                            material_type=material_type,
+                            material_title=title,
                         )
                 except Exception as retry_exc:
                     error = str(retry_exc)
@@ -4580,13 +4726,6 @@ class WXBot:
                 now=datetime.now(),
                 limit=1000,
             )
-        if success:
-            self._remember_material_outbound_echoes(
-                targets,
-                material.get("type_bucket") or material.get("type"),
-                preface=preface,
-                source="material_outreach",
-            )
         material["forward_test_status"] = "success" if success else "failed"
         material["last_error"] = "" if success else error
         self._save_material_outreach_materials(materials)
@@ -4622,7 +4761,7 @@ class WXBot:
                 task,
                 state,
                 today,
-                log_info=lambda message: log(message=message),
+                log_info=lambda message: log(level="DEBUG", message=message),
             ):
                 continue
             task = dict(task)
@@ -4674,6 +4813,13 @@ class WXBot:
             self._last_incoming_message_at = time.time()
             setattr(msg, "_wxbot_ingress_source", "subwindow")
             setattr(msg, "_wxbot_received_at", received_at)
+            if (
+                self._is_ordinary_private_self_message(chat, msg)
+                and not bool(getattr(msg, "_wxbot_seen_at_ingress", False))
+            ):
+                if not self._mark_message_seen(chat.who, msg):
+                    return True
+                setattr(msg, "_wxbot_seen_at_ingress", True)
             message_routing.record_runtime_inbound_event(
                 self,
                 msg,
@@ -4695,7 +4841,12 @@ class WXBot:
             text = f"{scene_label} {chat.who}：收到{msg_type_label}消息"
             if not is_private:
                 text += f"，发送人：{msg.sender}"
-            text += f"，内容：{msg.content}"
+            if str(getattr(msg, "type", "") or "").lower() in {"text", "voice", "quote", "link"}:
+                content_preview = re.sub(r"\s+", " ", str(getattr(msg, "content", "") or "")).strip()
+                if len(content_preview) > 80:
+                    content_preview = content_preview[:79].rstrip() + "…"
+                if content_preview:
+                    text += f"，内容：{content_preview}"
             if getattr(msg, "attr", "") not in {"self", "system"}:
                 log(message=text)
             callback_result = None
@@ -4740,7 +4891,7 @@ class WXBot:
 
             ordinary_private_self = self._is_ordinary_private_self_message(chat, msg)
             self._save_incoming_memory_message(chat, msg)
-            if ordinary_private_self and not bool(getattr(msg, "_wxbot_private_reply_persisted_echo", False)):
+            if ordinary_private_self and not bool(getattr(msg, "_wxbot_private_outbound_echo", False)):
                 runtime_echo = self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
                 if not runtime_echo:
                     self._handle_private_self_message_boundary(chat, msg)
@@ -4773,15 +4924,48 @@ class WXBot:
             return True
         if bool(getattr(message, "_wxbot_private_reply_persisted_echo", False)):
             return True
+        if bool(getattr(message, "_wxbot_private_outbound_echo_duplicate", False)):
+            if not bool(getattr(message, "_wxbot_private_outbound_echo_primary", False)):
+                return True
+            if self._private_outbound_echo_primary_reservation_active(message):
+                return True
+        if bool(getattr(message, "_wxbot_private_outbound_echo", False)):
+            return False
         if (
             self._is_ordinary_private_self_message(chat, message)
-            and self._consume_private_outbound_echo(chat.who, message=message)
         ):
-            try:
-                setattr(message, "_wxbot_private_reply_persisted_echo", True)
-            except Exception:
-                pass
-            return True
+            outbound_echo = self._consume_private_outbound_echo(
+                chat.who,
+                message=message,
+                return_match=True,
+            )
+            if outbound_echo:
+                try:
+                    setattr(message, "_wxbot_private_outbound_echo", True)
+                    if outbound_echo.get("reservation_id"):
+                        setattr(message, "_wxbot_outbound_echo_reservation", outbound_echo["reservation_id"])
+                    if (
+                        outbound_echo.get("duplicate_reservation")
+                        or outbound_echo.get("dedupe_only")
+                        or outbound_echo.get("primary_memory_writer")
+                    ):
+                        setattr(message, "_wxbot_private_outbound_echo_duplicate", True)
+                    if outbound_echo.get("primary_memory_writer"):
+                        setattr(message, "_wxbot_private_outbound_echo_primary", True)
+                except Exception:
+                    pass
+                if outbound_echo.get("memory_persisted"):
+                    try:
+                        setattr(message, "_wxbot_private_reply_persisted_echo", True)
+                    except Exception:
+                        pass
+                    return True
+                if (
+                    outbound_echo.get("duplicate_reservation")
+                    or outbound_echo.get("dedupe_only")
+                    or outbound_echo.get("primary_memory_writer")
+                ):
+                    return True
         if (
             getattr(message, "type", "") == "voice"
             and message_routing.voice_content_state(getattr(message, "content", "")) != "valid"
@@ -4791,15 +4975,6 @@ class WXBot:
             getattr(message, "attr", "") == "self"
             and getattr(chat, "who", "") == getattr(self.config, "cmd", "")
         ):
-            return True
-        if (
-            self._is_ordinary_private_self_message(chat, message)
-            and self._consume_persisted_private_reply_echo(chat.who, getattr(message, "content", ""))
-        ):
-            try:
-                setattr(message, "_wxbot_private_reply_persisted_echo", True)
-            except Exception:
-                pass
             return True
         return False
 
@@ -5178,6 +5353,7 @@ class WXBot:
                     if self.config.text_reply_limit_switch and user_key:
                         self.reply_count_store.increment_ai_count(user_key)
                     self._record_reply_metric_success(chat.who, chat_type="private")
+                    log(level="SUCCESS", message=f"私聊 {chat.who}：本轮回复已发送")
                     return True
 
         send_success, result = self._send_private_ai_reply_parts(
@@ -5185,6 +5361,8 @@ class WXBot:
             parts,
             expected_sequence=None if api_error_reply else reply_message_sequence,
         )
+        if send_success:
+            log(level="SUCCESS", message=f"私聊 {chat.who}：本轮回复已发送")
 
         if image_reply_context_used and send_success and not api_error_reply:
             if self._pending_visual_context_ready_to_clear(chat.who):
@@ -5363,7 +5541,7 @@ class WXBot:
         if action == "takeover_mirror":
             return takeover_runtime.mirror_takeover_message_to_admin(self, chat, message)
         if action == "group_keyword_reply":
-            log(message=f"群组 {chat.who}：命中关键词回复，内容：{message.content}")
+            log(level="DEBUG", message=f"群组 {chat.who}：命中关键词回复，内容：{message.content}")
             reply_actions = route.get("reply_actions", [])
             send_success, result = self._send_keyword_reply_actions(
                 chat,
@@ -5388,7 +5566,7 @@ class WXBot:
                 unanswered_store.set_status(group_record_id, "ai_started")
             group_image_reply_context_used = False
             content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
-            log(message=f"群组 {chat.who}：触发 AI 回复，内容：{content_without_at}")
+            log(level="DEBUG", message=f"群组 {chat.who}：触发 AI 回复，内容：{content_without_at}")
             content_with_sender = f"{message.sender}: {format_model_message_text({'type': getattr(message, 'type', ''), 'content': content_without_at})}"
             model_group_user_message = build_current_turn_user_message(content_with_sender)
             group_voice_candidate_hit = False
@@ -5529,6 +5707,7 @@ class WXBot:
                     ):
                         self._save_voice_reply_state()
                         self._record_reply_metric_success(chat.who, chat_type="group")
+                        log(level="SUCCESS", message=f"群聊 {chat.who}：本轮回复已发送")
                         self._resolve_group_unanswered(group_record_id, message)
                         return True
 
@@ -5595,6 +5774,7 @@ class WXBot:
                     if group_user_key:
                         self.reply_count_store.mark_preprocess_fallback_notified(group_user_key)
                 self._record_reply_metric_success(chat.who, chat_type="group")
+                log(level="SUCCESS", message=f"群聊 {chat.who}：本轮回复已发送")
             self._resolve_group_unanswered(group_record_id, message)
             return result
 
@@ -6174,6 +6354,9 @@ class WXBot:
     def _save_incoming_image_memory_message(self, chat, message):
         if not getattr(getattr(self, "config", None), "memory_switch", False):
             return False
+        if self._private_outbound_echo_reservation_owned_by_fallback(message):
+            setattr(message, "_wxbot_memory_persisted", True)
+            return True
         memory_manager = getattr(self, "memory_manager", None)
         save_message = getattr(memory_manager, "save_message", None)
         if not callable(save_message):
@@ -6266,6 +6449,10 @@ class WXBot:
             self._private_reply_persisted_echoes = {}
         if not hasattr(self, '_private_outbound_echoes'):
             self._private_outbound_echoes = {}
+        if not hasattr(self, '_private_outbound_echo_fallback_stopped'):
+            self._private_outbound_echo_fallback_stopped = False
+        if not hasattr(self, '_private_outbound_history_write_lock'):
+            self._private_outbound_history_write_lock = threading.RLock()
         if not hasattr(self, '_pending_visual_contexts'):
             self._pending_visual_contexts = {}
         if not hasattr(self, '_memory_context_repair_startup_done'):
@@ -6670,6 +6857,15 @@ class WXBot:
         return True
 
     def _save_incoming_memory_message(self, chat, message, *, chat_type=None):
+        self._ensure_message_runtime_state()
+        reservation_id = str(getattr(message, "_wxbot_outbound_echo_reservation", "") or "").strip()
+        guard = self._private_outbound_history_write_lock if reservation_id else nullcontext()
+        with guard:
+            if reservation_id and self._private_outbound_echo_fallback_stopped:
+                return False
+            return self._save_incoming_memory_message_locked(chat, message, chat_type=chat_type)
+
+    def _save_incoming_memory_message_locked(self, chat, message, *, chat_type=None):
         if bool(getattr(message, "_wxbot_memory_persisted", False)):
             return True
         if not getattr(getattr(self, "config", None), "memory_switch", False):
@@ -6678,12 +6874,19 @@ class WXBot:
         save_message = getattr(memory_manager, "save_message", None)
         if not callable(save_message) or self._should_skip_message_memory(chat, message):
             return False
+        callback_claim = self._claim_private_outbound_echo_callback_write(message)
+        if callback_claim == "owned":
+            setattr(message, "_wxbot_memory_persisted", True)
+            return True
         try:
             memory_chat_name = str(getattr(chat, "who", "") or "").strip()
             if getattr(message, "type", "") == "image":
                 saved = self._save_incoming_image_memory_message(chat, message)
                 if saved:
                     setattr(message, "_wxbot_memory_persisted", True)
+                    self._commit_private_outbound_echo_reservation(message)
+                else:
+                    self._release_private_outbound_echo_callback_write(message)
                 return saved
             save_message(
                 chat_name=memory_chat_name,
@@ -6699,7 +6902,9 @@ class WXBot:
                 message_time=getattr(message, "time", None) or getattr(message, "_wxbot_received_at", None),
             )
             setattr(message, "_wxbot_memory_persisted", True)
+            self._commit_private_outbound_echo_reservation(message)
         except Exception as exc:
+            self._release_private_outbound_echo_callback_write(message)
             log(level="WARNING", message=f"写入消息记忆失败: {exc}")
             return False
         try:
@@ -6806,7 +7011,9 @@ class WXBot:
         }.get(source, "上下文补洞")
         suffix = str(suffix or "").strip()
         suffix_text = f"，{suffix}" if suffix else ""
-        log(message=f"{label}：{action_text}完成，补入 {int(added or 0)} 条{suffix_text}")
+        added = int(added or 0)
+        level = "DEBUG" if added == 0 and not suffix else "INFO"
+        log(level=level, message=f"{label}：{action_text}完成，补入 {added} 条{suffix_text}")
 
     def _append_context_repair_messages(self, memory_chat_name, entries, *, chat_type="private"):
         if not entries or not self.memory_manager:
@@ -7101,7 +7308,7 @@ class WXBot:
         self._enqueue_private_message_batch_locked(pipeline, messages)
         self._start_private_message_worker_locked(chat, pipeline)
         if reason == "max_wait":
-            log(message=f"私聊 {name}：连续消息达到最大等待，已先处理当前批次")
+            log(level="DEBUG", message=f"私聊 {name}：连续消息达到最大等待，已先处理当前批次")
         return True
 
     def _start_private_message_worker_locked(self, chat, pipeline):
@@ -7300,13 +7507,13 @@ class WXBot:
 
     def _log_reply_split_outcome(self, *, scene_label, chat_name, split_source, split_count):
         if split_source == "newline":
-            log(message=f"{scene_label} {chat_name}：命中换行，已自动拆分成 {split_count} 条")
+            log(level="DEBUG", message=f"{scene_label} {chat_name}：命中换行，已自动拆分成 {split_count} 条")
             return
         if split_source == "sentence":
-            log(message=f"{scene_label} {chat_name}：命中句末标点，已自动拆分成 {split_count} 条")
+            log(level="DEBUG", message=f"{scene_label} {chat_name}：命中句末标点，已自动拆分成 {split_count} 条")
             return
         if split_source == "space":
-            log(message=f"{scene_label} {chat_name}：命中中文空格停顿，已自动拆分成 {split_count} 条")
+            log(level="DEBUG", message=f"{scene_label} {chat_name}：命中中文空格停顿，已自动拆分成 {split_count} 条")
             return
 
     def _log_empty_cleaned_reply(self):
@@ -7376,12 +7583,25 @@ class WXBot:
             return True
         return False
 
-    def _remember_private_outbound_echo(self, chat_name, msg_type="text", content="", *, source="", path="", count=1):
+    def _remember_private_outbound_echo(
+        self,
+        chat_name,
+        msg_type="text",
+        content="",
+        *,
+        source="",
+        path="",
+        count=1,
+        memory_persisted=False,
+        fallback_content="",
+        echo_group_id="",
+        primary_memory_writer=False,
+    ):
         name = str(chat_name or "").strip()
         if not self._should_track_private_outbound_echo(name):
             return False
         kind = self._normalize_private_outbound_echo_type(msg_type, path=path)
-        text = str(content or "").strip() if kind == "text" else ""
+        text = str(content or "").strip()
         if kind == "text" and not text:
             return False
         try:
@@ -7390,6 +7610,7 @@ class WXBot:
             count = 1
         self._ensure_message_runtime_state()
         now = time.time()
+        self._flush_expired_private_outbound_echo_fallbacks(name, now=now)
         expires_at = now + self._private_outbound_echo_ttl(kind)
         with self._chat_merge_lock:
             echoes = [
@@ -7397,19 +7618,22 @@ class WXBot:
                 if isinstance(item, dict) and float(item.get("expires_at", 0) or 0) >= now
             ]
             echoes.append({
+                "echo_id": uuid.uuid4().hex,
+                "echo_group_id": str(echo_group_id or "").strip(),
                 "type": kind,
                 "content": text,
                 "source": str(source or "").strip() or "unknown",
                 "remaining": count,
                 "expires_at": expires_at,
+                "memory_persisted": bool(memory_persisted),
+                "fallback_content": str(fallback_content or "").strip(),
+                "primary_memory_writer": bool(primary_memory_writer),
             })
             self._private_outbound_echoes[name] = echoes[-PRIVATE_OUTBOUND_ECHO_MAX_PER_CHAT:]
         return True
 
     def _remember_private_outbound_echo_for_send_result(self, chat_name, result, msg_type="text", content="", *, source="", path="", count=1):
-        if result is not None and not ReplyCountStore.was_send_success(result):
-            return False
-        return self._remember_private_outbound_echo(
+        echo_group_id = self._reserve_private_outbound_echo_for_send(
             chat_name,
             msg_type,
             content,
@@ -7417,18 +7641,96 @@ class WXBot:
             path=path,
             count=count,
         )
+        return self._settle_private_outbound_echo_send(echo_group_id, result)
 
-    def _consume_private_outbound_echo(self, chat_name, message=None, content=None, msg_type=None):
+    def _reserve_private_outbound_echo_for_send(
+        self,
+        chat_name,
+        msg_type="text",
+        content="",
+        *,
+        source="",
+        path="",
+        count=1,
+        fallback_content="",
+        primary_memory_writer=False,
+    ):
+        echo_group_id = uuid.uuid4().hex
+        remembered = self._remember_private_outbound_echo(
+            chat_name,
+            msg_type,
+            content,
+            source=source,
+            path=path,
+            count=count,
+            fallback_content=fallback_content,
+            echo_group_id=echo_group_id,
+            primary_memory_writer=primary_memory_writer,
+        )
+        return echo_group_id if remembered else ""
+
+    def _reserve_private_outbound_echo_for_action(self, chat_name, action, *, source=""):
+        action = dict(action or {})
+        action_type = str(action.get("type") or "text").strip().lower()
+        if action_type == "file":
+            path = str(action.get("path") or "")
+            kind = self._normalize_private_outbound_echo_type("file", path=path)
+            basename = os.path.basename(path)
+            fallback_label = {"image": "[图片]", "video": "[视频]"}.get(kind, "[文件]")
+            return self._reserve_private_outbound_echo_for_send(
+                chat_name,
+                "file",
+                source=source,
+                path=path,
+                fallback_content=f"{fallback_label} {basename}".strip(),
+            )
+        if action_type in {"voice", "audio"}:
+            return self._reserve_private_outbound_echo_for_send(
+                chat_name,
+                "voice",
+                source=source,
+                path=str(action.get("path") or ""),
+                fallback_content="[语音]",
+            )
+        text = str(action.get("text") or action.get("content") or "")
+        return self._reserve_private_outbound_echo_for_send(
+            chat_name,
+            "text",
+            text,
+            source=source,
+            fallback_content=text,
+        )
+
+    def _settle_private_outbound_echo_send(self, echo_group_id, result):
+        echo_group_id = str(echo_group_id or "").strip()
+        if not echo_group_id:
+            return False
+        if result is not None and not ReplyCountStore.was_send_success(result):
+            self._mark_private_outbound_echo_group_reported_failed(echo_group_id)
+            return False
+        self._schedule_private_outbound_echo_fallback("")
+        return True
+
+    def _consume_private_outbound_echo(
+        self,
+        chat_name,
+        message=None,
+        content=None,
+        msg_type=None,
+        *,
+        return_match=False,
+    ):
         name = str(chat_name or "").strip()
         if not name:
             return False
+        self._flush_expired_private_outbound_echo_fallbacks(name)
         if message is not None:
             if msg_type is None:
                 msg_type = getattr(message, "type", "")
             if content is None:
                 content = getattr(message, "content", "")
         kind = self._normalize_private_outbound_echo_type(msg_type)
-        text = str(content or "").strip() if kind == "text" else ""
+        text = str(content or "").strip()
         self._ensure_message_runtime_state()
         now = time.time()
         matched = None
@@ -7437,6 +7739,7 @@ class WXBot:
                 item for item in self._private_outbound_echoes.get(name, [])
                 if isinstance(item, dict) and float(item.get("expires_at", 0) or 0) >= now
             ]
+            candidates = []
             for index, item in enumerate(echoes):
                 expected = str(item.get("type") or "unknown").strip().lower() or "unknown"
                 if kind == "text":
@@ -7444,24 +7747,355 @@ class WXBot:
                         continue
                 elif not self._private_outbound_echo_types_match(expected, kind):
                     continue
-                remaining = max(0, int(item.get("remaining", 1) or 1)) - 1
+                expected_content = str(item.get("content") or "").strip()
+                content_match = bool(
+                    expected_content
+                    and text
+                    and (
+                        expected_content == text
+                        or expected_content in text
+                        or text in expected_content
+                    )
+                )
+                candidates.append((index, item, content_match))
+            available = [candidate for candidate in candidates if not candidate[1].get("reservation_id")]
+            selected = None
+            if available:
+                exact_matches = [
+                    candidate
+                    for candidate in available
+                    if str(candidate[1].get("content") or "").strip() == text and text
+                ]
+                substring_matches = [candidate for candidate in available if candidate[2]]
+                if exact_matches:
+                    selected = exact_matches[0]
+                elif len(substring_matches) == 1:
+                    selected = substring_matches[0]
+                elif substring_matches:
+                    longest_length = max(
+                        len(str(candidate[1].get("content") or "").strip())
+                        for candidate in substring_matches
+                    )
+                    longest_matches = [
+                        candidate
+                        for candidate in substring_matches
+                        if len(str(candidate[1].get("content") or "").strip()) == longest_length
+                    ]
+                    if len(longest_matches) == 1:
+                        selected = longest_matches[0]
+                elif not text or all(not str(candidate[1].get("content") or "").strip() for candidate in available):
+                    selected = available[0]
+            if selected is not None:
+                index, item, _content_match = selected
                 matched = dict(item)
-                if remaining > 0:
-                    item["remaining"] = remaining
+                if item.get("primary_memory_writer"):
+                    matched["primary_memory_writer"] = True
+                    if message is not None and return_match and not item.get("memory_persisted"):
+                        reservation_id = uuid.uuid4().hex
+                        item["reservation_id"] = reservation_id
+                        matched["reservation_id"] = reservation_id
+                elif message is not None and return_match and not item.get("memory_persisted"):
+                    reservation_id = uuid.uuid4().hex
+                    item["reservation_id"] = reservation_id
+                    matched["reservation_id"] = reservation_id
+                elif item.get("memory_persisted"):
+                    matched["dedupe_only"] = True
                 else:
-                    del echoes[index]
-                break
+                    remaining = max(0, int(item.get("remaining", 1) or 1)) - 1
+                    if remaining > 0:
+                        item["remaining"] = remaining
+                    else:
+                        del echoes[index]
+            elif not available and candidates:
+                _index, item, _content_match = candidates[0]
+                matched = dict(item)
+                matched["duplicate_reservation"] = True
             if echoes:
                 self._private_outbound_echoes[name] = echoes
             else:
                 self._private_outbound_echoes.pop(name, None)
-        if matched:
-            return True
+        if return_match:
+            return matched
+        return bool(matched)
+
+    def _commit_private_outbound_echo_reservation(self, message):
+        reservation_id = str(getattr(message, "_wxbot_outbound_echo_reservation", "") or "").strip()
+        if not reservation_id:
+            return False
+        now = time.time()
+        with self._chat_merge_lock:
+            for echoes in self._private_outbound_echoes.values():
+                for item in echoes or []:
+                    if item.get("reservation_id") != reservation_id:
+                        continue
+                    item.pop("callback_write_id", None)
+                    item.pop("reservation_id", None)
+                    item["memory_persisted"] = True
+                    item["fallback_content"] = ""
+                    item["expires_at"] = now + 2
+                    return True
         return False
+
+    def _mark_private_outbound_echo_group_persisted(self, echo_group_id):
+        group_id = str(echo_group_id or "").strip()
+        if not group_id:
+            return False
+        now = time.time()
+        changed = False
+        with self._chat_merge_lock:
+            for echoes in self._private_outbound_echoes.values():
+                for item in echoes or []:
+                    if item.get("echo_group_id") != group_id:
+                        continue
+                    item["memory_persisted"] = True
+                    item["fallback_content"] = ""
+                    item["expires_at"] = now + 2
+                    changed = True
+        return changed
+
+    def _release_private_outbound_echo_group_to_callback(self, echo_group_id):
+        group_id = str(echo_group_id or "").strip()
+        if not group_id:
+            return False
+        changed = False
+        with self._chat_merge_lock:
+            for echoes in self._private_outbound_echoes.values():
+                for item in echoes or []:
+                    if item.get("echo_group_id") != group_id:
+                        continue
+                    item["primary_memory_writer"] = False
+                    item["fallback_content"] = ""
+                    changed = True
+        return changed
+
+    def _private_outbound_echo_reservation_owned_by_fallback(self, message):
+        reservation_id = str(getattr(message, "_wxbot_outbound_echo_reservation", "") or "").strip()
+        if not reservation_id:
+            return False
+        with self._chat_merge_lock:
+            return any(
+                item.get("reservation_id") == reservation_id
+                and (item.get("fallback_write_id") or item.get("memory_persisted"))
+                for echoes in self._private_outbound_echoes.values()
+                for item in echoes or []
+                if isinstance(item, dict)
+            )
+
+    def _claim_private_outbound_echo_callback_write(self, message):
+        reservation_id = str(getattr(message, "_wxbot_outbound_echo_reservation", "") or "").strip()
+        if not reservation_id:
+            return "none"
+        callback_write_id = uuid.uuid4().hex
+        with self._chat_merge_lock:
+            for echoes in self._private_outbound_echoes.values():
+                for item in echoes or []:
+                    if item.get("reservation_id") != reservation_id:
+                        continue
+                    if item.get("fallback_write_id") or item.get("memory_persisted"):
+                        return "owned"
+                    if item.get("callback_write_id"):
+                        return "owned"
+                    item["callback_write_id"] = callback_write_id
+                    setattr(message, "_wxbot_outbound_echo_callback_write", callback_write_id)
+                    return "claimed"
+        return "none"
+
+    def _release_private_outbound_echo_callback_write(self, message):
+        callback_write_id = str(
+            getattr(message, "_wxbot_outbound_echo_callback_write", "") or ""
+        ).strip()
+        if not callback_write_id:
+            return False
+        with self._chat_merge_lock:
+            for echoes in self._private_outbound_echoes.values():
+                for item in echoes or []:
+                    if item.get("callback_write_id") == callback_write_id:
+                        item.pop("callback_write_id", None)
+                        return True
+        return False
+
+    def _private_outbound_echo_primary_reservation_active(self, message):
+        reservation_id = str(getattr(message, "_wxbot_outbound_echo_reservation", "") or "").strip()
+        if not reservation_id:
+            return False
+        with self._chat_merge_lock:
+            return any(
+                item.get("reservation_id") == reservation_id
+                and item.get("primary_memory_writer")
+                for echoes in self._private_outbound_echoes.values()
+                for item in echoes or []
+                if isinstance(item, dict)
+            )
+
+    def _schedule_private_outbound_echo_fallback(self, chat_name):
+        if not getattr(getattr(self, "config", None), "memory_switch", False):
+            return False
+        self._ensure_message_runtime_state()
+        if self._private_outbound_echo_fallback_stopped:
+            return False
+        with self._chat_merge_lock:
+            if self._private_outbound_echo_fallback_stopped:
+                return False
+            now = time.time()
+            pending_expirations = [
+                float(item.get("expires_at", 0) or 0)
+                for echoes in self._private_outbound_echoes.values()
+                for item in echoes or []
+                if isinstance(item, dict)
+                and str(item.get("fallback_content") or "").strip()
+                and not item.get("memory_persisted")
+            ]
+            if not pending_expirations:
+                return False
+            expires_at = min(pending_expirations)
+            active = getattr(self, "_private_outbound_echo_fallback_timer", None)
+            active_deadline = float(getattr(self, "_private_outbound_echo_fallback_deadline", 0) or 0)
+            if active is not None and active.is_alive():
+                if active_deadline and active_deadline <= expires_at + 0.1:
+                    return True
+                active.cancel()
+            timer = threading.Timer(
+                max(0.1, expires_at - now + 0.1),
+                self._run_private_outbound_echo_fallback_timer,
+            )
+            timer.daemon = True
+            self._private_outbound_echo_fallback_timer = timer
+            self._private_outbound_echo_fallback_deadline = expires_at + 0.1
+            timer.start()
+        return True
+
+    def _run_private_outbound_echo_fallback_timer(self):
+        with self._chat_merge_lock:
+            self._private_outbound_echo_fallback_timer = None
+            self._private_outbound_echo_fallback_deadline = 0
+            if self._private_outbound_echo_fallback_stopped:
+                return
+        self._flush_expired_private_outbound_echo_fallbacks()
+        self._schedule_private_outbound_echo_fallback("")
+
+    def _save_private_outbound_echo_fallback(self, chat_name, echo):
+        content = str((echo or {}).get("fallback_content") or "").strip()
+        if not content or not getattr(getattr(self, "config", None), "memory_switch", False):
+            return False
+        memory_manager = getattr(self, "memory_manager", None)
+        save_message = getattr(memory_manager, "save_message", None)
+        if not callable(save_message):
+            return False
+        try:
+            save_message(
+                chat_name=str(chat_name or "").strip(),
+                sender="self",
+                content=content,
+                msg_type=str((echo or {}).get("type") or "unknown").strip() or "unknown",
+                msg_attr="self",
+                max_count=getattr(self.config, "memory_max_count", 1000),
+            )
+            return True
+        except Exception as exc:
+            log(level="WARNING", message=f"发送记录补写消息记忆失败: {exc}")
+            return False
+
+    def _flush_expired_private_outbound_echo_fallbacks(self, chat_name=None, *, now=None):
+        self._ensure_message_runtime_state()
+        with self._private_outbound_history_write_lock:
+            if self._private_outbound_echo_fallback_stopped:
+                return 0
+            return self._flush_expired_private_outbound_echo_fallbacks_locked(chat_name, now=now)
+
+    def _flush_expired_private_outbound_echo_fallbacks_locked(self, chat_name=None, *, now=None):
+        self._ensure_message_runtime_state()
+        now = time.time() if now is None else float(now)
+        target = str(chat_name or "").strip()
+        pending_writes = []
+        with self._chat_merge_lock:
+            names = [target] if target else list(self._private_outbound_echoes)
+            for name in names:
+                next_echoes = []
+                for echo in self._private_outbound_echoes.get(name, []):
+                    if not isinstance(echo, dict):
+                        continue
+                    if echo.get("fallback_write_id"):
+                        next_echoes.append(echo)
+                        continue
+                    if echo.get("callback_write_id"):
+                        next_echoes.append(echo)
+                        continue
+                    if float(echo.get("expires_at", 0) or 0) >= now:
+                        next_echoes.append(echo)
+                        continue
+                    fallback_content = str(echo.get("fallback_content") or "").strip()
+                    if not fallback_content or echo.get("memory_persisted"):
+                        continue
+                    write_id = uuid.uuid4().hex
+                    echo["fallback_write_id"] = write_id
+                    pending_writes.append((name, dict(echo), write_id))
+                    next_echoes.append(echo)
+                if next_echoes:
+                    self._private_outbound_echoes[name] = next_echoes[-PRIVATE_OUTBOUND_ECHO_MAX_PER_CHAT:]
+                else:
+                    self._private_outbound_echoes.pop(name, None)
+        saved = 0
+        for name, echo, write_id in pending_writes:
+            count = max(1, int(echo.get("remaining", 1) or 1))
+            success = all(
+                self._save_private_outbound_echo_fallback(name, echo)
+                for _index in range(count)
+            )
+            with self._chat_merge_lock:
+                current = next(
+                    (
+                        item
+                        for item in self._private_outbound_echoes.get(name, [])
+                        if item.get("echo_id") == echo.get("echo_id")
+                        and item.get("fallback_write_id") == write_id
+                    ),
+                    None,
+                )
+                if current is None:
+                    continue
+                current.pop("fallback_write_id", None)
+                if success:
+                    saved += count
+                    current["memory_persisted"] = True
+                    current["fallback_content"] = ""
+                    current["expires_at"] = now + 2
+                else:
+                    current.pop("reservation_id", None)
+                    current["expires_at"] = now + PRIVATE_OUTBOUND_ECHO_UNKNOWN_SECONDS
+        return saved
+
+    def _finalize_private_outbound_echo_fallbacks_on_stop(self):
+        self._ensure_message_runtime_state()
+        with self._chat_merge_lock:
+            self._private_outbound_echo_fallback_stopped = True
+            timer = getattr(self, "_private_outbound_echo_fallback_timer", None)
+            if timer is not None:
+                timer.cancel()
+            self._private_outbound_echo_fallback_timer = None
+            self._private_outbound_echo_fallback_deadline = 0
+        acquired = self._private_outbound_history_write_lock.acquire(
+            timeout=PRIVATE_OUTBOUND_HISTORY_STOP_WAIT_SECONDS
+        )
+        if not acquired:
+            log(level="WARNING", message="停止机器人等待发送记录写入超时，已放弃旧实例兜底并继续退出")
+            return False
+        try:
+            with self._chat_merge_lock:
+                self._private_outbound_echoes = {}
+        finally:
+            self._private_outbound_history_write_lock.release()
+        with self._chat_merge_lock:
+            timer = getattr(self, "_private_outbound_echo_fallback_timer", None)
+            if timer is not None:
+                timer.cancel()
+            self._private_outbound_echo_fallback_timer = None
+            self._private_outbound_echo_fallback_deadline = 0
+        return True
 
     def _has_pending_private_outbound_echoes(self):
         self._ensure_message_runtime_state()
         now = time.time()
+        self._flush_expired_private_outbound_echo_fallbacks(now=now)
         pending = False
         with self._chat_merge_lock:
             next_echoes = {}
@@ -7489,6 +8123,7 @@ class WXBot:
             "text",
             content,
             source="private_ai_reply",
+            memory_persisted=True,
         )
 
     def _consume_persisted_private_reply_echo(self, chat_name, content):
@@ -7973,6 +8608,15 @@ class WXBot:
             try:
                 self._mark_unanswered_send_started(unanswered_record_id)
                 send_started = True
+                echo_group_id = ""
+                if str(state_key or "").startswith("private:"):
+                    echo_group_id = self._reserve_private_outbound_echo_for_send(
+                        chat.who,
+                        "voice",
+                        source="private_ai_reply",
+                        fallback_content=clean_reply,
+                        primary_memory_writer=True,
+                    )
                 result = send_audio(
                     filepath=str(audio_path),
                     duration=None,
@@ -7983,17 +8627,19 @@ class WXBot:
             if ReplyCountStore.was_send_success(result) or self._private_reply_send_allows_memory_save(result):
                 if chat.who == getattr(self.config, "cmd", ""):
                     takeover_runtime.remember_admin_echo_message(self, clean_reply)
-                if str(state_key or "").startswith("private:"):
-                    self._remember_private_outbound_echo(
-                        chat.who,
-                        "voice",
-                        source="private_ai_reply",
-                    )
-                self._save_private_reply_memory_message(chat, clean_reply, msg_type="voice")
+                if self._save_private_reply_memory_message(chat, clean_reply, msg_type="voice"):
+                    self._mark_private_outbound_echo_group_persisted(echo_group_id)
+                else:
+                    self._schedule_private_outbound_echo_fallback("")
                 limiter.mark_sent(state_key, now=now, limit_hours=limit_hours)
                 return True
+            if result is None:
+                self._schedule_private_outbound_echo_fallback("")
+            else:
+                self._mark_private_outbound_echo_group_reported_failed(echo_group_id)
         except Exception as exc:
             if send_started:
+                self._schedule_private_outbound_echo_fallback("")
                 self._mark_unanswered_uncertain(unanswered_record_id)
                 log(
                     level="ERROR",
@@ -8080,6 +8726,16 @@ class WXBot:
                                 if not self._private_reply_can_continue(chat, expected_sequence=expected_sequence):
                                     break
                             self._mark_unanswered_send_started()
+                            echo_group_id = uuid.uuid4().hex
+                            self._remember_private_outbound_echo(
+                                chat.who,
+                                "text",
+                                segment,
+                                source="private_ai_reply",
+                                fallback_content=segment,
+                                echo_group_id=echo_group_id,
+                                primary_memory_writer=True,
+                            )
                             try:
                                 if isinstance(chat, OwnedChat):
                                     send_result = chat.SendMsg(
@@ -8089,22 +8745,26 @@ class WXBot:
                                 else:
                                     send_result = chat.SendMsg(segment)
                             except wechat_ui_actions.IntentCancelled:
+                                self._discard_private_outbound_echo_group(echo_group_id)
                                 break
+                            except Exception:
+                                self._settle_private_outbound_echo_send(echo_group_id, None)
+                                raise
                             result = send_result
                             if chat.who == getattr(self.config, "cmd", ""):
                                 takeover_runtime.remember_admin_echo_message(self, segment)
                             current_success = ReplyCountStore.was_send_success(send_result)
                             if current_success or self._private_reply_send_allows_memory_save(send_result):
-                                self._remember_private_outbound_echo(
-                                    chat.who,
-                                    "text",
-                                    segment,
-                                    source="private_ai_reply",
-                                )
-                                if not self._save_private_reply_memory_message(chat, segment):
+                                if self._save_private_reply_memory_message(chat, segment):
+                                    self._mark_private_outbound_echo_group_persisted(echo_group_id)
+                                else:
+                                    self._schedule_private_outbound_echo_fallback("")
                                     self._append_private_reply_runtime_part(runtime_turn, segment)
                             elif send_result is None:
+                                self._release_private_outbound_echo_group_to_callback(echo_group_id)
                                 self._append_private_reply_runtime_part(runtime_turn, segment)
+                            else:
+                                self._mark_private_outbound_echo_group_reported_failed(echo_group_id)
                             send_success = send_success or current_success
             finally:
                 self._finish_private_reply_runtime_turn(chat.who, runtime_turn)
@@ -8162,6 +8822,13 @@ class WXBot:
                             log(level="ERROR", message=f"关键词回复文件不存在，已跳过：{path}")
                             continue
                         prepared_action = {"type": "file", "path": path}
+                    echo_group_id = ""
+                    if private_chat:
+                        echo_group_id = self._reserve_private_outbound_echo_for_action(
+                            chat.who,
+                            prepared_action,
+                            source="keyword_reply",
+                        )
                     try:
                         results = chat.SendActions(
                             [prepared_action],
@@ -8171,20 +8838,17 @@ class WXBot:
                             delivery_id=f"{delivery_id}:{index}",
                         )
                     except wechat_ui_actions.IntentCancelled:
+                        self._discard_private_outbound_echo_group(echo_group_id)
                         break
+                    except Exception:
+                        self._settle_private_outbound_echo_send(echo_group_id, None)
+                        raise
                     results = list(results or []) if isinstance(results, (list, tuple)) else [results]
                     action_result = results[-1] if results else True
                     result = action_result
                     sent_count += 1
                     if private_chat:
-                        self._remember_private_outbound_echo_for_send_result(
-                            chat.who,
-                            action_result,
-                            "file" if prepared_action.get("type") == "file" else "text",
-                            prepared_action.get("text", ""),
-                            source="keyword_reply",
-                            path=prepared_action.get("path", ""),
-                        )
+                        self._settle_private_outbound_echo_send(echo_group_id, action_result)
                     send_success = send_success or ReplyCountStore.was_send_success(action_result)
             finally:
                 if release_wechat_lock:
@@ -8214,32 +8878,31 @@ class WXBot:
                         content = str(action.get("content") or "").strip()
                         if not content:
                             continue
-                        if at:
+                        if private_chat:
+                            result = self._run_private_outbound_echo_send(
+                                chat.who,
+                                {"type": "text", "text": content},
+                                lambda: chat.SendMsg(msg=content, at=at) if at else chat.SendMsg(msg=content),
+                                source="keyword_reply",
+                            )
+                        elif at:
                             result = chat.SendMsg(msg=content, at=at)
                         else:
                             result = chat.SendMsg(msg=content)
-                        if private_chat:
-                            self._remember_private_outbound_echo_for_send_result(
-                                chat.who,
-                                result,
-                                "text",
-                                content,
-                                source="keyword_reply",
-                            )
                     else:
                         path = str(action.get("path") or "").strip()
                         if not path or not os.path.isfile(path):
                             log(level="ERROR", message=f"关键词回复文件不存在，已跳过：{path}")
                             continue
-                        result = chat.SendFiles(filepath=path)
                         if private_chat:
-                            self._remember_private_outbound_echo_for_send_result(
+                            result = self._run_private_outbound_echo_send(
                                 chat.who,
-                                result,
-                                "file",
+                                {"type": "file", "path": path},
+                                lambda: chat.SendFiles(filepath=path),
                                 source="keyword_reply",
-                                path=path,
                             )
+                        else:
+                            result = chat.SendFiles(filepath=path)
                     send_success = send_success or ReplyCountStore.was_send_success(result)
         finally:
             if release_wechat_lock:
@@ -8947,6 +9610,9 @@ class WXBot:
                 [record.get("target")],
                 preface=preface,
                 material_source=material.get("source") or record.get("material_source", ""),
+                material_type=material.get("type_bucket") or material.get("type") or record.get("material_type"),
+                material_title=record.get("material_title", ""),
+                echo_source="ai_material_outreach",
             )
             if not success and self._material_forward_error_needs_refresh(error):
                 log(level="WARNING", message=f"[AI素材转发] 素材句柄失效，已刷新来源子窗口后重试：{record.get('material_title', '')}")
@@ -8957,6 +9623,9 @@ class WXBot:
                         [record.get("target")],
                         preface=preface,
                         material_source=material.get("source") or record.get("material_source", ""),
+                        material_type=material.get("type_bucket") or material.get("type") or record.get("material_type"),
+                        material_title=record.get("material_title", ""),
+                        echo_source="ai_material_outreach",
                     )
         except Exception as exc:
             success = False
@@ -8972,16 +9641,12 @@ class WXBot:
                             [record.get("target")],
                             preface=preface,
                             material_source=material.get("source") or record.get("material_source", ""),
+                            material_type=material.get("type_bucket") or material.get("type") or record.get("material_type"),
+                            material_title=record.get("material_title", ""),
+                            echo_source="ai_material_outreach",
                         )
                 except Exception as retry_exc:
                     error = str(retry_exc)
-        if success:
-            self._remember_material_outbound_echoes(
-                [record.get("target")],
-                material.get("type_bucket") or material.get("type") or record.get("material_type"),
-                preface=record.get("preface") if record.get("preface_enabled") else "",
-                source="ai_material_outreach",
-            )
         self._append_material_send_record(
             build_send_record(
                 AI_AUTO_OUTREACH_TASK_ID,
@@ -9789,11 +10454,13 @@ class WXBot:
                 self._ui_ingress_stop.set()
                 owner.stop(cancel_pending=True)
                 self._ui_owner = None
+            self._finalize_private_outbound_echo_fallbacks_on_stop()
             log(level="WARNING", message='siver_wxbot安全退出！！')
             return True
         listener = getattr(self, "wx", None)
         if listener and hasattr(listener, "StopListening"):
             listener.StopListening()
+        self._finalize_private_outbound_echo_fallbacks_on_stop()
         log(level="WARNING", message='siver_wxbot安全退出！！')
         return True
 
@@ -9807,7 +10474,7 @@ class WXBot:
         # self.key_pass(2025, 6, 20, 0, 0, 0)  # 打包保护锁（按需启用）
         # 激活授权校验
         if self.wxautox_activate_check():
-            log(message="wxautox已激活")
+            log(level="DEBUG", message="wxautox已激活")
         else:
             log(level="ERROR", message="wxautox未激活，请购买激活后再运行程序！！")
             log(level="ERROR", message="购买激活地址：https://www.siverking.online/static/img/siver_wx.jpg")
@@ -9818,7 +10485,7 @@ class WXBot:
         try:
             log(message="启动阶段：正在初始化微信监听器")
             self.init_wx_listeners()
-            log(message="启动阶段：已同步面板状态")
+            log(level="DEBUG", message="启动阶段：已同步面板状态")
 
             wait_time      = 3   # 主循环每 3 秒轮询一次
             check_interval = 10  # 每 10 次循环执行一次离线检测

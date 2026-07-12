@@ -46,6 +46,7 @@ def record_runtime_inbound_event(bot, message, chat_type="") -> None:
     try:
         _bot_log(
             bot,
+            level="DEBUG",
             message=f"运行事件：入站消息 scope={scope} type={message_type} runtime_id={runtime_id}",
         )
     except Exception:
