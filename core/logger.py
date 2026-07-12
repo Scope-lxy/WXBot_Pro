@@ -149,7 +149,7 @@ def format_log_message(message):
     return text
 
 
-def format_panel_log_message(message, level="INFO", max_length=260):
+def format_panel_log_message(message, level="INFO", max_length=100):
     """Keep the panel concise while the file log retains full diagnostics."""
     text = format_log_message(message)
     lines = [line.strip() for line in text.splitlines() if line.strip()]

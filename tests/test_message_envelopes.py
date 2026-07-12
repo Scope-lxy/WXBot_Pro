@@ -43,7 +43,7 @@ class MessageEnvelopeTests(unittest.TestCase):
 
         self.assertIsInstance(envelope.id, str)
 
-    def test_same_hash_voice_messages_are_consumed_in_window_order(self):
+    def test_same_hash_voice_messages_remain_pending_when_match_is_ambiguous(self):
         items = [
             {"key": "first", "signature": {"attr": "friend", "sender": "张三", "duration": 3, "hash": "same"}},
             {"key": "second", "signature": {"attr": "friend", "sender": "张三", "duration": 3, "hash": "same"}},
@@ -55,8 +55,7 @@ class MessageEnvelopeTests(unittest.TestCase):
 
         matched = match_pending_voice_snapshot(items, messages)
 
-        self.assertEqual(matched["first"].content, '语音3"秒第一条')
-        self.assertEqual(matched["second"].content, '语音3"秒第二条')
+        self.assertEqual(matched, {})
 
     def test_group_voice_matches_sender_before_duration(self):
         items = [

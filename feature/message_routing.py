@@ -140,6 +140,8 @@ def match_pending_voice_snapshot(items, messages):
             ]
             if hash_options:
                 options = hash_options
+        if len(options) != 1:
+            continue
         index, candidate = options[0]
         used.add(index)
         matched[item.get("key")] = candidate

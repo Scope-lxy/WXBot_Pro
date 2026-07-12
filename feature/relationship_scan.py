@@ -999,7 +999,7 @@ def process_pending_wechat_tag_sync(bot, *, now: Any = None, force: bool = False
                     break
         if processed:
             log(
-                level="SUCCESS" if success > 0 else "WARNING",
+                level="SUCCESS" if success > 0 and failed == 0 else "WARNING",
                 message=f"[关系扫描] 微信标签同步完成：成功 {success}，失败 {failed}",
             )
         return {"processed": processed, "success": success, "failed": failed}

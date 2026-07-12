@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
+from unittest import mock
 
 from core import runtime_chat_state
 from core.wechat_ui_actions import (
@@ -16,10 +17,23 @@ from feature.scheduled_message_tasks import (
     recover_interrupted_scheduled_message_task,
 )
 from feature.scheduled_messages import execute_scheduled_message_task
+from feature import runtime_task_runner
 from wxbot_core import WXBot
 
 
 class ScheduledMessageRecoveryTests(unittest.TestCase):
+    def test_run_result_level_requires_complete_success(self):
+        cases = [
+            ({"success_count": 2, "failed_count": 0, "skipped_count": 0, "queued_count": 0}, "SUCCESS"),
+            ({"success_count": 1, "failed_count": 1, "skipped_count": 0, "queued_count": 0}, "WARNING"),
+            ({"success_count": 0, "failed_count": 0, "skipped_count": 0, "queued_count": 2, "result_type": "queued"}, "INFO"),
+        ]
+
+        for result, expected_level in cases:
+            with self.subTest(expected_level=expected_level), mock.patch.object(runtime_task_runner, "log") as log_mock:
+                runtime_task_runner._log_scheduled_message_run_result({"name": "提醒"}, result)
+                self.assertEqual(log_mock.call_args.kwargs["level"], expected_level)
+
     def test_interrupted_inflight_delivery_becomes_uncertain_and_never_auto_runs(self):
         task = mark_scheduled_message_running(
             {

@@ -245,6 +245,18 @@ def limit_recent_visible_records(history, message_limit=None):
 def build_model_visible_history(history, *, message_limit=None):
     visible_history = _attach_time_separators(history)
     visible_history = limit_recent_visible_records(visible_history, message_limit=message_limit)
+    visible_history = [
+        item
+        for item in visible_history
+        if not isinstance(item, dict)
+        or _clean_text(
+            _render_record_content(
+                item,
+                speaker_role="assistant" if item.get("attr") == "self" else "user",
+                compact=False,
+            )
+        )
+    ]
     return [format_history_message(item) for item in visible_history]
 
 

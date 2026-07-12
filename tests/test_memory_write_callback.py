@@ -1001,6 +1001,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             type="image",
             _wxbot_media_prepared=True,
         )
+
         chat = SimpleNamespace(who="测试群", chat_type="group")
 
         bot.message_handle_callback(msg, chat)
@@ -1012,6 +1013,18 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "image")
         self.assertEqual(bot.memory_manager.calls[0]["image_paths"], [r"C:\tmp\group-image.png"])
         self.assertNotIn("visual_notes", bot.memory_manager.calls[0])
+
+    def test_pending_voice_placeholders_are_not_visible_to_model(self):
+        history = [
+            {"type": "voice", "attr": "friend", "sender": "张三", "content": "未播放"},
+            {"type": "voice", "attr": "friend", "sender": "张三", "content": '语音8"秒'},
+            {"type": "text", "attr": "friend", "sender": "张三", "content": "后续文字"},
+        ]
+
+        self.assertEqual(
+            build_model_visible_history(history),
+            [{"role": "user", "content": "张三: 后续文字"}],
+        )
 
     def test_chat_memory_background_worker_uses_existing_update_logic(self):
         bot = WXBot.__new__(WXBot)

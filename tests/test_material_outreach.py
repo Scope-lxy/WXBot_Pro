@@ -24,6 +24,80 @@ def msg(msg_type, content):
 
 
 class MaterialOutreachPoolTests(unittest.TestCase):
+    def test_manual_target_remains_runnable_when_contact_directory_is_empty(self):
+        bot = WXBot.__new__(WXBot)
+        bot._contact_profiles_directory_file = lambda: ("ignored.json", "scope_rui")
+        bot._append_material_progress_records = lambda *_args, **_kwargs: None
+        bot._append_material_skip_record = lambda *_args, **_kwargs: self.fail("手动目标不应因通讯录为空被阻断")
+        task = {
+            "task_id": "task_manual",
+            "target_selector": {"mode": "include", "base": "manual"},
+            "manual_target_names": ["阿英2"],
+        }
+
+        with mock.patch("wxbot_core.load_contact_directory", return_value={"subjects": []}):
+            resolved = bot._resolve_material_outreach_directory_task(task, [])
+
+        self.assertEqual(resolved["targets"], ["阿英2"])
+        self.assertEqual(resolved["_outreach_target_snapshot"]["targets"][0]["contact_key"], "")
+
+    def test_material_forward_passes_business_ids_to_ui_journal_payload(self):
+        bot = WXBot.__new__(WXBot)
+        bot._ui_owner = object()
+        bot._remember_material_outbound_echoes = lambda *_args, **_kwargs: "echo-1"
+        bot._schedule_private_outbound_echo_fallback = lambda *_args, **_kwargs: None
+        captured = []
+        bot._ui_forward_message = lambda *_args, **kwargs: captured.append(kwargs) or True
+
+        with mock.patch("wxbot_core.wechat_ui_actions.hold", return_value=nullcontext()):
+            success, error = bot._forward_material_message_unlocked(
+                SimpleNamespace(type="link", content="素材"),
+                ["阿英2"],
+                material_source="素材源",
+                delivery_id="delivery-1",
+                request_id="request-1",
+                run_id="run-1",
+                batch_id="batch-1",
+            )
+
+        self.assertTrue(success)
+        self.assertEqual(error, "")
+        self.assertEqual(captured[0]["delivery_id"], "delivery-1")
+        self.assertEqual(captured[0]["request_id"], "request-1")
+        self.assertEqual(captured[0]["run_id"], "run-1")
+        self.assertEqual(captured[0]["batch_id"], "batch-1")
+
+    def test_uncertain_material_result_stops_outer_retry_loop(self):
+        bot = WXBot.__new__(WXBot)
+        snapshot = {"run_id": "run-1", "targets": []}
+        resolved_task = {"task_id": "task-1", "_outreach_target_snapshot": snapshot}
+        bot._load_material_send_records = lambda: []
+        bot._resolve_material_outreach_directory_task = lambda _task, _records: resolved_task
+        bot._log_material_outreach_run_start = lambda *_args, **_kwargs: None
+        calls = []
+        uncertain = {"status": "uncertain", "message": "result lost"}
+        bot._attempt_material_outreach_batches = lambda *_args, **_kwargs: calls.append("attempt") or uncertain
+
+        result = bot._send_material_outreach_locked({"task_id": "task-1"})
+
+        self.assertIs(result, uncertain)
+        self.assertEqual(calls, ["attempt"])
+
+    def test_material_task_finish_is_warning_when_any_target_failed(self):
+        bot = WXBot.__new__(WXBot)
+        bot._material_outreach_progress_summary = lambda _snapshot: {
+            "targets": 2,
+            "success": 1,
+            "failed": 1,
+            "skipped": 0,
+            "pending": 0,
+        }
+
+        with mock.patch("wxbot_core.log") as log_mock:
+            bot._log_material_outreach_run_finish({"name": "测试任务"}, {"run_id": "run-1"})
+
+        self.assertEqual(log_mock.call_args.kwargs["level"], "WARNING")
+
     def _material_history_bot(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(

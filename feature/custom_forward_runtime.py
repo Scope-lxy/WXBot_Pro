@@ -97,7 +97,7 @@ def send_custom_forward_action(bot, action, chat, message):
         if not success and isinstance(result, dict):
             error = str(result.get("message") or result.get("error") or "").strip()
     log(
-        level="SUCCESS" if success else "WARNING",
+        level="INFO" if success else "WARNING",
         message=(
             f"[自定义转发] {chat.who} → {target}"
             f"（规则类型：{action.get('rule_type', 'all')}，附带来源：{bool(action.get('source_message'))}）"

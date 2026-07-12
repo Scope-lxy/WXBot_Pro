@@ -852,8 +852,6 @@ def auto_maintenance_is_due(
     maintenance = (directory or {}).get("maintenance") if isinstance(directory, dict) else {}
     if not isinstance(maintenance, dict):
         maintenance = {}
-    if maintenance.get("status") == "running":
-        return False
     if bool(maintenance.get("paused", False)):
         return False
     interval = coerce_auto_maintenance_interval_minutes(interval_minutes)
@@ -861,6 +859,12 @@ def auto_maintenance_is_due(
     last_attempt = _parse_maintenance_time(
         maintenance.get("last_batch_finished_at") or maintenance.get("last_attempted_at")
     )
+    if maintenance.get("status") == "running":
+        last_activity = last_attempt or _parse_maintenance_time(
+            maintenance.get("updated_at") or maintenance.get("started_at")
+        )
+        if last_activity is not None and current < last_activity + timedelta(minutes=max(interval, 10)):
+            return False
     start_gate = _parse_maintenance_time(not_before)
     if start_gate is not None and current < start_gate + timedelta(minutes=interval):
         if last_attempt is None or last_attempt < start_gate:
@@ -2662,7 +2666,7 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
             append_bounded_record(records_file, record, limit=1000)
             result["records"].append(record)
             if success:
-                _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] 备注修复 {index}/{len(candidates)}：{target_display} -> {suggested_remark}")
+                _bot_log(bot, level="INFO", message=f"[通讯录维护] 备注修复 {index}/{len(candidates)}：{target_display} -> {suggested_remark}")
             else:
                 _bot_log(bot, level="WARNING", message=f"[通讯录维护] 备注修复失败 {index}/{len(candidates)}：{target_display} -> {suggested_remark}，错误：{error}")
 
@@ -2691,7 +2695,7 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
     result["directory"] = current_directory
     _bot_log(
         bot,
-        level="SUCCESS",
+        level="SUCCESS" if result["failed_count"] == 0 else "WARNING",
         message=(
             f"[通讯录维护] 备注修复完成：成功 {result['success_count']}，"
             f"失败 {result['failed_count']}，跳过 {result['skipped_count']}"

@@ -49,6 +49,31 @@ class LogFormattingTest(unittest.TestCase):
             "后台线程异常：监听线程退出（详情见本地日志）",
         )
 
+    def test_panel_summary_is_limited_to_one_hundred_characters(self):
+        summary = format_panel_log_message("回" * 120)
+
+        self.assertEqual(len(summary), 100)
+        self.assertEqual(summary, "回" * 99 + "…")
+
+    def test_panel_truncation_does_not_truncate_local_log_file(self):
+        full_message = "回复" * 80
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(logger, "LOG_PATH", temp_dir), mock.patch.object(
+                logger, "_is_test_process", return_value=True
+            ):
+                with logger._log_lock:
+                    original = list(logger.log_messages)
+                    logger.log_messages.clear()
+                try:
+                    logger.log(message=full_message)
+                    self.assertEqual(len(logger.get_recent_logs(limit=1)[0]["message"]), 100)
+                    path = os.path.join(temp_dir, "tests", "log_" + logger.datetime.now().strftime("%y%m%d") + ".txt")
+                    with open(path, encoding="utf-8-sig") as log_file:
+                        self.assertIn(full_message, log_file.read())
+                finally:
+                    with logger._log_lock:
+                        logger.log_messages[:] = original
+
     def test_debug_is_file_only_and_test_logs_use_separate_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             with mock.patch.object(logger, "LOG_PATH", temp_dir), mock.patch.object(

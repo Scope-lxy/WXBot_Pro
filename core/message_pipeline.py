@@ -18,6 +18,9 @@ VOICE_TRANSCRIPTION_FAILED_TEXTS = {
     "语音转换失败",
     "语音识别失败",
 }
+VOICE_PENDING_PLACEHOLDER_TEXTS = {
+    "未播放",
+}
 MESSAGE_TYPE_LABELS = {
     "voice": "语音",
     "emotion": "微信表情",
@@ -146,9 +149,16 @@ def is_failed_voice_transcription_text(content):
 def is_unrecognized_voice_placeholder(content):
     body = voice_message_body(content)
     if not body:
-        return False
+        raw = strip_leading_voice_label(content)
+        duration = VOICE_DURATION_PREFIX_RE.match(raw)
+        return bool(duration and not raw[duration.end():].strip())
     lowered = body.lower()
-    return body == UNRECOGNIZED_VOICE_TEXT or lowered.startswith("<") or "voicemsg" in lowered
+    return (
+        body == UNRECOGNIZED_VOICE_TEXT
+        or body in VOICE_PENDING_PLACEHOLDER_TEXTS
+        or lowered.startswith("<")
+        or "voicemsg" in lowered
+    )
 
 
 def readable_emotion_text(content):

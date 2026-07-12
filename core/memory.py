@@ -272,6 +272,7 @@ class MemoryManager:
         max_count,
         *,
         reconcile_visible_snapshot=False,
+        require_anchor=False,
         chat_type="private",
         anchor_recent_count=5,
     ):
@@ -330,7 +331,11 @@ class MemoryManager:
                     anchor_recent_count=anchor_recent_count,
                     chat_type=chat_type,
                 )
-                normalized_entries = repair_plan.messages_to_append
+                normalized_entries = (
+                    repair_plan.messages_to_append
+                    if repair_plan.anchor_found or not require_anchor
+                    else []
+                )
 
             existing_keys = {
                 unique_message_key(item)

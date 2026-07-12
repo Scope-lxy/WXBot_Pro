@@ -85,11 +85,13 @@ def _task_log_name(task, default="未命名任务"):
 def _log_scheduled_message_run_result(task, result):
     result = result if isinstance(result, dict) else {}
     success_count = int(result.get("success_count") or 0)
+    failed_count = int(result.get("failed_count") or 0)
+    skipped_count = int(result.get("skipped_count") or 0)
     queued_count = int(result.get("queued_count") or 0)
     result_type = str(result.get("result_type") or "").strip()
-    if success_count > 0:
+    if success_count > 0 and failed_count == 0 and skipped_count == 0 and queued_count == 0:
         level = "SUCCESS"
-    elif result_type == "queued" and queued_count > 0:
+    elif failed_count == 0 and skipped_count == 0 and result_type == "queued" and queued_count > 0:
         level = "INFO"
     else:
         level = "WARNING"
@@ -573,7 +575,7 @@ def process_pending_runtime_task_reload(bot):
         bot.config.refresh_config()
         bot._reset_runtime_task_states()
         bot._register_runtime_task_schedules()
-        log(level="SUCCESS", message="运行中任务配置同步完成，后续任务将按新配置执行")
+        log(level="INFO", message="运行中任务配置同步完成，后续任务将按新配置执行")
         return {"reloaded": True, "success": True}
     except Exception as e:
         log(level="ERROR", message=f"运行中任务配置同步失败：{e}")

@@ -1238,6 +1238,25 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             now=datetime(2026, 6, 10, 21, 30, 0),
         ))
 
+    def test_auto_maintenance_running_state_becomes_due_after_stale_interval(self):
+        directory = {
+            "maintenance": {
+                "status": "running",
+                "last_attempted_at": "2026-06-10 20:00:00",
+            }
+        }
+
+        self.assertFalse(auto_maintenance_is_due(
+            directory,
+            interval_minutes=30,
+            now=datetime(2026, 6, 10, 20, 10, 0),
+        ))
+        self.assertTrue(auto_maintenance_is_due(
+            directory,
+            interval_minutes=30,
+            now=datetime(2026, 6, 10, 20, 31, 0),
+        ))
+
     def test_auto_maintenance_legacy_read_timeout_is_ten_minutes(self):
         self.assertEqual(contact_auto_maintenance_read_timeout_seconds(50), 600)
 

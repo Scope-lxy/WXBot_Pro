@@ -35,7 +35,7 @@ class UIDeliveryJournal:
         return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
     def _save_unlocked(self, records):
-        payload = json.dumps(records[-1000:], ensure_ascii=False, indent=2)
+        payload = json.dumps(records, ensure_ascii=False, indent=2)
         fd, temp_name = tempfile.mkstemp(
             prefix=f".{self.path.name}.",
             suffix=".tmp",
@@ -59,10 +59,16 @@ class UIDeliveryJournal:
             records = self._load_unlocked()
             if any(str(item.get("delivery_id") or "") == delivery_id for item in records):
                 return False
+            payload = payload if isinstance(payload, dict) else {}
             records.append({
                 "delivery_id": delivery_id,
                 "kind": str(kind or ""),
-                "conversation": str((payload or {}).get("conversation") or ""),
+                "conversation": str(payload.get("conversation") or ""),
+                "request_id": str(payload.get("request_id") or ""),
+                "run_id": str(payload.get("run_id") or ""),
+                "batch_id": str(payload.get("batch_id") or ""),
+                "contact_key": str(payload.get("contact_key") or ""),
+                "targets": [str(item or "") for item in (payload.get("targets") or []) if str(item or "")],
                 "status": "inflight",
                 "started_at": self._now(),
                 "finished_at": "",

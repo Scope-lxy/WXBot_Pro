@@ -728,6 +728,8 @@ class WXBot:
         self._unanswered_inbound_store = unanswered_store
         self._unanswered_inbound_context = threading.local()
         self._pending_unanswered_inbound_recovery = unanswered_store.recover_for_replay()
+        self._pending_voice_transcription_recovery = unanswered_store.pending("voice_pending")
+        self._pending_awaiting_ui_recovery = unanswered_store.pending("awaiting_ui")
         return dict(self._ui_identity)
 
     def _drain_unanswered_inbound_recovery(self):
@@ -765,6 +767,59 @@ class WXBot:
                 )
         if recovered_inbound:
             log(level="WARNING", message=f"消息恢复：已重新排队 {len(recovered_inbound)} 条 AI 生成中断消息")
+        recovered_voice = list(getattr(self, "_pending_voice_transcription_recovery", []) or [])
+        self._pending_voice_transcription_recovery = []
+        for record in recovered_voice:
+            payload = dict(record.get("message") or {})
+            message = MessageEnvelope(
+                content=str(payload.get("content") or ""),
+                original_content=str(payload.get("original_content") or payload.get("content") or ""),
+                type="voice",
+                sender=str(payload.get("sender") or ""),
+                attr=str(payload.get("attr") or "friend"),
+                id=payload.get("id") or "",
+                hash=payload.get("hash") or "",
+                hash_text=payload.get("hash_text") or "",
+                time=payload.get("time") or "",
+                _wxbot_ingress_source="voice_pending_recovery",
+                _wxbot_received_at=float(record.get("received_at") or time.time()),
+            )
+            message._wxbot_voice_pending_record_id = str(record.get("record_id") or "")
+            message._wxbot_voice_history_only = True
+            self._queue_pending_private_voice_transcription(
+                OwnedChat(self._ui_owner, str(record.get("conversation") or "")),
+                message,
+            )
+        if recovered_voice:
+            log(level="WARNING", message=f"语音恢复：已重新排队 {len(recovered_voice)} 条待识别语音，仅补历史，不自动回复")
+        recovered_awaiting_ui = list(getattr(self, "_pending_awaiting_ui_recovery", []) or [])
+        self._pending_awaiting_ui_recovery = []
+        for record in recovered_awaiting_ui:
+            payload = dict(record.get("message") or {})
+            message = MessageEnvelope(
+                content=str(payload.get("content") or ""),
+                original_content=str(payload.get("original_content") or payload.get("content") or ""),
+                type=str(payload.get("type") or ""),
+                sender=str(payload.get("sender") or ""),
+                attr=str(payload.get("attr") or "friend"),
+                id=payload.get("id") or "",
+                hash=payload.get("hash") or "",
+                hash_text=payload.get("hash_text") or "",
+                time=payload.get("time") or "",
+                _wxbot_ingress_source="awaiting_ui_recovery",
+                _wxbot_received_at=float(record.get("received_at") or time.time()),
+            )
+            message._wxbot_awaiting_ui_record_id = str(record.get("record_id") or "")
+            listening._queue_lightweight_delayed_listen(
+                self,
+                str(record.get("conversation") or ""),
+                [message],
+                reason="重启恢复临时接管",
+                allow_rebuild=True,
+                recovered=True,
+            )
+        if recovered_awaiting_ui:
+            log(level="WARNING", message=f"监听恢复：已重新排队 {len(recovered_awaiting_ui)} 条漏窗记录，唯一匹配后才处理")
         return len(recovered_inbound)
 
     def _prepare_ui_intent_payload(self, intent):
@@ -1045,6 +1100,9 @@ class WXBot:
         task_version=0,
         require_contact_key=False,
         delivery_id="",
+        request_id="",
+        run_id="",
+        batch_id="",
     ):
         payload = self._ui_message_payload(chat, message)
         context = getattr(getattr(self, "_material_ui_context", None), "value", None) or {}
@@ -1065,6 +1123,9 @@ class WXBot:
             "target_contacts": target_contacts,
             "preface": str(preface or ""),
             "delivery_id": str(delivery_id or uuid.uuid4()),
+            "request_id": str(request_id or ""),
+            "run_id": str(run_id or ""),
+            "batch_id": str(batch_id or ""),
             "task_key": task_key,
         })
         return self._ui_owner.call(
@@ -1573,6 +1634,7 @@ class WXBot:
         source="lightweight_send",
         expected_sequence=None,
         delivery_id="",
+        completed_actions=None,
     ):
         if getattr(self, "_ui_owner", None) is not None:
             prepared_actions = [dict(action or {}) for action in actions or []]
@@ -1629,6 +1691,8 @@ class WXBot:
                 action_result = action_results[-1] if action_results else True
                 completed_results.append(action_result)
                 self._settle_private_outbound_echo_send(echo_group_id, action_result)
+                if ReplyCountStore.was_send_success(action_result) and isinstance(completed_actions, list):
+                    completed_actions.append(dict(action))
             return completed_results[-1] if completed_results else True
         chat = runtime_chat_state.get_listen_chat(self, target)
         if not (runtime_chat_state.listen_chat_has_method(chat, "SendMsg") and self._listen_chat_matches_target(chat, target)):
@@ -1681,6 +1745,8 @@ class WXBot:
                         lambda: chat.SendMsg(text),
                         source=source,
                     )
+                if ReplyCountStore.was_send_success(result) and isinstance(completed_actions, list):
+                    completed_actions.append(dict(action))
         return result
 
     def _run_private_outbound_echo_send(self, target, action, sender, *, source):
@@ -1720,12 +1786,14 @@ class WXBot:
                 if not release_wechat_lock:
                     break
                 try:
+                    completed_actions = []
                     result = self._send_lightweight_actions_to_child(
                         target,
                         item.get("actions") or [],
                         source=str(item.get("source") or "lightweight_send"),
                         expected_sequence=expected_sequence,
                         delivery_id=str(item.get("delivery_id") or ""),
+                        completed_actions=completed_actions,
                     )
                 except wechat_ui_actions.IntentCancelled as exc:
                     with self._lightweight_send_queue_lock:
@@ -1750,7 +1818,14 @@ class WXBot:
                         if current is item:
                             self._lightweight_send_queue.pop(target, None)
                     flushed = True
-                    log(level="SUCCESS", message=f"[轻量发送队列] {target} 延后发送已完成")
+                    if str(item.get("source") or "").strip() == "private_ai_reply":
+                        reply_items = [
+                            self._format_reply_log_item(action.get("text"), kind=action.get("type"))
+                            for action in completed_actions
+                        ]
+                        self._log_reply_contents("私聊", target, reply_items)
+                    else:
+                        log(level="INFO", message=f"[轻量发送队列] {target} 延后发送已完成")
                     continue
                 log(level="WARNING", message=f"[轻量发送队列] {target} 待发送任务暂未发出，保留队列")
                 break
@@ -3008,9 +3083,11 @@ class WXBot:
         success_count = int((result or {}).get("success_count", 0) or 0) if isinstance(result, dict) else 0
         queued_count = int((result or {}).get("queued_count", 0) or 0) if isinstance(result, dict) else 0
         result_type = str((result or {}).get("result_type", "") or "") if isinstance(result, dict) else ""
-        if success_count > 0:
+        failed_count = int((result or {}).get("failed_count", 0) or 0) if isinstance(result, dict) else 0
+        skipped_count = int((result or {}).get("skipped_count", 0) or 0) if isinstance(result, dict) else 0
+        if success_count > 0 and failed_count == 0 and skipped_count == 0 and queued_count == 0:
             level = "SUCCESS"
-        elif result_type == "queued" and queued_count > 0:
+        elif failed_count == 0 and skipped_count == 0 and result_type == "queued" and queued_count > 0:
             level = "INFO"
         else:
             level = "WARNING"
@@ -3147,8 +3224,13 @@ class WXBot:
 
     def _log_material_outreach_run_finish(self, task, snapshot):
         summary = self._material_outreach_progress_summary(snapshot)
+        complete_success = bool(
+            summary["success"] > 0
+            and summary["failed"] == 0
+            and summary["pending"] == 0
+        )
         log(
-            level="SUCCESS" if summary["success"] > 0 else "WARNING",
+            level="SUCCESS" if complete_success else "WARNING",
             message=(
                 f"[素材转发] 任务 {self._material_outreach_task_label(task)} 完成："
                 f"成功 {summary['success']}，失败 {summary['failed']}，跳过 {summary['skipped']}"
@@ -3192,25 +3274,16 @@ class WXBot:
             if snapshot and not self._material_outreach_is_deferred(result):
                 self._log_material_outreach_run_finish(task, snapshot)
             return result
-        success = False
-        for attempt in range(3):
-            send_records = self._load_material_send_records()
-            send_count_before = len(send_records)
-            result = self._attempt_material_outreach_batches(task, send_records, allow_rebuild=True)
-            if (
-                self._material_outreach_is_deferred(result)
-                or self._material_outreach_is_stopped(result)
-                or self._material_outreach_preface_is_queued(result)
-            ):
-                return result
-            if result:
-                success = True
-                break
-            send_count_after = len(self._load_material_send_records())
-            if send_count_after <= send_count_before:
-                break
-            if attempt == 0:
-                log(message="[素材转发] 运行时素材发送失败，准备重建素材池重试")
+        send_records = self._load_material_send_records()
+        result = self._attempt_material_outreach_batches(task, send_records, allow_rebuild=True)
+        if (
+            self._material_outreach_is_deferred(result)
+            or self._material_outreach_is_stopped(result)
+            or self._material_outreach_is_uncertain(result)
+            or self._material_outreach_preface_is_queued(result)
+        ):
+            return result
+        success = bool(result)
         if snapshot:
             self._log_material_outreach_run_finish(task, snapshot)
         return success
@@ -4121,6 +4194,10 @@ class WXBot:
         material_type="",
         material_title="",
         echo_source="material_outreach",
+        delivery_id="",
+        request_id="",
+        run_id="",
+        batch_id="",
     ):
         material_source = str(material_source or "").strip()
         if material_source:
@@ -4133,6 +4210,10 @@ class WXBot:
                     material_type=material_type,
                     material_title=material_title,
                     echo_source=echo_source,
+                    delivery_id=delivery_id,
+                    request_id=request_id,
+                    run_id=run_id,
+                    batch_id=batch_id,
                 )
         return self._forward_material_message_unlocked(
             message,
@@ -4142,6 +4223,10 @@ class WXBot:
             material_type=material_type,
             material_title=material_title,
             echo_source=echo_source,
+            delivery_id=delivery_id,
+            request_id=request_id,
+            run_id=run_id,
+            batch_id=batch_id,
         )
 
     def _forward_material_message_unlocked(
@@ -4154,6 +4239,10 @@ class WXBot:
         material_type="",
         material_title="",
         echo_source="material_outreach",
+        delivery_id="",
+        request_id="",
+        run_id="",
+        batch_id="",
     ):
         with wechat_ui_actions.hold(self):
             target_label = "、".join(str(item or "").strip() for item in (targets or []) if str(item or "").strip())
@@ -4174,6 +4263,10 @@ class WXBot:
                                 message,
                                 targets,
                                 preface=preface,
+                                delivery_id=delivery_id,
+                                request_id=request_id,
+                                run_id=run_id,
+                                batch_id=batch_id,
                             )
                         except wechat_ui_actions.IntentCancelled:
                             self._discard_private_outbound_echo_group(echo_group_id)
@@ -4624,7 +4717,14 @@ class WXBot:
         success = False
         error = ""
         uncertain = False
-        batch_id = f"batch_{uuid.uuid4().hex}"
+        run_id = str((snapshot or {}).get("run_id") or "").strip()
+        request_id = run_id or str(task.get("request_id") or task.get("task_id") or "").strip()
+        delivery_seed = json.dumps(
+            [request_id, str(material_id or ""), targets, preface],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        batch_id = f"outreach_{hashlib.sha256(delivery_seed.encode('utf-8')).hexdigest()[:24]}"
         if snapshot:
             self._update_material_progress_records_for_send(
                 snapshot,
@@ -4641,8 +4741,12 @@ class WXBot:
                 material_source=material_source,
                 material_type=material_type,
                 material_title=title,
+                delivery_id=batch_id,
+                request_id=request_id,
+                run_id=run_id,
+                batch_id=batch_id,
             )
-            if not success and self._material_forward_error_needs_refresh(error):
+            if not success and getattr(self, "_ui_owner", None) is None and self._material_forward_error_needs_refresh(error):
                 log(level="WARNING", message=f"[素材转发] 素材句柄失效，已刷新来源子窗口后重试：{title}")
                 material, message, materials = self._refresh_material_runtime_message(material, materials)
                 material_id = material.get("id")
@@ -4657,10 +4761,14 @@ class WXBot:
                         material_source=material_source,
                         material_type=material_type,
                         material_title=title,
+                        delivery_id=f"{batch_id}:legacy-retry",
+                        request_id=request_id,
+                        run_id=run_id,
+                        batch_id=batch_id,
                     )
         except Exception as exc:
             error = str(exc)
-            if self._material_forward_error_needs_refresh(error):
+            if getattr(self, "_ui_owner", None) is None and self._material_forward_error_needs_refresh(error):
                 try:
                     log(level="WARNING", message=f"[素材转发] 素材句柄异常失效，已刷新来源子窗口后重试：{title}")
                     material, message, materials = self._refresh_material_runtime_message(material, materials)
@@ -4676,6 +4784,10 @@ class WXBot:
                             material_source=material_source,
                             material_type=material_type,
                             material_title=title,
+                            delivery_id=f"{batch_id}:legacy-exception-retry",
+                            request_id=request_id,
+                            run_id=run_id,
+                            batch_id=batch_id,
                         )
                 except Exception as retry_exc:
                     error = str(retry_exc)
@@ -4736,7 +4848,7 @@ class WXBot:
             )
             return {"status": "uncertain", "message": error, "targets": targets}
         log(
-            level="SUCCESS" if success else "WARNING",
+            level="INFO" if success else "WARNING",
             message=f"[素材转发] {material_id} -> {target_label}，附带文案：{preface or '无'}，成功：{success}，错误：{error}",
         )
         return success
@@ -5357,16 +5469,22 @@ class WXBot:
                     if self.config.text_reply_limit_switch and user_key:
                         self.reply_count_store.increment_ai_count(user_key)
                     self._record_reply_metric_success(chat.who, chat_type="private")
-                    log(level="SUCCESS", message=f"私聊 {chat.who}：本轮回复已发送")
+                    self._log_reply_contents(
+                        "私聊",
+                        chat.who,
+                        [self._format_reply_log_item(clean_reply, kind="voice")],
+                    )
                     return True
 
+        sent_reply_items = []
         send_success, result = self._send_private_ai_reply_parts(
             chat,
             parts,
             expected_sequence=None if api_error_reply else reply_message_sequence,
+            sent_items=sent_reply_items,
         )
         if send_success:
-            log(level="SUCCESS", message=f"私聊 {chat.who}：本轮回复已发送")
+            self._log_reply_contents("私聊", chat.who, sent_reply_items)
 
         if image_reply_context_used and send_success and not api_error_reply:
             if self._pending_visual_context_ready_to_clear(chat.who):
@@ -5711,13 +5829,18 @@ class WXBot:
                     ):
                         self._save_voice_reply_state()
                         self._record_reply_metric_success(chat.who, chat_type="group")
-                        log(level="SUCCESS", message=f"群聊 {chat.who}：本轮回复已发送")
+                        self._log_reply_contents(
+                            "群聊",
+                            chat.who,
+                            [self._format_reply_log_item(clean_reply, kind="voice")],
+                        )
                         self._resolve_group_unanswered(group_record_id, message)
                         return True
 
             _at_msg = self.config.group_reply_at_msg
             _quote = self.config.group_reply_quote
             sent_any = False
+            sent_reply_items = []
             last_index = max(0, len(parts) - 1)
             for i, part in enumerate(parts):
                 if self.is_stop_requested():
@@ -5761,7 +5884,12 @@ class WXBot:
                                     msg=part,
                                     at=message.sender if _at_msg and i == 0 else None,
                                 )
-                sent_any = sent_any or ReplyCountStore.was_send_success(result)
+                current_success = ReplyCountStore.was_send_success(result)
+                sent_any = sent_any or current_success
+                if current_success:
+                    sent_reply_items.append(
+                        self._format_reply_log_item(part, kind="quote" if _quote and i == 0 else "text")
+                    )
 
             if sent_any:
                 if group_image_reply_context_used and not group_api_error_reply:
@@ -5778,7 +5906,7 @@ class WXBot:
                     if group_user_key:
                         self.reply_count_store.mark_preprocess_fallback_notified(group_user_key)
                 self._record_reply_metric_success(chat.who, chat_type="group")
-                log(level="SUCCESS", message=f"群聊 {chat.who}：本轮回复已发送")
+                self._log_reply_contents("群聊", chat.who, sent_reply_items)
             self._resolve_group_unanswered(group_record_id, message)
             return result
 
@@ -6685,6 +6813,9 @@ class WXBot:
         self._ensure_pending_private_voice_transcription_state()
         source_key = message_unique_id(name, message)
         chat_ref = ConversationRef.from_wx_chat(chat)
+        history_only = bool(getattr(message, "_wxbot_voice_history_only", False))
+        record_id = str(getattr(message, "_wxbot_voice_pending_record_id", "") or "")
+        store = getattr(self, "_unanswered_inbound_store", None)
         item = {
             "key": "",
             "source_key": source_key,
@@ -6701,6 +6832,8 @@ class WXBot:
             },
             "first_seen_at": time.time(),
             "reread_attempts": 0,
+            "record_id": record_id,
+            "history_only": history_only,
         }
         created_task = False
         with self._chat_merge_lock:
@@ -6713,6 +6846,9 @@ class WXBot:
             if already_pending:
                 task["chat"] = chat_ref
                 return True
+            if not record_id and store is not None and str(getattr(message, "attr", "") or "") == "friend":
+                record_id = store.begin(name, message, chat_type="private", status="voice_pending")
+                item["record_id"] = record_id
             sequence = self._pending_private_voice_sequence.get(name, 0) + 1
             self._pending_private_voice_sequence[name] = sequence
             key = f"voice:{name}:{sequence}"
@@ -6721,7 +6857,8 @@ class WXBot:
             if source_key:
                 task["source_keys"].add(source_key)
             task["items"][key] = item
-            self._insert_pending_private_voice_placeholder_locked(name, chat, message, key)
+            if not history_only:
+                self._insert_pending_private_voice_placeholder_locked(name, chat, message, key)
             if not task.get("timer"):
                 task["timer"] = self._schedule_private_message_timer(
                     VOICE_TRANSCRIPTION_RETRY_DELAY_SECONDS,
@@ -6780,7 +6917,7 @@ class WXBot:
                         if item_key:
                             self._drop_pending_private_voice_placeholder_locked(name, item_key)
                     self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
-                log(message=f"私聊 {name}：{len(expired)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字，已静默忽略")
+                log(message=f"私聊 {name}：{len(expired)} 条语音重读仍未得到有效文字，已保留待下次启动恢复")
             return True
         try:
             for item in items:
@@ -6806,7 +6943,7 @@ class WXBot:
                         if item_key:
                             self._drop_pending_private_voice_placeholder_locked(name, item_key)
                     self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
-                log(message=f"私聊 {name}：{len(expired)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字，已静默忽略，最后一次重读失败：{exc}")
+                log(message=f"私聊 {name}：{len(expired)} 条语音重读仍未得到有效文字，已保留待下次启动恢复，最后一次重读失败：{exc}")
             return True
         finally:
             release_wechat_lock()
@@ -6831,6 +6968,13 @@ class WXBot:
                     setattr(resolved, "_wxbot_media_prepared", True)
                     self.message_handle_callback(resolved, chat)
                     continue
+                if item.get("history_only"):
+                    self._save_private_incoming_memory_message(chat, resolved)
+                    record_id = str(item.get("record_id") or "")
+                    if record_id and getattr(self, "_unanswered_inbound_store", None) is not None:
+                        self._unanswered_inbound_store.resolve(record_id)
+                    log(message=f"私聊 {name}：待识别语音已恢复并补入可信历史，未触发旧消息回复")
+                    continue
                 replaced = False
                 if item_key:
                     with self._chat_merge_lock:
@@ -6840,12 +6984,18 @@ class WXBot:
                     log(message=f"私聊 {name}：语音识别结果已过期，已静默忽略")
                     continue
                 self._save_private_incoming_memory_message(chat, resolved)
+                record_id = str(item.get("record_id") or "")
+                if record_id and getattr(self, "_unanswered_inbound_store", None) is not None:
+                    self._unanswered_inbound_store.resolve(record_id)
             elif state == "failed":
                 if item_key:
                     with self._chat_merge_lock:
                         self._drop_pending_private_voice_placeholder_locked(name, item_key)
                         self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
-                log(message=f"私聊 {name}：语音识别失败，未得到有效文字，已静默忽略")
+                record_id = str(item.get("record_id") or "")
+                if record_id and getattr(self, "_unanswered_inbound_store", None) is not None:
+                    self._unanswered_inbound_store.resolve(record_id)
+                log(message=f"私聊 {name}：语音识别明确失败，未触发回复")
             elif self._pending_voice_item_expired(item) or self._pending_voice_item_deadline_reached(item):
                 expired_items.append(item)
                 if item_key:
@@ -6857,7 +7007,7 @@ class WXBot:
         if pending_items:
             self._reschedule_pending_private_voice_transcription(chat, pending_items, reason="结果仍未就绪")
         if expired_items:
-            log(message=f"私聊 {name}：{len(expired_items)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字，已静默忽略")
+            log(message=f"私聊 {name}：{len(expired_items)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字，已保留待下次启动恢复")
         return True
 
     def _save_incoming_memory_message(self, chat, message, *, chat_type=None):
@@ -7027,6 +7177,7 @@ class WXBot:
             entries,
             getattr(self.config, "memory_max_count", 5000),
             reconcile_visible_snapshot=True,
+            require_anchor=True,
             chat_type=chat_type,
             anchor_recent_count=DEFAULT_ANCHOR_RECENT_COUNT,
         )
@@ -7104,8 +7255,10 @@ class WXBot:
                 chat_name,
                 "ui",
                 added,
-                suffix="未找到锚点，已按当前可见快照补入缺失消息" if not anchor_found else "",
+                suffix="未找到锚点，已跳过当前可见快照" if not anchor_found else "",
             )
+            if not anchor_found:
+                return False
             self._mark_context_repair_success(cooldown_key)
             return bool(added or anchor_found)
         except Exception as exc:
@@ -7164,8 +7317,10 @@ class WXBot:
                 chat_name,
                 "ui",
                 added,
-                suffix="未找到锚点，已按当前可见快照补入缺失消息" if not anchor_found else "",
+                suffix="未找到锚点，已跳过当前可见快照" if not anchor_found else "",
             )
+            if not anchor_found:
+                return False
             self._consume_context_repair_reasons(chat_name, reasons)
             self._mark_context_repair_success(repair_key)
             return bool(added or anchor_found)
@@ -8563,6 +8718,31 @@ class WXBot:
         warning_keys.add(key)
         return True
 
+    @staticmethod
+    def _format_reply_log_item(content, *, kind="text"):
+        text = " ".join(str(content or "").splitlines()).strip()
+        if not text:
+            return ""
+        type_label = {
+            "voice": "语音",
+            "audio": "语音",
+            "quote": "引用",
+            "image": "图片",
+            "file": "文件",
+        }.get(str(kind or "text").strip().lower(), "")
+        return f"[{type_label}]{text}" if type_label else text
+
+    @staticmethod
+    def _log_reply_contents(scene, chat_name, items):
+        reply_items = [str(item or "").strip() for item in (items or []) if str(item or "").strip()]
+        if not reply_items:
+            return
+        count_text = f"（{len(reply_items)}条）" if len(reply_items) > 1 else ""
+        log(
+            level="INFO",
+            message=f"{scene} {chat_name}：本轮回复{count_text}：{' ｜ '.join(reply_items)}",
+        )
+
     def _try_send_voice_reply(
         self,
         chat,
@@ -8694,7 +8874,7 @@ class WXBot:
             self._remove_temp_audio_file(audio_path)
         return False
 
-    def _send_private_ai_reply_parts(self, chat, parts, *, expected_sequence=None):
+    def _send_private_ai_reply_parts(self, chat, parts, *, expected_sequence=None, sent_items=None):
         send_success = False
         result = True
         if not self._private_reply_can_continue(chat, expected_sequence=expected_sequence):
@@ -8791,6 +8971,8 @@ class WXBot:
                             if chat.who == getattr(self.config, "cmd", ""):
                                 takeover_runtime.remember_admin_echo_message(self, segment)
                             current_success = ReplyCountStore.was_send_success(send_result)
+                            if current_success and isinstance(sent_items, list):
+                                sent_items.append(self._format_reply_log_item(segment))
                             if current_success or self._private_reply_send_allows_memory_save(send_result):
                                 if self._save_private_reply_memory_message(chat, segment):
                                     self._mark_private_outbound_echo_group_persisted(echo_group_id)
@@ -8893,7 +9075,7 @@ class WXBot:
             if not send_success:
                 log(level="ERROR", message=f"关键词回复命中但未成功发送任何内容，已停止处理：{chat.who}")
                 return False, False
-            log(level="SUCCESS", message=f"关键词回复成功：{chat.who}，发送 {sent_count} 条")
+            log(level="INFO", message=f"关键词回复成功：{chat.who}，发送 {sent_count} 条")
             return send_success, result
         try:
             with self._get_chat_send_lock(chat.who):
@@ -8948,7 +9130,7 @@ class WXBot:
             log(level="ERROR", message=f"关键词回复命中但未成功发送任何内容，已停止处理：{chat.who}")
             return False, False
         log(
-            level="SUCCESS",
+            level="INFO",
             message=f"关键词回复成功：{chat.who}，发送 {len(actions)} 条",
         )
         return send_success, result
@@ -9092,9 +9274,15 @@ class WXBot:
                         if api_user_data.get("api_err_notified"):
                             return True, True
                     parts = self._api_error_reply_parts()
-                    send_success, result = self._send_private_ai_reply_parts(chat, parts)
+                    sent_reply_items = []
+                    send_success, result = self._send_private_ai_reply_parts(
+                        chat,
+                        parts,
+                        sent_items=sent_reply_items,
+                    )
                     if send_success:
                         self._record_reply_metric_success(chat.who, chat_type="private")
+                        self._log_reply_contents("私聊", chat.who, sent_reply_items)
                         if getattr(self.config, "api_error_reply_once", False):
                             self.reply_count_store.mark_api_err_notified(user_key)
                     return True, result
@@ -9106,9 +9294,15 @@ class WXBot:
         if not reply_text:
             return True, True
 
-        send_success, result = self._send_private_ai_reply_parts(chat, [reply_text])
+        sent_reply_items = []
+        send_success, result = self._send_private_ai_reply_parts(
+            chat,
+            [reply_text],
+            sent_items=sent_reply_items,
+        )
         if send_success:
             self._record_reply_metric_success(chat.who, chat_type="private")
+            self._log_reply_contents("私聊", chat.who, sent_reply_items)
             if self.config.text_reply_limit_reply_once:
                 self.reply_count_store.mark_limit_notified(user_key)
         return True, result
@@ -9728,7 +9922,7 @@ class WXBot:
             or ""
         ).strip() or "未命名素材"
         if success:
-            log(level="SUCCESS", message=f"[AI自动转发] {target_label} 已发送素材：{material_label}")
+            log(level="INFO", message=f"[AI自动转发] {target_label} 已发送素材：{material_label}")
         else:
             log(level="WARNING", message=f"[AI自动转发] {target_label} 发送失败：{error or '未知原因'}")
         return success, error

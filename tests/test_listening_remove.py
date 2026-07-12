@@ -6,6 +6,126 @@ from feature import listening
 
 
 class RemoveListenChatTests(unittest.TestCase):
+    def test_lightweight_delayed_listen_persists_one_awaiting_ui_record(self):
+        records = []
+
+        class Store:
+            def begin(self, conversation, message, *, chat_type="private", status="routing"):
+                records.append((conversation, message.id, chat_type, status))
+                return "awaiting-1"
+
+        bot = SimpleNamespace(
+            _unanswered_inbound_store=Store(),
+            _lightweight_delayed_listen_tasks={},
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+        )
+        bot._get_private_message_sequence = lambda _name: 0
+        message = SimpleNamespace(
+            id="msg-1",
+            hash="",
+            hash_text="",
+            time="10:00",
+            attr="friend",
+            sender="张三",
+            type="text",
+            content="你好",
+        )
+
+        self.assertTrue(listening._queue_lightweight_delayed_listen(bot, "张三", [message], now=100.0))
+        self.assertFalse(listening._queue_lightweight_delayed_listen(bot, "张三", [message], now=101.0))
+
+        self.assertEqual(records, [("张三", "msg-1", "private", "awaiting_ui")])
+
+    def test_recovered_delayed_listen_requires_unique_fresh_snapshot_match(self):
+        processed = []
+        statuses = []
+        stored = SimpleNamespace(
+            id="old-id",
+            hash="",
+            hash_text="",
+            time="10:00",
+            attr="friend",
+            sender="张三",
+            type="text",
+            content="你好",
+        )
+        fresh = SimpleNamespace(
+            id="new-id",
+            hash="",
+            hash_text="",
+            time="10:00",
+            attr="friend",
+            sender="张三",
+            type="text",
+            content="你好",
+        )
+
+        class Store:
+            def resolve(self, record_id):
+                statuses.append((record_id, "resolved"))
+
+            def set_status(self, record_id, status):
+                statuses.append((record_id, status))
+
+        class Chat:
+            who = "张三"
+
+            def SendMsg(self, _text):
+                return True
+
+            def GetAllMessage(self):
+                return [fresh]
+
+        bot = SimpleNamespace(
+            _unanswered_inbound_store=Store(),
+            _listen_chats={"张三": Chat()},
+            _lightweight_delayed_listen_tasks={
+                "张三": {
+                    "chat": "张三",
+                    "messages": [stored],
+                    "message_keys": {"id:张三:old-id"},
+                    "record_ids": {"id:张三:old-id": "awaiting-1"},
+                    "created_at": 90.0,
+                    "due_at": 100.0,
+                    "message_sequence": 0,
+                    "requires_snapshot_match": True,
+                }
+            },
+            _lightweight_delayed_listen_last_rebuild_at={},
+            _lightweight_delayed_listen_flushing=False,
+            process_message=lambda _chat, message: processed.append(message),
+        )
+        bot._get_private_message_sequence = lambda _name: 0
+
+        with mock.patch.object(listening.time, "time", return_value=101.0):
+            self.assertTrue(listening.flush_lightweight_delayed_listen_tasks(bot))
+
+        self.assertEqual(processed, [fresh])
+        self.assertEqual(statuses, [("awaiting-1", "resolved")])
+        self.assertEqual(bot._lightweight_delayed_listen_tasks, {})
+
+        processed.clear()
+        statuses.clear()
+        bot._lightweight_delayed_listen_tasks["张三"] = {
+            "chat": "张三",
+            "messages": [stored],
+            "message_keys": {"id:张三:old-id"},
+            "record_ids": {"id:张三:old-id": "awaiting-1"},
+            "created_at": 90.0,
+            "due_at": 100.0,
+            "message_sequence": 0,
+            "requires_snapshot_match": True,
+        }
+        bot._listen_chats["张三"].GetAllMessage = lambda: [fresh, SimpleNamespace(**vars(fresh))]
+
+        with mock.patch.object(listening.time, "time", return_value=101.0):
+            self.assertTrue(listening.flush_lightweight_delayed_listen_tasks(bot))
+
+        self.assertEqual(processed, [])
+        self.assertEqual(statuses, [])
+        self.assertIn("张三", bot._lightweight_delayed_listen_tasks)
+
     def test_process_listen_message_prepares_media_before_routing(self):
         calls = []
         message = SimpleNamespace(type="voice", attr="friend", sender="张三", content='语音8"秒')
@@ -1140,7 +1260,7 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(any(level == "INFO" and "第 2 次未恢复" in message for level, message in logs))
         self.assertFalse(any(level == "WARNING" and "两次恢复失败" in message for level, message in logs))
 
-    def test_lightweight_delayed_listen_expiry_saves_text_fallback(self):
+    def test_lightweight_delayed_listen_after_ten_minutes_keeps_waiting_without_writing_memory(self):
         calls = []
         saves = []
         msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好", time="2026/07/04 10:00:00")
@@ -1183,10 +1303,9 @@ class RemoveListenChatTests(unittest.TestCase):
             flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
 
         self.assertTrue(flushed)
-        self.assertEqual(len(saves), 1)
-        self.assertEqual(saves[0]["chat_name"], "张三")
-        self.assertEqual(saves[0]["content"], "你好")
-        self.assertEqual(saves[0]["message_time"], "2026/07/04 10:00:00")
+        self.assertEqual(saves, [])
+        self.assertIn("张三", bot._lightweight_delayed_listen_tasks)
+        self.assertEqual(bot._lightweight_delayed_listen_tasks["张三"]["due_at"], 760.0)
 
     def test_lightweight_delayed_listen_keeps_task_when_lock_busy(self):
         releases = []
@@ -1225,7 +1344,7 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertIn("张三", bot._lightweight_delayed_listen_tasks)
         self.assertEqual(releases, [])
 
-    def test_lightweight_delayed_listen_drops_expired_task(self):
+    def test_lightweight_delayed_listen_keeps_old_task_for_low_frequency_retry(self):
         processed = []
         msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
         bot = SimpleNamespace(
@@ -1246,14 +1365,23 @@ class RemoveListenChatTests(unittest.TestCase):
             process_message=lambda chat, message: processed.append((chat, message)),
         )
         bot._get_private_message_sequence = lambda _chat: 0
-        bot._get_wechat_action_lock = lambda: self.fail("过期任务不应触发微信 UI")
+        class FreeLock:
+            def acquire(self, blocking=True):
+                return True
+
+            def release(self):
+                pass
+
+        bot._get_wechat_action_lock = lambda: FreeLock()
+        bot._add_and_verify_subwindow = lambda _chat: None
 
         with mock.patch.object(listening.time, "time", return_value=101.0):
             flushed = listening.flush_lightweight_delayed_listen_tasks(bot)
 
         self.assertTrue(flushed)
         self.assertEqual(processed, [])
-        self.assertEqual(bot._lightweight_delayed_listen_tasks, {})
+        self.assertIn("张三", bot._lightweight_delayed_listen_tasks)
+        self.assertEqual(bot._lightweight_delayed_listen_tasks["张三"]["due_at"], 161.0)
 
     def test_lightweight_delayed_listen_drops_when_message_sequence_changed(self):
         processed = []

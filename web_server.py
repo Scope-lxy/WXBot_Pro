@@ -2098,7 +2098,7 @@ def login():
             session['logged_in'] = True
             session['username'] = username
             session.permanent = True
-            log('SUCCESS', f'用户 {username} 登录成功')
+            log('INFO', f'用户 {username} 登录成功')
             next_page = request.args.get('next') or absolute_url_for('dashboard')
             if not is_safe_redirect_target(next_page):
                 next_page = absolute_url_for('dashboard')
@@ -3766,7 +3766,7 @@ def save_config(config_data):
         merged_config.pop('task_scope_wx_id', None)
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(merged_config, f, ensure_ascii=False, indent=4)
-        log('SUCCESS', '配置文件保存成功')
+        log('INFO', '配置文件保存成功')
         return True
     except Exception as e:
         last_save_config_error = str(e) or "未知错误"
@@ -4221,7 +4221,7 @@ def save_prompt_route():
             except Exception:
                 pass
             raise
-        log('SUCCESS', f'Prompt 已保存：{name}.md')
+        log('INFO', f'Prompt 已保存：{name}.md')
         return jsonify({'status': 'success'})
     except Exception as e:
         log('ERROR', f'保存 Prompt 失败: {e}')
@@ -4274,7 +4274,7 @@ def delete_prompt_route():
         status_target = _persona_status_path(name)
         if os.path.exists(status_target):
             os.remove(status_target)
-        log('SUCCESS', f'Prompt 已删除：{name}.md')
+        log('INFO', f'Prompt 已删除：{name}.md')
         return jsonify({'status': 'success'})
     except Exception as e:
         log('ERROR', f'删除 Prompt 失败: {e}')
@@ -4312,7 +4312,7 @@ def persona_status_route(prompt_name):
         if not content.strip() or not _persona_status_has_usable_items(content):
             if os.path.exists(path):
                 os.remove(path)
-            log('SUCCESS', f'人设近况已清空：{prompt_name}')
+            log('INFO', f'人设近况已清空：{prompt_name}')
             return jsonify({
                 'status': 'success',
                 'action': 'deleted',
@@ -4331,7 +4331,7 @@ def persona_status_route(prompt_name):
             except Exception:
                 pass
             raise
-        log('SUCCESS', f'人设近况已保存：{prompt_name}{PERSONA_STATUS_SUFFIX}.md')
+        log('INFO', f'人设近况已保存：{prompt_name}{PERSONA_STATUS_SUFFIX}.md')
         return jsonify({
             'status': 'success',
             'action': 'saved',
@@ -4887,7 +4887,7 @@ def update_wxautox_kernel():
                         'status': 'error',
                         'message': f'停止机器人失败，请手动停止后重试。{stop_message}'
                     })
-                log('SUCCESS', '更新 wxautox4 前已自动停止机器人')
+                log('INFO', '更新 wxautox4 前已自动停止机器人')
                 stopped_bot = True
             except Exception as e:
                 log('ERROR', f'更新 wxautox4 前自动停止机器人出错: {e}')
@@ -4915,7 +4915,7 @@ def update_wxautox_kernel():
                 if previous_version:
                     rolled_back, rollback_output = _run_wxautox_rollback(previous_version)
                     if rolled_back:
-                        log('SUCCESS', f'wxautox4 授权检测失败，已自动回滚到 {previous_version}')
+                        log('WARNING', f'wxautox4 授权检测失败，已自动回滚到 {previous_version}')
                         return jsonify({
                             'status': 'error',
                             'message': '内核更新失败，已自动回滚。<br>请重启程序使回滚后版本生效，并确认授权仍在更新期内后再尝试升级。',
@@ -4980,7 +4980,7 @@ def update_wxautox_kernel():
             try:
                 rolled_back, rollback_output = _run_wxautox_rollback(previous_version)
                 if rolled_back:
-                    log('SUCCESS', f'wxautox4 更新失败，已自动回滚到 {previous_version}')
+                    log('WARNING', f'wxautox4 更新失败，已自动回滚到 {previous_version}')
                 else:
                     log('ERROR', f'wxautox4 更新失败且自动回滚失败：{rollback_output}')
             except Exception as rollback_error:
@@ -5184,7 +5184,7 @@ def save_admin_config():
             json.dump(new_creds, f, ensure_ascii=False, indent=4)
         USERS = new_creds
         session['username'] = username
-        log('SUCCESS', f'后台账号已更新，用户名：{username}')
+        log('INFO', f'后台账号已更新，用户名：{username}')
         message = '账号密码已保存，下次登录生效'
         force_admin_change_required = is_force_admin_change_required()
         if was_force_required and not force_admin_change_required:
@@ -5226,7 +5226,7 @@ def save_email_config():
             {'host': host, 'port': port, 'user': user, 'pass': pwd},
             EMAIL_FILE,
         )
-        log('SUCCESS', f"邮件配置已更新，SMTP: {config['host']}:{config['port']}，账号: {config['user']}")
+        log('INFO', f"邮件配置已更新，SMTP: {config['host']}:{config['port']}，账号: {config['user']}")
         return jsonify({'status': 'success', 'message': '邮件配置已保存'})
     except (TypeError, ValueError):
         return jsonify({'status': 'error', 'message': '端口必须是数字'})
@@ -5249,7 +5249,7 @@ def save_webhook_config():
     try:
         data = request.get_json() or {}
         config = webhook_send.save_config(data, WEBHOOK_FILE)
-        log('SUCCESS', f"WebHook 配置已更新，启用状态: {config.get('enabled')}")
+        log('INFO', f"WebHook 配置已更新，启用状态: {config.get('enabled')}")
         return jsonify({'status': 'success', 'message': 'WebHook 配置已保存', 'config': config})
     except Exception as e:
         log('ERROR', f'保存 WebHook 配置失败: {e}')

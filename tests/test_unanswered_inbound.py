@@ -21,6 +21,38 @@ class FakeStore:
 
 
 class UnansweredInboundWrapperTests(unittest.TestCase):
+    def test_duplicate_pending_voice_creates_only_one_persistent_record(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(memory_switch=False)
+        bot._chat_merge_lock = threading.Lock()
+        bot._pending_private_voice_transcription = {}
+        bot.is_stop_requested = lambda: False
+        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
+        records = []
+
+        class VoiceStore:
+            def begin(self, conversation, message, *, chat_type="private", status="routing"):
+                records.append((conversation, message.id, chat_type, status))
+                return "voice-record-1"
+
+        bot._unanswered_inbound_store = VoiceStore()
+        chat = SimpleNamespace(who="张三")
+        voice = SimpleNamespace(
+            id="voice-1",
+            hash="voice-hash-1",
+            hash_text="",
+            time="10:00",
+            attr="friend",
+            sender="张三",
+            type="voice",
+            content='语音8"秒',
+        )
+
+        self.assertTrue(bot._queue_pending_private_voice_transcription(chat, voice))
+        self.assertTrue(bot._queue_pending_private_voice_transcription(chat, voice))
+
+        self.assertEqual(records, [("张三", "voice-1", "private", "voice_pending")])
+
     def test_normal_private_pipeline_completion_resolves_record(self):
         bot = WXBot.__new__(WXBot)
         store = FakeStore()

@@ -36,7 +36,14 @@ class UnansweredInboundStore:
         return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
     def _save_unlocked(self, records):
-        payload = json.dumps(records[-500:], ensure_ascii=False, indent=2)
+        resolved = [item for item in records if str(item.get("status") or "") == "resolved"][-500:]
+        retained_ids = {id(item) for item in resolved}
+        retained = [
+            item
+            for item in records
+            if str(item.get("status") or "") != "resolved" or id(item) in retained_ids
+        ]
+        payload = json.dumps(retained, ensure_ascii=False, indent=2)
         fd, temp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=str(self.path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
@@ -58,13 +65,13 @@ class UnansweredInboundStore:
         except (TypeError, ValueError):
             return 0.0
 
-    def begin(self, conversation, message, *, chat_type="private"):
+    def begin(self, conversation, message, *, chat_type="private", status="routing"):
         record_id = str(uuid.uuid4())
         record = {
             "record_id": record_id,
             "conversation": str(conversation or "").strip(),
             "chat_type": str(chat_type or "private").strip().lower() or "private",
-            "status": "routing",
+            "status": str(status or "routing"),
             "created_at": self._now(),
             "updated_at": self._now(),
             "message": {
@@ -112,3 +119,10 @@ class UnansweredInboundStore:
     def records(self):
         with directory_lock(self.path):
             return self._load_unlocked()
+
+    def pending(self, status):
+        wanted = str(status or "").strip()
+        if not wanted:
+            return []
+        with directory_lock(self.path):
+            return [dict(item) for item in self._load_unlocked() if str(item.get("status") or "") == wanted]

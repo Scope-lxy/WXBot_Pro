@@ -692,6 +692,47 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertEqual(logs, ["[轻量发送队列] 李四 待发送任务暂未发出，保留队列"])
 
+    def test_queued_private_ai_reply_logs_confirmed_contents_as_info(self):
+        bot = WXBot.__new__(WXBot)
+        bot._get_wechat_action_lock = lambda: threading.RLock()
+        bot._get_chat_send_lock = lambda _target: threading.RLock()
+        bot._wechat_action_lock_is_busy = lambda: False
+        bot._ensure_target_listen_chat_for_send = lambda _target: SimpleNamespace(
+            SendMsg=lambda _text: True
+        )
+
+        logs = []
+        with mock.patch(
+            "wxbot_core.log",
+            side_effect=lambda **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", ""))),
+        ):
+            bot._queue_text_reply_until_target_verified(
+                "张三",
+                ["你好", "晚安"],
+                source="private_ai_reply",
+            )
+            self.assertTrue(bot._flush_lightweight_send_queue())
+
+        self.assertEqual(logs, [("INFO", "私聊 张三：本轮回复（2条）：你好 ｜ 晚安")])
+
+    def test_reply_content_log_marks_voice_and_uses_info_level(self):
+        logs = []
+
+        with mock.patch(
+            "wxbot_core.log",
+            side_effect=lambda **kwargs: logs.append((kwargs.get("level"), kwargs.get("message"))),
+        ):
+            WXBot._log_reply_contents(
+                "私聊",
+                "诗意&清欢",
+                ["你好", WXBot._format_reply_log_item("姐姐，我也在想你哦", kind="voice")],
+            )
+
+        self.assertEqual(
+            logs,
+            [("INFO", "私聊 诗意&清欢：本轮回复（2条）：你好 ｜ [语音]姐姐，我也在想你哦")],
+        )
+
     def test_stale_private_ai_reply_is_dropped_from_lightweight_send_queue(self):
         bot = WXBot.__new__(WXBot)
         bot._get_wechat_action_lock = lambda: threading.RLock()
@@ -2348,7 +2389,7 @@ class MessageBehaviorTests(unittest.TestCase):
         merged = bot._build_merged_private_message(queued)
         self.assertEqual(merged.content, "AAA\n中间这句识别出来了\nBBB")
 
-    def test_private_batch_preserves_multiple_pending_voices_before_image(self):
+    def test_private_batch_does_not_guess_between_same_duration_pending_voices(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             memory_switch=False,
@@ -2416,14 +2457,10 @@ class MessageBehaviorTests(unittest.TestCase):
 
         bot._flush_pending_private_voice_transcription(chat)
         wake_timer = timers[-1]
-        self.assertEqual(wake_timer.seconds, 0)
-        wake_timer.callback(*wake_timer.args)
-
-        queued = list(bot._private_message_pipelines["张三"]["queued_batches"][0])
-        merged = bot._build_merged_private_message(queued)
-        text_part, image_part = merged.content.split("+引用的图片:", 1)
-        self.assertEqual(text_part, "AAA\n第一条。\n第二条。\n第三条。\nBBB")
-        self.assertEqual(image_part.strip(), r"C:\tmp\after.png")
+        self.assertEqual(wake_timer.seconds, 5)
+        self.assertEqual(len(bot._pending_private_voice_transcription["张三"]["items"]), 3)
+        self.assertTrue(pipeline.get("pending_voice_blocked_close"))
+        self.assertEqual(len(pipeline["queued_batches"]), 0)
 
     def test_private_batch_drops_pending_voice_after_retry_limit_then_closes(self):
         bot = WXBot.__new__(WXBot)
@@ -2701,7 +2738,7 @@ class MessageBehaviorTests(unittest.TestCase):
         log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
         self.assertTrue(any("重读 2 次仍未得到有效文字" in message for message in log_messages))
 
-    def test_pending_private_voice_reread_ignores_unrecognized_when_another_voice_resolves(self):
+    def test_pending_private_voice_does_not_guess_when_resolved_snapshot_lacks_identity(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(memory_switch=False)
         bot._chat_merge_lock = threading.Lock()
@@ -2755,8 +2792,8 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._flush_pending_private_voice_transcription(chat)
 
         pipeline = bot._private_message_pipelines["张三"]
-        self.assertEqual([msg.content for msg in pipeline["open_messages"]], ["这是识别成功的内容"])
-        self.assertNotIn("张三", bot._pending_private_voice_transcription)
+        self.assertEqual([msg.content for msg in pipeline["open_messages"]], ['语音3"秒'])
+        self.assertIn("张三", bot._pending_private_voice_transcription)
 
     def test_pending_private_voice_reread_silently_ignores_empty_voice_after_max_attempts(self):
         bot = WXBot.__new__(WXBot)
@@ -3847,6 +3884,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._next_private_message_sequence("张三")
         expected_sequence = bot._get_private_message_sequence("张三")
         chat = FakeChat(bot)
+        sent_items = []
 
         with mock.patch("wxbot_core.log") as log_mock:
             self.assertEqual(
@@ -3854,12 +3892,14 @@ class MessageBehaviorTests(unittest.TestCase):
                     chat,
                     ["第一段", "第二段", "第三段"],
                     expected_sequence=expected_sequence,
+                    sent_items=sent_items,
                 ),
                 (True, True),
             )
         log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
         self.assertFalse(any("已停止发送上一轮剩余回复" in message for message in log_messages))
         self.assertEqual(chat.sent, ["第一段"])
+        self.assertEqual(sent_items, ["第一段"])
 
     def test_private_reply_waits_checks_and_sends_each_bubble_in_order(self):
         events = []

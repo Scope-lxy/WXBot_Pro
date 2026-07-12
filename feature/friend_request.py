@@ -639,7 +639,7 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
         or "未知好友"
     )
     if status == "sent":
-        log(level="SUCCESS", message=f"[好友申请] 已发送好友申请：{target_label}")
+        log(level="INFO", message=f"[好友申请] 已发送好友申请：{target_label}")
     elif status == "failed":
         log(level="WARNING", message=f"[好友申请] 发送失败：{target_label}，{_clean_text(result.get('message')) or '未知原因'}")
     elif status == "uncertain":

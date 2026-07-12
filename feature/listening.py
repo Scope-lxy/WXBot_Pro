@@ -21,7 +21,7 @@ from core.wechat_observability import warn_slow_wechat_ui_action
 from feature.custom_forward import iter_custom_forward_listen_sources
 from feature.custom_forward_runtime import handle_custom_forward, handle_custom_forward_takeover
 from feature.material_outreach import iter_material_outreach_listen_sources
-from feature.message_routing import prepare_message_media, record_runtime_inbound_event, voice_content_state
+from feature.message_routing import prepare_message_media, record_runtime_inbound_event
 from feature.new_friends import build_new_friend_remark, iter_new_friend_welcome_actions
 from feature.voice_reply import load_voice_reply_state
 from core.message_pipeline import message_unique_id, strip_voice_duration_metadata
@@ -30,7 +30,7 @@ LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS = 5
 LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS = (30, 60)
 LIGHTWEIGHT_DELAYED_LISTEN_DELAY_SECONDS = LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS[0]
 LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS = 60
-LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS = 600
+LIGHTWEIGHT_DELAYED_LISTEN_ESCALATION_SECONDS = 600
 LIGHTWEIGHT_DELAYED_LISTEN_REBUILD_COOLDOWN_SECONDS = 600
 LIGHTWEIGHT_DELAYED_LISTEN_VERIFY_INTERVAL_SECONDS = 0.3
 LIGHTWEIGHT_DELAYED_LISTEN_MAX_MESSAGES_PER_CHAT = 20
@@ -373,7 +373,16 @@ def _has_due_lightweight_delayed_listen_task(bot, now_ts=None):
     return False
 
 
-def _queue_lightweight_delayed_listen(bot, chat_name, messages, *, reason="", allow_rebuild=False, now=None):
+def _queue_lightweight_delayed_listen(
+    bot,
+    chat_name,
+    messages,
+    *,
+    reason="",
+    allow_rebuild=False,
+    recovered=False,
+    now=None,
+):
     name = str(chat_name or "").strip()
     msgs = list(messages or [])
     if not name or not msgs:
@@ -388,22 +397,27 @@ def _queue_lightweight_delayed_listen(bot, chat_name, messages, *, reason="", al
             "chat": name,
             "messages": [],
             "message_keys": set(),
+            "record_ids": {},
             "created_at": now_ts,
             "due_at": due_at,
             "reason": str(reason or "").strip(),
             "allow_rebuild": bool(allow_rebuild),
             "attempt_index": 0,
             "message_sequence": _get_bot_private_message_sequence(bot, name),
+            "requires_snapshot_match": bool(recovered),
         }
         tasks[name] = task
     task["due_at"] = min(float(task.get("due_at") or due_at), due_at)
     task["reason"] = str(reason or task.get("reason") or "").strip()
     task["allow_rebuild"] = bool(task.get("allow_rebuild")) or bool(allow_rebuild)
+    task["requires_snapshot_match"] = bool(task.get("requires_snapshot_match")) or bool(recovered)
     keys = task.get("message_keys")
     if not isinstance(keys, set):
         keys = set(keys or [])
         task["message_keys"] = keys
     queued = 0
+    store = getattr(bot, "_unanswered_inbound_store", None)
+    record_ids = task.setdefault("record_ids", {})
     for msg in msgs:
         key = message_unique_id(name, msg)
         if key in keys:
@@ -412,10 +426,56 @@ def _queue_lightweight_delayed_listen(bot, chat_name, messages, *, reason="", al
             break
         keys.add(key)
         task["messages"].append(msg)
+        record_id = str(getattr(msg, "_wxbot_awaiting_ui_record_id", "") or "")
+        if not record_id and store is not None:
+            record_id = store.begin(name, msg, chat_type="private", status="awaiting_ui")
+            try:
+                setattr(msg, "_wxbot_awaiting_ui_record_id", record_id)
+            except Exception:
+                pass
+        if record_id:
+            record_ids[key] = record_id
         queued += 1
     if queued <= 0:
         return False
     return True
+
+
+def _set_delayed_record_status(bot, record_id, status):
+    store = getattr(bot, "_unanswered_inbound_store", None)
+    if not record_id or store is None:
+        return
+    if status == "resolved":
+        store.resolve(record_id)
+    else:
+        store.set_status(record_id, status)
+
+
+def _match_recovered_delayed_message(stored, snapshot):
+    candidates = [
+        item
+        for item in snapshot or []
+        if str(getattr(item, "sender", "") or "") == str(getattr(stored, "sender", "") or "")
+        and str(getattr(item, "type", "") or "") == str(getattr(stored, "type", "") or "")
+        and str(getattr(item, "attr", "") or "") == str(getattr(stored, "attr", "") or "")
+    ]
+    for field in ("id", "hash", "hash_text"):
+        wanted = getattr(stored, field, None)
+        if wanted in {None, ""}:
+            continue
+        exact = [item for item in candidates if getattr(item, field, None) == wanted]
+        if len(exact) == 1:
+            return exact[0]
+        if len(exact) > 1:
+            return None
+    content = str(getattr(stored, "content", "") or "")
+    candidates = [item for item in candidates if str(getattr(item, "content", "") or "") == content]
+    wanted_time = str(getattr(stored, "time", "") or "")
+    if wanted_time:
+        same_time = [item for item in candidates if str(getattr(item, "time", "") or "") == wanted_time]
+        if same_time:
+            candidates = same_time
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _get_bot_private_message_sequence(bot, chat_name):
@@ -473,7 +533,7 @@ def _rebuild_lightweight_delayed_listener(bot, chat_name):
         with warn_slow_wechat_ui_action(f"AddListenChat({name})"):
             result = bot.wx.AddListenChat(nickname=name, callback=bot.message_handle_callback)
     except Exception as exc:
-        _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听重建异常，任务已放弃，详情：{exc}")
+        _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听重建异常，稍后继续等待，详情：{exc}")
         return None
     if is_target_chat(result, name):
         runtime_chat_state.remember_listen_chat(bot, name, result)
@@ -484,7 +544,7 @@ def _rebuild_lightweight_delayed_listener(bot, chat_name):
         runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
         touch_dynamic_listener_entry(bot, name)
         return sub_chat
-    _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听重建失败，任务已放弃，详情：{listen_add_error(result)}")
+    _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听重建失败，稍后继续等待，详情：{listen_add_error(result)}")
     return None
 
 
@@ -492,15 +552,14 @@ def _reschedule_lightweight_delayed_listen(bot, name, task, now_ts):
     attempt_index = int(task.get("attempt_index") or 0)
     next_index = attempt_index + 1
     created_at = float(task.get("created_at") or now_ts)
-    expires_at = created_at + LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS
-    if now_ts >= expires_at:
-        return False
     if next_index < len(LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS):
         next_delay = LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS[next_index]
         next_due = created_at + next_delay
     else:
         next_delay = LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS
-        next_due = min(now_ts + next_delay, expires_at)
+        next_due = now_ts + next_delay
+    if now_ts - created_at >= LIGHTWEIGHT_DELAYED_LISTEN_ESCALATION_SECONDS:
+        next_due = now_ts + LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS
     task["attempt_index"] = next_index
     task["due_at"] = next_due
     bot._lightweight_delayed_listen_tasks[name] = task
@@ -520,38 +579,6 @@ def _reschedule_lightweight_delayed_listen(bot, name, task, now_ts):
         message=message,
     )
     return True
-
-
-def _save_abandoned_lightweight_messages(bot, chat_name, messages):
-    if not getattr(getattr(bot, "config", None), "memory_switch", False):
-        return 0
-    memory_manager = getattr(bot, "memory_manager", None)
-    save_message = getattr(memory_manager, "save_message", None)
-    if not callable(save_message):
-        return 0
-    saved = 0
-    memory_chat_name = str(chat_name or "").strip()
-    max_count = getattr(getattr(bot, "config", None), "memory_max_count", 1000)
-    for msg in messages or []:
-        msg_type = str(getattr(msg, "type", "") or "").strip().lower()
-        if msg_type not in {"text", "voice"}:
-            continue
-        if msg_type == "voice" and voice_content_state(getattr(msg, "content", "")) != "valid":
-            continue
-        try:
-            save_message(
-                chat_name=memory_chat_name,
-                sender=getattr(msg, "sender", ""),
-                content=strip_voice_duration_metadata(getattr(msg, "content", "")) if msg_type == "voice" else getattr(msg, "content", ""),
-                msg_type=getattr(msg, "type", "text"),
-                msg_attr=getattr(msg, "attr", "friend"),
-                max_count=max_count,
-                message_time=getattr(msg, "time", None) or getattr(msg, "_wxbot_received_at", None),
-            )
-            saved += 1
-        except Exception as exc:
-            _bot_log(bot, level="WARNING", message=f"全局监听 {chat_name}：放弃批次兜底写入记忆失败：{exc}")
-    return saved
 
 
 def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
@@ -577,23 +604,10 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
             current = bot._lightweight_delayed_listen_tasks.pop(name, None)
             if not current:
                 continue
-            created_at = float(current.get("created_at") or now_ts)
-            if now_ts - created_at >= LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS:
-                saved = _save_abandoned_lightweight_messages(bot, name, current.get("messages") or [])
-                _bot_log(
-                    bot,
-                    level="WARNING",
-                    message=(
-                        f"全局监听 {name}：轻量延后监听等待超过 "
-                        f"{LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS}s，已放弃旧批次"
-                    ),
-                )
-                if saved:
-                    _bot_log(bot, level="INFO", message=f"全局监听 {name}：已兜底保存 {saved} 条放弃批次消息")
-                handled = True
-                continue
             if _get_bot_private_message_sequence(bot, name) != int(current.get("message_sequence") or 0):
                 _bot_log(bot, level="INFO", message=f"全局监听 {name}：轻量延后监听期间已有新消息处理，已放弃旧批次")
+                for record_id in (current.get("record_ids") or {}).values():
+                    _set_delayed_record_status(bot, record_id, "uncertain")
                 handled = True
                 continue
             if not sub_chat:
@@ -611,26 +625,77 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
                 finally:
                     release_wechat_lock()
             if not sub_chat:
-                if _reschedule_lightweight_delayed_listen(bot, name, current, now_ts):
-                    handled = True
-                    continue
-                saved = _save_abandoned_lightweight_messages(bot, name, current.get("messages") or [])
-                _bot_log(
-                    bot,
-                    level="WARNING",
-                    message=(
-                        f"全局监听 {name}：轻量延后监听等待超过 "
-                        f"{LIGHTWEIGHT_DELAYED_LISTEN_TTL_SECONDS}s，已放弃旧批次"
-                    ),
-                )
-                if saved:
-                    _bot_log(bot, level="INFO", message=f"全局监听 {name}：已兜底保存 {saved} 条放弃批次消息")
+                _reschedule_lightweight_delayed_listen(bot, name, current, now_ts)
                 handled = True
                 continue
             messages = list(current.get("messages") or [])
+            if current.get("requires_snapshot_match"):
+                try:
+                    snapshot = list(sub_chat.GetAllMessage() or [])
+                except Exception as exc:
+                    current["due_at"] = now_ts + LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS
+                    bot._lightweight_delayed_listen_tasks[name] = current
+                    _bot_log(bot, level="WARNING", message=f"全局监听 {name}：重启恢复读取子窗口失败，稍后继续，详情：{exc}")
+                    handled = True
+                    continue
+                matched = []
+                unmatched = []
+                original_record_ids = dict(current.get("record_ids") or {})
+                for msg in messages:
+                    fresh = _match_recovered_delayed_message(msg, snapshot)
+                    if fresh is None:
+                        unmatched.append(msg)
+                    else:
+                        matched.append((msg, fresh))
+                failed = []
+                recovered_count = 0
+                for stored, fresh in matched:
+                    try:
+                        process_listen_message(bot, sub_chat, fresh)
+                    except Exception as exc:
+                        failed.append(stored)
+                        _bot_log(bot, level="WARNING", message=f"全局监听 {name}：重启恢复消息处理失败，已保留待重试，详情：{exc}")
+                        continue
+                    key = message_unique_id(name, stored)
+                    _set_delayed_record_status(bot, original_record_ids.get(key), "resolved")
+                    recovered_count += 1
+                pending = unmatched + failed
+                if pending:
+                    current["messages"] = pending
+                    current["message_keys"] = {message_unique_id(name, msg) for msg in pending}
+                    current["record_ids"] = {
+                        key: record_id
+                        for key, record_id in original_record_ids.items()
+                        if key in current["message_keys"]
+                    }
+                    current["due_at"] = now_ts + LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS
+                    bot._lightweight_delayed_listen_tasks[name] = current
+                _bot_log(
+                    bot,
+                    level="INFO" if recovered_count else "WARNING",
+                    message=f"全局监听 {name}：重启恢复成功处理 {recovered_count} 条，仍待确认 {len(pending)} 条",
+                )
+                handled = True
+                continue
             _bot_log(bot, level="INFO", message=f"全局监听 {name}：轻量延后监听恢复成功，开始处理 {len(messages)} 条暂存消息")
-            for msg in messages:
-                process_listen_message(bot, sub_chat, msg)
+            for index, msg in enumerate(messages):
+                try:
+                    process_listen_message(bot, sub_chat, msg)
+                except Exception as exc:
+                    pending = messages[index:]
+                    current["messages"] = pending
+                    current["message_keys"] = {message_unique_id(name, item) for item in pending}
+                    current["record_ids"] = {
+                        key: record_id
+                        for key, record_id in (current.get("record_ids") or {}).items()
+                        if key in current["message_keys"]
+                    }
+                    current["due_at"] = now_ts + LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS
+                    bot._lightweight_delayed_listen_tasks[name] = current
+                    _bot_log(bot, level="WARNING", message=f"全局监听 {name}：暂存消息处理失败，已保留待重试，详情：{exc}")
+                    break
+                key = message_unique_id(name, msg)
+                _set_delayed_record_status(bot, (current.get("record_ids") or {}).get(key), "resolved")
             handled = True
         return handled
     finally:
@@ -814,7 +879,7 @@ def rebuild_listener_runtime(
 
     verify_initial_listeners(bot, expected_listeners, retry_count=verify_retry_count)
     bot._listener_reconcile_last_at = time.time()
-    _bot_log(bot, level="SUCCESS", message=finish_message)
+    _bot_log(bot, level="INFO", message=finish_message)
     admin_name = str(getattr(bot.config, "cmd", "") or "").strip()
     return bool(admin_name and runtime_chat_state.get_listen_chat(bot, admin_name))
 
@@ -1207,7 +1272,7 @@ def pass_new_friends(bot):
             record_metric = getattr(bot, "_metric_increment", None)
             if callable(record_metric):
                 record_metric("new_friend_accepted_count")
-            _bot_log(bot, level="SUCCESS", message="已通过" + str(item.get("send_name") or item.get("name") or "") + "的好友请求")
+            _bot_log(bot, level="INFO", message="已通过" + str(item.get("send_name") or item.get("name") or "") + "的好友请求")
             if welcome_actions:
                 _bot_sleep(bot, 5)
                 send_name = str(item.get("send_name") or item.get("name") or "")
@@ -1263,7 +1328,7 @@ def pass_new_friends(bot):
                 record_metric = getattr(bot, "_metric_increment", None)
                 if callable(record_metric):
                     record_metric("new_friend_accepted_count")
-                _bot_log(bot, level="SUCCESS", message="已通过" + send_name + "的好友请求")
+                _bot_log(bot, level="INFO", message="已通过" + send_name + "的好友请求")
                 bot.wx.SwitchToChat()
                 _bot_sleep(bot, 5)
                 if bool(getattr(bot.config, "new_friend_reply_switch", False)):

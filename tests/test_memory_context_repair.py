@@ -748,7 +748,7 @@ class WXBotContextRepairTests(unittest.TestCase):
             self.assertIn("private:张三", bot._memory_context_repair_last_at)
             self.assertFalse(bot._context_repair_success_ttl_allows("private:张三", 300))
 
-    def test_visible_window_repair_uses_snapshot_without_scrolling_when_anchor_missing(self):
+    def test_visible_window_repair_skips_snapshot_when_anchor_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             lock = FakeLock()
             bot = self.make_bot(tmp, lock=lock)
@@ -764,13 +764,13 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
-            self.assertTrue(repaired)
+            self.assertFalse(repaired)
             self.assertFalse(hasattr(chat, "history_args"))
             self.assertEqual(lock.acquire_calls, [False])
             self.assertTrue(lock.released)
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
-                ["旧锚点", "新内容"],
+                ["旧锚点"],
             )
 
     def test_lock_busy_skips_visible_read(self):
@@ -793,7 +793,7 @@ class WXBotContextRepairTests(unittest.TestCase):
             self.assertNotIn("张三", bot._memory_context_repair_startup_done)
             self.assertNotIn("private:张三", bot._memory_context_repair_last_at)
 
-    def test_without_anchor_appends_visible_snapshot_when_history_exists(self):
+    def test_without_anchor_does_not_append_visible_snapshot_when_history_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = self.make_bot(tmp)
             bot.memory_manager.append_missing_messages(
@@ -805,21 +805,18 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
-            self.assertTrue(repaired)
-            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("张三", 10)], ["旧锚点", "新内容"])
+            self.assertFalse(repaired)
+            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("张三", 10)], ["旧锚点"])
 
-    def test_without_anchor_initializes_empty_history_from_visible_snapshot(self):
+    def test_without_anchor_does_not_initialize_empty_history_from_visible_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = self.make_bot(tmp)
             chat = FakeChat(visible=[msg("第一条", time="1"), msg("第二条", time="2")])
 
             repaired = bot._repair_private_context_before_ai(chat, msg("第二条", time="2"))
 
-            self.assertTrue(repaired)
-            self.assertEqual(
-                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
-                ["第一条", "第二条"],
-            )
+            self.assertFalse(repaired)
+            self.assertEqual(bot.memory_manager.get_messages("张三", 10), [])
 
     def test_snapshot_time_markers_insert_stopped_period_messages_before_current_trigger(self):
         with tempfile.TemporaryDirectory() as tmp:

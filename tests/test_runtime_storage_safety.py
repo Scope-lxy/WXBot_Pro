@@ -122,6 +122,29 @@ os._exit(91)
             self.assertIn("禁止自动重发", recovered[0]["error"])
             self.assertFalse(journal.begin("delivery-1", "send_audio", {"conversation": "张三"}))
 
+    def test_ui_delivery_journal_keeps_old_delivery_ids_and_business_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = UIDeliveryJournal(tmp, "wxid_test")
+            records = [
+                {"delivery_id": f"delivery-{index}", "status": "done"}
+                for index in range(1001)
+            ]
+            journal._save_unlocked(records)
+
+            self.assertFalse(journal.begin("delivery-0", "forward", {"conversation": "张三"}))
+            self.assertTrue(journal.begin("delivery-new", "forward", {
+                "conversation": "素材群",
+                "request_id": "request-1",
+                "run_id": "run-1",
+                "batch_id": "batch-1",
+                "targets": ["阿英2"],
+            }))
+            stored = journal.records()[-1]
+            self.assertEqual(stored["request_id"], "request-1")
+            self.assertEqual(stored["run_id"], "run-1")
+            self.assertEqual(stored["batch_id"], "batch-1")
+            self.assertEqual(stored["targets"], ["阿英2"])
+
     def test_ui_delivery_journal_records_partial_action_boundary(self):
         with tempfile.TemporaryDirectory() as tmp:
             journal = UIDeliveryJournal(tmp, "wxid_test")
@@ -179,6 +202,43 @@ os._exit(91)
             self.assertEqual([item["conversation"] for item in recovered_again], ["张三"])
             statuses = {item["conversation"]: item["status"] for item in store.records()}
             self.assertEqual(statuses, {"张三": "replay_pending", "李四": "uncertain"})
+
+    def test_unanswered_inbound_retains_all_safety_records_when_resolved_history_is_trimmed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = UnansweredInboundStore(tmp, "wxid_test")
+            records = [{"record_id": "critical", "status": "voice_pending"}]
+            records.extend(
+                {"record_id": f"resolved-{index}", "status": "resolved"}
+                for index in range(501)
+            )
+
+            store._save_unlocked(records)
+            stored = store.records()
+
+            self.assertEqual(len(stored), 501)
+            self.assertEqual(stored[0]["record_id"], "critical")
+            self.assertNotIn("resolved-0", {item["record_id"] for item in stored})
+
+    def test_voice_pending_record_is_preserved_for_safe_history_only_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = UnansweredInboundStore(tmp, "wxid_test")
+            message = type("Message", (), {
+                "content": '语音8"秒',
+                "original_content": '语音8"秒',
+                "type": "voice",
+                "sender": "张三",
+                "attr": "friend",
+                "id": "voice-1",
+                "hash": "voice-hash-1",
+                "hash_text": "",
+                "time": "10:00",
+                "_wxbot_received_at": 100.0,
+            })()
+
+            record_id = store.begin("张三", message, status="voice_pending")
+
+            self.assertEqual(store.recover_for_replay(), [])
+            self.assertEqual([item["record_id"] for item in store.pending("voice_pending")], [record_id])
 
     def test_unanswered_group_record_preserves_type_and_datetime(self):
         with tempfile.TemporaryDirectory() as tmp:

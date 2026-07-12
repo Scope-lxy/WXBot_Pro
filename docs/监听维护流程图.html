@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WXBot Pro 监听维护流程图</title>
+  <style>
+    :root {
+      --ink: #1c2937;
+      --muted: #526476;
+      --line: #b9c5d1;
+      --paper: #f5f7fa;
+      --blue: #0b70b8;
+      --blue-bg: #e8f4ff;
+      --green: #147a51;
+      --green-bg: #eaf8f0;
+      --amber: #9a6200;
+      --amber-bg: #fff5dc;
+      --red: #ad3f3f;
+      --red-bg: #ffeded;
+      --violet: #6b4e9b;
+      --violet-bg: #f3edff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif; line-height: 1.5; }
+    .page { width: min(1440px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 48px; }
+    .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--line); padding-bottom: 20px; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 28px; font-weight: 700; }
+    h2 { font-size: 18px; }
+    .lede { color: var(--muted); margin-top: 6px; max-width: 820px; }
+    .nav { display: flex; gap: 16px; flex-wrap: wrap; font-size: 14px; white-space: nowrap; }
+    .nav a { color: var(--blue); text-decoration: none; }
+    .nav a:hover { text-decoration: underline; }
+    .rules { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 20px; }
+    .rule { border: 1px solid #8798a8; border-left: 4px solid var(--ink); background: #eef2f6; padding: 10px 12px; color: #344657; font-size: 13px; }
+    .workflow { margin-top: 24px; display: grid; gap: 22px; }
+    .stage { border-top: 3px solid var(--ink); padding-top: 10px; }
+    .stage-title { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+    .stage-number { color: var(--muted); font: 700 12px ui-monospace, monospace; }
+    .flow-row { display: grid; grid-template-columns: minmax(0, 1fr) 42px minmax(0, 1fr) 42px minmax(0, 1fr); align-items: stretch; }
+    .arrow { display: grid; place-items: center; color: #718394; font: 700 24px ui-monospace, monospace; }
+    .arrow.down { min-height: 32px; font-size: 22px; }
+    .node { min-height: 108px; border: 1px solid currentColor; border-radius: 6px; padding: 13px 14px; }
+    .node h3 { font-size: 15px; margin-bottom: 6px; }
+    .node p, .node li { color: #405365; font-size: 13px; }
+    .node ul { margin: 6px 0 0; padding-left: 18px; }
+    .node.blue { color: var(--blue); background: var(--blue-bg); }
+    .node.green { color: var(--green); background: var(--green-bg); }
+    .node.amber { color: var(--amber); background: var(--amber-bg); }
+    .node.red { color: var(--red); background: var(--red-bg); }
+    .node.violet { color: var(--violet); background: var(--violet-bg); }
+    .node p, .node li, .node strong { color: var(--ink); }
+    .decision { min-height: 116px; border: 2px solid #6a7d8e; background: #fff; display: grid; place-items: center; padding: 12px 18px; text-align: center; clip-path: polygon(12% 0, 88% 0, 100% 50%, 88% 100%, 12% 100%, 0 50%); }
+    .decision strong { font-size: 14px; }
+    .decision span { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .branch-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .branch { position: relative; padding-top: 26px; }
+    .branch::before { content: ""; position: absolute; top: 0; left: 50%; height: 18px; border-left: 1px solid #8191a0; }
+    .branch::after { content: ""; position: absolute; top: 17px; left: calc(50% - 4px); border: 4px solid transparent; border-top-color: #8191a0; }
+    .branch-label { color: var(--muted); font-size: 12px; margin: 0 0 5px; text-align: center; }
+    .two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .lane { margin-top: 18px; display: grid; grid-template-columns: 180px 1fr; border: 1px solid var(--line); background: #fff; }
+    .lane-label { background: #e8eef5; padding: 14px; font-size: 14px; font-weight: 700; }
+    .lane-content { padding: 14px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .mini { border-left: 3px solid #788a9b; padding: 4px 8px; font-size: 13px; color: #35495b; }
+    .note { border: 1px solid #8aa0b5; background: #edf4fa; padding: 13px 15px; font-size: 13px; color: #31485c; }
+    .footer { color: var(--muted); font-size: 12px; margin-top: 18px; }
+    @media (max-width: 900px) {
+      .topbar { display: block; }
+      .nav { margin-top: 12px; }
+      .rules, .branch-grid, .lane-content { grid-template-columns: 1fr 1fr; }
+      .flow-row { grid-template-columns: 1fr; gap: 8px; }
+      .arrow { min-height: 30px; transform: rotate(90deg); }
+      .two-column { grid-template-columns: 1fr; }
+      .lane { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) {
+      .page { width: min(100% - 20px, 1440px); padding-top: 18px; }
+      h1 { font-size: 23px; }
+      .rules, .branch-grid, .lane-content { grid-template-columns: 1fr; }
+      .node { min-height: 0; }
+      .decision { clip-path: none; border-radius: 6px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div>
+        <h1>监听维护与 UI 调度流程图</h1>
+        <p class="lede">当前重构版不再用主循环高频巡检“硬盯”子窗口，而是固定监听预注册、动态按需补窗、发送前复核和受控故障恢复。</p>
+      </div>
+      <nav class="nav" aria-label="相关文档">
+        <a href="消息处理流程图.html">查看消息处理图</a>
+        <a href="WXBot Pro 使用说明.md">使用说明</a>
+        <a href="WXBot Pro 开发指南.md">开发指南</a>
+      </nav>
+    </header>
+
+    <section class="rules" aria-label="总规则">
+      <div class="rule"><strong>唯一 UI owner</strong><br>只有 owner 创建和使用 wxautox/UIA 对象；业务线程只传纯数据意图。</div>
+      <div class="rule"><strong>同类失败局部收敛</strong><br>控件超时、会话不匹配、资料页失败只结束或延后当前任务，不重绑客户端。</div>
+      <div class="rule"><strong>固定与动态分治</strong><br>固定对象低频校验补回；动态对象收到消息才补窗，同一目标合并，不重复建窗。</div>
+      <div class="rule"><strong>独占事务优先完整</strong><br>通讯录批次和手动全量关系扫描不被聊天抢占；恢复聊天页后再按 FIFO 续处理。</div>
+    </section>
+
+    <div class="workflow">
+      <section class="stage">
+        <div class="stage-title"><span class="stage-number">01</span><h2>启动与固定监听</h2></div>
+        <div class="flow-row">
+          <article class="node blue"><h3>启动 UI owner</h3><p>owner 线程创建 <code>WeChat</code>、读取当前账号、初始化监听器。wxautox 对象不能跨线程保存或使用。</p></article>
+          <div class="arrow">-&gt;</div>
+          <article class="node blue"><h3>注册固定对象</h3><p>管理员、白名单好友、监听群、自定义转发来源和素材来源注册为固定监听。</p></article>
+          <div class="arrow">-&gt;</div>
+          <article class="node green"><h3>验证后进入运行态</h3><p>验证固定子窗口是否真实存在；缺失时轻量补一次。之后仅低频巡检，不恢复主循环高频扫描。</p></article>
+        </div>
+      </section>
+
+      <section class="stage">
+        <div class="stage-title"><span class="stage-number">02</span><h2>动态监听与按需补窗</h2></div>
+        <div class="flow-row">
+          <article class="node blue"><h3>收到新消息</h3><p>固定监听回调直接带来消息；全局监听模式发现陌生私聊时，先得到目标与纯数据快照。</p></article>
+          <div class="arrow">-&gt;</div>
+          <article class="decision"><div><strong>目标已有健康子窗口？</strong><span>同时校验当前窗口是否仍属于这个目标</span></div></article>
+          <div class="arrow">-&gt;</div>
+          <article class="node green"><h3>复用并处理</h3><p>刷新活跃状态，交给消息路由。发送前还会再次核对目标窗口，避免回复误投。</p></article>
+        </div>
+        <div class="arrow down">v</div>
+        <div class="branch-grid">
+          <div class="branch"><p class="branch-label">没有健康窗口</p><article class="node blue"><h3>补一次并立刻验证</h3><p>由 owner 尝试添加监听子窗口；只有拿到的窗口和目标匹配，才允许继续处理。</p></article></div>
+          <div class="branch"><p class="branch-label">补窗暂时失败</p><article class="node amber"><h3>延后、合并和轻量重试</h3><p>先在 30 秒、60 秒后延后；之后在 600 秒待处理窗口内继续轻量重试。同一好友的新消息合并到既有任务。</p></article></div>
+          <div class="branch"><p class="branch-label">已监听但无子窗口残留</p><article class="node violet"><h3>受控关闭重建</h3><p>只有这类明确残留状态允许关闭后重建。普通动态监听增删不重绑微信客户端，也不强清窗口。</p></article></div>
+        </div>
+      </section>
+
+      <section class="stage">
+        <div class="stage-title"><span class="stage-number">03</span><h2>所有微信动作都走同一 owner</h2></div>
+        <div class="lane">
+          <div class="lane-label">业务线程产出<br>纯数据意图</div>
+          <div class="lane-content">
+            <div class="mini">回复、关键词、文件、语音和 quote：每项独立、可在开始前取消。</div>
+            <div class="mini">好友申请、素材转发和发圈：一旦提交结果未知，持久化为 <code>uncertain</code>。</div>
+            <div class="mini">备注、标签同步和单人资料编辑：进入 owner 后保留窗口置前、搜索和鼠标焦点步骤。</div>
+            <div class="mini">图片、引用等媒体动作也等待 owner；不建立绕过队列的“高优先级下载”通道。</div>
+          </div>
+        </div>
+        <div class="arrow down">v</div>
+        <div class="flow-row">
+          <article class="node blue"><h3>owner FIFO 执行</h3><p>真实发送、窗口切换、资料页、素材读取和朋友圈动作都在 owner 中完成，并把明确结果回写给调用方。</p></article>
+          <div class="arrow">-&gt;</div>
+          <article class="node amber"><h3>目标窗口不能确认</h3><p>尝试补窗；仍失败时进入轻量延后队列。宁可暂缓，也不基于错误窗口发送。</p></article>
+          <div class="arrow">-&gt;</div>
+          <article class="node green"><h3>明确结果</h3><p>成功才写成功日志与历史；取消、排队或未知提交不会伪装成已完成。</p></article>
+        </div>
+      </section>
+
+      <section class="stage">
+        <div class="stage-title"><span class="stage-number">04</span><h2>通讯录批次与关系扫描的独占边界</h2></div>
+        <div class="flow-row">
+          <article class="node violet"><h3>通讯录自动维护开始</h3><p>正常批次固定 50 人，完整轮间隔 7 天。完整资料采集只在最小子进程运行，主进程持有 UI 协调权。</p></article>
+          <div class="arrow">-&gt;</div>
+          <article class="node red"><h3>全屏障期间</h3><p>从启动采集到 <code>SwitchToChat</code> 恢复完成：聊天路由、AI、媒体下载和后到微信意图全部等待；新消息只存纯数据 FIFO。</p></article>
+          <div class="arrow">-&gt;</div>
+          <article class="node green"><h3>恢复聊天页后放行</h3><p>采集完成或 300 秒硬超时后，必要时按 PID kill / taskkill 兜底，恢复聊天页，再按 FIFO 处理积压消息。</p></article>
+        </div>
+        <div class="arrow down">v</div>
+        <div class="two-column">
+          <article class="node violet"><h3>通讯录资料一致性</h3><p><code>contacts.json</code> 只保存真源资料；读改写使用路径锁和原子替换。展示名、发送目标只作任务运行快照，不写回档案。</p></article>
+          <article class="node amber"><h3>手动全量关系扫描</h3><p>也是连续、不可抢占的 owner 独占事务，不提供中途停止。1000 次滚动仅是失控保险，不是正常结束条件。</p></article>
+        </div>
+      </section>
+
+      <section class="stage">
+        <div class="stage-title"><span class="stage-number">05</span><h2>失败分级与恢复</h2></div>
+        <div class="branch-grid">
+          <div class="branch"><p class="branch-label">普通业务失败</p><article class="node amber"><h3>结束或延后当前任务</h3><p>控件超时、目标不匹配、单个资料页不适用等，不能升级为客户端重绑。</p></article></div>
+          <div class="branch"><p class="branch-label">监听器异常</p><article class="node blue"><h3>先探活，再只重建监听器</h3><p>现有客户端可用时只恢复监听。监听回调线程异常必须让运行健康状态变为不健康，不能静默失联。</p></article></div>
+          <div class="branch"><p class="branch-label">明确客户端级失效</p><article class="node red"><h3>受控重绑或 watchdog</h3><p>只有 Windows 1400 无效句柄、COM/RPC 断开等明确证据，才允许重绑。UI 卡死由专用 watchdog 以退出码 86 交给启动器恢复。</p></article></div>
+        </div>
+        <div class="note"><strong>启动器的最后防线：</strong>用户点击停止不会自动启动；只有退出码 <code>86</code> 才计入恢复预算，滚动 30 分钟最多自动重启 3 次。超过预算时停在可排查状态，不进入短循环重启。</div>
+      </section>
+    </div>
+
+    <p class="footer">对应实现以 <code>feature/listening.py</code>、<code>core/wechat_ui_runtime.py</code>、<code>feature/contacts.py</code>、<code>feature/contact_auto_collector_worker.py</code>、<code>wxbot_core.py</code> 和 <code>core/ui_restart_policy.py</code> 为准。更新调度规则时，请同时更新本图与开发指南。</p>
+  </main>
+</body>
+</html>
