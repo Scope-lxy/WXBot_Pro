@@ -147,25 +147,19 @@ class MaterialSourceReaderTests(unittest.TestCase):
             "子窗口内部 ChatBox.get_msgs_from_history",
         )
 
-    def test_material_source_read_holds_source_lock_before_global_wechat_lock(self):
+    def test_material_source_read_uses_domain_lock_without_legacy_global_lock(self):
         events = []
         source_messages = [msg("link", "[链接]子窗口素材")]
         source_chat = FakeSourceChat(chat_box=FakeChatBox(source_messages))
         bot = make_bot(source_chat, FakeMainWindow([msg("link", "[链接]主窗口素材")]))
         bot._material_source_read_locks = {"素材源": RecordingLock("source", events)}
-        bot._wechat_action_lock = RecordingLock("global", events)
 
         messages = bot._read_material_source_messages("素材源", 5, goback=True)
 
         self.assertIs(messages[0], source_messages[0])
         self.assertEqual(
             events,
-            [
-                "enter:source",
-                "enter:global",
-                "exit:global",
-                "exit:source",
-            ],
+            ["enter:source", "exit:source"],
         )
 
     def test_prefers_subwindow_internal_history_before_subwindow_public_history(self):
@@ -257,12 +251,11 @@ class MaterialSourceReaderTests(unittest.TestCase):
         self.assertEqual(storage.saved, [])
         self.assertEqual(bot._material_runtime_messages, {})
 
-    def test_forward_uses_source_lock_before_global_wechat_lock(self):
+    def test_forward_uses_source_lock_without_legacy_global_lock(self):
         bot = WXBot.__new__(WXBot)
         events = []
         bot._material_source_read_locks = {"素材源": RecordingLock("source", events)}
         bot._material_source_read_locks_guard = threading.Lock()
-        bot._wechat_action_lock = RecordingLock("global", events)
 
         success, error = bot._forward_material_message(
             FakeForwardMessage(events),
@@ -273,15 +266,40 @@ class MaterialSourceReaderTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(
             events,
-            [
-                "enter:source",
-                "enter:global",
-                "roll",
-                "forward:阿英2",
-                "exit:global",
-                "exit:source",
-            ],
+            ["enter:source", "roll", "forward:阿英2", "exit:source"],
         )
+
+    def test_owner_material_forward_never_calls_raw_message_directly(self):
+        bot = WXBot.__new__(WXBot)
+        events = []
+        bot._ui_owner = object()
+        bot._material_source_read_locks = {"素材源": RecordingLock("source", events)}
+        bot._material_source_read_locks_guard = threading.Lock()
+        bot._ui_forward_message = lambda _chat, _message, targets, **_kwargs: events.append(
+            "owner:" + ",".join(targets)
+        ) or True
+
+        class RawMessage:
+            type = "link"
+            attr = "friend"
+            sender = "素材源"
+            content = "素材"
+
+            def roll_into_view(self):
+                raise AssertionError("owner 模式不得在业务线程操作原始消息")
+
+            def forward(self, *_args, **_kwargs):
+                raise AssertionError("owner 模式不得在业务线程直接转发")
+
+        success, error = bot._forward_material_message(
+            RawMessage(),
+            ["阿英2"],
+            material_source="素材源",
+        )
+
+        self.assertTrue(success)
+        self.assertEqual(error, "")
+        self.assertEqual(events, ["enter:source", "owner:阿英2", "exit:source"])
 
 
 if __name__ == "__main__":

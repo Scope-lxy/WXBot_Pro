@@ -3,24 +3,25 @@
 from __future__ import annotations
 
 import os
-import random
 import sys
 import time
-from wxautox4 import WeChat
+import uuid
 
 from core import runtime_chat_state, wechat_ui_actions
 from core.account_storage import account_area_dir, migrate_default_account
 from core.logger import log
 from core.memory import MemoryManager
 from core.wechat_window import (
+    is_wechat_client_binding_failure,
     rebind_wechat_client as core_rebind_wechat_client,
     run_with_wechat_rebind_retry,
 )
+from core.wechat_ui_runtime import OwnedChat
 from core.wechat_observability import warn_slow_wechat_ui_action
 from feature.custom_forward import iter_custom_forward_listen_sources
 from feature.custom_forward_runtime import handle_custom_forward, handle_custom_forward_takeover
 from feature.material_outreach import iter_material_outreach_listen_sources
-from feature.message_routing import prepare_message_media, voice_content_state
+from feature.message_routing import prepare_message_media, record_runtime_inbound_event, voice_content_state
 from feature.new_friends import build_new_friend_remark, iter_new_friend_welcome_actions
 from feature.voice_reply import load_voice_reply_state
 from core.message_pipeline import message_unique_id, strip_voice_duration_metadata
@@ -774,8 +775,8 @@ def bind_wechat_client(bot, force_rebind=False):
     return core_rebind_wechat_client(bot)
 
 
-def probe_listener_recovery_client(bot):
-    client = bind_wechat_client(bot, force_rebind=True)
+def probe_listener_recovery_client(bot, *, force_rebind=False):
+    client = bind_wechat_client(bot, force_rebind=force_rebind)
     if hasattr(client, "IsOnline"):
         client.IsOnline()
     return client
@@ -830,17 +831,28 @@ def process_listener_auto_recovery(bot):
 
     try:
         client = probe_listener_recovery_client(bot)
-    except Exception as exc:
-        if is_listener_recovery_desktop_error(exc):
+    except Exception as initial_exc:
+        recovery_exc = initial_exc
+        if is_wechat_client_binding_failure(initial_exc):
+            try:
+                client = probe_listener_recovery_client(bot, force_rebind=True)
+            except Exception as rebind_exc:
+                recovery_exc = rebind_exc
+            else:
+                recovery_exc = None
+        if recovery_exc is None:
+            pass
+        elif is_listener_recovery_desktop_error(recovery_exc):
             bot._listener_auto_recovery_probe_after = now_ts + LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS
             if hasattr(bot, "callback_is_die"):
                 bot.callback_is_die = False
             return "waiting"
-        bot._listener_auto_recovery_attempted = True
-        bot._listener_auto_recovery_last_error = str(exc or "")
-        clear_listener_auto_recovery(bot)
-        _bot_log(bot, level="ERROR", message=f"监听器自动恢复前探活失败：{exc}")
-        return "failed"
+        else:
+            bot._listener_auto_recovery_attempted = True
+            bot._listener_auto_recovery_last_error = str(recovery_exc or "")
+            clear_listener_auto_recovery(bot)
+            _bot_log(bot, level="ERROR", message=f"监听器自动恢复前探活失败：{recovery_exc}")
+            return "failed"
 
     bot.wx = client
     bot._listener_auto_recovery_attempted = True
@@ -1016,6 +1028,41 @@ def verify_initial_listeners(bot, expected_chats, retry_count=3):
 
 def init_wx_listeners(bot):
     """Initialize WeChat client and listener registrations."""
+    if getattr(bot, "_use_ui_owner", False):
+        specs = listener_registration_specs(bot)
+        identity = bot._bootstrap_ui_owner([name for _label, name, _cache_material in specs])
+        bot.config.AtMe = "@" + str(identity.get("nickname") or "")
+        _bot_log(bot, message="绑定@：" + bot.config.AtMe)
+        wx_id = str(identity.get("wx_id") or identity.get("nickname") or "")
+        bot.wx_id = wx_id
+        try:
+            migrated_default = migrate_default_account(bot.config.DATA_DIR, wx_id)
+            if migrated_default:
+                _bot_log(bot, message=f"已将 default 账号目录迁移到 {wx_id}")
+        except Exception as exc:
+            _bot_log(bot, level="WARNING", message=f"default 账号目录迁移失败：{exc}")
+        if hasattr(bot.config, "bind_account_wx_id"):
+            bot.config.bind_account_wx_id(wx_id)
+        bot._voice_reply_state = load_voice_reply_state(bot._voice_reply_state_path())
+        bot._set_material_outreach_namespace(wx_id)
+        bot._set_admin_moments_draft_namespace(wx_id)
+        bot._set_admin_forward_draft_namespace(wx_id)
+        _base = os.path.dirname(sys.executable) if hasattr(sys, "_MEIPASS") else os.path.abspath(".")
+        bot.memory_manager = MemoryManager(wx_id, os.path.join(_base, "data"))
+        bot._init_prompt_system(str(account_area_dir(os.path.join(_base, "data"), wx_id, "chat_memory", create=True)))
+        bot._listen_chats = {}
+        for _label, name, cache_material in specs:
+            chat = OwnedChat(bot._ui_owner, name)
+            runtime_chat_state.remember_listen_chat(bot, name, chat)
+            if cache_material:
+                bot._material_source_chats[name] = chat
+        drain_recovery = getattr(bot, "_drain_unanswered_inbound_recovery", None)
+        if callable(drain_recovery):
+            drain_recovery()
+        bot._register_runtime_task_schedules()
+        _bot_log(bot, level="SUCCESS", message="监听器初始化完成")
+        return runtime_chat_state.get_listen_chat(bot, bot.config.cmd)
+
     if not getattr(bot, "wx", None):
         _bot_log(bot, message="本次未获取客户端，正在初始化微信客户端...")
     bind_wechat_client(bot, force_rebind=not getattr(bot, "wx", None))
@@ -1077,25 +1124,112 @@ def send_group_welcome_msg(bot, chat, message):
     result = True
     _bot_log(bot, message=f"{chat.who} 系统消息:" + message.content)
 
-    if "加入群聊" in message.content and random.random() < bot.config.group_welcome_random:
+    def send_welcome(new_friend):
+        _bot_sleep(bot, 5)
+        if isinstance(chat, OwnedChat):
+            guard = getattr(bot, "_config_ui_task_guard", None)
+            task_key, task_version = guard("group_welcome") if callable(guard) else ("", 0)
+            seed = "|".join([
+                str(chat.who or ""),
+                str(getattr(message, "id", "") or ""),
+                str(getattr(message, "hash", "") or ""),
+                str(getattr(message, "time", "") or ""),
+                str(getattr(message, "content", "") or ""),
+                str(new_friend or ""),
+            ])
+            try:
+                return chat.SendActions(
+                    [{"type": "text", "text": str(bot.config.group_welcome_msg or ""), "at": new_friend}],
+                    task_key=task_key,
+                    task_version=task_version,
+                    delivery_id=f"group-welcome:{uuid.uuid5(uuid.NAMESPACE_URL, seed)}",
+                )
+            except wechat_ui_actions.IntentCancelled:
+                _bot_log(bot, message=f"群欢迎设置已更新或关闭，已取消向 {new_friend} 发送旧欢迎语")
+                return True
+        with wechat_ui_actions.hold(bot):
+            with bot._get_chat_send_lock(chat.who):
+                return chat.SendMsg(msg=bot.config.group_welcome_msg, at=new_friend)
+
+    if "加入群聊" in message.content:
         new_friend = find_new_group_friend(message.content, 1)
         _bot_log(bot, message=f"{chat.who} 新群友:" + new_friend)
-        _bot_sleep(bot, 5)
-        with wechat_ui_actions.hold(bot):
-            with bot._get_chat_send_lock(chat.who):
-                result = chat.SendMsg(msg=bot.config.group_welcome_msg, at=new_friend)
-    elif "加入了群聊" in message.content and random.random() < bot.config.group_welcome_random:
+        result = send_welcome(new_friend)
+    elif "加入了群聊" in message.content:
         new_friend = find_new_group_friend(message.content, 3)
         _bot_log(bot, message=f"{chat.who} 新群友:" + new_friend)
-        _bot_sleep(bot, 5)
-        with wechat_ui_actions.hold(bot):
-            with bot._get_chat_send_lock(chat.who):
-                result = chat.SendMsg(msg=bot.config.group_welcome_msg, at=new_friend)
+        result = send_welcome(new_friend)
 
     return result
 
 
 def pass_new_friends(bot):
+    owner = getattr(bot, "_ui_owner", None)
+    if owner is not None:
+        tags = list(getattr(bot.config, "new_friend_tags", []) or [])
+        archive_enabled = bool(getattr(bot.config, "new_friend_archive_switch", True))
+        remark_rules = {
+            "enabled": archive_enabled,
+            "prefix": str(getattr(bot.config, "new_friend_remark_prefix", "") or ""),
+            "suffix": str(getattr(bot.config, "new_friend_remark_suffix", "") or ""),
+            "prefix_timestamp": bool(getattr(bot.config, "new_friend_remark_prefix_timestamp", False)),
+            "suffix_timestamp": bool(getattr(bot.config, "new_friend_remark_suffix_timestamp", False)),
+        }
+        welcome_actions = (
+            list(iter_new_friend_welcome_actions(getattr(bot.config, "new_friend_msg", {})))
+            if bool(getattr(bot.config, "new_friend_reply_switch", False))
+            else []
+        )
+        guard = getattr(bot, "_config_ui_task_guard", None)
+        task_key, task_version = guard("new_friend") if callable(guard) else ("", 0)
+        try:
+            result = owner.call(
+                wechat_ui_actions.UIIntent(
+                    wechat_ui_actions.UIIntentKind.NEW_FRIEND,
+                    {
+                        "remark_rules": remark_rules,
+                        "tags": tags if archive_enabled else [],
+                        "task_key": task_key,
+                    },
+                    task_version=task_version,
+                ),
+                wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
+            )
+        except wechat_ui_actions.IntentCancelled:
+            _bot_log(bot, message="新好友自动通过规则已更新或关闭，本轮已取消")
+            return True
+        for item in result or []:
+            record_metric = getattr(bot, "_metric_increment", None)
+            if callable(record_metric):
+                record_metric("new_friend_accepted_count")
+            _bot_log(bot, level="SUCCESS", message="已通过" + str(item.get("send_name") or item.get("name") or "") + "的好友请求")
+            if welcome_actions:
+                _bot_sleep(bot, 5)
+                send_name = str(item.get("send_name") or item.get("name") or "")
+                for index, action in enumerate(welcome_actions):
+                    if str(action.get("type") or "") == "file":
+                        prepared_action = {"type": "file", "path": str(action.get("path") or "")}
+                    else:
+                        prepared_action = {"type": "text", "text": str(action.get("content") or "")}
+                    try:
+                        owner.call(wechat_ui_actions.UIIntent(
+                            wechat_ui_actions.UIIntentKind.SEND_ACTIONS,
+                            {
+                                "conversation": send_name,
+                                "task_key": task_key,
+                                "delivery_id": f"new-friend-welcome:{uuid.uuid4()}:{index}",
+                                "actions": [prepared_action],
+                            },
+                            task_version=task_version,
+                        ), wechat_ui_actions.UI_CALL_WAIT_TIMEOUT)
+                    except wechat_ui_actions.IntentCancelled:
+                        _bot_log(bot, message=f"新好友欢迎规则已更新或关闭，已停止向 {send_name} 发送旧欢迎内容")
+                        break
+                    delay = getattr(bot, "_inter_message_delay_or_stop", None)
+                    if index < len(welcome_actions) - 1 and callable(delay):
+                        delay()
+        return True
+
     release_wechat_lock = wechat_ui_actions.try_acquire(bot)
     if not release_wechat_lock:
         _bot_log(bot, message="新好友检测跳过：微信操作锁占用中")
@@ -1110,23 +1244,14 @@ def pass_new_friends(bot):
                 accept_kwargs = {}
                 send_name = new.name
                 if bool(getattr(bot.config, "new_friend_archive_switch", True)):
-                    remark_configured = any([
-                        bool(getattr(bot.config, "new_friend_remark_use_nickname", True)),
-                        bool(str(getattr(bot.config, "new_friend_remark_prefix", "") or "").strip()),
-                        bool(str(getattr(bot.config, "new_friend_remark_suffix", "") or "").strip()),
-                        bool(getattr(bot.config, "new_friend_remark_prefix_timestamp", False)),
-                        bool(getattr(bot.config, "new_friend_remark_suffix_timestamp", False)),
-                    ])
-                    if remark_configured:
-                        send_name = build_new_friend_remark(
-                            new.name,
-                            prefix=bot.config.new_friend_remark_prefix,
-                            suffix=bot.config.new_friend_remark_suffix,
-                            use_nickname=bot.config.new_friend_remark_use_nickname,
-                            prefix_timestamp=bot.config.new_friend_remark_prefix_timestamp,
-                            suffix_timestamp=bot.config.new_friend_remark_suffix_timestamp,
-                        )
-                        accept_kwargs["remark"] = send_name
+                    send_name = build_new_friend_remark(
+                        new.name,
+                        prefix=bot.config.new_friend_remark_prefix,
+                        suffix=bot.config.new_friend_remark_suffix,
+                        prefix_timestamp=bot.config.new_friend_remark_prefix_timestamp,
+                        suffix_timestamp=bot.config.new_friend_remark_suffix_timestamp,
+                    )
+                    accept_kwargs["remark"] = send_name
                     if bot.config.new_friend_tags:
                         accept_kwargs["tags"] = bot.config.new_friend_tags
                 new.accept(**accept_kwargs)
@@ -1137,12 +1262,15 @@ def pass_new_friends(bot):
                 bot.wx.SwitchToChat()
                 _bot_sleep(bot, 5)
                 if bool(getattr(bot.config, "new_friend_reply_switch", False)):
-                    for action in iter_new_friend_welcome_actions(getattr(bot.config, "new_friend_msg", {})):
+                    fallback_actions = list(iter_new_friend_welcome_actions(getattr(bot.config, "new_friend_msg", {})))
+                    for index, action in enumerate(fallback_actions):
                         if action["type"] == "file":
                             bot.wx.SendFiles(who=send_name, filepath=action["path"])
                         else:
                             bot.wx.SendMsg(who=send_name, msg=action["content"])
-                        bot.config.human_delay()
+                        delay = getattr(bot, "_inter_message_delay_or_stop", None)
+                        if index < len(fallback_actions) - 1 and callable(delay):
+                            delay()
                 bot.wx.ChatWith(who="文件传输助手")
                 _bot_sleep(bot, 1)
                 bot.wx.SwitchToContact()
@@ -1192,12 +1320,6 @@ def new_msg_get_plus(chat_records):
     return filtered
 
 
-def next_message_handle(bot):
-    with wechat_ui_actions.hold(bot):
-        all_message = bot.wx.GetAllMessage()
-    return new_msg_get_plus(all_message)
-
-
 def add_chat_to_listen(bot, chat):
     add_verify_fn = getattr(bot, "_add_and_verify_subwindow", None)
     if callable(add_verify_fn):
@@ -1240,37 +1362,11 @@ def alllisten_mode(bot, last_time, timeout=10):
                     _bot_log(bot, message=f"全局监听 {listen_name}：对话超时，已停止监听")
 
     def get_next_new_message():
-        next_callback_down_map = {}
-
-        def next_callback(msg):
-            nonlocal next_callback_down_map
-            try:
-                bot._last_incoming_message_at = time.time()
-            except Exception:
-                pass
-            if bot.wx.chat_type != "group":
-                _bot_log(bot, message=f"全局监听 {msg.sender}：收到私聊消息，内容：{msg.content}")
-                any_img_enabled = bot.config.chat_image_recognition_switch
-                try:
-                    if any_img_enabled:
-                        if msg.type == "image":
-                            path = msg.download()
-                            if path:
-                                next_callback_down_map[msg.id] = path
-                            else:
-                                _bot_log(bot, "ERROR", "全局监听：图片下载失败，请尝试将 Windows 屏幕缩放设置为 100%")
-                        elif msg.type == "quote":
-                            path = msg.download_quote_image()
-                            if path:
-                                next_callback_down_map[msg.id] = path
-                            else:
-                                _bot_log(bot, "INFO", "引用内容不是图片或视频")
-                except Exception as exc:
-                    _bot_log(bot, level="ERROR", message=f"全局监听：图片下载失败，请尝试将 Windows 屏幕缩放设置为 100%，详情：{exc}")
-            else:
-                _bot_log(bot, "INFO", "私聊全局监听收到群聊消息，跳过")
-
-        messages_new = bot.wx.GetNextNewMessage(filter_mute=bot.config.AllListen_filter_mute, callback=next_callback)
+        messages_new = bot.wx.GetNextNewMessage(
+            filter_mute=bot.config.AllListen_filter_mute,
+            callback=None,
+            download_media=bool(getattr(bot.config, "chat_image_recognition_switch", False)),
+        )
         chat = messages_new.get("chat_name")
         chat_type = messages_new.get("chat_type")
         msgs = messages_new.get("msg")
@@ -1287,15 +1383,8 @@ def alllisten_mode(bot, last_time, timeout=10):
 
             for msg in msgs:
                 setattr(msg, "_wxbot_ingress_source", "global")
-                if msg.type == "image":
-                    if msg.id in next_callback_down_map:
-                        msg.content = str(next_callback_down_map[msg.id])
-                        msg._wxbot_media_prepared = True
-                elif msg.type == "quote":
-                    if msg.id in next_callback_down_map:
-                        msg.content = msg.content + "+引用的图片:" + str(next_callback_down_map[msg.id])
-                        msg._wxbot_media_prepared = True
-                elif msg.type == "voice":
+                record_runtime_inbound_event(bot, msg, chat_type)
+                if msg.type == "voice":
                     if not bot.config.chat_voice_recognition_switch:
                         msg._skip_ai_reply = True
 
@@ -1359,6 +1448,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                                     "msg_type": msg.type,
                                     "msg_attr": msg.attr,
                                     "max_count": bot.config.memory_max_count,
+                                    "message_time": getattr(msg, "time", None) or getattr(msg, "_wxbot_received_at", None),
                                 }
                                 if msg.type == "image" and str(getattr(msg, "content", "") or "").strip():
                                     save_kwargs["image_paths"] = [str(msg.content).strip()]

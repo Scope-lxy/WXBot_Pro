@@ -4,12 +4,13 @@ import json
 import hashlib
 import os
 import re
+import tempfile
 import threading
 from datetime import datetime
 
 from core.account_storage import account_area_dir
 from core.message_pipeline import split_quoted_image_message
-from core.memory_context_repair import unique_message_key
+from core.memory_context_repair import build_repair_plan, unique_message_key
 
 
 WINDOWS_RESERVED_NAMES = {
@@ -18,6 +19,21 @@ WINDOWS_RESERVED_NAMES = {
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 }
 INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _atomic_write_json(path, value, *, indent=2):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as file:
+            json.dump(value, file, ensure_ascii=False, indent=indent)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
 
 
 def normalize_memory_chat_name(chat_name):
@@ -79,6 +95,7 @@ class MemoryManager:
         self.base_path = base_path
         self.chat_name_resolver = chat_name_resolver
         self._locks = {}
+        self._locks_guard = threading.Lock()
 
     def resolve_chat_name(self, chat_name):
         resolver = getattr(self, "chat_name_resolver", None)
@@ -93,9 +110,12 @@ class MemoryManager:
 
     def _get_lock(self, chat_name):
         key = self.resolve_chat_name(chat_name)
-        if key not in self._locks:
-            self._locks[key] = threading.Lock()
-        return self._locks[key]
+        with self._locks_guard:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[key] = lock
+            return lock
 
     def _write_original_name(self, dir_path, chat_name):
         name_path = os.path.join(dir_path, "name.json")
@@ -104,8 +124,7 @@ class MemoryManager:
             current = read_memory_original_name(dir_path, "")
             if current == raw_name:
                 return
-            with open(name_path, "w", encoding="utf-8") as file:
-                json.dump({"name": raw_name}, file, ensure_ascii=False, indent=2)
+            _atomic_write_json(name_path, {"name": raw_name})
         except Exception:
             pass
 
@@ -141,6 +160,11 @@ class MemoryManager:
         if isinstance(message_time, str):
             message_time = message_time.strip()
             if message_time:
+                for fmt in ("%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                    try:
+                        return datetime.strptime(message_time, fmt).strftime("%Y/%m/%d %H:%M:%S")
+                    except ValueError:
+                        pass
                 return message_time
         return datetime.now().strftime("%Y/%m/%d %H:%M:%S")
 
@@ -148,10 +172,12 @@ class MemoryManager:
     def _parse_message_time(message_time):
         if not message_time:
             return None
-        try:
-            return datetime.strptime(str(message_time), "%Y/%m/%d %H:%M:%S")
-        except Exception:
-            return None
+        for fmt in ("%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(str(message_time), fmt)
+            except ValueError:
+                pass
+        return None
 
     def _append_message_in_order(self, messages, entry, recent_count=5):
         current_dt = self._parse_message_time(entry.get("time"))
@@ -181,7 +207,18 @@ class MemoryManager:
         messages[recent_start:] = [item for _, _, item in sortable_recent]
         return messages
 
-    def save_message(self, chat_name, sender, content, msg_type, msg_attr, max_count, message_time=None, image_paths=None, visual_notes=None):
+    def save_message(
+        self,
+        chat_name,
+        sender,
+        content,
+        msg_type,
+        msg_attr,
+        max_count,
+        message_time=None,
+        image_paths=None,
+        visual_notes=None,
+    ):
         path = self._get_memory_path(chat_name)
         normalized_msg_type = str(msg_type).strip().lower()
         normalized_image_paths = [
@@ -223,18 +260,21 @@ class MemoryManager:
                     messages = []
             else:
                 messages = []
-            entry_key = unique_message_key(entry)
-            if message_time is not None and entry_key:
-                for item in messages[-20:]:
-                    if isinstance(item, dict) and unique_message_key(item) == entry_key:
-                        return
             messages = self._append_message_in_order(messages, entry, recent_count=5)
             if len(messages) > max_count:
                 messages = messages[-max_count:]
-            with open(path, "w", encoding="utf-8") as file:
-                json.dump(messages, file, ensure_ascii=False, indent=2)
+            _atomic_write_json(path, messages)
 
-    def append_missing_messages(self, chat_name, entries, max_count):
+    def append_missing_messages(
+        self,
+        chat_name,
+        entries,
+        max_count,
+        *,
+        reconcile_visible_snapshot=False,
+        chat_type="private",
+        anchor_recent_count=5,
+    ):
         path = self._get_memory_path(chat_name)
         normalized_entries = []
         for entry in entries or []:
@@ -254,6 +294,8 @@ class MemoryManager:
             source = str(entry.get("source", "") or "").strip()
             if source:
                 normalized["source"] = source
+            if bool(entry.get("time_inferred")):
+                normalized["time_inferred"] = True
             if isinstance(entry.get("image_paths"), list):
                 image_paths = [str(path or "").strip() for path in entry.get("image_paths") if str(path or "").strip()]
                 if image_paths:
@@ -280,24 +322,38 @@ class MemoryManager:
             else:
                 messages = []
 
+            repair_plan = None
+            if reconcile_visible_snapshot:
+                repair_plan = build_repair_plan(
+                    messages,
+                    normalized_entries,
+                    anchor_recent_count=anchor_recent_count,
+                    chat_type=chat_type,
+                )
+                normalized_entries = repair_plan.messages_to_append
+
             existing_keys = {
                 unique_message_key(item)
                 for item in messages
                 if isinstance(item, dict) and unique_message_key(item)
             }
             added = 0
-            normalized_entries.sort(
-                key=lambda item: (
-                    self._parse_message_time(item.get("time")) or datetime.max,
-                    unique_message_key(item),
+            indexed_entries = list(enumerate(normalized_entries))
+            indexed_entries.sort(
+                key=lambda pair: (
+                    self._parse_message_time(pair[1].get("time")) or datetime.max,
+                    pair[0],
                 )
             )
+            normalized_entries = [entry for _, entry in indexed_entries]
             for entry in normalized_entries:
+                entry.pop("time_inferred", None)
                 key = unique_message_key(entry)
-                if not key or key in existing_keys:
+                if not key or (not reconcile_visible_snapshot and key in existing_keys):
                     continue
                 messages = self._append_message_in_order(messages, entry, recent_count=10)
-                existing_keys.add(key)
+                if not reconcile_visible_snapshot:
+                    existing_keys.add(key)
                 added += 1
             try:
                 max_count = int(max_count)
@@ -305,9 +361,15 @@ class MemoryManager:
                 max_count = 0
             if max_count > 0 and len(messages) > max_count:
                 messages = messages[-max_count:]
-            with open(path, "w", encoding="utf-8") as file:
-                json.dump(messages, file, ensure_ascii=False, indent=2)
-            return {"added": added, "total": len(messages)}
+            if added:
+                _atomic_write_json(path, messages)
+            result = {"added": added, "total": len(messages)}
+            if repair_plan is not None:
+                result.update(
+                    anchor_found=repair_plan.anchor_found,
+                    anchor_index=repair_plan.anchor_index,
+                )
+            return result
 
     @staticmethod
     def _message_image_paths(entry):
@@ -388,8 +450,7 @@ class MemoryManager:
                     break
             if not updated:
                 return False
-            with open(path, "w", encoding="utf-8") as file:
-                json.dump(messages, file, ensure_ascii=False, indent=2)
+            _atomic_write_json(path, messages)
             return True
 
     def get_messages(self, chat_name, count):
@@ -434,8 +495,7 @@ class MemoryManager:
             path = self._get_memory_path(chat_name)
         with self._get_lock(chat_name):
             try:
-                with open(path, "w", encoding="utf-8") as file:
-                    json.dump([], file, ensure_ascii=False)
+                _atomic_write_json(path, [], indent=None)
             except Exception:
                 pass
 
@@ -448,8 +508,7 @@ class MemoryManager:
             memory_file = os.path.join(base, chat_dir, f"{chat_dir}_memory.json")
             if os.path.exists(memory_file):
                 try:
-                    with open(memory_file, "w", encoding="utf-8") as file:
-                        json.dump([], file, ensure_ascii=False)
+                    _atomic_write_json(memory_file, [], indent=None)
                     count += 1
                 except Exception:
                     pass

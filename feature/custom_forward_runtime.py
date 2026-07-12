@@ -16,16 +16,39 @@ def send_custom_forward_action(bot, action, chat, message):
     if not target:
         return
     time.sleep(1)
+    guard = getattr(bot, "_config_ui_task_guard", None)
+    task_key, task_version = guard("custom_forward") if callable(guard) else ("", 0)
+    stable_delivery = getattr(bot, "_stable_inbound_delivery_id", None)
+    delivery_id = (
+        stable_delivery(f"custom-forward:{target}:{action.get('kind')}", chat, message)
+        if callable(stable_delivery)
+        else ""
+    )
     success = False
     error = ""
     if action.get("kind") == "forward":
         source_message = action.get("source_message")
-        with wechat_ui_actions.hold(bot):
-            with warn_slow_wechat_ui_action(f"message.forward({target})"):
-                if source_message:
-                    result = message.forward(target, message=source_message)
-                else:
-                    result = message.forward(target)
+        if getattr(bot, "_ui_owner", None) is None and callable(getattr(message, "forward", None)):
+            with wechat_ui_actions.hold(bot):
+                with warn_slow_wechat_ui_action(f"message.forward({target})"):
+                    if source_message:
+                        result = message.forward(target, message=source_message)
+                    else:
+                        result = message.forward(target)
+        else:
+            try:
+                result = bot._ui_forward_message(
+                    chat,
+                    message,
+                    target,
+                    preface=source_message,
+                    task_key=task_key,
+                    task_version=task_version,
+                    delivery_id=delivery_id,
+                )
+            except wechat_ui_actions.IntentCancelled:
+                log(message=f"[自定义转发] 规则已更新或关闭，已取消 {chat.who} → {target} 的旧转发")
+                return
         remember_echo = getattr(bot, "_remember_private_outbound_echo", None)
         success, error = is_forward_result_success(result)
         if success and callable(remember_echo):
@@ -33,7 +56,21 @@ def send_custom_forward_action(bot, action, chat, message):
                 remember_echo(target, "text", source_message, source="custom_forward")
             remember_echo(target, getattr(message, "type", "unknown"), source="custom_forward")
     else:
-        result = send_text_to_target(bot, target, action.get("content", ""))
+        send_actions = getattr(bot, "_send_actions_to_target_without_child", None)
+        if getattr(bot, "_ui_owner", None) is not None and callable(send_actions):
+            try:
+                result = send_actions(
+                    target,
+                    [{"type": "text", "text": str(action.get("content") or "")}],
+                    task_key=task_key,
+                    task_version=task_version,
+                    delivery_id=delivery_id,
+                )
+            except wechat_ui_actions.IntentCancelled:
+                log(message=f"[自定义转发] 规则已更新或关闭，已取消 {chat.who} → {target} 的旧转发")
+                return
+        else:
+            result = send_text_to_target(bot, target, action.get("content", ""))
         success = True if result is None else ReplyCountStore.was_send_success(result)
         if not success and isinstance(result, dict):
             error = str(result.get("message") or result.get("error") or "").strip()

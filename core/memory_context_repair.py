@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from core.message_pipeline import (
     UNRECOGNIZED_VOICE_TEXT,
@@ -13,11 +13,10 @@ from core.message_pipeline import (
 )
 
 
-DEFAULT_LOW_RISK_COOLDOWN_SECONDS = 300
-DEFAULT_HIGH_RISK_COOLDOWN_SECONDS = 3600
+DEFAULT_CONTEXT_REPAIR_COOLDOWN_SECONDS = 300
 DEFAULT_ANCHOR_RECENT_COUNT = 5
 DEFAULT_VISIBLE_LIMIT = 30
-DEFAULT_HISTORY_LIMIT = 50
+DEFAULT_LOCAL_HISTORY_LIMIT = 50
 NEARBY_DUPLICATE_WINDOW_SECONDS = 600
 
 
@@ -45,18 +44,6 @@ def normalize_message_content(content, msg_type="") -> str:
     if msg_type == "image":
         return "[图片]"
     return text
-
-
-def parse_message_time(value):
-    text = clean_text(value)
-    if not text:
-        return None
-    for fmt in ("%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(text, fmt)
-        except Exception:
-            pass
-    return None
 
 
 def is_unrecognized_voice(item) -> bool:
@@ -95,6 +82,18 @@ def relaxed_duplicate_key(item, *, chat_type="private") -> str:
         parts.append(sender)
     parts.extend([msg_type, content])
     return "|".join(parts)
+
+
+def parse_message_time(value):
+    text = clean_text(value)
+    if not text:
+        return None
+    for fmt in ("%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            pass
+    return None
 
 
 def message_fingerprint(item) -> str:
@@ -156,6 +155,75 @@ def normalize_wechat_message(message, *, source="wechat_context_repair") -> dict
     return entry
 
 
+def _assign_snapshot_times_before(entries, indexes, anchor_time, *, include_anchor=False):
+    anchor_dt = parse_message_time(anchor_time)
+    if not anchor_dt or not indexes:
+        return
+    use_dash = "-" in clean_text(anchor_time)
+    fmt = "%Y-%m-%d %H:%M:%S" if use_dash else "%Y/%m/%d %H:%M:%S"
+    last_offset = len(indexes) - 1 if include_anchor else len(indexes)
+    for position, index in enumerate(indexes):
+        entries[index]["time"] = (anchor_dt - timedelta(seconds=last_offset - position)).strftime(fmt)
+        entries[index]["time_inferred"] = True
+
+
+def normalize_wechat_snapshot(
+    messages,
+    *,
+    source="wechat_context_repair",
+    fallback_tail_time="",
+) -> list[dict]:
+    entries = []
+    latest_time_marker = ""
+    leading_without_time = []
+    for message in messages or []:
+        msg_type = normalize_message_type(getattr(message, "type", "text"))
+        raw_time = clean_text(getattr(message, "time", ""))
+        if msg_type == "time":
+            if not latest_time_marker and leading_without_time:
+                _assign_snapshot_times_before(entries, leading_without_time, raw_time)
+                leading_without_time = []
+            latest_time_marker = raw_time or latest_time_marker
+            continue
+        entry = normalize_wechat_message(message, source=source)
+        entry["time"] = raw_time or latest_time_marker
+        entries.append(entry)
+        if not entry["time"]:
+            leading_without_time.append(len(entries) - 1)
+    if leading_without_time:
+        tail_time = clean_text(fallback_tail_time) or datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+        _assign_snapshot_times_before(
+            entries,
+            leading_without_time,
+            tail_time,
+            include_anchor=True,
+        )
+    return entries
+
+
+def snapshot_messages_through_current(messages, current_message):
+    source = list(messages or [])
+    current_id = clean_text(getattr(current_message, "id", ""))
+    current_hash_text = clean_text(getattr(current_message, "hash_text", ""))
+    current_entry = normalize_wechat_message(current_message, source="current_snapshot_tail")
+    current_fp = message_fingerprint(current_entry)
+    matched_raw_index = None
+    for index, item in enumerate(source):
+        if normalize_message_type(getattr(item, "type", "text")) == "time":
+            continue
+        item_id = clean_text(getattr(item, "id", ""))
+        if current_id and item_id and item_id == current_id:
+            return source[:index + 1]
+        item_hash_text = clean_text(getattr(item, "hash_text", ""))
+        if current_hash_text and item_hash_text and item_hash_text == current_hash_text:
+            return source[:index + 1]
+        if current_fp and message_fingerprint(normalize_wechat_message(item)) == current_fp:
+            matched_raw_index = index
+    if matched_raw_index is None:
+        return source
+    return source[:matched_raw_index + 1]
+
+
 def filter_model_repair_messages(messages) -> list[dict]:
     result = []
     for item in messages or []:
@@ -211,29 +279,29 @@ def find_anchor_index(
     remote = filter_model_repair_messages(remote_history)
     if not remote:
         return None
-    remote_fps = [repair_anchor_fingerprint(item, chat_type=chat_type) for item in remote]
-    remote_fps = [fp for fp in remote_fps if fp]
+    remote_anchor_pairs = [
+        (index, repair_anchor_fingerprint(item, chat_type=chat_type))
+        for index, item in enumerate(remote)
+    ]
+    remote_anchor_pairs = [(index, fp) for index, fp in remote_anchor_pairs if fp]
+    remote_fps = [fp for _, fp in remote_anchor_pairs]
     local_fps = recent_repair_anchor_fingerprints(
         local_history,
         anchor_recent_count,
         chat_type=chat_type,
     )
-    if not local_fps:
-        return None
-
     max_sequence = min(len(local_fps), len(remote_fps))
     for size in range(max_sequence, 1, -1):
         sequence = local_fps[-size:]
         for start in range(len(remote_fps) - size, -1, -1):
             if _tail_sequence_match(remote_fps, sequence, start):
-                return start + size - 1
+                return remote_anchor_pairs[start + size - 1][0]
 
-    last_fp = local_fps[-1]
-    if not last_fp:
-        return None
-    matches = [index for index, fp in enumerate(remote_fps) if fp == last_fp]
-    if len(matches) == 1:
-        return matches[0]
+    if local_fps:
+        last_fp = local_fps[-1]
+        matches = [index for index, fp in remote_anchor_pairs if fp == last_fp]
+        if len(matches) == 1:
+            return matches[0]
     return None
 
 
@@ -252,33 +320,51 @@ def build_repair_plan(
         chat_type=chat_type,
     )
     local_messages = filter_model_repair_messages(local_history)
-    existing_keys = {unique_message_key(item) for item in local_messages if unique_message_key(item)}
-    existing_relaxed_keys = []
-    for item in local_messages:
-        key = relaxed_duplicate_key(item, chat_type=chat_type)
-        item_time = parse_message_time(item.get("time"))
-        if key and item_time:
-            existing_relaxed_keys.append((key, item_time))
-
-    def already_have_nearby_duplicate(item) -> bool:
-        key = relaxed_duplicate_key(item, chat_type=chat_type)
-        item_time = parse_message_time(item.get("time"))
-        if not key or not item_time:
-            return False
-        for existing_key, existing_time in existing_relaxed_keys:
-            if existing_key == key and abs((item_time - existing_time).total_seconds()) <= NEARBY_DUPLICATE_WINDOW_SECONDS:
-                return True
-        return False
-
-    messages_to_append = [
-        dict(item)
-        for item in remote
-        if (
-            unique_message_key(item)
-            and unique_message_key(item) not in existing_keys
-            and not already_have_nearby_duplicate(item)
+    unmatched_local = set(range(len(local_messages)))
+    messages_to_append = []
+    for remote_item in remote:
+        exact_key = unique_message_key(remote_item)
+        exact_match = next(
+            (
+                index
+                for index in unmatched_local
+                if exact_key and unique_message_key(local_messages[index]) == exact_key
+            ),
+            None,
         )
-    ]
+        if exact_match is not None:
+            unmatched_local.remove(exact_match)
+            continue
+
+        relaxed_key = relaxed_duplicate_key(remote_item, chat_type=chat_type)
+        remote_time = parse_message_time(remote_item.get("time"))
+        nearby_matches = []
+        if relaxed_key and remote_time:
+            for index in unmatched_local:
+                local_item = local_messages[index]
+                local_time = parse_message_time(local_item.get("time"))
+                if not local_time or relaxed_duplicate_key(local_item, chat_type=chat_type) != relaxed_key:
+                    continue
+                delta = abs((remote_time - local_time).total_seconds())
+                if delta <= NEARBY_DUPLICATE_WINDOW_SECONDS:
+                    nearby_matches.append((delta, index))
+        if nearby_matches:
+            _, nearby_match = min(nearby_matches)
+            unmatched_local.remove(nearby_match)
+            continue
+        if remote_item.get("time_inferred") and relaxed_key:
+            inferred_match = next(
+                (
+                    index
+                    for index in sorted(unmatched_local, reverse=True)
+                    if relaxed_duplicate_key(local_messages[index], chat_type=chat_type) == relaxed_key
+                ),
+                None,
+            )
+            if inferred_match is not None:
+                unmatched_local.remove(inferred_match)
+                continue
+        messages_to_append.append(dict(remote_item))
     return RepairPlan(
         anchor_index=anchor,
         messages_to_append=messages_to_append,
@@ -305,13 +391,22 @@ def current_message_found_near_tail(local_history, current_message, *, tail_coun
     if not candidates:
         return False
     tail = recent_effective_messages(local_history, max(tail_count, len(candidates)))
+    unmatched_tail = set(range(len(tail)))
     for current_entry in candidates:
         current_key = unique_message_key(current_entry)
         current_fp = message_fingerprint(current_entry)
-        if not any(
-            (current_key and unique_message_key(item) == current_key)
-            or message_fingerprint(item) == current_fp
-            for item in tail
-        ):
+        matched_index = next(
+            (
+                index
+                for index in unmatched_tail
+                if (
+                    (current_key and unique_message_key(tail[index]) == current_key)
+                    or message_fingerprint(tail[index]) == current_fp
+                )
+            ),
+            None,
+        )
+        if matched_index is None:
             return False
+        unmatched_tail.remove(matched_index)
     return True

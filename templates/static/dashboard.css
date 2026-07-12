@@ -153,11 +153,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 #status-main-card { order: 2; }
 #runtime-metrics-card { order: 3; }
 #activate-card { order: 4; }
-#wechat-cli-card { order: 5; }
-#wechat-cli-card .wechat-cli-actions { justify-content: flex-start; align-items: center; }
-#wechat-cli-card .wechat-cli-toggle { min-width: 118px; }
-#wechat-cli-card .wechat-cli-toggle.is-cli-enabled { background: var(--danger); color: #fff; border-color: var(--danger); }
-#wechat-cli-card .wechat-cli-toggle.is-cli-enabled:hover { background: #DC2626; color: #fff; border-color: #DC2626; }
 #update-card { order: 6; }
 .cfg-inline-balance { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--cfg-inline-gap); min-width: 0; }
 .cfg-inline-copy { min-width: 0; flex: 1 1 auto; }
@@ -1135,11 +1130,12 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .log-entry .log-msg { display: block; color: #bbb; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; word-break: normal; }
 
 /* ===== Switch Row ===== */
-.switch-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 14px; background: var(--muted-bg); border-radius: 6px; margin-bottom: 12px; flex-wrap: wrap; min-width: 0; }
+.switch-row { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--muted-bg); border-radius: 6px; margin-bottom: 12px; flex-wrap: wrap; min-width: 0; }
 .switch-row .form-check-input { margin: 0; flex: 0 0 auto; }
 .switch-row label { margin: 0; font-size: 13.5px; font-weight: 500; color: var(--card-fg); flex: 0 1 auto; min-width: 0; line-height: 1.6; }
 .switch-row .switch-title { font-weight: inherit; color: var(--card-fg); }
 .switch-row .switch-desc { font-size: 12px; color: var(--muted); min-width: 0; flex: 1 1 220px; margin-left: auto; text-align: right; line-height: 1.6; }
+.switch-row > .cfg-hint { min-width: 0; flex: 1 1 220px; margin: 0 0 0 auto; text-align: right; line-height: 1.6; }
 .switch-row .switch-desc--emphasis { color: var(--card-fg); font-weight: 600; }
 .switch-row--ghost { visibility: hidden; pointer-events: none; }
 .memory-config-grid { display: grid; grid-template-columns: repeat(2, minmax(260px, 1fr)); gap: 16px; }
@@ -1180,10 +1176,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .material-source-panel { min-width: 0; display: flex; flex-direction: column; gap: var(--ui-panel-gap); background: var(--surface-l3); border: 1px solid var(--layer-border-subtle); border-radius: 6px; padding: 16px; align-self: stretch; height: 100%; }
 .group-welcome-block { background: var(--muted-bg); border-radius: 6px; padding: 12px 14px; }
 .group-welcome-settings { display: flex; flex-direction: column; gap: var(--ui-panel-gap); margin-top: 0; }
-.group-welcome-probability { display: flex; align-items: center; gap: 14px; min-height: 44px; }
-.group-welcome-probability .cfg-label { margin: 0; min-width: 72px; white-space: nowrap; }
-.group-welcome-probability .form-range { margin: 0; min-width: 120px; }
-.group-welcome-probability #group_welcome_random_number { min-width: 52px; text-align: right; font-weight: 600; }
 .group-welcome-panel .cfg-label,
 .material-source-panel .cfg-label { display: block; }
 .group-welcome-panel textarea { height: 72px; min-height: 72px; resize: vertical; }
@@ -1310,8 +1302,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .group-top-grid,
   .material-top-grid,
   .basic-message-grid { grid-template-columns: 1fr; }
-  .group-welcome-probability { flex-wrap: wrap; }
-  .group-welcome-probability .cfg-label { min-width: 100%; }
 }
 .listen-top-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; align-items: stretch; }
 .listen-top-grid > .switch-row,
@@ -1394,6 +1384,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .contact-maintenance-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 0; }
 .contact-maintenance-note { margin: 0; }
 .contact-maintenance-auto-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.contact-maintenance-auto-grid--stacked { grid-template-columns: minmax(0, 1fr); gap: 16px; }
 .contact-maintenance-auto-field--full { grid-column: 1 / -1; }
 .contact-maintenance-auto-grid .cfg-hint { line-height: 1.6; }
 .relationship-scan-card { margin-top: 16px; }
@@ -1467,11 +1458,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .new-friend-interval-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-width: 0; }
 .new-friend-interval-grid .cfg-label { display: block; margin-bottom: 6px; }
 .new-friend-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.new-friend-nickname-row { display: flex; align-items: center; gap: 10px; padding: 0 0 10px; border: 0; border-bottom: 1px solid var(--layer-border-subtle); border-radius: 0; background: transparent; margin: 0 0 12px; flex-wrap: wrap; }
 .new-friend-nickname-label { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 13.5px; font-weight: 600; color: var(--card-fg); cursor: pointer; }
-.new-friend-inline-switch { flex: 0 0 auto; }
-.new-friend-nickname-row .cfg-hint { margin: 0 0 0 auto; text-align: right; flex: 1 1 220px; }
-.new-friend-nickname-row + .new-friend-field-grid { margin-top: 0; }
 .new-friend-tag-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 12px 0 8px; }
 .new-friend-tag-head .cfg-hint { margin: 0; text-align: right; }
 .new-friend-list { display: grid; gap: 10px; }
@@ -1492,6 +1479,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .summary-action-row .form-select.ui-head-select { width: 100%; min-width: 0; }
   .switch-row--inline-desc { flex-wrap: wrap; align-items: flex-start; }
   .switch-row--inline-desc .switch-desc { flex: 1 1 100%; text-align: left; margin-left: 0; white-space: normal; }
+  .switch-row > .cfg-hint { flex: 1 1 100%; margin-left: 0; text-align: left; white-space: normal; }
   .custom-forward-workbench { grid-template-columns: 1fr; }
   .custom-forward-field-grid { grid-template-columns: 1fr; }
   .custom-forward-add-actions { justify-content: flex-start; }
@@ -1518,7 +1506,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .friend-request-candidate-list { max-height: none; overflow: visible; padding-right: 0; }
   .friend-request-runtime-card .friend-request-candidate-list,
   .friend-request-runtime-card .friend-request-execution-list { max-height: none; overflow: visible; padding-right: 0; }
-  .new-friend-nickname-row .cfg-hint,
   .new-friend-tag-head .cfg-hint { text-align: left; margin-left: 0; }
   .new-friend-welcome-head { flex-wrap: wrap; align-items: flex-start; }
   .new-friend-welcome-head .ui-head__actions { width: 100%; justify-content: flex-start; }

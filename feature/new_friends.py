@@ -1,6 +1,7 @@
 """New-friend business rules kept separate from wxautox execution calls."""
 
 from datetime import datetime
+import unicodedata
 
 MAX_NEW_FRIEND_MESSAGE_FILES = 9
 
@@ -80,12 +81,30 @@ def truncate_remark_units(text, max_units):
     return "".join(result)
 
 
+def normalize_new_friend_nickname(value):
+    """Keep legitimate Unicode nicknames while removing clearly unusable text."""
+    cleaned = []
+    for char in str(value or ""):
+        if char == "\ufffd":
+            continue
+        category = unicodedata.category(char)
+        if category in {"Cc", "Cf", "Cs"}:
+            if char in "\r\n\t":
+                cleaned.append(" ")
+            continue
+        cleaned.append(char)
+    nickname = " ".join("".join(cleaned).split())
+    visible = nickname.replace(" ", "")
+    if not visible or all(char in "?？" for char in visible):
+        return ""
+    return nickname
+
+
 def build_new_friend_remark(
     nickname,
     *,
     prefix="",
     suffix="",
-    use_nickname=True,
     prefix_timestamp=False,
     suffix_timestamp=False,
     now=None,
@@ -96,26 +115,18 @@ def build_new_friend_remark(
     timestamp = current_time.strftime("%Y%m%d%H%M%S")
     leading = timestamp if prefix_timestamp else ""
     prefix = str(prefix or "")
-    name = str(nickname or "") if use_nickname else ""
+    name = normalize_new_friend_nickname(nickname) or f"新好友_{timestamp}"
     suffix = str(suffix or "")
     trailing = timestamp if suffix_timestamp else ""
 
     fixed_left = leading + prefix
     fixed_right = suffix + trailing
-    fixed_units = remark_unit_len(fixed_left) + remark_unit_len(fixed_right)
-    if fixed_units <= max_units:
-        name_units = max_units - fixed_units
-        remark = fixed_left + truncate_remark_units(name, name_units) + fixed_right
-    else:
-        trailing_units = remark_unit_len(trailing)
-        main_units = max(0, max_units - trailing_units)
-        main = truncate_remark_units(fixed_left + suffix, main_units)
-        remark = main + trailing
-
-    if remark:
-        return remark
-    fallback = str(nickname or "新好友") if use_nickname else "新好友"
-    return truncate_remark_units(fallback, max_units)
+    name_part = truncate_remark_units(name, max_units)
+    remaining = max(0, max_units - remark_unit_len(name_part))
+    left_part = truncate_remark_units(fixed_left, remaining)
+    remaining -= remark_unit_len(left_part)
+    right_part = truncate_remark_units(fixed_right, remaining)
+    return left_part + name_part + right_part
 
 
 def build_new_friend_status_lines(
@@ -123,7 +134,6 @@ def build_new_friend_status_lines(
     accept_enabled,
     reply_enabled,
     messages,
-    use_nickname,
     prefix,
     suffix,
     prefix_timestamp,
@@ -132,7 +142,6 @@ def build_new_friend_status_lines(
     """Render the admin command status text for new-friend settings."""
     accept = "开启" if accept_enabled else "关闭"
     reply = "开启" if reply_enabled else "关闭"
-    use_name = "是" if use_nickname else "否"
     prefix_time = "是" if prefix_timestamp else "否"
     suffix_time = "是" if suffix_timestamp else "否"
     configured_messages = [new_friend_welcome_message_summary(messages)] if new_friend_welcome_message_has_content(messages) else ["（无）"]
@@ -140,7 +149,6 @@ def build_new_friend_status_lines(
         "--- 新好友状态 ---",
         f"自动通过好友申请：{accept}",
         f"自动回复新好友：{reply}",
-        f"备注采用昵称：{use_name}",
         f"备注前缀：{prefix or '（空）'}  前缀加时间戳：{prefix_time}",
         f"备注后缀：{suffix or '（空）'}  后缀加时间戳：{suffix_time}",
         "自动回复消息：",

@@ -147,8 +147,9 @@ class ConversationVerifyResult:
 class ConversationVerifySender:
     """Click the existing chat verification link and submit an add-friend request."""
 
-    def __init__(self, *, wait_after_front: float = 0.35):
+    def __init__(self, *, wait_after_front: float = 0.35, assert_owner_thread=None):
         self.wait_after_front = wait_after_front
+        self._assert_owner_thread = assert_owner_thread
 
     def _front(self) -> None:
         bring_wechat_main_window_to_front(wait=self.wait_after_front)
@@ -197,6 +198,9 @@ class ConversationVerifySender:
         permission: str = "不设置",
         max_attempts: int = 2,
     ) -> dict[str, Any]:
+        if not callable(self._assert_owner_thread):
+            raise RuntimeError("好友申请 UI 只能由微信 UI owner 执行")
+        self._assert_owner_thread()
         if not getattr(bot, "wx", None):
             raise RuntimeError("微信客户端未初始化")
         target_name = _clean_text(target_name)
@@ -233,7 +237,22 @@ class ConversationVerifySender:
                 }
                 if permission and permission != "不设置":
                     send_kwargs["permission"] = permission
-                wnd.send(**send_kwargs)
+                try:
+                    wnd.send(**send_kwargs)
+                except Exception as exc:
+                    return ConversationVerifyResult(
+                        "uncertain",
+                        f"好友申请已进入提交阶段，但未能确认结果：{exc}",
+                        {
+                            "target": target_name,
+                            "addmsg": _clean_text(addmsg),
+                            "remark": _clean_text(remark) or target_name,
+                            "permission": permission or "不设置",
+                            "attempt": attempt,
+                            "phase": "submit",
+                            "click": click_meta,
+                        },
+                    ).to_dict()
                 return ConversationVerifyResult(
                     "sent",
                     "好友验证申请已提交",

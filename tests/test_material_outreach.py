@@ -1,4 +1,5 @@
 import unittest
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -6,6 +7,7 @@ from feature.runtime_task_runner import run_due_fixed_material_outreach
 from feature.material_outreach import (
     build_target_snapshot,
     collect_material_source_message,
+    plan_material_outreach_batches,
     rebuild_material_pool_for_source,
     send_names_from_target_snapshot,
 )
@@ -346,6 +348,65 @@ class MaterialOutreachPoolTests(unittest.TestCase):
 
         self.assertEqual(disabled, [])
         self.assertEqual(saved, [])
+
+    def test_once_fixed_material_skips_target_already_sent_by_same_task(self):
+        task = {
+            "task_id": "task_1",
+            "repeat_mode": "once",
+            "targets": ["阿英2", "阿英3"],
+            "material_types": ["all"],
+            "batch_material_strategy": "fixed",
+            "fixed_material_id": "mat_1",
+            "batch_size_fixed": 9,
+        }
+        material = {
+            "id": "mat_1",
+            "status": "active",
+            "type": "link",
+            "type_bucket": "link",
+        }
+
+        plan = plan_material_outreach_batches(
+            task,
+            [material],
+            [{"task_id": "task_1", "material_id": "mat_1", "target": "阿英2", "success": True}],
+            {"mat_1"},
+            now=datetime(2026, 7, 12, 15, 0, 0),
+        )
+
+        self.assertEqual(plan["send"][0]["target"], "阿英3")
+        self.assertEqual([(item["target"], item["reason"]) for item in plan["skip"]], [("阿英2", "already_sent")])
+
+    def test_preface_queue_resolves_completed_cycle_before_removing_record(self):
+        now = datetime(2026, 7, 12, 15, 0, 0)
+        queue = [{
+            "queue_id": "preface_1",
+            "task_id": "task_1",
+            "run_id": "run_1",
+            "target": "阿英2",
+            "status": "pending",
+            "preface_status": "success",
+            "scheduled_at": now.isoformat(),
+        }]
+        saved_queues = []
+        resolved = []
+        bot = SimpleNamespace(
+            is_stop_requested=lambda: False,
+            _material_outreach_runtime_lock=lambda: nullcontext(),
+            _load_material_outreach_preface_queue=lambda: queue,
+            _load_material_outreach_materials=lambda: [],
+            _send_material_outreach_preface_record=lambda record, now=None: record.update(status="sent") or True,
+            _resolve_material_outreach_preface_cycle=lambda task_id, **kwargs: resolved.append(
+                (task_id, kwargs["cycle_records"][0]["status"])
+            ) or True,
+            _save_material_outreach_preface_queue=lambda records: saved_queues.append(list(records)),
+        )
+
+        changed = WXBot._process_material_outreach_preface_queue(bot, now=now)
+
+        self.assertTrue(changed)
+        self.assertEqual(resolved, [("task_1", "sent")])
+        self.assertEqual(saved_queues[-1], [])
 
     def test_ai_material_outreach_success_registers_outbound_echoes(self):
         bot = WXBot.__new__(WXBot)

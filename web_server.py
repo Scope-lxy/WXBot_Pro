@@ -1,6 +1,6 @@
 # /mnt/data/web_server.py
 # ---------------------------------------------
-# 机器人管理网页（含关键词与群欢迎概率扩展）
+# 机器人管理网页
 # ---------------------------------------------
 """
 机器人管理网页
@@ -67,6 +67,7 @@ from core.contact_profiles import (
     contact_send_target,
     default_directory as default_contact_directory,
     dismiss_identity_calibration_pending,
+    directory_lock as contact_directory_lock,
     directory_path as contact_directory_path,
     list_chat_memory_names,
     list_memory_chat_names,
@@ -77,7 +78,6 @@ from core.contact_profiles import (
     reconcile_contact_storage_names,
     save_directory as save_contact_directory,
 )
-from core.local_wechat_reader import check_wechat_cli_status, check_wechat_cli_update, wechat_cli_integration_enabled
 from core.sending import clean_ai_reply_text, sanitize_ai_output_text
 from core.tts import TTSConfigError, create_tts_client, make_tts_cache_path
 from feature.voice_reply import DEFAULT_CHAT_VOICE_REPLY_KEYWORDS, DEFAULT_GROUP_VOICE_REPLY_KEYWORDS
@@ -2136,31 +2136,23 @@ def dashboard():
     config.setdefault('api_capability_map', {})
     config.setdefault('backup_chat_api_index', -1)
     config.setdefault('backup_chat_api_failover_threshold', 3)
-    config.setdefault('wechat_cli_enabled', False)
 
     # —— 新增字段默认值（关键）——
     config.setdefault('group_api_map', {})                   # 群组专属接口映射
-    config.setdefault('group_welcome_random', 1.0)          # 新人欢迎概率
     config.setdefault('chat_keyword_switch', False)          # 私聊关键词开关
     config.setdefault('group_keyword_switch', False)         # 群组关键词开关
     config.setdefault('group_keyword_at_only', False)        # 群聊关键词仅@时回复
     config.setdefault('keyword_dict', {})                    # 关键词字典
     config.setdefault('scheduled_message_task_list', [])     # 统一定时消息任务列表
     config.setdefault('contact_directory_auto_maintenance_switch', False)
-    config.setdefault('contact_directory_auto_maintenance_batch_size', 50)
     config.setdefault('contact_directory_auto_maintenance_interval_minutes', 20)
-    config.setdefault('contact_directory_auto_maintenance_full_scan_interval_days', 7)
     config.setdefault('contact_directory_auto_maintenance_window_start', '00:00')
     config.setdefault('contact_directory_auto_maintenance_window_end', '23:59')
-    config['contact_directory_auto_maintenance_batch_size'] = normalize_auto_maintenance_batch_size(
-        config.get('contact_directory_auto_maintenance_batch_size', 50)
-    )
+    config.pop('contact_directory_auto_maintenance_batch_size', None)
     config['contact_directory_auto_maintenance_interval_minutes'] = coerce_auto_maintenance_interval_minutes(
         config.get('contact_directory_auto_maintenance_interval_minutes', 20)
     )
-    config['contact_directory_auto_maintenance_full_scan_interval_days'] = coerce_auto_maintenance_full_scan_interval_days(
-        config.get('contact_directory_auto_maintenance_full_scan_interval_days', 7)
-    )
+    config.pop('contact_directory_auto_maintenance_full_scan_interval_days', None)
     config['contact_directory_auto_maintenance_window_start'] = coerce_auto_maintenance_window_time(
         config.get('contact_directory_auto_maintenance_window_start', '00:00'),
         '00:00',
@@ -2186,9 +2178,6 @@ def dashboard():
     config.setdefault('ai_material_outreach_detection_message_threshold', 30)
     config.update(normalize_ai_material_outreach_config(config))
     _drop_legacy_ai_material_outreach_fields(config)
-    config.setdefault('moments_like_switch', False)          # 随机朋友圈点赞开关
-    config.setdefault('moments_like_min', 60)                # 随机点赞最小间隔（分钟）
-    config.setdefault('moments_like_max', 120)               # 随机点赞最大间隔（分钟）
     config.setdefault('moments_task_list', [])               # 统一发朋友圈任务列表
     config.setdefault('moments_api_index', 0)                # 发朋友圈专用接口，必须手动选择，默认第一个接口
     config.setdefault('everyday_start_stop_bot_switch', False)
@@ -2198,14 +2187,6 @@ def dashboard():
     config.setdefault('memory_context_switch', config.get('memory_switch', True))
     config.setdefault('memory_max_count', 5000)
     config.setdefault('memory_context_count', 50)
-    config.setdefault('memory_context_repair_low_risk_switch', True)
-    config.setdefault('memory_context_repair_high_risk_switch', False)
-    config.setdefault('reply_delay_switch', True)
-    config.setdefault('reply_delay_first_min', 1)
-    config.setdefault('reply_delay_first_max', 5)
-    config.setdefault('reply_delay_split_min', 1)
-    config.setdefault('reply_delay_split_max', 2)
-    config.setdefault('reply_delay_split_speed_mode', 'fast')
     config.setdefault('wxauto_save_cache_retention_days', 30)
     config.setdefault('clean_ai_reply_switch', True)
     if isinstance(config.get('material_outreach_list'), list):
@@ -2214,7 +2195,6 @@ def dashboard():
             for task in config['material_outreach_list']
             if isinstance(task, dict)
         ]
-    config.setdefault('new_friend_remark_use_nickname', True)
     config.setdefault('new_friend_archive_switch', True)
     config['new_friend_msg'] = normalize_new_friend_welcome_messages(config.get('new_friend_msg'))
     config['new_friend_reply_switch'] = new_friend_welcome_message_has_content(config.get('new_friend_msg'))
@@ -2274,11 +2254,13 @@ def dashboard():
     config.setdefault('text_reply_limit_ai_reply', True)     # 超限后AI自动生成结束语
     config.setdefault('text_reply_limit_reply_once', False)  # 超限话术是否同一用户只发一次
     config.setdefault('chat_split_reply_switch', False)   # 私聊拆分多条回复开关
+    config.setdefault('chat_split_reply_delay_switch', True)
     config.setdefault('chat_split_max_chars', 100)        # 私聊单条最大字数
     config.setdefault('chat_split_max_count', 4)          # 私聊最多条数
     config.setdefault('group_reply_at_msg', True)          # 群聊回复是否@发言人
     config.setdefault('group_reply_quote', True)           # 群聊回复是否引用消息
     config.setdefault('group_split_reply_switch', False)  # 群聊拆分多条回复开关
+    config.setdefault('group_split_reply_delay_switch', True)
     config.setdefault('group_split_max_chars', 100)       # 群聊单条最大字数
     config.setdefault('group_split_max_count', 4)         # 群聊最多条数
     normalize_voice_reply_config(config)
@@ -2478,12 +2460,6 @@ def _dashboard_config_status_snapshot(cfg):
         'memory_switch': bool(cfg.get('memory_switch', True)),
         'memory_context_switch': bool(cfg.get('memory_context_switch', cfg.get('memory_switch', True))),
         'memory_context_count': cfg.get('memory_context_count', 50),
-        'reply_delay_switch': bool(cfg.get('reply_delay_switch', False)),
-        'reply_delay_first_min': cfg.get('reply_delay_first_min', 0),
-        'reply_delay_first_max': cfg.get('reply_delay_first_max', 0),
-        'reply_delay_split_speed_mode': cfg.get('reply_delay_split_speed_mode', 'fast'),
-        'reply_delay_split_min': cfg.get('reply_delay_split_min', 0),
-        'reply_delay_split_max': cfg.get('reply_delay_split_max', 0),
         'default_prompt': str(cfg.get('default_prompt', '默认') or '默认').strip(),
         'clean_ai_reply_switch': bool(cfg.get('clean_ai_reply_switch', True)),
         'chat_voice_reply_switch': bool(cfg.get('chat_voice_reply_switch', False)),
@@ -2491,7 +2467,9 @@ def _dashboard_config_status_snapshot(cfg):
         'chat_image_recognition_switch': bool(cfg.get('chat_image_recognition_switch', False)),
         'group_image_recognition_switch': bool(cfg.get('group_image_recognition_switch', False)),
         'chat_split_reply_switch': bool(cfg.get('chat_split_reply_switch', False)),
+        'chat_split_reply_delay_switch': bool(cfg.get('chat_split_reply_delay_switch', True)),
         'group_split_reply_switch': bool(cfg.get('group_split_reply_switch', False)),
+        'group_split_reply_delay_switch': bool(cfg.get('group_split_reply_delay_switch', True)),
         'text_reply_limit_switch': bool(cfg.get('text_reply_limit_switch', False)),
         'text_reply_limit_count': cfg.get('text_reply_limit_count', 99),
         'text_reply_limit_hours': cfg.get('text_reply_limit_hours', 24),
@@ -3282,7 +3260,6 @@ def _coerce_bool_fields(merged_config):
         'AllListen_filter_mute',
         'chat_listen_only',
         'chat_voice_recognition_switch',
-        'wechat_cli_enabled',
         'group_switch',
         'group_listen_only',
         'group_reply_at',
@@ -3292,7 +3269,6 @@ def _coerce_bool_fields(merged_config):
         'new_friend_switch',
         'new_friend_archive_switch',
         'new_friend_reply_switch',
-        'new_friend_remark_use_nickname',
         'new_friend_remark_prefix_timestamp',
         'new_friend_remark_suffix_timestamp',
         # —— 新增布尔字段 ——
@@ -3302,20 +3278,18 @@ def _coerce_bool_fields(merged_config):
         'ai_material_outreach_switch',
         'contact_directory_auto_maintenance_switch',
         'material_source_silent',           # 素材源非素材消息静默
-        'moments_like_switch',              # 随机朋友圈点赞开关
         'everyday_start_stop_bot_switch',   # 新增
         'memory_switch',                    # 聊天记录保存开关
         'memory_context_switch',            # 最近聊天带入开关
-        'memory_context_repair_low_risk_switch',
-        'memory_context_repair_high_risk_switch',
-        'reply_delay_switch',               # 发送延迟开关
         'clean_ai_reply_switch',            # AI 回复清洗开关
         'chat_image_recognition_switch',    # 私聊图片识别开关
         'group_image_recognition_switch',   # 群组图片识别开关
         'group_voice_recognition_switch',   # 群组语音转文字开关
         'custom_forward_switch',            # 自定义转发总开关
         'chat_split_reply_switch',          # 私聊拆分多条回复开关
+        'chat_split_reply_delay_switch',    # 私聊拆分气泡间隔
         'group_split_reply_switch',         # 群聊拆分多条回复开关
+        'group_split_reply_delay_switch',   # 群聊拆分气泡间隔
         'chat_voice_reply_switch',
         'group_voice_reply_switch',
         'siver_panel_enabled',
@@ -3345,19 +3319,6 @@ def _coerce_list_fields(merged_config):
                 merged_config[field] = []
         if field in merged_config:
             merged_config[field] = [item for item in merged_config[field] if str(item).strip()]
-
-def _coerce_float_fields(merged_config):
-    # 仅当前需要 group_welcome_random，限定 [0.0, 1.0]
-    if 'group_welcome_random' in merged_config:
-        try:
-            val = float(merged_config['group_welcome_random'])
-            if val < 0.0: val = 0.0
-            if val > 1.0: val = 1.0
-            merged_config['group_welcome_random'] = val
-        except (TypeError, ValueError):
-            # 若非法，则保持原值或回退默认
-            merged_config['group_welcome_random'] = float(read_config().get('group_welcome_random', 1.0))
-
 
 def _clean_unique_string_list(value):
     if isinstance(value, list):
@@ -3419,9 +3380,7 @@ def _coerce_int_range_fields(merged_config):
         'chat_memory_interval_hours': (1, 72, 12),
         'chat_memory_protected_recent_count': (0, 200, 20),
         'chat_message_merge_delay': (1, 60, 20),
-        'contact_directory_auto_maintenance_batch_size': (20, 80, 50),
         'contact_directory_auto_maintenance_interval_minutes': (5, 1440, 20),
-        'contact_directory_auto_maintenance_full_scan_interval_days': (1, 30, 7),
         'backup_chat_api_failover_threshold': (1, 10, 3),
         'chat_voice_reply_cooldown_minutes': (0, 1440, 10),
         'chat_voice_reply_limit_count': (0, 99, 50),
@@ -3448,14 +3407,6 @@ def _coerce_int_range_fields(merged_config):
         if merged_config['memory_context_count'] > merged_config['memory_max_count']:
             merged_config['memory_context_count'] = merged_config['memory_max_count']
 
-    reply_delay_first_min = merged_config.get('reply_delay_first_min', 1)
-    reply_delay_first_max = merged_config.get('reply_delay_first_max', 5)
-    reply_delay_split_min = merged_config.get('reply_delay_split_min', reply_delay_first_min)
-    reply_delay_split_max = merged_config.get('reply_delay_split_max', reply_delay_first_max)
-    split_speed_mode = str(merged_config.get('reply_delay_split_speed_mode', 'fast') or 'fast').strip().lower()
-    if split_speed_mode not in ('fast', 'normal', 'slow'):
-        split_speed_mode = 'fast'
-    merged_config['reply_delay_split_speed_mode'] = split_speed_mode
     try:
         wxauto_retention_days = int(merged_config.get('wxauto_save_cache_retention_days', 30))
     except (TypeError, ValueError):
@@ -3463,40 +3414,18 @@ def _coerce_int_range_fields(merged_config):
     if wxauto_retention_days not in {0, 7, 30, 90, 180, 360}:
         wxauto_retention_days = 30
     merged_config['wxauto_save_cache_retention_days'] = wxauto_retention_days
-    try:
-        merged_config['reply_delay_first_min'] = max(1, min(600, int(reply_delay_first_min)))
-    except (TypeError, ValueError):
-        merged_config['reply_delay_first_min'] = 1
-    try:
-        merged_config['reply_delay_first_max'] = max(1, min(600, int(reply_delay_first_max)))
-    except (TypeError, ValueError):
-        merged_config['reply_delay_first_max'] = 5
-    try:
-        merged_config['reply_delay_split_min'] = max(1, min(600, int(reply_delay_split_min)))
-    except (TypeError, ValueError):
-        merged_config['reply_delay_split_min'] = merged_config['reply_delay_first_min']
-    try:
-        merged_config['reply_delay_split_max'] = max(1, min(600, int(reply_delay_split_max)))
-    except (TypeError, ValueError):
-        merged_config['reply_delay_split_max'] = merged_config['reply_delay_first_max']
     if isinstance(merged_config.get('material_outreach_list'), list):
         merged_config['material_outreach_list'] = [
             normalize_material_outreach_task(task)
             for task in merged_config['material_outreach_list']
             if isinstance(task, dict)
         ]
-    if 'contact_directory_auto_maintenance_batch_size' in merged_config:
-        merged_config['contact_directory_auto_maintenance_batch_size'] = normalize_auto_maintenance_batch_size(
-            merged_config.get('contact_directory_auto_maintenance_batch_size')
-        )
     if 'contact_directory_auto_maintenance_interval_minutes' in merged_config:
         merged_config['contact_directory_auto_maintenance_interval_minutes'] = coerce_auto_maintenance_interval_minutes(
             merged_config.get('contact_directory_auto_maintenance_interval_minutes')
         )
-    if 'contact_directory_auto_maintenance_full_scan_interval_days' in merged_config:
-        merged_config['contact_directory_auto_maintenance_full_scan_interval_days'] = coerce_auto_maintenance_full_scan_interval_days(
-            merged_config.get('contact_directory_auto_maintenance_full_scan_interval_days')
-        )
+    merged_config.pop('contact_directory_auto_maintenance_batch_size', None)
+    merged_config.pop('contact_directory_auto_maintenance_full_scan_interval_days', None)
     if 'contact_directory_auto_maintenance_window_start' in merged_config:
         merged_config['contact_directory_auto_maintenance_window_start'] = coerce_auto_maintenance_window_time(
             merged_config.get('contact_directory_auto_maintenance_window_start'),
@@ -3767,7 +3696,6 @@ def save_config(config_data):
 
         _coerce_bool_fields(merged_config)
         _coerce_list_fields(merged_config)
-        _coerce_float_fields(merged_config)
         _coerce_int_range_fields(merged_config)
         _coerce_backup_chat_api_fields(merged_config)
         _coerce_dict_fields(merged_config)
@@ -3861,7 +3789,6 @@ def save_config_route():
         # 预处理（与 save_config 二次校验互补）
         _coerce_bool_fields(merged_config)
         _coerce_list_fields(merged_config)
-        _coerce_float_fields(merged_config)
         _coerce_int_range_fields(merged_config)
         _coerce_backup_chat_api_fields(merged_config)
         _coerce_dict_fields(merged_config)
@@ -3880,18 +3807,6 @@ def save_config_route():
             global update_config_status
             update_config_status = True # 执行了保存配置
             if bot_thread and bot_thread.is_alive() and bot:
-                if 'wechat_cli_enabled' in (config_data or {}):
-                    enabled = bool(merged_config.get('wechat_cli_enabled', False))
-                    try:
-                        bot._local_wechat_reader_enabled = enabled
-                        if hasattr(bot, 'config'):
-                            bot.config.wechat_cli_enabled = enabled
-                            if isinstance(getattr(bot.config, 'config', None), dict):
-                                bot.config.config['wechat_cli_enabled'] = enabled
-                        if not enabled:
-                            _set_wechat_cli_status(check_wechat_cli_status())
-                    except Exception as e:
-                        log('WARNING', f'运行中 wechat-cli 开关同步失败，将在下次重启后生效：{e}')
                 api_runtime_fields = {
                     'api_configs',
                     'api_index',
@@ -4432,26 +4347,39 @@ bot = None
 bot_thread = None
 relationship_full_scan_thread = None
 relationship_full_scan_thread_lock = threading.Lock()
+panel_wechat_jobs = {}
+panel_wechat_jobs_lock = threading.Lock()
+
+
+def _start_panel_wechat_job(name, target):
+    with panel_wechat_jobs_lock:
+        current = panel_wechat_jobs.get(name)
+        if current and current.is_alive():
+            return False
+
+        def run():
+            try:
+                target()
+            finally:
+                with panel_wechat_jobs_lock:
+                    if panel_wechat_jobs.get(name) is threading.current_thread():
+                        panel_wechat_jobs.pop(name, None)
+
+        worker = threading.Thread(target=run, name=f'panel-{name}', daemon=True)
+        panel_wechat_jobs[name] = worker
+        worker.start()
+        return True
 bot_stop_requested = threading.Event()
+bot_stop_worker = None
+bot_stop_worker_lock = threading.Lock()
 BOT_STOP_WAIT_TIMEOUT_SECONDS = 10
 BOT_START_WAIT_TIMEOUT_SECONDS = 8
 BOT_START_PENDING_MESSAGE = '正在连接微信，请稍候'
-_VALID_BOT_STARTUP_STATUSES = {'idle', 'pending', 'success', 'error'}
+_VALID_BOT_STARTUP_STATUSES = {'idle', 'pending', 'success', 'stopping', 'error'}
 bot_startup_state_lock = threading.Lock()
 bot_startup_state = {
     'status': 'idle',
     'message': '机器人未启动',
-}
-wechat_cli_status_lock = threading.Lock()
-wechat_cli_status_checking = False
-wechat_cli_status_cache = {
-    'available': False,
-    'state': 'unknown',
-    'title': '尚未检测',
-    'message': '正在等待状态检测。',
-    'detail': '',
-    'checked_at': '',
-    'version': '',
 }
 
 # ============================================================
@@ -4497,6 +4425,7 @@ def _normalize_bot_startup_state(status=None, message=None):
         'idle': '机器人未启动',
         'pending': BOT_START_PENDING_MESSAGE,
         'success': '机器人已启动',
+        'stopping': '正在停止机器人',
         'error': '机器人启动失败',
     }
     return {
@@ -4517,169 +4446,6 @@ def _get_bot_startup_state_snapshot():
     with bot_startup_state_lock:
         snapshot = dict(bot_startup_state)
     return _normalize_bot_startup_state(snapshot.get('status'), snapshot.get('message'))
-
-
-def _wechat_cli_status_snapshot():
-    with wechat_cli_status_lock:
-        snapshot = dict(wechat_cli_status_cache)
-        checking = bool(wechat_cli_status_checking)
-    if checking:
-        snapshot['checking'] = True
-        if snapshot.get('state') in {'unknown', 'checking'}:
-            snapshot.update({
-                'available': False,
-                'state': 'checking',
-                'title': '正在检测 wechat-cli',
-                'message': '正在确认本地高速读取是否可用。',
-            })
-    else:
-        snapshot['checking'] = False
-    return snapshot
-
-
-def _set_wechat_cli_status(snapshot):
-    normalized = dict(snapshot or {})
-    normalized.setdefault('available', False)
-    normalized.setdefault('state', 'unknown')
-    normalized.setdefault('title', '检测结果未知')
-    normalized.setdefault('message', '暂时无法确认 wechat-cli 当前状态。')
-    normalized.setdefault('detail', '')
-    normalized.setdefault('checked_at', '')
-    normalized.setdefault('version', '')
-    normalized['checking'] = False
-    with wechat_cli_status_lock:
-        wechat_cli_status_cache.clear()
-        wechat_cli_status_cache.update(normalized)
-    return dict(normalized)
-
-
-def _send_wechat_cli_live_check_message(message):
-    current_bot = bot
-    wx_client = getattr(current_bot, 'wx', None)
-    if not wx_client:
-        raise RuntimeError('机器人尚未连接微信，无法完成账号活体校验')
-    try:
-        chat_with = getattr(wx_client, 'ChatWith', None)
-        if callable(chat_with):
-            try:
-                chat_result = chat_with('文件传输助手', exact=True)
-            except TypeError:
-                chat_result = chat_with(who='文件传输助手')
-            if chat_result is False:
-                raise RuntimeError('未能切换到文件传输助手')
-            if isinstance(chat_result, dict):
-                status = str(chat_result.get('status') or '').strip()
-                if status and status not in {'成功', 'success', 'ok', 'OK'}:
-                    raise RuntimeError(chat_result.get('message') or status)
-        send_msg = getattr(wx_client, 'SendMsg', None)
-        if not callable(send_msg):
-            raise RuntimeError('当前 wxauto 客户端不支持发送校验消息')
-        result = send_msg(str(message or ''))
-        if isinstance(result, dict):
-            status = str(result.get('status') or '').strip()
-            if status and status not in {'成功', 'success', 'ok', 'OK'}:
-                raise RuntimeError(result.get('message') or status)
-        return True
-    except Exception as exc:
-        raise RuntimeError(f'发送文件传输助手校验消息失败：{exc}')
-
-
-def _current_wechat_cli_expected_account():
-    try:
-        return _running_wx_id()
-    except Exception:
-        return ''
-
-
-def _check_wechat_cli_status_for_current_account():
-    expected_wx_id = _current_wechat_cli_expected_account()
-    return check_wechat_cli_status(
-        expected_wx_id=expected_wx_id,
-        live_check_sender=_send_wechat_cli_live_check_message if expected_wx_id else None,
-    )
-
-
-def _run_wechat_cli_status_check(*, reason='manual', log_result=False):
-    global wechat_cli_status_checking
-    if not wechat_cli_integration_enabled():
-        with wechat_cli_status_lock:
-            wechat_cli_status_checking = False
-        return _set_wechat_cli_status(check_wechat_cli_status())
-    with wechat_cli_status_lock:
-        wechat_cli_status_checking = True
-    try:
-        snapshot = _check_wechat_cli_status_for_current_account()
-        if log_result:
-            if snapshot.get('available'):
-                log('INFO', f"wechat-cli 状态检测通过：{snapshot.get('title')}")
-            else:
-                detail = str(snapshot.get('detail') or '').strip()
-                suffix = f"：{detail}" if detail else ''
-                log('WARNING', f"wechat-cli 状态检测未通过，已保持 wxautox4 回退：{snapshot.get('title')}{suffix}")
-        return _set_wechat_cli_status(snapshot)
-    except Exception as e:
-        snapshot = {
-            'available': False,
-            'state': 'error',
-            'title': '状态检测异常',
-            'message': '本地高速读取暂不可用，机器人会自动回退微信界面读取。',
-            'detail': str(e)[:300],
-            'checked_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'version': '',
-        }
-        if log_result:
-            log('WARNING', f"wechat-cli 状态检测异常，已保持 wxautox4 回退：{e}")
-        return _set_wechat_cli_status(snapshot)
-    finally:
-        with wechat_cli_status_lock:
-            wechat_cli_status_checking = False
-
-
-def _start_wechat_cli_status_check_async(*, reason='startup'):
-    global wechat_cli_status_checking
-    if not wechat_cli_integration_enabled():
-        _set_wechat_cli_status(check_wechat_cli_status())
-        return False
-    with wechat_cli_status_lock:
-        if wechat_cli_status_checking:
-            return False
-        wechat_cli_status_checking = True
-        wechat_cli_status_cache.update({
-            'available': False,
-            'state': 'checking',
-            'title': '正在检测 wechat-cli',
-            'message': '正在确认本地高速读取是否可用。',
-            'detail': '',
-        })
-
-    def worker():
-        global wechat_cli_status_checking
-        try:
-            snapshot = _check_wechat_cli_status_for_current_account()
-            if snapshot.get('available'):
-                log('INFO', f"wechat-cli 状态检测通过：{snapshot.get('title')}")
-            else:
-                detail = str(snapshot.get('detail') or '').strip()
-                suffix = f"：{detail}" if detail else ''
-                log('WARNING', f"wechat-cli 状态检测未通过，已保持 wxautox4 回退：{snapshot.get('title')}{suffix}")
-            _set_wechat_cli_status(snapshot)
-        except Exception as e:
-            _set_wechat_cli_status({
-                'available': False,
-                'state': 'error',
-                'title': '状态检测异常',
-                'message': '本地高速读取暂不可用，机器人会自动回退微信界面读取。',
-                'detail': str(e)[:300],
-                'checked_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                'version': '',
-            })
-            log('WARNING', f"wechat-cli 状态检测异常，已保持 wxautox4 回退：{e}")
-        finally:
-            with wechat_cli_status_lock:
-                wechat_cli_status_checking = False
-
-    threading.Thread(target=worker, name=f"wechat-cli-status-{reason}", daemon=True).start()
-    return True
 
 
 def _report_bot_startup_state(success, message, event=None, state=None):
@@ -4796,19 +4562,47 @@ def _stop_running_bot_and_wait(wait_timeout=BOT_STOP_WAIT_TIMEOUT_SECONDS):
     return True, '机器人已停止'
 
 
+def _request_running_bot_stop_async():
+    global bot_stop_worker
+    thread = bot_thread
+    current_bot = bot
+    if not thread or not thread.is_alive():
+        return False, '机器人未运行'
+    with bot_stop_worker_lock:
+        if bot_stop_worker and bot_stop_worker.is_alive():
+            return True, '机器人正在停止'
+        bot_stop_requested.set()
+        _set_bot_startup_state('stopping', '机器人正在停止')
+        if current_bot and hasattr(current_bot, 'stop_wxbot'):
+            if not current_bot.stop_wxbot():
+                _set_bot_startup_state('error', '停止机器人失败')
+                return False, '停止机器人失败'
+
+        def finish_stop():
+            global bot_stop_worker
+            try:
+                thread.join()
+                if bot_thread is thread:
+                    _clear_bot_runtime_refs()
+                bot_stop_requested.clear()
+                _set_bot_startup_state('idle', '机器人未启动')
+                _restore_sleep()
+                log('SUCCESS', '机器人已停止')
+            except Exception as exc:
+                _set_bot_startup_state('error', f'停止机器人失败：{exc}')
+                log('ERROR', f'后台等待机器人停止失败：{exc}')
+            finally:
+                with bot_stop_worker_lock:
+                    bot_stop_worker = None
+
+        bot_stop_worker = threading.Thread(target=finish_stop, name='bot-stop-waiter', daemon=True)
+        bot_stop_worker.start()
+    return True, '机器人正在停止'
+
+
 def _startup_status_callback(event, state):
     def mark(success, message):
         _report_bot_startup_state(success, message, event, state)
-        if success:
-            def delayed_check():
-                if not wechat_cli_integration_enabled():
-                    _set_wechat_cli_status(check_wechat_cli_status())
-                    return
-                for _attempt in range(3):
-                    if _start_wechat_cli_status_check_async(reason='bot-ready'):
-                        return
-                    time.sleep(1)
-            threading.Thread(target=delayed_check, name='wechat-cli-status-after-bot-ready', daemon=True).start()
     return mark
 
 @app.route('/start_bot', methods=['POST'])
@@ -4835,18 +4629,37 @@ def start_bot():
 def get_startup_status():
     return jsonify(_get_bot_startup_state_snapshot())
 
+
+@app.route('/runtime_health')
+def runtime_health():
+    if request.remote_addr not in {'127.0.0.1', '::1'}:
+        return jsonify({'status': 'error'}), 404
+    snapshot = _get_bot_startup_state_snapshot()
+    owner = getattr(bot, '_ui_owner', None) if bot is not None else None
+    owner_running = bool(getattr(owner, 'is_running', False))
+    stop_requested = bool(bot.is_stop_requested()) if bot is not None else True
+    bot_running = bool(
+        bot_thread
+        and bot_thread.is_alive()
+        and bot is not None
+        and snapshot.get('status') == 'success'
+        and owner_running
+        and not stop_requested
+    )
+    return jsonify({
+        'status': 'ok',
+        'bot_running': bot_running,
+        'runtime_id': str(getattr(bot, '_runtime_instance_id', '') or '') if bot_running else '',
+    })
+
 @app.route('/stop_bot', methods=['POST'])
 @login_required
 def stop_bot():
     log('INFO', '机器人停止请求已接收')
     global bot_thread, bot
     if bot_thread and bot_thread.is_alive():
-        ok, message = _stop_running_bot_and_wait()
-        if ok:
-            return jsonify({'status': 'success', 'message': message})
-        if ok is None:
-            return jsonify({'status': 'stopping', 'message': message})
-        return jsonify({'status': 'error', 'message': message})
+        ok, message = _request_running_bot_stop_async()
+        return jsonify({'status': 'stopping' if ok else 'error', 'message': message})
     else:
         log('WARNING', '状态：机器人未运行')
         return jsonify({'status': 'error', 'message': '机器人未运行'})
@@ -4862,60 +4675,6 @@ def check_activate():
             'wxautox4_version': _get_wxautox_version(),
         }})
     except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
-
-
-def _wechat_cli_repair_advice(snapshot):
-    state = str((snapshot or {}).get('state') or '').strip()
-    if state == 'available':
-        return 'wechat-cli 当前可用，不需要修复。'
-    if state == 'missing_tool':
-        return '未找到 wechat-cli。请确认工具已安装在 venv/tools/wechat-cli/，或设置 WXBOT_WECHAT_CLI_EXE 后重新检测。'
-    if state == 'need_init':
-        return '工具已安装但未初始化。请确认当前登录的微信账号后，手动完成 wechat-cli 初始化，再重新检测。'
-    if state in {'read_failed', 'invalid_output'}:
-        return '工具已安装但读取失败。常见原因是切换了微信账号、数据库目录变化或密钥失效；请重新确认当前账号的数据目录并初始化。'
-    if state == 'account_unverified':
-        return '当前微信账号尚未和 wechat-cli 数据目录完成绑定。请先启动机器人并确保 wxautox4 授权可用，系统会向文件传输助手发送一条简短校验消息后自动绑定。'
-    return '暂时无法自动修复。请先查看日志里的 wechat-cli 状态检测原因，然后重新检测。'
-
-
-@app.route('/check_wechat_cli_status')
-@login_required
-def check_wechat_cli_status_route():
-    force = str(request.args.get('force', '') or '').strip().lower() in {'1', 'true', 'yes'}
-    if force:
-        return jsonify({'status': 'success', 'data': _run_wechat_cli_status_check(reason='manual', log_result=True)})
-    snapshot = _wechat_cli_status_snapshot()
-    if snapshot.get('state') == 'unknown' and not snapshot.get('checking'):
-        _start_wechat_cli_status_check_async(reason='dashboard')
-        snapshot = _wechat_cli_status_snapshot()
-    return jsonify({'status': 'success', 'data': snapshot})
-
-
-@app.route('/repair_wechat_cli_status', methods=['POST'])
-@login_required
-def repair_wechat_cli_status_route():
-    snapshot = _run_wechat_cli_status_check(reason='repair', log_result=True)
-    return jsonify({
-        'status': 'success',
-        'message': _wechat_cli_repair_advice(snapshot),
-        'data': snapshot,
-    })
-
-
-@app.route('/check_wechat_cli_update')
-@login_required
-def check_wechat_cli_update_route():
-    try:
-        result = check_wechat_cli_update()
-        if result.get('ok'):
-            log('INFO', f"wechat-cli 更新检查完成：{result.get('title')}")
-        else:
-            log('WARNING', f"wechat-cli 更新检查未完成：{result.get('title')} - {result.get('message')}")
-        return jsonify({'status': 'success', 'data': result})
-    except Exception as e:
-        log('WARNING', f'wechat-cli 更新检查异常：{e}')
         return jsonify({'status': 'error', 'message': str(e)})
 
 
@@ -5983,20 +5742,21 @@ def _contact_profiles_remove_tag(wx_id, tag):
     if not tag or tag == '__all__':
         raise ValueError('该标签不允许删除')
     path = contact_directory_path(CONTACT_PROFILES_DIR, wx_id)
-    directory = load_contact_directory(path, wx_id=wx_id)
-    changed = False
-    for subject in directory.get('subjects') or []:
-        if not isinstance(subject, dict):
-            continue
-        old_tags = normalize_tag_list(subject.get('tags'))
-        new_tags = [item for item in old_tags if item != tag]
-        if new_tags == old_tags:
-            continue
-        subject['tags'] = new_tags
-        changed = True
-    if changed:
-        directory['updated_at'] = datetime.now().replace(microsecond=0).isoformat()
-        save_contact_directory(path, directory)
+    with contact_directory_lock(path):
+        directory = load_contact_directory(path, wx_id=wx_id)
+        changed = False
+        for subject in directory.get('subjects') or []:
+            if not isinstance(subject, dict):
+                continue
+            old_tags = normalize_tag_list(subject.get('tags'))
+            new_tags = [item for item in old_tags if item != tag]
+            if new_tags == old_tags:
+                continue
+            subject['tags'] = new_tags
+            changed = True
+        if changed:
+            directory['updated_at'] = datetime.now().replace(microsecond=0).isoformat()
+            save_contact_directory(path, directory)
     return changed
 
 
@@ -6297,9 +6057,10 @@ def contact_profiles_identity_calibration_dismiss(fingerprint):
     try:
         wx_id = _contact_profiles_wx_id_from_request()
         path = contact_directory_path(CONTACT_PROFILES_DIR, wx_id)
-        directory = load_contact_directory(path, wx_id=wx_id)
-        directory = dismiss_identity_calibration_pending(directory, fingerprint)
-        save_contact_directory(path, directory)
+        with contact_directory_lock(path):
+            directory = load_contact_directory(path, wx_id=wx_id)
+            directory = dismiss_identity_calibration_pending(directory, fingerprint)
+            save_contact_directory(path, directory)
         index = directory.get('identity_calibration') if isinstance(directory.get('identity_calibration'), dict) else {}
         log('INFO', f'[身份校准] 已标记不是同一人：{fingerprint}')
         return jsonify({
@@ -6319,44 +6080,45 @@ def contact_profiles_identity_calibration_merge(fingerprint):
     try:
         wx_id = _contact_profiles_wx_id_from_request()
         path = contact_directory_path(CONTACT_PROFILES_DIR, wx_id)
-        directory = load_contact_directory(path, wx_id=wx_id)
-        index = directory.get('identity_calibration') if isinstance(directory.get('identity_calibration'), dict) else {}
-        target = None
-        for item in index.get('pending') or []:
-            if isinstance(item, dict) and str(item.get('fingerprint') or '') == str(fingerprint or ''):
-                target = item
-                break
-        if not target:
-            return jsonify({'status': 'error', 'message': '待确认项不存在'}), 404
-        old_name = str(target.get('old_name') or '').strip()
-        new_name = str(target.get('new_name') or '').strip()
-        if not old_name or not new_name:
-            return jsonify({'status': 'error', 'message': '待确认项缺少可合并的会话名'}), 400
-        manifest = reconcile_contact_storage_names(
-            DATA_DIR,
-            wx_id,
-            old_name,
-            new_name,
-            reason='manual_identity_calibration',
-        )
-        index['pending'] = [
-            item for item in (index.get('pending') or [])
-            if not (
-                isinstance(item, dict)
-                and (
-                    str(item.get('fingerprint') or '') == str(fingerprint or '')
-                    or (
-                        old_name
-                        and new_name
-                        and str(item.get('old_name') or '').strip() == old_name
-                        and str(item.get('new_name') or '').strip() == new_name
+        with contact_directory_lock(path):
+            directory = load_contact_directory(path, wx_id=wx_id)
+            index = directory.get('identity_calibration') if isinstance(directory.get('identity_calibration'), dict) else {}
+            target = None
+            for item in index.get('pending') or []:
+                if isinstance(item, dict) and str(item.get('fingerprint') or '') == str(fingerprint or ''):
+                    target = item
+                    break
+            if not target:
+                return jsonify({'status': 'error', 'message': '待确认项不存在'}), 404
+            old_name = str(target.get('old_name') or '').strip()
+            new_name = str(target.get('new_name') or '').strip()
+            if not old_name or not new_name:
+                return jsonify({'status': 'error', 'message': '待确认项缺少可合并的会话名'}), 400
+            manifest = reconcile_contact_storage_names(
+                DATA_DIR,
+                wx_id,
+                old_name,
+                new_name,
+                reason='manual_identity_calibration',
+            )
+            index['pending'] = [
+                item for item in (index.get('pending') or [])
+                if not (
+                    isinstance(item, dict)
+                    and (
+                        str(item.get('fingerprint') or '') == str(fingerprint or '')
+                        or (
+                            old_name
+                            and new_name
+                            and str(item.get('old_name') or '').strip() == old_name
+                            and str(item.get('new_name') or '').strip() == new_name
+                        )
                     )
                 )
-            )
-        ]
-        directory['identity_calibration'] = index
-        directory['updated_at'] = datetime.now().replace(microsecond=0).isoformat()
-        save_contact_directory(path, directory)
+            ]
+            directory['identity_calibration'] = index
+            directory['updated_at'] = datetime.now().replace(microsecond=0).isoformat()
+            save_contact_directory(path, directory)
         _refresh_runtime_identity_after_manual_calibration()
         log('SUCCESS', f'[身份校准] 已确认同一人并合并：{old_name} -> {new_name}')
         return jsonify({
@@ -6520,22 +6282,21 @@ def contact_profiles_repair_remarks():
         if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'repair_contact_profile_remarks')):
             return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
         running_wx_id = _require_running_contact_profiles_wx_id()
-        result = bot.repair_contact_profile_remarks()
-        wx_id = str(result.get('wx_id', '') or running_wx_id or getattr(bot, 'wx_id', '') or '').strip()
-        candidate_count = int(result.get('candidate_count', 0) or 0)
-        success_count = int(result.get('success_count', 0) or 0)
-        failed_count = int(result.get('failed_count', 0) or 0)
-        skipped_count = int(result.get('skipped_count', 0) or 0)
-        if candidate_count <= 0:
-            message = '当前没有可修复联系人。'
-        else:
-            message = f'备注修复完成：成功 {success_count}，失败 {failed_count}，跳过 {skipped_count}。'
+        active_bot = bot
+
+        def repair_worker():
+            try:
+                active_bot.repair_contact_profile_remarks()
+            except Exception as exc:
+                log('ERROR', f'[通讯录维护] 后台备注修复失败：{exc}')
+
+        started = _start_panel_wechat_job('contact-remark-repair', repair_worker)
         return jsonify({
             'status': 'success',
-            'message': message,
-            'data': result,
-            'browser': _contact_profiles_browser_payload(wx_id) if wx_id else _contact_profiles_browser_payload(''),
-        })
+            'message': '备注修复已开始，请稍后刷新查看结果' if started else '备注修复正在进行中',
+            'queued': True,
+            'wx_id': running_wx_id,
+        }), 202
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
@@ -6588,16 +6349,22 @@ def relationship_scan_manual_scan():
     try:
         if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'scan_relationship_sessions')):
             return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
-        _require_running_contact_profiles_wx_id()
-        result = bot.scan_relationship_sessions()
-        count = len(result.get('sessions') or [])
-        scan_source = str(result.get('scan_source') or ((result.get('payload') or {}).get('summary') or {}).get('last_scan_source') or '').strip()
-        source_label = '本地快照' if scan_source == 'wechat_cli' else '微信界面'
+        wx_id = _require_running_contact_profiles_wx_id()
+        active_bot = bot
+
+        def scan_worker():
+            try:
+                active_bot.scan_relationship_sessions()
+            except Exception as exc:
+                log('ERROR', f'[关系扫描] 后台立即扫描失败：{exc}')
+
+        started = _start_panel_wechat_job('relationship-scan', scan_worker)
         return jsonify({
             'status': 'success',
-            'message': f'关系扫描完成，{source_label}读取 {count} 个会话',
-            'payload': result.get('payload') or {},
-        })
+            'message': '关系扫描已开始' if started else '关系扫描正在进行中',
+            'queued': True,
+            'payload': _relationship_scan_payload(wx_id),
+        }), 202
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
@@ -6628,7 +6395,7 @@ def _relationship_full_scan_worker():
             return
         count = len(result.get('sessions') or [])
         scan_source = str(result.get('scan_source') or '').strip()
-        source_label = '本地快照' if scan_source == 'wechat_cli' else '微信界面'
+        source_label = '微信界面'
         log('INFO', f'[关系扫描] 后台全量扫描完成，{source_label}读取 {count} 个会话')
     except Exception as e:
         log('ERROR', f'[关系扫描] 后台全量扫描失败：{e}')
@@ -6720,33 +6487,6 @@ def relationship_scan_full_scan():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-@app.route('/relationship_scan/stop', methods=['POST'])
-@login_required
-def relationship_scan_stop():
-    try:
-        if bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'stop_relationship_full_scan'):
-            _require_running_contact_profiles_wx_id()
-            wx_id = _relationship_scan_wx_id_from_request()
-            state = relationship_scan.load_state(DATA_DIR, wx_id)
-            runtime = state.setdefault('runtime', {})
-            if not runtime.get('full_scan_running'):
-                return jsonify({'status': 'success', 'message': '当前没有正在运行的全量扫描', 'payload': relationship_scan.relationship_scan_payload(state)})
-            payload = bot.stop_relationship_full_scan()
-        else:
-            wx_id = _relationship_scan_wx_id_from_request()
-            state = relationship_scan.load_state(DATA_DIR, wx_id)
-            if not (state.get('runtime') or {}).get('full_scan_running'):
-                return jsonify({'status': 'success', 'message': '当前没有正在运行的全量扫描', 'payload': relationship_scan.relationship_scan_payload(state)})
-            state.setdefault('runtime', {})['stop_requested'] = True
-            state = relationship_scan.save_state(DATA_DIR, state)
-            payload = relationship_scan.relationship_scan_payload(state)
-        return jsonify({'status': 'success', 'message': '已请求停止全量扫描', 'payload': payload})
-    except ValueError as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 400
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
-
 @app.route('/relationship_scan/clear', methods=['POST'])
 @login_required
 def relationship_scan_clear():
@@ -6754,7 +6494,7 @@ def relationship_scan_clear():
         wx_id = _relationship_scan_wx_id_from_request()
         state = relationship_scan.load_state(DATA_DIR, wx_id)
         if (state.get('runtime') or {}).get('full_scan_running'):
-            return jsonify({'status': 'error', 'message': '全量扫描正在运行，请先停止扫描后再清空结果。'})
+            return jsonify({'status': 'error', 'message': '全量扫描正在运行，请等待扫描完成后再清空结果。'})
         state = relationship_scan.save_state(DATA_DIR, relationship_scan.clear_state(state))
         payload = _relationship_scan_payload(state.get('wx_id') or wx_id)
         return jsonify({'status': 'success', 'message': '已清空关系扫描结果和待同步队列，并暂停自动扫描和微信标签同步', 'payload': payload})
@@ -6813,16 +6553,22 @@ def friend_request_run_once():
         if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'run_friend_request_once')):
             return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
         _require_running_contact_profiles_wx_id()
-        result = bot.run_friend_request_once(force=True)
-        status = result.get('status') or 'failed'
-        ok = status in {'sent', 'skipped'}
+        active_bot = bot
         wx_id = str(getattr(bot, 'wx_id', '') or '').strip()
+
+        def request_worker():
+            try:
+                active_bot.run_friend_request_once(force=True)
+            except Exception as exc:
+                log('ERROR', f'[好友申请] 后台手动执行失败：{exc}')
+
+        started = _start_panel_wechat_job('friend-request', request_worker)
         return jsonify({
-            'status': 'success' if ok else 'error',
-            'message': result.get('message') or ('执行完成' if ok else '执行失败'),
-            'payload': _friend_request_payload(wx_id) if wx_id else (result.get('payload') or {}),
-            'result': result.get('result') or {},
-        })
+            'status': 'success',
+            'message': '好友申请已开始' if started else '好友申请正在执行中',
+            'queued': True,
+            'payload': _friend_request_payload(wx_id) if wx_id else {},
+        }), 202
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
@@ -7357,6 +7103,23 @@ def memory_delete_chat(wx_id, chat_name):
         return jsonify({'status': 'error', 'message': str(e)})
 
 
+def _scheduled_start_is_suppressed(marker_path=None, now=None):
+    marker = os.path.abspath(marker_path or os.path.join('runtime', 'suppress_scheduled_bot_start_until.txt'))
+    try:
+        with open(marker, 'r', encoding='utf-8') as handle:
+            deadline = float(handle.read().strip() or 0)
+    except (FileNotFoundError, ValueError, OSError):
+        return False
+    current = time.time() if now is None else float(now)
+    if current < deadline:
+        return True
+    try:
+        os.remove(marker)
+    except OSError:
+        pass
+    return False
+
+
 def time_start_stop():
     """定时启停"""
     def is_target_time(target_hour, target_minute):
@@ -7421,6 +7184,10 @@ def time_start_stop():
                     log('INFO', '配置更新，定时启停未启用')
             if everyday_start_stop_bot_switch:
                 if is_target_time(start_hour, start_minute): # 启动时间
+                    if _scheduled_start_is_suppressed():
+                        log('WARNING', '用户主动停止后的恢复保护仍生效，本分钟跳过定时自动启动')
+                        time.sleep(60)
+                        continue
                     log('INFO', '到达预定启动时间，正在启动机器人')
                     if bot_thread and bot_thread.is_alive():
                         log("WARNING", "状态：机器人已在运行")
@@ -7535,7 +7302,6 @@ def main():
                 "group_reply_at_msg": True,
                 "group_reply_quote": True,
                 "group_welcome": False,
-                "group_welcome_random": 1.0,
                 "group_welcome_msg": "欢迎新朋友！请先查看群公告！",
                 "new_friend_switch": False,
                 "new_friend_archive_switch": True,
@@ -7543,7 +7309,6 @@ def main():
                 "new_friend_msg": {"text": "", "files": []},
                 "new_friend_check_min": 60,
                 "new_friend_check_max": 300,
-                "new_friend_remark_use_nickname": True,
                 "new_friend_remark_prefix": "",
                 "new_friend_remark_prefix_timestamp": False,
                 "new_friend_remark_suffix": "_机器人备注",
@@ -7555,9 +7320,7 @@ def main():
                 "keyword_dict": {},
                 "scheduled_message_task_list": [],
                 "contact_directory_auto_maintenance_switch": False,
-                "contact_directory_auto_maintenance_batch_size": 50,
                 "contact_directory_auto_maintenance_interval_minutes": 20,
-                "contact_directory_auto_maintenance_full_scan_interval_days": 7,
                 "contact_directory_auto_maintenance_window_start": "00:00",
                 "contact_directory_auto_maintenance_window_end": "23:59",
                 "material_source_list": [],
@@ -7571,14 +7334,6 @@ def main():
                 "memory_context_switch": True,
                 "memory_max_count": 5000,
                 "memory_context_count": 50,
-                "memory_context_repair_low_risk_switch": True,
-                "memory_context_repair_high_risk_switch": False,
-                "reply_delay_switch": True,
-                "reply_delay_first_min": 1,
-                "reply_delay_first_max": 5,
-                "reply_delay_split_speed_mode": "fast",
-                "reply_delay_split_min": 1,
-                "reply_delay_split_max": 2,
                 "wxauto_save_cache_retention_days": 30,
                 "clean_ai_reply_switch": True,
                 "chat_image_recognition_switch": False,
@@ -7611,9 +7366,11 @@ def main():
                 "text_reply_limit_reply": "",
                 "text_reply_limit_reply_once": False,
                 "chat_split_reply_switch": False,
+                "chat_split_reply_delay_switch": True,
                 "chat_split_max_chars": 100,
                 "chat_split_max_count": 4,
                 "group_split_reply_switch": False,
+                "group_split_reply_delay_switch": True,
                 "group_split_max_chars": 100,
                 "group_split_max_count": 4,
                 "siver_panel_enabled": False,

@@ -1,18 +1,21 @@
 import unittest
 import json
+import os
 import subprocess
 import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+from core.wechat_ui_runtime import WeChatUIRuntime
 from feature.contacts import analyze_refresh_batch
 from feature.contacts import auto_maintenance_is_due
 from feature.contacts import contact_auto_maintenance_collect_hard_timeout_seconds
 from feature.contacts import contact_auto_maintenance_read_timeout_seconds
 from feature.contacts import check_contact_directory_auto_maintenance
+from feature.contacts import cleanup_orphaned_contact_auto_collector
 from feature.contacts import edit_friend_info_via_chat_profile
 from feature.contacts import has_active_contact_maintenance_conflict
 from feature.contacts import modify_friend_tags_via_chat_profile
@@ -32,7 +35,63 @@ from web_server import (
     memory_chats,
 )
 from web_server import _contact_profiles_summary
+from core.contact_profiles import load_directory as load_contact_directory
 from core.contact_profiles import mark_history_target_status
+from core.contact_profiles import save_directory as save_contact_directory
+
+
+def _contact_owner_for(wx):
+    runtime = WeChatUIRuntime(lambda *_args: None)
+    runtime._client = wx
+    return SimpleNamespace(call=lambda intent, _timeout: runtime.edit_contact(intent.payload))
+
+
+class ContactCollectorOrphanCleanupTests(unittest.TestCase):
+    def test_cleanup_kills_only_registry_process_with_matching_command_line(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry = Path(temp_dir) / "collector.json"
+            script = str(Path(temp_dir) / "contact_auto_collector_worker.py")
+            request = str(Path(temp_dir) / "request.json")
+            registry.write_text(json.dumps({
+                "pid": 4242,
+                "script_path": script,
+                "request_path": request,
+                "created_at": 1,
+            }), encoding="utf-8")
+            completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with (
+                patch("feature.contacts._contact_auto_collector_registry_path", return_value=str(registry)),
+                patch("feature.contacts._windows_process_command_line", return_value=f'python "{script}" --request "{request}"'),
+                patch("feature.contacts.subprocess.run", return_value=completed) as run,
+            ):
+                result = cleanup_orphaned_contact_auto_collector()
+
+            self.assertTrue(result["verified"])
+            self.assertTrue(result["terminated"])
+            self.assertEqual(run.call_args.args[0], ["taskkill", "/PID", "4242", "/T", "/F"])
+            self.assertFalse(registry.exists())
+
+    def test_cleanup_never_kills_reused_pid_with_mismatched_command_line(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry = Path(temp_dir) / "collector.json"
+            registry.write_text(json.dumps({
+                "pid": 4242,
+                "script_path": str(Path(temp_dir) / "contact_auto_collector_worker.py"),
+                "request_path": str(Path(temp_dir) / "request.json"),
+                "created_at": 1,
+            }), encoding="utf-8")
+
+            with (
+                patch("feature.contacts._contact_auto_collector_registry_path", return_value=str(registry)),
+                patch("feature.contacts._windows_process_command_line", return_value="python unrelated.py"),
+                patch("feature.contacts.subprocess.run") as run,
+            ):
+                result = cleanup_orphaned_contact_auto_collector()
+
+            self.assertFalse(result["verified"])
+            run.assert_not_called()
+            self.assertFalse(registry.exists())
 
 
 class WeChatNameSortTests(unittest.TestCase):
@@ -385,7 +444,9 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                     "maintenance": {
                         "auto_cycle_status": "running",
                         "auto_cycle_next_start_name": "主游标",
+                        "auto_cycle_next_start_identity": "wechat_id:primary",
                         "auto_cycle_backup_start_name": "备用游标",
+                        "auto_cycle_backup_start_identity": "wechat_id:backup",
                         "auto_cycle_retry_count": 0,
                         "last_attempted_at": "2026-06-10 20:00:00",
                     }
@@ -431,6 +492,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(calls[0], ("refresh_batch", {
             "mode": "standard",
             "start_name": "主游标",
+            "start_identity": "wechat_id:primary",
             "use_saved_position": True,
             "count_override": 50,
             "run_to_completion": False,
@@ -442,6 +504,101 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(fallback_updates["auto_cycle_next_start_name"], "备用游标")
         self.assertEqual(fallback_updates["auto_cycle_backup_start_name"], "")
         self.assertEqual(fallback_updates["auto_cycle_retry_count"], 1)
+
+    def test_auto_maintenance_timeout_persists_backup_cursor_before_reraising(self):
+        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot._load_contact_profiles_directory = lambda: ({
+            "maintenance": {
+                "auto_cycle_status": "running",
+                "auto_cycle_next_start_name": "主游标",
+                "auto_cycle_next_start_identity": "wechat_id:primary",
+                "auto_cycle_backup_start_name": "备用游标",
+                "auto_cycle_backup_start_identity": "wechat_id:backup",
+                "auto_cycle_retry_count": 0,
+                "last_attempted_at": "2026-06-10 20:00:00",
+            }
+        }, "ignored.json", "scope_rui")
+
+        def fail_batch(**kwargs):
+            bot.calls.append(("refresh_batch", kwargs))
+            raise RuntimeError("通讯录采集超过 300s，已终止本批次")
+
+        bot.refresh_contact_profiles_batch = fail_batch
+        with (
+            patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True),
+            self.assertRaisesRegex(RuntimeError, "超过 300s"),
+        ):
+            check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+
+        saved = [call[1] for call in bot.calls if call[0] == "write_cycle"][-1]
+        self.assertEqual(saved["auto_cycle_status"], "stalled")
+        self.assertEqual(saved["auto_cycle_next_start_name"], "备用游标")
+        self.assertEqual(saved["auto_cycle_backup_start_name"], "")
+        self.assertEqual(saved["auto_cycle_last_outcome"], "primary_cursor_failed")
+        self.assertEqual(saved["auto_cycle_retry_count"], 1)
+
+    def test_auto_maintenance_timeout_on_fallback_cursor_resets_to_head(self):
+        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot._load_contact_profiles_directory = lambda: ({
+            "maintenance": {
+                "auto_cycle_status": "stalled",
+                "auto_cycle_next_start_name": "备用游标",
+                "auto_cycle_next_start_identity": "wechat_id:backup",
+                "auto_cycle_backup_start_name": "",
+                "auto_cycle_retry_count": 1,
+                "last_attempted_at": "2026-06-10 20:00:00",
+            }
+        }, "ignored.json", "scope_rui")
+        bot.refresh_contact_profiles_batch = lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("collector timeout"))
+
+        with (
+            patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True),
+            self.assertRaisesRegex(RuntimeError, "collector timeout"),
+        ):
+            check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+
+        saved = [call[1] for call in bot.calls if call[0] == "write_cycle"][-1]
+        self.assertEqual(saved["auto_cycle_status"], "reset_required")
+        self.assertEqual(saved["auto_cycle_next_start_name"], "")
+        self.assertEqual(saved["auto_cycle_backup_start_name"], "")
+        self.assertEqual(saved["auto_cycle_last_outcome"], "cursor_batch_failed")
+        self.assertEqual(saved["auto_cycle_retry_count"], 2)
+
+    def test_auto_maintenance_tail_probe_timeout_keeps_same_cursor(self):
+        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot._load_contact_profiles_directory = lambda: ({
+            "maintenance": {
+                "auto_cycle_status": "running",
+                "auto_cycle_next_start_name": "最后联系人",
+                "auto_cycle_next_start_identity": "wechat_id:last",
+                "auto_cycle_backup_start_name": "备用游标",
+                "auto_cycle_backup_start_identity": "wechat_id:backup",
+                "auto_cycle_last_outcome": "short_advanced",
+                "auto_cycle_retry_count": 0,
+                "last_attempted_at": "2026-06-10 20:00:00",
+            }
+        }, "ignored.json", "scope_rui")
+
+        def fail_batch(**kwargs):
+            bot.calls.append(("refresh_batch", kwargs))
+            raise RuntimeError("通讯录采集超过 300s，已终止本批次")
+
+        bot.refresh_contact_profiles_batch = fail_batch
+        with (
+            patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True),
+            self.assertRaisesRegex(RuntimeError, "超过 300s"),
+        ):
+            check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+
+        refresh_kwargs = [call[1] for call in bot.calls if call[0] == "refresh_batch"][0]
+        saved = [call[1] for call in bot.calls if call[0] == "write_cycle"][-1]
+        self.assertEqual(refresh_kwargs["count_override"], 2)
+        self.assertEqual(saved["auto_cycle_status"], "running")
+        self.assertEqual(saved["auto_cycle_next_start_name"], "最后联系人")
+        self.assertEqual(saved["auto_cycle_next_start_identity"], "wechat_id:last")
+        self.assertEqual(saved["auto_cycle_backup_start_name"], "备用游标")
+        self.assertEqual(saved["auto_cycle_last_outcome"], "tail_confirm_pending")
+        self.assertNotIn("last_full_scan_completed_at", saved)
 
     def test_auto_maintenance_resets_when_primary_cursor_stalls_without_backup(self):
         calls = []
@@ -468,6 +625,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                     "maintenance": {
                         "auto_cycle_status": "running",
                         "auto_cycle_next_start_name": "主游标",
+                        "auto_cycle_next_start_identity": "wechat_id:primary",
                         "auto_cycle_backup_start_name": "",
                         "auto_cycle_retry_count": 0,
                         "last_attempted_at": "2026-06-10 20:00:00",
@@ -514,6 +672,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(calls[0], ("refresh_batch", {
             "mode": "standard",
             "start_name": "主游标",
+            "start_identity": "wechat_id:primary",
             "use_saved_position": True,
             "count_override": 50,
             "run_to_completion": False,
@@ -552,7 +711,9 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                     "maintenance": {
                         "auto_cycle_status": "running",
                         "auto_cycle_next_start_name": "主游标",
+                        "auto_cycle_next_start_identity": "wechat_id:primary",
                         "auto_cycle_backup_start_name": "备用游标",
+                        "auto_cycle_backup_start_identity": "wechat_id:backup",
                         "auto_cycle_retry_count": 0,
                         "last_attempted_at": "2026-06-10 20:00:00",
                     }
@@ -578,7 +739,9 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                     },
                     "analysis": {"outcome": "advanced", "completed": False},
                     "next_start_name": "新主游标",
+                    "next_start_identity": "wechat_id:new-primary",
                     "backup_start_name": "新备用游标",
+                    "backup_start_identity": "wechat_id:new-backup",
                     "completed": False,
                 }
 
@@ -610,8 +773,22 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(analysis["outcome"], "short_advanced")
         self.assertFalse(analysis["completed"])
 
-    def _tail_confirmation_updates(self, retry_count):
+    def _tail_confirmation_updates(
+        self,
+        retry_count,
+        *,
+        raw_identities=None,
+        outcome="not_advanced",
+        next_name="最后联系人",
+        next_identity="wechat_id:last",
+        result_completed=False,
+    ):
         calls = []
+        raw_identities = list(
+            ["wechat_id:last", "wechat_id:last"]
+            if raw_identities is None
+            else raw_identities
+        )
 
         class FreeLock:
             def acquire(self, blocking=True):
@@ -635,6 +812,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                     "maintenance": {
                         "auto_cycle_status": "running",
                         "auto_cycle_next_start_name": "最后联系人",
+                        "auto_cycle_next_start_identity": "wechat_id:last",
                         "auto_cycle_last_outcome": "short_advanced" if retry_count == 0 else "tail_confirm_pending",
                         "auto_cycle_retry_count": retry_count,
                         "last_attempted_at": "2026-06-10 20:00:00",
@@ -659,10 +837,13 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                             "auto_cycle_batches_completed": 8,
                         }
                     },
-                    "analysis": {"outcome": "not_advanced", "completed": False},
-                    "next_start_name": "最后联系人",
+                    "analysis": {"outcome": outcome, "completed": False},
+                    "next_start_name": next_name,
+                    "next_start_identity": next_identity,
                     "backup_start_name": "",
-                    "completed": False,
+                    "raw_result_count": len(raw_identities),
+                    "raw_result_identities": raw_identities,
+                    "completed": result_completed,
                 }
 
             def _write_contact_directory_auto_cycle_state(self, directory, **updates):
@@ -677,22 +858,72 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
             self.assertTrue(check_contact_directory_auto_maintenance(FakeBot(), now=datetime(2026, 6, 10, 21, 0, 0)))
 
+        refresh_kwargs = [call[1] for call in calls if call[0] == "refresh_batch"][0]
+        self.assertEqual(refresh_kwargs["count_override"], 2)
         return [call[1] for call in calls if call[0] == "write_cycle"][-1]
 
-    def test_auto_maintenance_waits_before_confirming_short_batch_tail(self):
+    def test_auto_maintenance_confirms_short_batch_tail_once(self):
         final_updates = self._tail_confirmation_updates(retry_count=0)
 
-        self.assertEqual(final_updates["auto_cycle_status"], "running")
-        self.assertEqual(final_updates["auto_cycle_last_outcome"], "tail_confirm_pending")
-        self.assertEqual(final_updates["auto_cycle_next_start_name"], "最后联系人")
-        self.assertEqual(final_updates["auto_cycle_retry_count"], 1)
+        self.assertEqual(final_updates["auto_cycle_status"], "completed")
+        self.assertEqual(final_updates["auto_cycle_last_outcome"], "completed")
+        self.assertTrue(final_updates["last_full_scan_completed_at"])
 
-    def test_auto_maintenance_confirms_completion_after_repeated_short_batch_stalls(self):
+    def test_auto_maintenance_confirms_completion_without_repeating_tail_probe(self):
         final_updates = self._tail_confirmation_updates(retry_count=2)
 
         self.assertEqual(final_updates["auto_cycle_status"], "completed")
         self.assertEqual(final_updates["auto_cycle_last_outcome"], "completed")
         self.assertTrue(final_updates["last_full_scan_completed_at"])
+
+    def test_auto_maintenance_single_anchor_tail_probe_stays_pending(self):
+        final_updates = self._tail_confirmation_updates(
+            retry_count=0,
+            raw_identities=["wechat_id:last"],
+        )
+
+        self.assertEqual(final_updates["auto_cycle_status"], "running")
+        self.assertEqual(final_updates["auto_cycle_last_outcome"], "tail_confirm_pending")
+        self.assertEqual(final_updates["auto_cycle_next_start_name"], "最后联系人")
+        self.assertNotIn("last_full_scan_completed_at", final_updates)
+
+    def test_auto_maintenance_tail_probe_ignores_unproven_completed_flag(self):
+        final_updates = self._tail_confirmation_updates(
+            retry_count=0,
+            raw_identities=["wechat_id:last"],
+            result_completed=True,
+        )
+
+        self.assertEqual(final_updates["auto_cycle_status"], "running")
+        self.assertEqual(final_updates["auto_cycle_last_outcome"], "tail_confirm_pending")
+        self.assertNotIn("last_full_scan_completed_at", final_updates)
+
+    def test_auto_maintenance_tail_probe_rejects_missing_or_conflicting_completion_evidence(self):
+        for raw_identities in ([], ["wechat_id:last", "wechat_id:other"]):
+            with self.subTest(raw_identities=raw_identities):
+                final_updates = self._tail_confirmation_updates(
+                    retry_count=0,
+                    raw_identities=raw_identities,
+                    result_completed=True,
+                )
+
+                self.assertEqual(final_updates["auto_cycle_status"], "running")
+                self.assertEqual(final_updates["auto_cycle_last_outcome"], "tail_confirm_pending")
+                self.assertNotIn("last_full_scan_completed_at", final_updates)
+
+    def test_auto_maintenance_tail_probe_with_next_identity_advances(self):
+        final_updates = self._tail_confirmation_updates(
+            retry_count=0,
+            raw_identities=["wechat_id:last", "wechat_id:next"],
+            outcome="advanced",
+            next_name="下一位",
+            next_identity="wechat_id:next",
+        )
+
+        self.assertEqual(final_updates["auto_cycle_status"], "running")
+        self.assertEqual(final_updates["auto_cycle_last_outcome"], "advanced")
+        self.assertEqual(final_updates["auto_cycle_next_start_name"], "下一位")
+        self.assertNotIn("last_full_scan_completed_at", final_updates)
 
     def test_auto_maintenance_empty_batch_does_not_confirm_short_batch_tail(self):
         calls = []
@@ -844,7 +1075,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         self.assertEqual(calls, ["SwitchToContact"])
 
-    def test_prepare_rebinds_and_retries_after_switch_failure(self):
+    def test_prepare_does_not_rebind_after_business_switch_failure(self):
         calls = []
 
         class BrokenWeChat:
@@ -852,22 +1083,15 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                 calls.append("broken")
                 raise RuntimeError("missing contact tab")
 
-        class HealthyWeChat:
-            def SwitchToContact(self):
-                calls.append("healthy")
-
         class FakeBot:
             wx = BrokenWeChat()
 
-        def fake_rebind(bot):
-            calls.append("rebind")
-            bot.wx = HealthyWeChat()
-            return bot.wx
+        with patch("core.wechat_window.rebind_wechat_client") as rebind:
+            with self.assertRaisesRegex(RuntimeError, "missing contact tab"):
+                prepare_contact_directory_window(FakeBot())
 
-        with patch("core.wechat_window.rebind_wechat_client", side_effect=fake_rebind):
-            prepare_contact_directory_window(FakeBot())
-
-        self.assertEqual(calls, ["broken", "rebind", "healthy"])
+        self.assertEqual(calls, ["broken"])
+        rebind.assert_not_called()
 
 
     def test_run_to_completion_passes_previous_tail_as_next_batch_start(self):
@@ -919,40 +1143,27 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         self.assertEqual(settings["count"], 50)
 
-    def test_repair_remarks_retries_single_contact_after_rebind(self):
+    def test_repair_remarks_does_not_rebind_after_business_failure(self):
         calls = []
 
-        class BrokenWeChat:
-            def ChatWith(self, who, exact=True):
-                calls.append(("ChatWith", who, exact))
-                raise RuntimeError("desktop busy")
+        class FakeOwner:
+            owner_thread_id = None
 
-            def EditFriendInfo(self, remark=None, **_kwargs):
-                calls.append(("EditFriendInfo", remark))
-                return {"status": "成功"}
-
-        class HealthyWeChat:
-            def ChatWith(self, who, exact=True):
-                calls.append(("ChatWithRetry", who, exact))
-
-            def EditFriendInfo(self, remark=None, **_kwargs):
-                calls.append(("EditFriendInfoRetry", remark))
-                return {"status": "成功"}
+            def call(self, intent, _timeout):
+                if intent.kind.value == "rebind":
+                    calls.append(("rebind",))
+                    return {"nickname": "测试账号", "wx_id": "scope_rui"}
+                if intent.kind.value == "contact_edit":
+                    calls.append(("EditFriendInfo", intent.payload.get("remark")))
+                    raise RuntimeError("desktop busy")
+                raise AssertionError(intent.kind)
 
         class FakeBot:
             def __init__(self):
-                self.wx = BrokenWeChat()
-                self._wechat_action_lock = None
-
-            def _get_wechat_action_lock(self):
-                class DummyLock:
-                    def __enter__(self_inner):
-                        return self_inner
-
-                    def __exit__(self_inner, exc_type, exc, tb):
-                        return False
-
-                return DummyLock()
+                self.wx = SimpleNamespace()
+                self._ui_owner = FakeOwner()
+                self._ui_runtime = object()
+                self._ui_identity = {"nickname": "测试账号", "wx_id": "scope_rui"}
 
             def _load_contact_profiles_directory(self):
                 return (
@@ -977,10 +1188,8 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             def _contact_profiles_remark_repair_records_file(self):
                 return "ignored-records.json"
 
-        def fake_rebind(bot):
-            calls.append(("rebind",))
-            bot.wx = HealthyWeChat()
-            return bot.wx
+            def _close_dynamic_listener_subwindows(self, _names):
+                return []
 
         with (
             patch("feature.contacts.contact_repair_candidates", return_value=[{
@@ -994,20 +1203,19 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             patch("feature.contacts.append_bounded_record"),
             patch("feature.contacts.save_contact_directory"),
             patch("feature.contacts.apply_repaired_remark", side_effect=lambda directory, contact_key, new_remark, now=None: directory),
-            patch("core.wechat_window.rebind_wechat_client", side_effect=fake_rebind),
         ):
             result = repair_contact_profile_remarks(FakeBot())
 
-        self.assertEqual(result["success_count"], 1)
-        self.assertEqual(result["failed_count"], 0)
-        self.assertIn(("rebind",), calls)
-        self.assertIn(("EditFriendInfoRetry", "阿英2_test"), calls)
+        self.assertEqual(result["success_count"], 0)
+        self.assertEqual(result["failed_count"], 1)
+        self.assertNotIn(("rebind",), calls)
+        self.assertEqual(calls, [("EditFriendInfo", "阿英2_test")])
 
 
     def test_auto_maintenance_batch_size_policy(self):
-        self.assertEqual(normalize_auto_maintenance_batch_size(20), 20)
+        self.assertEqual(normalize_auto_maintenance_batch_size(20), 50)
         self.assertEqual(normalize_auto_maintenance_batch_size(50), 50)
-        self.assertEqual(normalize_auto_maintenance_batch_size(80), 80)
+        self.assertEqual(normalize_auto_maintenance_batch_size(80), 50)
         self.assertEqual(normalize_auto_maintenance_batch_size(10), 50)
         self.assertEqual(normalize_auto_maintenance_batch_size("bad"), 50)
 
@@ -1094,6 +1302,13 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
     def test_auto_maintenance_single_batch_uses_minimal_collector(self):
         calls = []
+        runtime_events = []
+
+        def flaky_runtime_log(*_args, **kwargs):
+            message = str(kwargs.get("message", ""))
+            if "运行事件：" in message:
+                runtime_events.append(message)
+                raise OSError("log unavailable")
 
         class FakeLock:
             def __enter__(self):
@@ -1109,6 +1324,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         class FakeBot:
             wx = FakeWeChat()
+            _runtime_instance_id = "a" * 32
 
             def _get_wechat_action_lock(self):
                 return FakeLock()
@@ -1131,6 +1347,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         with (
             patch("feature.contacts.save_contact_directory"),
             patch("feature.contacts.load_contact_directory", return_value={"subjects": [], "maintenance": {}}),
+            patch("feature.contacts.log", side_effect=flaky_runtime_log),
         ):
             refresh_contact_profiles_single_batch(
                 FakeBot(),
@@ -1141,12 +1358,60 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             )
 
         collector_calls = [call for call in calls if call[0] == "collector"]
+        self.assertEqual(runtime_events, [f"运行事件：通讯录批次完成 runtime_id={'a' * 32}"])
         self.assertEqual(collector_calls[0][1], {
             "start_name": "阿英2",
+            "start_identity": "",
             "count": 50,
             "timeout_seconds": 300,
+            "run_kind": "auto_maintenance",
         })
         self.assertIn(("SwitchToChat",), calls)
+
+    def test_manual_batch_uses_fixed_minimal_collector_when_owner_is_active(self):
+        calls = []
+
+        class FakeWeChat:
+            def GetFriendDetails(self, **_kwargs):
+                raise AssertionError("owner 模式不得在主进程调用 GetFriendDetails")
+
+            def SwitchToChat(self):
+                calls.append(("SwitchToChat",))
+
+        class FakeBot:
+            wx = FakeWeChat()
+            _ui_owner = object()
+
+            def _load_contact_profiles_directory(self):
+                return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
+
+            def _run_contact_auto_maintenance_collector(self, **kwargs):
+                calls.append(("collector", kwargs))
+                return {
+                    "ok": True,
+                    "result": [{"备注": "阿英2"}],
+                    "callback_names": ["阿英2"],
+                    "matched_name": "阿英2",
+                }
+
+        with (
+            patch("feature.contacts.save_contact_directory"),
+            patch("feature.contacts.load_contact_directory", return_value={"subjects": [], "maintenance": {}}),
+        ):
+            refresh_contact_profiles_single_batch(
+                FakeBot(),
+                mode="standard",
+                count_override=20,
+                run_kind="manual_standard",
+            )
+
+        self.assertEqual(calls[0], ("collector", {
+            "start_name": "",
+            "start_identity": "",
+            "count": 50,
+            "timeout_seconds": 300,
+            "run_kind": "manual_standard",
+        }))
 
     def test_contact_read_logs_from_callback_without_duplicate_result_logs(self):
         log_messages = []
@@ -1373,6 +1638,37 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertFalse(saved["directory"]["maintenance"]["paused"])
         self.assertEqual(saved["directory"]["maintenance"]["status"], "idle")
 
+    def test_pause_preserves_contact_fields_added_after_initial_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "contacts.json")
+            initial = {
+                "wx_id": "scope_rui",
+                "subjects": [{"contact_key": "k1", "nickname": "阿英2", "tags": []}],
+                "maintenance": {},
+            }
+            save_contact_directory(path, initial)
+
+            class FakeBot:
+                wx = object()
+
+                def _load_contact_profiles_directory(self):
+                    return load_contact_directory(path, wx_id="scope_rui"), path, "scope_rui"
+
+            stale, _path, _wx_id = FakeBot()._load_contact_profiles_directory()
+            latest = load_contact_directory(path, wx_id="scope_rui")
+            latest["subjects"][0]["tags"] = ["关系扫描新标签"]
+            save_contact_directory(path, latest)
+
+            with patch.object(FakeBot, "_load_contact_profiles_directory", side_effect=[
+                (stale, path, "scope_rui"),
+                (latest, path, "scope_rui"),
+            ]):
+                set_contact_profiles_paused(FakeBot(), True)
+
+            saved = load_contact_directory(path, wx_id="scope_rui")
+            self.assertEqual(saved["subjects"][0]["tags"], ["关系扫描新标签"])
+            self.assertTrue(saved["maintenance"]["paused"])
+
     def test_edit_friend_info_requires_explicit_success(self):
         calls = []
 
@@ -1393,21 +1689,33 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def __init__(self):
                 self._lock = threading.RLock()
+                self._ui_owner = _contact_owner_for(self.wx)
 
             def _get_wechat_action_lock(self):
                 return self._lock
 
-        with patch("feature.contacts.bring_wechat_to_front", return_value=1):
-            with self.assertRaisesRegex(RuntimeError, "未返回明确成功"):
-                edit_friend_info_via_chat_profile(
-                    FakeBot(),
-                    "阿英2",
-                    expected_names={"阿英2"},
-                    add_tags=["付费用户"],
-                )
+        with self.assertRaisesRegex(RuntimeError, "未返回明确成功"):
+            edit_friend_info_via_chat_profile(
+                FakeBot(),
+                "阿英2",
+                expected_names={"阿英2"},
+                add_tags=["付费用户"],
+            )
 
         self.assertEqual(calls[0], ("ChatWith", "阿英2", True))
         self.assertEqual(calls[1], ("ChatInfo",))
+
+    def test_edit_friend_info_rejects_missing_owner_before_ui(self):
+        calls = []
+        bot = SimpleNamespace(
+            wx=SimpleNamespace(ChatWith=lambda *_args, **_kwargs: calls.append("ChatWith")),
+            _ui_owner=None,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "只能由微信 UI owner"):
+            edit_friend_info_via_chat_profile(bot, "阿英2", add_tags=["付费用户"])
+
+        self.assertEqual(calls, [])
 
     def test_modify_friend_tags_uses_generic_chat_profile_path(self):
         calls = []
@@ -1429,16 +1737,16 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def __init__(self):
                 self._lock = threading.RLock()
+                self._ui_owner = _contact_owner_for(self.wx)
 
             def _get_wechat_action_lock(self):
                 return self._lock
 
-        with patch("feature.contacts.bring_wechat_to_front", return_value=1):
-            result = modify_friend_tags_via_chat_profile(
-                FakeBot(),
-                [{"name": "阿英2"}],
-                add_tags=["付费用户"],
-            )
+        result = modify_friend_tags_via_chat_profile(
+            FakeBot(),
+            [{"name": "阿英2"}],
+            add_tags=["付费用户"],
+        )
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["success_count"], 1)
@@ -1446,6 +1754,25 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(calls[1], ("ChatInfo",))
         self.assertEqual(calls[2][0], "EditFriendInfo")
         self.assertEqual(calls[2][1]["add_tags"], ["付费用户"])
+
+    def test_relationship_tag_failure_does_not_rebind_wechat_client(self):
+        owner = Mock()
+        owner.call.side_effect = RuntimeError("标签页面暂时不可用")
+        bot = SimpleNamespace(wx=object(), _ui_owner=owner)
+
+        with patch("core.wechat_window.rebind_wechat_client") as rebind:
+            result = modify_friend_tags_via_chat_profile(
+                bot,
+                [{"name": "阿英2"}],
+                add_tags=["删除我的人"],
+                log_prefix="[关系扫描]",
+                rebind_attempts=1,
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("标签页面暂时不可用", result["message"])
+        owner.call.assert_called_once()
+        rebind.assert_not_called()
 
     def test_modify_friend_tags_closes_dynamic_listener_after_success(self):
         calls = []
@@ -1467,6 +1794,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def __init__(self):
                 self._lock = threading.RLock()
+                self._ui_owner = _contact_owner_for(self.wx)
                 self.all_Mode_listen_list = [["阿英2", 1]]
 
             def _get_wechat_action_lock(self):
@@ -1477,13 +1805,12 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                 self.all_Mode_listen_list.clear()
                 return ["阿英2"]
 
-        with patch("feature.contacts.bring_wechat_to_front", return_value=1):
-            result = modify_friend_tags_via_chat_profile(
-                FakeBot(),
-                [{"name": "阿英2"}],
-                add_tags=["付费用户"],
-                log_prefix="[关系扫描]",
-            )
+        result = modify_friend_tags_via_chat_profile(
+            FakeBot(),
+            [{"name": "阿英2"}],
+            add_tags=["付费用户"],
+            log_prefix="[关系扫描]",
+        )
 
         self.assertEqual(result["status"], "success")
         self.assertIn(("CloseDynamic", ["阿英2"]), calls)
@@ -1508,16 +1835,16 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def __init__(self):
                 self._lock = threading.RLock()
+                self._ui_owner = _contact_owner_for(self.wx)
 
             def _get_wechat_action_lock(self):
                 return self._lock
 
-        with patch("feature.contacts.bring_wechat_to_front", return_value=1):
-            result = modify_friend_tags_via_chat_profile(
-                FakeBot(),
-                [{"name": "阿英2"}],
-                add_tags=["删除我的人"],
-            )
+        result = modify_friend_tags_via_chat_profile(
+            FakeBot(),
+            [{"name": "阿英2"}],
+            add_tags=["删除我的人"],
+        )
 
         edit_calls = [item for item in calls if item[0] == "EditFriendInfo"]
         self.assertEqual(result["status"], "success")
@@ -1545,19 +1872,16 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def __init__(self):
                 self._lock = threading.RLock()
+                self._ui_owner = _contact_owner_for(self.wx)
 
             def _get_wechat_action_lock(self):
                 return self._lock
 
-        with (
-            patch("feature.contacts.bring_wechat_to_front", return_value=1),
-            patch("feature.contacts.move_cursor_to_wechat_main_window_center", return_value=True),
-        ):
-            result = modify_friend_tags_via_chat_profile(
-                FakeBot(),
-                [{"name": "阿英2"}],
-                add_tags=["删除我的人"],
-            )
+        result = modify_friend_tags_via_chat_profile(
+            FakeBot(),
+            [{"name": "阿英2"}],
+            add_tags=["删除我的人"],
+        )
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["success_count"], 1)

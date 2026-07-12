@@ -84,7 +84,6 @@ class WXBotConfig:
         self.group_listen_only = False   # 群聊只监听不 AI 回复
         self.group_reply_at = False     # 群聊是否仅在被 @ 时才回复
         self.group_welcome = False      # 群新人欢迎语开关
-        self.group_welcome_random = 1.0 # 群新人欢迎语触发概率（0.0~1.0）
         self.group_welcome_msg = "欢迎新朋友！请先查看群公告！本消息由wxautox发送!"
 
         # ---------- 新好友配置 ----------
@@ -92,7 +91,6 @@ class WXBotConfig:
         self.new_friend_archive_switch = True # 通过好友后自动修改备注和标签
         self.new_frien_reply_switch = False   # 新好友自动回复开关
         self.new_frien_msg = []               # 通过后自动发送的打招呼消息列表
-        self.new_friend_remark_use_nickname = True
         self.new_friend_remark_prefix_timestamp = False
         self.new_friend_remark_suffix_timestamp = False
 
@@ -125,7 +123,7 @@ class WXBotConfig:
 
         # ---------- 素材转发配置 ----------
         self.contact_directory_auto_maintenance_switch = False
-        self.contact_directory_auto_maintenance_batch_size = 10
+        self.contact_directory_auto_maintenance_batch_size = 50
         self.contact_directory_auto_maintenance_interval_minutes = 10
         self.contact_directory_auto_maintenance_full_scan_interval_days = 7
         self.contact_directory_auto_maintenance_window_start = "00:00"
@@ -147,29 +145,14 @@ class WXBotConfig:
         self.moments_api_index = 0                 # 发朋友圈专用接口
         self.moments_task_list = []             # 统一发朋友圈任务列表
 
-        # ---------- 随机朋友圈点赞配置 ----------
-        self.moments_like_switch = False  # 随机点赞总开关
-        self.moments_like_min    = 60     # 随机间隔最小分钟数
-        self.moments_like_max    = 120    # 随机间隔最大分钟数
-
         # ---------- 对话记忆配置 ----------
         self.memory_switch        = True      # 记忆开关（默认开启）
         self.memory_context_switch = True     # 是否把最近聊天记录带入 AI 上下文
         self.memory_max_count     = 5000     # 单窗口最多存储条数（上限 5000）
         self.memory_context_count = 50       # AI 请求时带入最近聊天记录条数
-        self.memory_context_repair_low_risk_switch = True
-        self.memory_context_repair_high_risk_switch = False
 
-        # ---------- 发送延迟配置 ----------
-        self.reply_delay_switch = True   # 模拟人工操作延迟开关（默认开启）
-        self.reply_delay_first_min = 1   # 首条回复最小延迟秒数
-        self.reply_delay_first_max = 5   # 首条回复最大延迟秒数
-        self.reply_delay_split_speed_mode = "fast"  # 拆分消息发送延迟档位
-        self.reply_delay_split_min = 1   # 拆分消息最小延迟秒数
-        self.reply_delay_split_max = 2   # 拆分消息最大延迟秒数
         self.wxauto_save_cache_retention_days = 30  # wxauto_save 缓存自动清理周期，0=不清理
         self.clean_ai_reply_switch = True  # AI 回复清洗开关
-        self.wechat_cli_enabled = False
         self.current_account_wx_id = ""
 
         # 初始化时自动加载配置并同步到属性
@@ -252,7 +235,6 @@ class WXBotConfig:
                     "group_reply_at_msg": True,
                     "group_reply_quote": True,
                     "group_welcome": False,
-                    "group_welcome_random": 1.0,
                     "group_welcome_msg": "欢迎新朋友！请先查看群公告！",
                     "new_friend_switch": False,
                     "new_friend_archive_switch": True,
@@ -260,7 +242,6 @@ class WXBotConfig:
                     "new_friend_msg": {"text": "", "files": []},
                     "new_friend_check_min": 60,
                     "new_friend_check_max": 300,
-                    "new_friend_remark_use_nickname": True,
                     "new_friend_remark_prefix": "",
                     "new_friend_remark_prefix_timestamp": False,
                     "new_friend_remark_suffix": "_机器人备注",
@@ -284,9 +265,7 @@ class WXBotConfig:
                     "chat_memory_protected_recent_count": CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
                     "scheduled_message_task_list": [],
                     "contact_directory_auto_maintenance_switch": False,
-                    "contact_directory_auto_maintenance_batch_size": 10,
                     "contact_directory_auto_maintenance_interval_minutes": 10,
-                    "contact_directory_auto_maintenance_full_scan_interval_days": 7,
                     "contact_directory_auto_maintenance_window_start": "00:00",
                     "contact_directory_auto_maintenance_window_end": "23:59",
                     "material_source_list": [],
@@ -295,9 +274,6 @@ class WXBotConfig:
                     "material_outreach_list": [],
                     "moments_api_index": 0,
                     "moments_task_list": [],
-                    "moments_like_switch": False,
-                    "moments_like_min": 60,
-                    "moments_like_max": 120,
                     "everyday_start_stop_bot_switch": False,
                     "everyday_start_bot_time": "08:00",
                     "everyday_stop_bot_time": "23:00",
@@ -305,17 +281,8 @@ class WXBotConfig:
                     "memory_context_switch": True,
                     "memory_max_count": 5000,
                     "memory_context_count": 50,
-                    "memory_context_repair_low_risk_switch": True,
-                    "memory_context_repair_high_risk_switch": False,
-                    "reply_delay_switch": True,
-                    "reply_delay_first_min": 1,
-                    "reply_delay_first_max": 5,
-                    "reply_delay_split_speed_mode": "fast",
-                    "reply_delay_split_min": 1,
-                    "reply_delay_split_max": 2,
                     "wxauto_save_cache_retention_days": 30,
                     "clean_ai_reply_switch": True,
-                    "wechat_cli_enabled": False,
                     "chat_image_recognition_switch": False,
                     "chat_voice_recognition_switch": False,
                     "chat_message_merge_delay": 20,
@@ -335,9 +302,11 @@ class WXBotConfig:
                     "text_reply_limit_reply": "",
                     "text_reply_limit_reply_once": False,
                     "chat_split_reply_switch": False,
+                    "chat_split_reply_delay_switch": True,
                     "chat_split_max_chars": 100,
                     "chat_split_max_count": 4,
                     "group_split_reply_switch": False,
+                    "group_split_reply_delay_switch": True,
                     "group_split_max_chars": 100,
                     "group_split_max_count": 4,
                     "tts_configs": [default_tts_config()],
@@ -874,7 +843,6 @@ class WXBotConfig:
         self.group_reply_at_msg   = bool(self.config.get('group_reply_at_msg', True))
         self.group_reply_quote    = bool(self.config.get('group_reply_quote', False))
         self.group_welcome        = self.config.get('group_welcome')
-        self.group_welcome_random = self.config.get('group_welcome_random')
         self.group_welcome_msg    = self.config.get('group_welcome_msg', '')
 
         # 新好友配置
@@ -887,7 +855,6 @@ class WXBotConfig:
         )
         self.new_friend_check_min    = max(60, int(self.config.get('new_friend_check_min', 60)))
         self.new_friend_check_max    = min(3600, max(self.new_friend_check_min, int(self.config.get('new_friend_check_max', 300))))
-        self.new_friend_remark_use_nickname = bool(self.config.get('new_friend_remark_use_nickname', True))
         self.new_friend_remark_prefix = self.config.get('new_friend_remark_prefix', '')
         self.new_friend_remark_prefix_timestamp = bool(self.config.get('new_friend_remark_prefix_timestamp', False))
         self.new_friend_remark_suffix = self.config.get('new_friend_remark_suffix', '_机器人备注')
@@ -910,15 +877,11 @@ class WXBotConfig:
         self.contact_directory_auto_maintenance_switch = bool(
             self.config.get('contact_directory_auto_maintenance_switch', False)
         )
-        self.contact_directory_auto_maintenance_batch_size = normalize_auto_maintenance_batch_size(
-            self.config.get('contact_directory_auto_maintenance_batch_size', 10)
-        )
+        self.contact_directory_auto_maintenance_batch_size = 50
         self.contact_directory_auto_maintenance_interval_minutes = coerce_auto_maintenance_interval_minutes(
             self.config.get('contact_directory_auto_maintenance_interval_minutes', 10)
         )
-        self.contact_directory_auto_maintenance_full_scan_interval_days = coerce_auto_maintenance_full_scan_interval_days(
-            self.config.get('contact_directory_auto_maintenance_full_scan_interval_days', 7)
-        )
+        self.contact_directory_auto_maintenance_full_scan_interval_days = 7
         self.contact_directory_auto_maintenance_window_start = coerce_auto_maintenance_window_time(
             self.config.get('contact_directory_auto_maintenance_window_start', '00:00'),
             '00:00',
@@ -927,9 +890,9 @@ class WXBotConfig:
             self.config.get('contact_directory_auto_maintenance_window_end', '23:59'),
             '23:59',
         )
-        self.config['contact_directory_auto_maintenance_batch_size'] = self.contact_directory_auto_maintenance_batch_size
+        self.config.pop('contact_directory_auto_maintenance_batch_size', None)
         self.config['contact_directory_auto_maintenance_interval_minutes'] = self.contact_directory_auto_maintenance_interval_minutes
-        self.config['contact_directory_auto_maintenance_full_scan_interval_days'] = self.contact_directory_auto_maintenance_full_scan_interval_days
+        self.config.pop('contact_directory_auto_maintenance_full_scan_interval_days', None)
         self.config['contact_directory_auto_maintenance_window_start'] = self.contact_directory_auto_maintenance_window_start
         self.config['contact_directory_auto_maintenance_window_end'] = self.contact_directory_auto_maintenance_window_end
         self.material_source_list = self.config.get('material_source_list', [])
@@ -970,10 +933,6 @@ class WXBotConfig:
             self.moments_task_list = []
             self.config['moments_task_list'] = []
 
-        # 随机朋友圈点赞配置
-        self.moments_like_switch = self.config.get('moments_like_switch', False)
-        self.moments_like_min    = max(1,    int(self.config.get('moments_like_min', 60)))
-        self.moments_like_max    = max(self.moments_like_min, int(self.config.get('moments_like_max', 120)))
 
         # 对话记忆配置
         self.memory_switch        = self.config.get('memory_switch', True)
@@ -986,69 +945,6 @@ class WXBotConfig:
         )
         if self.memory_context_count > self.memory_max_count:
             self.memory_context_count = self.memory_max_count
-        repair_defaults = {
-            "memory_context_repair_low_risk_switch": True,
-            "memory_context_repair_high_risk_switch": False,
-        }
-        repair_needs_save = any(key not in self.config for key in repair_defaults)
-        for key, value in repair_defaults.items():
-            self.config.setdefault(key, value)
-        self.memory_context_repair_low_risk_switch = bool(
-            self.config.get("memory_context_repair_low_risk_switch", True)
-        )
-        self.memory_context_repair_high_risk_switch = bool(
-            self.config.get("memory_context_repair_high_risk_switch", False)
-        )
-        if repair_needs_save:
-            self.config.update({
-                "memory_context_repair_low_risk_switch": self.memory_context_repair_low_risk_switch,
-                "memory_context_repair_high_risk_switch": self.memory_context_repair_high_risk_switch,
-            })
-            self.save_config()
-
-        # 发送延迟配置
-        removed_delay_keys = False
-        for key in (f"reply_delay_{suffix}" for suffix in ("min", "max")):
-            removed_delay_keys = self.config.pop(key, None) is not None or removed_delay_keys
-        _delay_defaults = {
-            'reply_delay_switch': True,
-            'reply_delay_first_min': 1,
-            'reply_delay_first_max': 5,
-            'reply_delay_split_speed_mode': 'fast',
-            'reply_delay_split_min': 1,
-            'reply_delay_split_max': 2,
-            'wxauto_save_cache_retention_days': 30,
-        }
-        _needs_save = removed_delay_keys or any(k not in self.config for k in _delay_defaults)
-        for k, v in _delay_defaults.items():
-            self.config.setdefault(k, v)
-        if _needs_save:
-            self.save_config()
-            log(message="已自动补充发送延迟配置默认值并写回配置文件")
-        self.reply_delay_switch = bool(self.config.get('reply_delay_switch', True))
-        self.reply_delay_first_min = self._coerce_int_range(
-            self.config.get('reply_delay_first_min', 1), 1, 1, 600
-        )
-        self.reply_delay_first_max = self._coerce_int_range(
-            self.config.get('reply_delay_first_max', 5), 5, 1, 600
-        )
-        split_speed_mode = str(self.config.get('reply_delay_split_speed_mode', 'fast') or 'fast').strip().lower()
-        if split_speed_mode not in ('fast', 'normal', 'slow'):
-            split_speed_mode = 'fast'
-        self.reply_delay_split_speed_mode = split_speed_mode
-        self.config['reply_delay_split_speed_mode'] = split_speed_mode
-        self.reply_delay_split_min = self._coerce_int_range(
-            self.config.get('reply_delay_split_min', self.reply_delay_first_min),
-            self.reply_delay_first_min,
-            1,
-            600,
-        )
-        self.reply_delay_split_max = self._coerce_int_range(
-            self.config.get('reply_delay_split_max', self.reply_delay_first_max),
-            self.reply_delay_first_max,
-            1,
-            600,
-        )
         self.wxauto_save_cache_retention_days = self._coerce_choice_int(
             self.config.get('wxauto_save_cache_retention_days', 30),
             30,
@@ -1056,8 +952,6 @@ class WXBotConfig:
         )
         self.config['wxauto_save_cache_retention_days'] = self.wxauto_save_cache_retention_days
         self.clean_ai_reply_switch = bool(self.config.get('clean_ai_reply_switch', True))
-        self.wechat_cli_enabled = bool(self.config.get('wechat_cli_enabled', False))
-        self.config['wechat_cli_enabled'] = self.wechat_cli_enabled
 
         # 图片识别配置
         self.chat_image_recognition_switch  = bool(self.config.get('chat_image_recognition_switch', False))
@@ -1134,9 +1028,11 @@ class WXBotConfig:
 
         # 拆分多条回复配置
         self.chat_split_reply_switch  = bool(self.config.get('chat_split_reply_switch', False))
+        self.chat_split_reply_delay_switch = bool(self.config.get('chat_split_reply_delay_switch', True))
         self.chat_split_max_chars     = max(1, int(self.config.get('chat_split_max_chars', 100)))
         self.chat_split_max_count     = max(1, int(self.config.get('chat_split_max_count', 4)))
         self.group_split_reply_switch = bool(self.config.get('group_split_reply_switch', False))
+        self.group_split_reply_delay_switch = bool(self.config.get('group_split_reply_delay_switch', True))
         self.group_split_max_chars    = max(1, int(self.config.get('group_split_max_chars', 100)))
         self.group_split_max_count    = max(1, int(self.config.get('group_split_max_count', 4)))
         normalize_tts_settings(self.config)
@@ -1315,14 +1211,6 @@ class WXBotConfig:
         except Exception:
             number = int(default)
         return number if number in set(choices or []) else int(default)
-
-    def human_delay(self, split_continuation=False):
-        """模拟首条回复的人工操作随机延迟。"""
-        if not self.reply_delay_switch:
-            return
-        lo = min(self.reply_delay_first_min, self.reply_delay_first_max)
-        hi = max(self.reply_delay_first_min, self.reply_delay_first_max)
-        time.sleep(random.randint(lo, hi))
 
     @staticmethod
     def get_run_time(start_time):

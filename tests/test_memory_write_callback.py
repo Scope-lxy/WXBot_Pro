@@ -58,6 +58,45 @@ class InMemoryChatMemory:
 
 
 class MemoryWriteCallbackTests(unittest.TestCase):
+    def test_private_message_saved_before_queue_is_not_saved_again_by_callback_tail(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=True,
+            memory_max_count=5000,
+            group_welcome=False,
+            group=[],
+            cmd="admin",
+        )
+        bot.memory_manager = CaptureMemory()
+        bot._mark_chat_memory_dirty = lambda *_args, **_kwargs: True
+        bot._handle_material_source_message = lambda *_args, **_kwargs: False
+        bot.callback_is_die = False
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
+        msg = SimpleNamespace(attr="friend", sender="张三", content="同一条入站", type="text")
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        self.assertTrue(bot._save_private_incoming_memory_message(chat, msg))
+        with mock.patch("feature.message_routing.handle_friend_message_callback", return_value=True):
+            bot.message_handle_callback(msg, chat)
+
+        self.assertEqual(len(bot.memory_manager.calls), 1)
+        self.assertTrue(getattr(msg, "_wxbot_memory_persisted", False))
+
+    def test_dirty_marker_failure_does_not_retry_durable_message_save(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(memory_switch=True, memory_max_count=5000)
+        bot.memory_manager = CaptureMemory()
+        bot._mark_chat_memory_dirty = mock.Mock(side_effect=RuntimeError("dirty failed"))
+        msg = SimpleNamespace(attr="friend", sender="张三", content="已落盘", type="text")
+        chat = SimpleNamespace(who="张三", chat_type="private")
+
+        self.assertTrue(bot._save_private_incoming_memory_message(chat, msg))
+        self.assertTrue(bot._save_private_incoming_memory_message(chat, msg))
+
+        self.assertEqual(len(bot.memory_manager.calls), 1)
+        self.assertTrue(getattr(msg, "_wxbot_memory_persisted", False))
+
     def test_message_callback_saves_memory_with_callback_receive_time(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
@@ -951,9 +990,9 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         msg = SimpleNamespace(
             attr="group",
             sender="B",
-            content="",
+            content=r"C:\tmp\group-image.png",
             type="image",
-            download=lambda: r"C:\tmp\group-image.png",
+            _wxbot_media_prepared=True,
         )
         chat = SimpleNamespace(who="测试群", chat_type="group")
 

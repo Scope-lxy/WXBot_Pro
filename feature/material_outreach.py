@@ -634,6 +634,7 @@ def _snapshot_contact(contact):
         "contact_key": str(contact.get("contact_key") or ""),
         "send_name": send_name,
         "display_name": display_name,
+        "require_contact_key": bool(contact.get("contact_key")),
         "tags": list(contact.get("tags") or []),
         "warnings": list(contact.get("warnings") or []),
     }
@@ -843,6 +844,16 @@ def _material_sent_to_target(send_records, material_id, target):
     )
 
 
+def _task_material_sent_to_target(send_records, task_id, material_id, target):
+    return any(
+        record.get("task_id") == task_id
+        and record.get("material_id") == material_id
+        and record.get("target") == target
+        and record.get("success")
+        for record in send_records or []
+    )
+
+
 def select_material_for_target(
     materials,
     *,
@@ -952,15 +963,26 @@ def plan_material_outreach_batches(
     skip_records = []
     preface_config = normalize_material_outreach_preface_config(task)
     preface_mode = preface_config.get("preface_mode", "none")
+    strategy = normalize_batch_material_strategy(task.get("batch_material_strategy") or "per_batch")
+    fixed_material_id = str(task.get("fixed_material_id") or task.get("material_id") or "")
+    is_once = str(task.get("repeat_mode") or "").strip() == "once"
     eligible_targets = []
     for target in task.get("targets", []) or []:
+        if is_once and fixed_material_id and _task_material_sent_to_target(
+            send_records,
+            task.get("task_id"),
+            fixed_material_id,
+            target,
+        ):
+            skip_records.append(
+                build_skip_record(task.get("task_id"), target, "already_sent", "单次任务已成功转发，跳过重复提交", now=now)
+            )
+            continue
         if is_target_in_cooldown(send_records, target, task.get("cooldown_hours", 0), now=now):
             skip_records.append(build_skip_record(task.get("task_id"), target, "cooldown", "同好友冷却未结束", now=now))
             continue
         eligible_targets.append(target)
 
-    strategy = normalize_batch_material_strategy(task.get("batch_material_strategy") or "per_batch")
-    fixed_material_id = str(task.get("fixed_material_id") or task.get("material_id") or "")
     run_material = None
     if strategy == "fixed" and not fixed_material_id:
         for target in eligible_targets:
@@ -1072,6 +1094,7 @@ def build_send_record(
     raw_messages=None,
     raw_media=None,
     raw_material=None,
+    status="",
 ):
     now = now or datetime.now()
     contact_fields = _record_contact_fields(target, raw_targets)
@@ -1101,6 +1124,7 @@ def build_send_record(
         "display_name": contact_fields["display_name"],
         "sent_at": now.replace(microsecond=0).isoformat(),
         "success": bool(success),
+        "status": str(status or "").strip() or ("success" if success else "failed"),
         "error": str(error or ""),
         "preface": str(preface or ""),
         "batch_id": str(batch_id or ""),
@@ -1314,11 +1338,11 @@ def _snapshot_contact_by_send_name(snapshot):
     return by_name
 
 
-def update_progress_records_for_send(path, snapshot, targets, *, success, error="", now=None, limit=1000):
+def update_progress_records_for_send(path, snapshot, targets, *, success=False, status="", error="", now=None, limit=1000):
     by_name = _snapshot_contact_by_send_name(snapshot)
     run_id = (snapshot or {}).get("run_id") or ""
     task_id = (snapshot or {}).get("task_id") or ""
-    status = "success" if success else "failed"
+    status = str(status or "").strip() or ("success" if success else "failed")
     progress = []
     for target in targets or []:
         send_name = str(target or "").strip()

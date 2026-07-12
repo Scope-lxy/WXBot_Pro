@@ -2,7 +2,9 @@
 
 import hashlib
 import re
+from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import Any
 
 QUOTE_IMAGE_MARKER = "+引用的图片:"
 SINGLE_EMOTION_TEXT = "对方发来了一个微信表情（无法识别具体表情内容）"
@@ -40,6 +42,72 @@ MESSAGE_TYPE_PREFIX_PATTERNS = {
 }
 VIDEO_DURATION_SUFFIX_RE = re.compile(r'\s*(\d+:\d+)\s*$')
 LOCAL_PATH_RE = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\|/|file://)', re.IGNORECASE)
+
+
+def _plain_scalar(value: Any, default: Any = "") -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (bool, int, float, str, bytes)):
+        return value
+    return str(value)
+
+
+@dataclass
+class ConversationRef:
+    """Pure-data conversation identity copied at the wxautox callback edge."""
+
+    who: str
+    chat_type: str = "private"
+
+    @classmethod
+    def from_wx_chat(cls, chat: Any) -> "ConversationRef":
+        return cls(
+            who=str(getattr(chat, "who", "") or "").strip(),
+            chat_type=str(getattr(chat, "chat_type", "private") or "private").strip() or "private",
+        )
+
+
+@dataclass
+class MessageEnvelope:
+    """Message scalars safe to pass outside the UI owner thread."""
+
+    content: str = ""
+    original_content: str = ""
+    type: str = ""
+    sender: str = ""
+    attr: str = ""
+    id: Any = ""
+    hash: Any = ""
+    hash_text: Any = ""
+    time: Any = ""
+    window_order: int = 0
+    _wxbot_ingress_source: str = ""
+    _wxbot_received_at: float = 0.0
+
+    @classmethod
+    def from_wx_message(
+        cls,
+        message: Any,
+        *,
+        ingress_source: str = "",
+        received_at: float = 0.0,
+        window_order: int = 0,
+    ) -> "MessageEnvelope":
+        content = str(getattr(message, "content", "") or "")
+        return cls(
+            content=content,
+            original_content=content,
+            type=str(getattr(message, "type", "") or ""),
+            sender=str(getattr(message, "sender", "") or ""),
+            attr=str(getattr(message, "attr", "") or ""),
+            id=_plain_scalar(getattr(message, "id", "")),
+            hash=_plain_scalar(getattr(message, "hash", "")),
+            hash_text=_plain_scalar(getattr(message, "hash_text", "")),
+            time=_plain_scalar(getattr(message, "time", "")),
+            window_order=int(window_order or 0),
+            _wxbot_ingress_source=str(ingress_source or ""),
+            _wxbot_received_at=float(received_at or 0.0),
+        )
 
 
 def strip_voice_duration_metadata(content):
@@ -217,6 +285,7 @@ def build_merged_private_message(messages, *, on_extra_image=None):
     attr = "friend"
     pending_emotion_count = 0
     contains_voice_message = False
+    recovery_record_id = ""
     on_extra_image = on_extra_image or (lambda image_path: None)
 
     def flush_emotions():
@@ -230,6 +299,7 @@ def build_merged_private_message(messages, *, on_extra_image=None):
         pending_emotion_count = 0
 
     for msg in source_messages:
+        recovery_record_id = recovery_record_id or str(getattr(msg, "_wxbot_recovery_record_id", "") or "")
         sender = sender or getattr(msg, "sender", "")
         attr = getattr(msg, "attr", attr)
         msg_type = getattr(msg, "type", "")
@@ -288,6 +358,7 @@ def build_merged_private_message(messages, *, on_extra_image=None):
                     attr=attr,
                     _contains_voice_message=contains_voice_message,
                     _merged_source_messages=source_messages,
+                    _wxbot_recovery_record_id=recovery_record_id,
                 )
             merged_content = build_quoted_image_message("", image_paths)
         else:
@@ -299,4 +370,5 @@ def build_merged_private_message(messages, *, on_extra_image=None):
         attr=attr,
         _contains_voice_message=contains_voice_message,
         _merged_source_messages=source_messages,
+        _wxbot_recovery_record_id=recovery_record_id,
     )

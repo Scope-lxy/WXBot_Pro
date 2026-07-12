@@ -4,6 +4,7 @@ import os
 import re
 
 from core import runtime_chat_state
+from core.logger import log
 from feature import takeover_runtime
 from feature.listening import add_listen_chat_once, remove_listen_chat_verified
 
@@ -248,6 +249,12 @@ def handle_take_over_friend(bot, chat, message):
     if runtime_chat_state.pause_single_chat_reply(bot, target):
         takeover_runtime.enter_takeover(bot, target, source="manual")
         takeover_runtime.replay_pending_takeover_messages_to_admin(bot, target)
+        try:
+            runtime_id = str(getattr(bot, "_runtime_instance_id", "") or "").strip().lower()
+            if len(runtime_id) == 32 and all(char in "0123456789abcdef" for char in runtime_id):
+                log(message=f"运行事件：人工介入已确认 runtime_id={runtime_id}")
+        except Exception:
+            pass
         return chat.SendMsg(takeover_runtime.takeover_enter_reply())
     return chat.SendMsg("请提供有效的好友昵称")
 

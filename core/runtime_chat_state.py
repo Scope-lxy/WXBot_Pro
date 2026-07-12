@@ -87,7 +87,26 @@ def remove_listen_chat(bot, name):
     bot._listen_chats.pop(normalize_chat_name(name), None)
 
 
-def send_text_to_target(bot, target, msg):
+def send_text_to_target(
+    bot,
+    target,
+    msg,
+    *,
+    contact_key="",
+    task_key="",
+    task_version=0,
+    require_contact_key=False,
+):
+    if getattr(bot, "_ui_owner", None) is not None:
+        sender = getattr(bot, "_send_text_to_target_without_child", None)
+        return sender(
+            target,
+            msg,
+            contact_key=contact_key,
+            task_key=task_key,
+            task_version=task_version,
+            require_contact_key=require_contact_key,
+        ) if callable(sender) else False
     release_wechat_lock = wechat_ui_actions.try_acquire(bot)
     if not release_wechat_lock:
         sender = getattr(bot, "_send_text_to_target_without_child", None)
@@ -124,7 +143,26 @@ def send_text_to_target(bot, target, msg):
         release_wechat_lock()
 
 
-def send_file_to_target(bot, target, path):
+def send_file_to_target(
+    bot,
+    target,
+    path,
+    *,
+    contact_key="",
+    task_key="",
+    task_version=0,
+    require_contact_key=False,
+):
+    if getattr(bot, "_ui_owner", None) is not None:
+        sender = getattr(bot, "_send_file_to_target_without_child", None)
+        return sender(
+            target,
+            path,
+            contact_key=contact_key,
+            task_key=task_key,
+            task_version=task_version,
+            require_contact_key=require_contact_key,
+        ) if callable(sender) else False
     release_wechat_lock = wechat_ui_actions.try_acquire(bot)
     if not release_wechat_lock:
         sender = getattr(bot, "_send_file_to_target_without_child", None)

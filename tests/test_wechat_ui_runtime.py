@@ -1,0 +1,1124 @@
+import unittest
+import threading
+import time
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from feature import listening
+from core.message_pipeline import ConversationRef, MessageEnvelope
+from core.wechat_ui_actions import ActionBatchInterrupted, ContactBatchHandle, IntentNeedsExclusive
+from core.wechat_ui_actions import UIIntent, UIIntentKind, WeChatUIOwner
+from core.wechat_ui_runtime import WeChatUIRuntime
+
+
+class FakeChat:
+    def __init__(self, who):
+        self.who = who
+        self.chat_type = "private"
+        self.sent = []
+        self.messages = []
+        self.history_messages = None
+        self.history_calls = []
+
+    def GetAllMessage(self):
+        return list(self.messages)
+
+    def SendMsg(self, msg, at=None):
+        self.sent.append((msg, at))
+        return True
+
+    def SendFiles(self, filepath):
+        return filepath
+
+    def SendAudio(self, filepath, duration=None):
+        return filepath
+
+    def GetHistoryMessage(self, limit, callback=None, **_kwargs):
+        self.history_calls.append(limit)
+        source = self.messages if self.history_messages is None else self.history_messages
+        messages = list(source)[-limit:]
+        for message in messages:
+            if callback and callback(message) == "stop":
+                break
+        return messages
+
+
+class FakeClient:
+    nickname = "测试账号"
+
+    def __init__(self):
+        self.chats = {}
+        self.callback = None
+        self.stop_count = 0
+        self.start_count = 0
+
+    def GetMyInfo(self):
+        return {"id": "wxid-test"}
+
+    def IsOnline(self):
+        return True
+
+    def StopListening(self):
+        self.stop_count += 1
+        return True
+
+    def StartListening(self):
+        self.start_count += 1
+        return True
+
+    def GetSubWindow(self, nickname):
+        return self.chats.get(nickname)
+
+    def AddListenChat(self, nickname, callback):
+        self.callback = callback
+        return self.chats.setdefault(nickname, FakeChat(nickname))
+
+    def RemoveListenChat(self, nickname):
+        self.chats.pop(nickname, None)
+        return True
+
+    def GetNextNewMessage(self, filter_mute=False, callback=None):
+        message = SimpleNamespace(
+            id="img-1",
+            type="image",
+            attr="friend",
+            sender="张三",
+            content="[图片]",
+            download=lambda: "C:/temp/global.png",
+        )
+        if callback:
+            callback(message)
+        return {"chat_name": "张三", "chat_type": "private", "msg": [message]}
+
+    def ChatWith(self, who=None, exact=True):
+        self.current_chat = who
+        return True
+
+    def ChatInfo(self):
+        return {"chat_type": "friend", "chat_name": self.current_chat}
+
+    def EditFriendInfo(self, **kwargs):
+        self.edit_kwargs = kwargs
+        return {"status": "成功"}
+
+    def GetSession(self):
+        return [{"name": "张三", "content": "你好", "time": "10:30"}]
+
+    def GetAllSubWindow(self):
+        return list(self.chats.values())
+
+    def IsOnline(self):
+        return True
+
+
+class WeChatUIRuntimeTests(unittest.TestCase):
+    def test_subwindow_callback_downloads_exact_original_image_before_copying(self):
+        received = []
+        downloads = []
+        runtime = WeChatUIRuntime(
+            lambda conversation, message: received.append((conversation, message)),
+            inbound_media_enabled=lambda _conversation, _message_type: True,
+        )
+        runtime.set_owner(SimpleNamespace(run_callback_action=lambda _intent, action: action()))
+        original = SimpleNamespace(
+            type="image",
+            attr="friend",
+            sender="瑞东（私人号）",
+            content="图片",
+            id="",
+            hash="",
+            hash_text="",
+            time="",
+            download=lambda: downloads.append(True) or "C:/temp/exact.png",
+        )
+
+        runtime._callback(original, SimpleNamespace(who="瑞东（私人号）", chat_type="private"))
+
+        self.assertEqual(downloads, [True])
+        self.assertEqual(received[0][1].content, "C:/temp/exact.png")
+        self.assertTrue(received[0][1]._wxbot_media_prepared)
+        self.assertFalse(hasattr(received[0][1], "download"))
+
+    def test_subwindow_callback_contains_original_image_download_failure(self):
+        received = []
+        runtime = WeChatUIRuntime(
+            lambda _conversation, message: received.append(message),
+            inbound_media_enabled=lambda _conversation, _message_type: True,
+        )
+        runtime.set_owner(SimpleNamespace(run_callback_action=lambda _intent, action: action()))
+
+        runtime._callback(
+            SimpleNamespace(
+                type="image", attr="friend", sender="张三", content="图片",
+                download=lambda: (_ for _ in ()).throw(RuntimeError("download failed")),
+            ),
+            SimpleNamespace(who="张三", chat_type="private"),
+        )
+
+        self.assertEqual(len(received), 1)
+        self.assertTrue(received[0]._wxbot_media_prepared)
+        self.assertTrue(received[0]._skip_ai_reply)
+        self.assertTrue(received[0]._skip_memory)
+
+    def test_subwindow_image_callback_waits_for_contact_recovery_before_download(self):
+        contact_done = threading.Event()
+        downloads = []
+        received = []
+        runtime = WeChatUIRuntime(
+            lambda _conversation, message: received.append(message),
+            inbound_media_enabled=lambda _conversation, _message_type: True,
+        )
+        handlers = runtime.handlers()
+        handlers[UIIntentKind.CONTACT_START] = lambda _payload: ContactBatchHandle(
+            poll=lambda: (contact_done.is_set(), True),
+        )
+        handlers[UIIntentKind.CONTACT_RECOVER] = lambda _payload: True
+        owner = WeChatUIOwner(handlers, poll_interval=0.01)
+        owner.start()
+        runtime.set_owner(owner)
+        contact = owner.submit(UIIntent(UIIntentKind.CONTACT_START))
+        deadline = time.time() + 1
+        while not owner.contact_active and time.time() < deadline:
+            time.sleep(0.01)
+
+        callback = threading.Thread(target=lambda: runtime._callback(
+            SimpleNamespace(
+                type="image", attr="friend", sender="张三", content="图片",
+                download=lambda: downloads.append(True) or "C:/temp/after-contact.png",
+            ),
+            SimpleNamespace(who="张三", chat_type="private"),
+        ))
+        callback.start()
+        try:
+            time.sleep(0.03)
+            self.assertEqual(downloads, [])
+            self.assertEqual(received, [])
+            contact_done.set()
+            contact.result(1)
+            callback.join(1)
+        finally:
+            owner.stop()
+
+        self.assertFalse(callback.is_alive())
+        self.assertEqual(downloads, [True])
+        self.assertEqual(received[0].content, "C:/temp/after-contact.png")
+
+    def test_listener_auto_recovery_rebuilds_listener_without_rebinding_client(self):
+        first = FakeClient()
+        clients = iter([first])
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: next(clients))
+        owner = WeChatUIOwner(runtime.handlers())
+        owner.start()
+        runtime.set_heartbeat(owner.heartbeat_current_action)
+        identity = owner.call(UIIntent(UIIntentKind.BOOTSTRAP, {"listeners": ["管理员"]}), 1)
+
+        bot = SimpleNamespace(
+            _ui_owner=owner,
+            _ui_runtime=runtime,
+            _ui_identity=identity,
+            wx=None,
+            config=SimpleNamespace(
+                cmd="管理员",
+                AllListen_switch=False,
+                listen_list=[],
+                group_switch=False,
+                group=[],
+                custom_forward_switch=False,
+            ),
+            all_Mode_listen_list=[],
+            _listen_chats={},
+            _material_source_chats={},
+            _listener_auto_recovery_active=True,
+            _listener_auto_recovery_attempted=False,
+            _listener_auto_recovery_probe_after=0.0,
+            _listener_auto_recovery_last_error="desktop unavailable",
+            _listener_auto_recovery_source="test",
+            _listener_reconcile_last_at=0.0,
+            callback_is_die=False,
+            message_handle_callback=lambda *_args: None,
+        )
+        from core.wechat_ui_runtime import UIClientFacade
+        bot.wx = UIClientFacade(owner, identity)
+        try:
+            with patch("feature.listening.time.sleep", return_value=None):
+                result = listening.process_listener_auto_recovery(bot)
+        finally:
+            owner.stop()
+
+        self.assertEqual(result, "recovered")
+        self.assertIsInstance(bot.wx, UIClientFacade)
+        self.assertIs(runtime._client, first)
+        self.assertIn("管理员", first.chats)
+        self.assertFalse(bot._listener_auto_recovery_active)
+
+    def test_listener_auto_recovery_rebinds_after_invalid_client_handle(self):
+        bot = SimpleNamespace(
+            wx=object(),
+            _listener_auto_recovery_active=True,
+            _listener_auto_recovery_attempted=False,
+            _listener_auto_recovery_probe_after=0.0,
+            _listener_auto_recovery_last_error="invalid handle",
+            _listener_auto_recovery_source="test",
+            callback_is_die=False,
+        )
+        rebound = object()
+        with (
+            patch(
+                "feature.listening.probe_listener_recovery_client",
+                side_effect=[OSError(1400, "MoveWindow", "无效的窗口句柄。"), rebound],
+            ) as probe,
+            patch("feature.listening.rebuild_listener_runtime", return_value=True),
+        ):
+            result = listening.process_listener_auto_recovery(bot)
+
+        self.assertEqual(result, "recovered")
+        self.assertIs(bot.wx, rebound)
+        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(probe.call_args_list[1].kwargs, {"force_rebind": True})
+
+    def test_rebind_recreates_client_and_restores_listener_names(self):
+        first = FakeClient()
+        second = FakeClient()
+        clients = iter([first, second])
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: next(clients))
+        owner = WeChatUIOwner(runtime.handlers())
+        owner.start()
+        runtime.set_heartbeat(owner.heartbeat_current_action)
+        try:
+            owner.call(UIIntent(UIIntentKind.BOOTSTRAP, {"listeners": ["阿英4"]}), 1)
+            identity = owner.call(UIIntent(UIIntentKind.REBIND), 1)
+        finally:
+            owner.stop()
+
+        self.assertEqual(identity["listeners"], ["阿英4"])
+        self.assertIn("阿英4", second.chats)
+        self.assertEqual(first.stop_count, 2)
+        self.assertEqual(second.stop_count, 1)
+        self.assertEqual(second.start_count, 1)
+
+    def test_owner_frozen_listener_payload_bootstraps_real_runtime_shape(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        owner = WeChatUIOwner(runtime.handlers())
+        owner.start()
+        runtime.set_heartbeat(owner.heartbeat_current_action)
+        try:
+            identity = owner.call(UIIntent(
+                UIIntentKind.BOOTSTRAP,
+                {"listeners": [{"name": "阿英4"}]},
+            ), 1)
+        finally:
+            owner.stop()
+
+        self.assertEqual(identity["listeners"], ["阿英4"])
+        self.assertIn("阿英4", client.chats)
+
+    def test_bootstrap_and_callback_expose_only_pure_records(self):
+        received = []
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda chat, msg: received.append((chat, msg)), client_factory=lambda _version: client)
+
+        identity = runtime.bootstrap({"listeners": [{"name": "张三"}]})
+        client.callback(
+            SimpleNamespace(type="text", attr="friend", sender="张三", content="你好", download=lambda: None),
+            client.chats["张三"],
+        )
+
+        self.assertEqual(identity["wx_id"], "wxid-test")
+        self.assertIsInstance(received[0][0], ConversationRef)
+        self.assertIsInstance(received[0][1], MessageEnvelope)
+        self.assertFalse(hasattr(received[0][1], "download"))
+
+    def test_light_send_requires_exclusive_retry_before_adding_missing_chat(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with self.assertRaises(IntentNeedsExclusive):
+            runtime.send_text({"conversation": "张三", "text": "你好"})
+
+        result = runtime.send_text({"conversation": "张三", "text": "你好", "_exclusive_retry": True})
+
+        self.assertTrue(result)
+        self.assertEqual(client.chats["张三"].sent, [("你好", None)])
+
+    def test_text_batch_stays_in_one_owner_transaction(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "张三"}]})
+
+        results = runtime.send_text_batch({"conversation": "张三", "messages": ["第一段", "第二段", "第三段"]})
+
+        self.assertEqual(results, [True, True, True])
+        self.assertEqual(client.chats["张三"].sent, [("第一段", None), ("第二段", None), ("第三段", None)])
+
+    def test_text_batch_applies_at_only_to_first_part(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "测试群"}]})
+
+        runtime.send_text_batch({
+            "conversation": "测试群",
+            "messages": ["第一段", "第二段"],
+            "first_at": "群成员",
+        })
+
+        self.assertEqual(client.chats["测试群"].sent, [("第一段", "群成员"), ("第二段", None)])
+
+    def test_send_actions_reports_completed_boundary_when_middle_action_raises(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "张三"}]})
+        chat = client.chats["张三"]
+
+        def send_msg(msg, at=None):
+            if msg == "第二条":
+                raise RuntimeError("结果丢失")
+            chat.sent.append((msg, at))
+            return True
+
+        chat.SendMsg = send_msg
+        with self.assertRaises(ActionBatchInterrupted) as caught:
+            runtime.send_actions({
+                "conversation": "张三",
+                "actions": [
+                    {"type": "text", "text": "第一条"},
+                    {"type": "text", "text": "第二条"},
+                    {"type": "text", "text": "第三条"},
+                ],
+            })
+
+        self.assertEqual(caught.exception.completed_results, [True])
+        self.assertEqual(caught.exception.failed_index, 1)
+        self.assertEqual(chat.sent, [("第一条", None)])
+
+    def test_quote_rolls_original_message_into_view_before_action(self):
+        client = FakeClient()
+        chat = client.chats.setdefault("测试群", FakeChat("测试群"))
+        events = []
+        source = SimpleNamespace(
+            type="text",
+            attr="friend",
+            sender="群成员",
+            content="原消息",
+            hash="hash-roll",
+            roll_into_view=lambda: events.append("roll"),
+            quote=lambda _text, at=None: events.append(("quote", at)) or True,
+        )
+        chat.messages = [source]
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "测试群"}]})
+
+        runtime.quote_message({
+            "conversation": "测试群",
+            "message_type": "text",
+            "message_attr": "friend",
+            "message_sender": "群成员",
+            "message_content": "原消息",
+            "message_hash": "hash-roll",
+            "text": "回复",
+            "at": "群成员",
+        })
+
+        self.assertEqual(events, ["roll", ("quote", "群成员")])
+
+    def test_message_snapshot_does_not_return_wxautox_message(self):
+        client = FakeClient()
+        client.chats["张三"] = FakeChat("张三")
+        client.chats["张三"].messages = [SimpleNamespace(type="voice", attr="friend", sender="张三", content="正文")]
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "张三"}]})
+
+        messages = runtime.get_messages({"conversation": "张三"})
+
+        self.assertEqual([message.content for message in messages], ["正文"])
+        self.assertTrue(all(isinstance(message, MessageEnvelope) for message in messages))
+
+    def test_voice_snapshot_uses_visible_wechat_transcription_inside_owner(self):
+        client = FakeClient()
+        client.chats["LXYou"] = FakeChat("LXYou")
+        client.chats["LXYou"].messages = [SimpleNamespace(
+            type="voice",
+            attr="friend",
+            sender="LXYou",
+            content='语音4"秒',
+            control=SimpleNamespace(Name='语音4"秒私聊验收，C语语音测试。'),
+        )]
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "LXYou"}]})
+
+        messages = runtime.get_messages({"conversation": "LXYou"})
+
+        self.assertEqual(messages[0].content, '语音4"秒私聊验收，C语语音测试。')
+        self.assertEqual(messages[0].original_content, '语音4"秒私聊验收，C语语音测试。')
+        self.assertFalse(hasattr(messages[0], "control"))
+
+    def test_snapshot_read_does_not_emit_history_side_effect_callbacks(self):
+        received = []
+        client = FakeClient()
+        chat = client.chats.setdefault("瑞东（私人号）", FakeChat("瑞东（私人号）"))
+        old_message = SimpleNamespace(
+            type="text",
+            attr="self",
+            sender="self",
+            content="旧的自己消息",
+        )
+        def get_all_messages():
+            client.callback(old_message, chat)
+            return [old_message]
+
+        chat.GetAllMessage = get_all_messages
+        runtime = WeChatUIRuntime(
+            lambda conversation, message: received.append((conversation, message)),
+            client_factory=lambda _version: client,
+        )
+        runtime.bootstrap({"listeners": [{"name": "瑞东（私人号）"}]})
+
+        messages = runtime.get_messages({"conversation": "瑞东（私人号）"})
+
+        self.assertEqual([message.content for message in messages], ["旧的自己消息"])
+        self.assertEqual(received, [])
+
+    def test_snapshot_read_keeps_real_callback_from_another_thread(self):
+        received = []
+        client = FakeClient()
+        chat = client.chats.setdefault("瑞东（私人号）", FakeChat("瑞东（私人号）"))
+        getter_started = threading.Event()
+        callback_finished = threading.Event()
+        real_message = SimpleNamespace(
+            id="new-1", type="text", attr="friend", sender="瑞东（私人号）", content="刚发的新消息",
+        )
+
+        def get_all_messages():
+            getter_started.set()
+            self.assertTrue(callback_finished.wait(1))
+            return []
+
+        def emit_real_message():
+            self.assertTrue(getter_started.wait(1))
+            client.callback(real_message, chat)
+            callback_finished.set()
+
+        chat.GetAllMessage = get_all_messages
+        runtime = WeChatUIRuntime(
+            lambda conversation, message: received.append((conversation, message)),
+            client_factory=lambda _version: client,
+        )
+        runtime.bootstrap({"listeners": [{"name": "瑞东（私人号）"}]})
+        thread = threading.Thread(target=emit_real_message)
+        thread.start()
+
+        runtime.get_messages({"conversation": "瑞东（私人号）"})
+        thread.join(1)
+
+        self.assertEqual([message.content for _conversation, message in received], ["刚发的新消息"])
+
+    def test_snapshot_callback_suppression_releases_after_getter_error(self):
+        received = []
+        client = FakeClient()
+        chat = client.chats.setdefault("张三", FakeChat("张三"))
+        chat.GetAllMessage = lambda: (_ for _ in ()).throw(RuntimeError("snapshot failed"))
+        runtime = WeChatUIRuntime(
+            lambda conversation, message: received.append((conversation, message)),
+            client_factory=lambda _version: client,
+        )
+        runtime.bootstrap({"listeners": [{"name": "张三"}]})
+
+        with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
+            runtime.get_messages({"conversation": "张三"})
+        client.callback(
+            SimpleNamespace(id="new-1", type="text", attr="friend", sender="张三", content="错误后的新消息"),
+            chat,
+        )
+
+        self.assertEqual([message.content for _conversation, message in received], ["错误后的新消息"])
+
+    def test_global_poll_returns_pure_batch_and_prepares_media_inside_owner(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        batch = runtime.poll_messages({"mode": "next", "download_media": True})
+
+        self.assertEqual(batch["chat_name"], "张三")
+        self.assertEqual(batch["chat_type"], "private")
+        self.assertEqual(batch["msg"][0].content, "C:/temp/global.png")
+        self.assertTrue(batch["msg"][0]._wxbot_media_prepared)
+        self.assertFalse(hasattr(batch["msg"][0], "download"))
+
+    def test_contact_edit_verifies_target_and_returns_pure_result(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        result = runtime.edit_contact({
+            "target": "张三",
+            "expected_names": ["张三"],
+            "remark": "客户-张三",
+            "add_tags": ["客户"],
+            "remove_tags": [],
+        })
+
+        self.assertEqual(result["status"], "成功")
+        self.assertEqual(client.edit_kwargs["remark"], "客户-张三")
+
+    def test_contact_edit_preserves_legacy_window_focus_sequence_inside_owner(self):
+        events = []
+
+        class TrackingClient(FakeClient):
+            def ChatWith(self, who=None, exact=True):
+                events.append(("chat_with", who, exact))
+                return super().ChatWith(who=who, exact=exact)
+
+            def ChatInfo(self):
+                events.append(("chat_info",))
+                return super().ChatInfo()
+
+            def EditFriendInfo(self, **kwargs):
+                events.append(("edit", kwargs.get("add_tags")))
+                return super().EditFriendInfo(**kwargs)
+
+        client = TrackingClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with (
+            patch(
+                "core.wechat_window.bring_wechat_main_window_to_front",
+                side_effect=lambda **_kwargs: events.append(("front",)),
+            ),
+            patch(
+                "core.wechat_window.move_cursor_to_wechat_main_window_center",
+                side_effect=lambda **_kwargs: events.append(("cursor",)),
+            ),
+        ):
+            runtime.edit_contact({
+                "target": "张三",
+                "expected_names": ["张三"],
+                "add_tags": ["客户"],
+                "remove_tags": [],
+            })
+
+        self.assertEqual(events, [
+            ("front",),
+            ("chat_with", "张三", True),
+            ("front",),
+            ("cursor",),
+            ("chat_info",),
+            ("front",),
+            ("cursor",),
+            ("edit", ["客户"]),
+        ])
+
+    def test_relationship_scan_returns_normalized_pure_sessions(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        sessions = runtime.scan_relationship_sessions({"mode": "current"})
+
+        self.assertEqual(sessions, [{"name": "张三", "content": "你好", "time": "10:30", "info": ""}])
+
+    def test_relationship_full_scan_is_one_uninterrupted_transaction_with_safety_cap(self):
+        client = FakeClient()
+        rolls = []
+        client.SessionBox = SimpleNamespace(roll_down=lambda: rolls.append(True), go_top=lambda: None)
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with patch("core.wechat_ui_runtime.time.sleep", return_value=None) as sleep:
+            result = runtime.scan_relationship_sessions({"mode": "full", "max_scrolls": 20, "stale_rounds": 999})
+
+        self.assertEqual(result["scrolls"], 20)
+        self.assertEqual(len(rolls), 20)
+        self.assertTrue(result["hit_safety_limit"])
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_relationship_full_scan_returns_to_top_before_and_after_scan(self):
+        client = FakeClient()
+        calls = []
+        client.SessionBox = SimpleNamespace(
+            roll_down=lambda: calls.append("roll_down"),
+            go_top=lambda: calls.append("go_top"),
+        )
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with patch("core.wechat_ui_runtime.time.sleep", return_value=None):
+            runtime.scan_relationship_sessions({"mode": "full", "max_scrolls": 1, "stale_rounds": 999})
+
+        self.assertEqual(calls, ["go_top", "roll_down", "go_top"])
+
+    def test_relationship_full_scan_keeps_result_when_final_go_top_fails(self):
+        client = FakeClient()
+        go_top_calls = 0
+
+        def go_top():
+            nonlocal go_top_calls
+            go_top_calls += 1
+            if go_top_calls == 2:
+                raise RuntimeError("top failed")
+
+        client.SessionBox = SimpleNamespace(roll_down=lambda: None, go_top=go_top)
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with patch("core.wechat_ui_runtime.time.sleep", return_value=None):
+            result = runtime.scan_relationship_sessions({"mode": "full", "max_scrolls": 1, "stale_rounds": 999})
+
+        self.assertEqual(result["sessions"][0]["name"], "张三")
+        self.assertEqual(result["scrolls"], 1)
+
+    def test_friend_request_runs_whole_ui_transaction_inside_runtime(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with patch("feature.friend_request_senders.ConversationVerifySender.send", return_value={
+            "status": "sent",
+            "message": "好友验证申请已提交",
+            "data": {"target": "张三"},
+        }) as send:
+            result = runtime.send_friend_request({
+                "target": "张三",
+                "addmsg": "你好",
+                "remark": "张三",
+                "tags": ["客户"],
+                "permission": "不设置",
+                "max_attempts": 2,
+            })
+
+        self.assertEqual(result["status"], "sent")
+        self.assertIs(send.call_args.args[0].wx, client)
+
+    def test_friend_request_history_read_suppresses_same_thread_old_callbacks(self):
+        received = []
+        client = FakeClient()
+        chat = client.chats.setdefault("张三", FakeChat("张三"))
+        runtime = WeChatUIRuntime(
+            lambda conversation, message: received.append((conversation, message)),
+            client_factory=lambda _version: client,
+        )
+        runtime.bootstrap({"listeners": [{"name": "张三"}]})
+
+        def send(*_args, **_kwargs):
+            client.callback(
+                SimpleNamespace(id="old-1", type="text", attr="friend", sender="张三", content="旧历史"),
+                chat,
+            )
+            return {"status": "skipped", "message": "未找到发送朋友验证入口", "data": {}}
+
+        with patch("feature.friend_request_senders.ConversationVerifySender.send", side_effect=send):
+            runtime.send_friend_request({"target": "张三"})
+
+        self.assertEqual(received, [])
+
+    def test_material_history_is_copied_before_leaving_runtime(self):
+        client = FakeClient()
+        chat = FakeChat("素材源")
+        chat.messages = [SimpleNamespace(
+            id="file-1",
+            hash="hash-1",
+            type="file",
+            attr="friend",
+            sender="素材源",
+            content="C:/docs/a.pdf",
+            forward=lambda *_args, **_kwargs: True,
+        )]
+        client.chats["素材源"] = chat
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "素材源"}]})
+
+        result = runtime.read_material_messages({"conversation": "素材源", "limit": 20})
+
+        self.assertEqual(result["strategy"], "子窗口公开 GetHistoryMessage")
+        self.assertIsInstance(result["messages"][0], MessageEnvelope)
+        self.assertFalse(hasattr(result["messages"][0], "forward"))
+
+    def test_material_history_read_suppresses_same_thread_old_callbacks(self):
+        received = []
+        client = FakeClient()
+        chat = FakeChat("素材源")
+        material = SimpleNamespace(
+            id="file-1", hash="hash-1", type="file", attr="friend",
+            sender="素材源", content="C:/docs/a.pdf",
+        )
+
+        def read_history(*_args, **_kwargs):
+            client.callback(
+                SimpleNamespace(id="old-1", type="text", attr="friend", sender="素材源", content="旧历史"),
+                chat,
+            )
+            return [material]
+
+        chat.GetHistoryMessage = read_history
+        client.chats["素材源"] = chat
+        runtime = WeChatUIRuntime(
+            lambda conversation, message: received.append((conversation, message)),
+            client_factory=lambda _version: client,
+        )
+        runtime.bootstrap({"listeners": [{"name": "素材源"}]})
+
+        result = runtime.read_material_messages({"conversation": "素材源", "limit": 20})
+
+        self.assertEqual(result["messages"][0].content, "C:/docs/a.pdf")
+        self.assertEqual(received, [])
+
+    def test_material_history_preserves_legacy_reader_fallback_order(self):
+        events = []
+        material = SimpleNamespace(
+            id="file-1", hash="hash-1", type="file", attr="friend",
+            sender="素材源", content="C:/docs/a.pdf",
+        )
+
+        class BrokenChatBox:
+            def get_msgs_from_history(self, *_args, **_kwargs):
+                events.append("internal")
+                raise RuntimeError("内部读取失效")
+
+        class TrackingClient(FakeClient):
+            def ChatWith(self, who=None, exact=True):
+                events.append("main_chat_with")
+                return super().ChatWith(who=who, exact=exact)
+
+        client = TrackingClient()
+        chat = FakeChat("素材源")
+        chat.ChatBox = BrokenChatBox()
+
+        def public_history(*_args, **_kwargs):
+            events.append("public")
+            return [material]
+
+        chat.GetHistoryMessage = public_history
+        client.chats["素材源"] = chat
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "素材源"}]})
+
+        result = runtime.read_material_messages({"conversation": "素材源", "limit": 20})
+
+        self.assertEqual(result["strategy"], "子窗口公开 GetHistoryMessage")
+        self.assertEqual(result["messages"][0].content, "C:/docs/a.pdf")
+        self.assertEqual(events, ["internal", "public"])
+
+    def test_material_history_uses_main_window_only_after_subwindow_readers_fail(self):
+        events = []
+        material = SimpleNamespace(
+            id="file-1", hash="hash-1", type="file", attr="friend",
+            sender="素材源", content="C:/docs/main.pdf",
+        )
+
+        class BrokenChatBox:
+            def get_msgs_from_history(self, *_args, **_kwargs):
+                events.append("internal")
+                raise RuntimeError("内部读取失效")
+
+        class TrackingClient(FakeClient):
+            def ChatWith(self, who=None, exact=True):
+                events.append("main_chat_with")
+                return super().ChatWith(who=who, exact=exact)
+
+            def GetHistoryMessage(self, *_args, **_kwargs):
+                events.append("main_history")
+                return [material]
+
+        client = TrackingClient()
+        chat = FakeChat("素材源")
+        chat.ChatBox = BrokenChatBox()
+
+        def broken_public(*_args, **_kwargs):
+            events.append("public")
+            raise RuntimeError("公开读取失效")
+
+        chat.GetHistoryMessage = broken_public
+        client.chats["素材源"] = chat
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "素材源"}]})
+
+        result = runtime.read_material_messages({"conversation": "素材源", "limit": 20})
+
+        self.assertEqual(result["strategy"], "主窗口公开 GetHistoryMessage")
+        self.assertEqual(result["messages"][0].content, "C:/docs/main.pdf")
+        self.assertEqual(events, ["internal", "public", "main_chat_with", "main_history"])
+
+    def test_forward_rolls_relocated_message_into_view_before_forwarding(self):
+        events = []
+        client = FakeClient()
+        chat = FakeChat("素材源")
+        message = SimpleNamespace(
+            id="file-1", hash="hash-1", type="file", attr="friend",
+            sender="素材源", content="C:/docs/a.pdf",
+            roll_into_view=lambda: events.append("roll"),
+            forward=lambda targets: events.append(("forward", targets)) or {"status": "成功"},
+        )
+        chat.messages = [message]
+        client.chats["素材源"] = chat
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "素材源"}]})
+
+        runtime.forward_message({
+            "conversation": "素材源",
+            "message_type": "file",
+            "message_attr": "friend",
+            "message_sender": "素材源",
+            "message_content": "C:/docs/a.pdf",
+            "message_id": "file-1",
+            "targets": ["阿英2"],
+        })
+
+        self.assertEqual(events, ["roll", ("forward", ["阿英2"])])
+
+    def test_moments_owner_preserves_legacy_ui_settle_delays(self):
+        sleeps = []
+
+        class FakeMoments:
+            def Publish(self, _text, _images, _privacy):
+                return True
+
+            def Refresh(self):
+                return True
+
+            def GetMoments(self, force_wait=1):
+                return [SimpleNamespace(content="今天不错")]
+
+            def Close(self):
+                return True
+
+        client = FakeClient()
+        client.Moments = lambda: FakeMoments()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with (
+            patch("core.wechat_ui_runtime.random.uniform", side_effect=[2.0, 9.0, 2.0]) as delay,
+            patch("core.wechat_ui_runtime.time.sleep", side_effect=lambda seconds: sleeps.append(seconds)),
+        ):
+            result = runtime.publish_moments({
+                "task": {"text": "今天不错", "images": [], "privacy": "public", "tags": []},
+                "nickname": "测试微信",
+            })
+
+        self.assertTrue(result)
+        self.assertEqual([call.args for call in delay.call_args_list], [(2, 5), (9, 12), (2, 5)])
+        self.assertEqual(sleeps, [2.0, 9.0, 2.0])
+
+    def test_message_locator_rejects_ambiguous_duplicates_without_known_order(self):
+        client = FakeClient()
+        chat = FakeChat("张三")
+        chat.messages = [
+            SimpleNamespace(type="text", attr="friend", sender="张三", content="相同", hash="same"),
+            SimpleNamespace(type="text", attr="friend", sender="张三", content="相同", hash="same"),
+        ]
+        client.chats["张三"] = chat
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "张三"}]})
+
+        with self.assertRaisesRegex(RuntimeError, "拒绝猜测"):
+            runtime._locate_message({
+                "conversation": "张三",
+                "message_type": "text",
+                "message_attr": "friend",
+                "message_sender": "张三",
+                "message_content": "相同",
+                "message_hash": "same",
+            })
+
+    def test_message_locator_uses_exact_snapshot_order_for_duplicates(self):
+        client = FakeClient()
+        chat = FakeChat("张三")
+        first = SimpleNamespace(type="text", attr="friend", sender="张三", content="相同", hash="same")
+        second = SimpleNamespace(type="text", attr="friend", sender="张三", content="相同", hash="same")
+        chat.messages = [first, second]
+        client.chats["张三"] = chat
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "张三"}]})
+
+        located = runtime._locate_message({
+            "conversation": "张三",
+            "message_type": "text",
+            "message_attr": "friend",
+            "message_sender": "张三",
+            "message_content": "相同",
+            "message_hash": "same",
+            "message_window_order_known": True,
+            "message_window_order": 1,
+        })
+
+        self.assertIs(located, second)
+
+    def test_message_locator_uses_message_id_for_duplicate_images(self):
+        client = FakeClient()
+        chat = FakeChat("瑞东（私人号）")
+        first = SimpleNamespace(
+            id="image-1", hash="same", type="image", attr="friend",
+            sender="瑞东（私人号）", content="图片", download=lambda: "C:/temp/first.png",
+        )
+        second = SimpleNamespace(
+            id="image-2", hash="same", type="image", attr="friend",
+            sender="瑞东（私人号）", content="图片", download=lambda: "C:/temp/second.png",
+        )
+        chat.messages = [first, second]
+        client.chats["瑞东（私人号）"] = chat
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "瑞东（私人号）"}]})
+
+        result = runtime.download_media({
+            "conversation": "瑞东（私人号）",
+            "message_type": "image",
+            "message_attr": "friend",
+            "message_sender": "瑞东（私人号）",
+            "message_content": "图片",
+            "message_id": "image-2",
+            "message_hash": "same",
+        })
+
+        self.assertEqual(result, "C:/temp/second.png")
+
+    def test_message_locator_uses_native_hash_text_for_duplicate_images(self):
+        client = FakeClient()
+        chat = FakeChat("瑞东（私人号）")
+        first = SimpleNamespace(
+            id="", hash="", hash_text="image-row-1", type="image", attr="friend",
+            sender="瑞东（私人号）", content="图片", download=lambda: "C:/temp/first.png",
+        )
+        second = SimpleNamespace(
+            id="", hash="", hash_text="image-row-2", type="image", attr="friend",
+            sender="瑞东（私人号）", content="图片", download=lambda: "C:/temp/second.png",
+        )
+        chat.messages = [first, second]
+        client.chats["瑞东（私人号）"] = chat
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "瑞东（私人号）"}]})
+
+        result = runtime.download_media({
+            "conversation": "瑞东（私人号）",
+            "message_type": "image",
+            "message_attr": "friend",
+            "message_sender": "瑞东（私人号）",
+            "message_content": "图片",
+            "message_hash_text": "image-row-2",
+        })
+
+        self.assertEqual(result, "C:/temp/second.png")
+
+    def test_message_locator_reads_one_bounded_recent_history_on_visible_miss(self):
+        client = FakeClient()
+        chat = FakeChat("张三")
+        target = SimpleNamespace(type="image", attr="friend", sender="张三", content="[图片]", hash="history-1")
+        chat.history_messages = [target]
+        client.chats["张三"] = chat
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "张三"}]})
+
+        located = runtime._locate_message({
+            "conversation": "张三",
+            "message_type": "image",
+            "message_attr": "friend",
+            "message_sender": "张三",
+            "message_content": "[图片]",
+            "message_hash": "history-1",
+        })
+
+        self.assertIs(located, target)
+        self.assertEqual(chat.history_calls, [50])
+
+    def test_realtime_media_locator_does_not_scroll_history_on_visible_miss(self):
+        client = FakeClient()
+        chat = FakeChat("张三")
+        chat.history_messages = [SimpleNamespace(
+            id="old-image", type="image", attr="friend", sender="张三", content="图片", hash="old",
+        )]
+        client.chats["张三"] = chat
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "张三"}]})
+
+        with self.assertRaisesRegex(RuntimeError, "停止历史翻页定位"):
+            runtime._locate_message({
+                "conversation": "张三",
+                "message_type": "image",
+                "message_attr": "friend",
+                "message_sender": "张三",
+                "message_content": "图片",
+                "message_id": "new-image",
+                "allow_history_fallback": False,
+            })
+
+        self.assertEqual(chat.history_calls, [])
+
+    def test_new_friend_accept_reloads_and_uniquely_locates_candidate(self):
+        calls = []
+
+        class Candidate:
+            name = "阿英2"
+            content = "我是阿英"
+            acceptable = True
+
+            def __init__(self, generation):
+                self.generation = generation
+
+            def accept(self, **kwargs):
+                calls.append((self.generation, kwargs))
+
+        client = FakeClient()
+        generation = 0
+
+        def get_new_friends(acceptable=True):
+            nonlocal generation
+            generation += 1
+            return [Candidate(generation)]
+
+        client.GetNewFriends = get_new_friends
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        result = runtime.process_new_friends({"remark_rules": {"enabled": True}, "tags": []})
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(calls[0][0], 2)
+
+    def test_new_friend_accept_refuses_indistinguishable_duplicates(self):
+        calls = []
+
+        class Candidate:
+            name = "同名"
+            content = "你好"
+            acceptable = True
+
+            def accept(self, **_kwargs):
+                calls.append(True)
+
+        client = FakeClient()
+        client.GetNewFriends = lambda acceptable=True: [Candidate(), Candidate()]
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        result = runtime.process_new_friends({"remark_rules": {"enabled": True}, "tags": []})
+
+        self.assertEqual(result, [])
+        self.assertEqual(calls, [])
+
+    def test_new_friend_owner_action_accepts_only_one_candidate_per_run(self):
+        calls = []
+
+        class Candidate:
+            content = "你好"
+            acceptable = True
+
+            def __init__(self, name):
+                self.name = name
+
+            def accept(self, **_kwargs):
+                calls.append(self.name)
+
+        client = FakeClient()
+        client.GetNewFriends = lambda acceptable=True: [Candidate("阿英2"), Candidate("阿英3")]
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        result = runtime.process_new_friends({"remark_rules": {"enabled": False}, "tags": []})
+
+        self.assertEqual(calls, ["阿英2"])
+        self.assertEqual([item["name"] for item in result], ["阿英2"])
+
+
+if __name__ == "__main__":
+    unittest.main()

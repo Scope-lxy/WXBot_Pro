@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from core import runtime_chat_state
+from core import runtime_chat_state, wechat_ui_actions
 from core.logger import log
 from core.scheduled_tasks import (
     advance_task_plan_after_success,
@@ -20,7 +20,6 @@ from feature.material_outreach import (
     plan_random_material_outreach_fire_time,
     prepare_random_material_outreach_day,
 )
-from feature.moments_like import execute_moments_like_task
 from feature.moments_tasks import (
     STATUS_EXECUTED,
     STATUS_PENDING,
@@ -29,6 +28,7 @@ from feature.moments_tasks import (
     moments_task_has_ai_candidates,
     mark_moments_task_running,
     moments_task_publish_text,
+    recover_interrupted_moments_task,
     split_moments_task_storage,
 )
 from feature.scheduled_message_tasks import (
@@ -36,6 +36,7 @@ from feature.scheduled_message_tasks import (
     ensure_scheduled_message_next_run,
     is_scheduled_message_task_due,
     mark_scheduled_message_running,
+    recover_interrupted_scheduled_message_task,
     split_scheduled_message_task_storage,
 )
 from feature.scheduled_messages import execute_scheduled_message_task
@@ -164,6 +165,15 @@ def run_due_scheduled_message_tasks(bot, now=None):
     for index, raw_task in enumerate(list(tasks)):
         if not isinstance(raw_task, dict):
             continue
+        if str(raw_task.get("status") or "").strip() == "running":
+            recovered = recover_interrupted_scheduled_message_task(raw_task)
+            raw_task.clear()
+            raw_task.update(recovered)
+            changed = True
+            bot._save_scheduled_message_runtime_history_records(raw_task)
+            if index < len(tasks):
+                tasks[index] = raw_task
+            continue
         task = ensure_scheduled_message_next_run(raw_task, now=now)
         if task != raw_task:
             raw_task.clear()
@@ -179,7 +189,23 @@ def run_due_scheduled_message_tasks(bot, now=None):
             run_id=run_id,
             started_at=now.replace(microsecond=0).isoformat(),
         )
-        targets = bot._resolve_scheduled_message_task_targets(raw_task)
+        resolve_target_records = getattr(bot, "_resolve_scheduled_message_task_target_records", None)
+        targets = (
+            resolve_target_records(raw_task)
+            if callable(resolve_target_records)
+            else bot._resolve_scheduled_message_task_targets(raw_task)
+        )
+        guard_task = getattr(bot, "_scheduled_message_ui_guard", None)
+        task_key, task_version = guard_task(raw_task) if callable(guard_task) else ("", 0)
+
+        def task_is_stale():
+            return bool(task_version and bot._current_ui_task_version(task_key) != task_version)
+
+        def guarded_send(send):
+            try:
+                return send()
+            except wechat_ui_actions.IntentCancelled as exc:
+                return {"status": "cancelled", "message": str(exc)}
         messages = [
             str(message or "").strip()
             for message in (raw_task.get("msgs") or [])
@@ -194,18 +220,50 @@ def run_due_scheduled_message_tasks(bot, now=None):
             batch_id=run_id,
             run_id=run_id,
         )
+        execution_snapshot["delivery_records"] = [
+            {
+                "key": f"{target_index}:{message_index}",
+                "target": target,
+                "message_index": message_index,
+                "status": "pending",
+                "error": "",
+            }
+            for target_index, target in enumerate(targets)
+            for message_index, _message in enumerate(messages)
+        ]
         running["pending_snapshot"] = execution_snapshot
         raw_task.clear()
         raw_task.update(running)
         changed = True
         bot._save_scheduled_message_runtime_record(raw_task)
+
+        def persist_delivery_state(_record):
+            raw_task["pending_snapshot"] = execution_snapshot
+            bot._save_scheduled_message_runtime_record(raw_task)
+
         result = execute_scheduled_message_task(
             task={**raw_task, "targets": targets},
-            send_text=lambda target, msg: runtime_chat_state.send_text_to_target(bot, target, msg),
-            send_file=lambda target, path: runtime_chat_state.send_file_to_target(bot, target, path),
+            send_text=lambda target, msg: guarded_send(lambda: runtime_chat_state.send_text_to_target(
+                    bot,
+                    str((target or {}).get("send_name") or "") if isinstance(target, dict) else target,
+                    msg,
+                    contact_key=str((target or {}).get("contact_key") or "") if isinstance(target, dict) else "",
+                    task_key=task_key,
+                task_version=task_version,
+                require_contact_key=bool((target or {}).get("require_contact_key")) if isinstance(target, dict) else False,
+                )),
+            send_file=lambda target, path: guarded_send(lambda: runtime_chat_state.send_file_to_target(
+                    bot,
+                    str((target or {}).get("send_name") or "") if isinstance(target, dict) else target,
+                    path,
+                    contact_key=str((target or {}).get("contact_key") or "") if isinstance(target, dict) else "",
+                    task_key=task_key,
+                task_version=task_version,
+                require_contact_key=bool((target or {}).get("require_contact_key")) if isinstance(target, dict) else False,
+                )),
             is_image_path=bot.is_image_path,
-            human_delay=getattr(bot, "_human_delay_or_stop", bot.config.human_delay),
-            should_stop=getattr(bot, "is_stop_requested", None),
+            human_delay=bot._inter_message_delay_or_stop,
+            should_stop=lambda: bool(bot.is_stop_requested() or task_is_stale()),
             notify_error=bot.is_err,
             nickname=bot.wx.nickname,
             scheduled_tasks=[],
@@ -213,6 +271,8 @@ def run_due_scheduled_message_tasks(bot, now=None):
             save_config=None,
             log_info=lambda message: log(message=message),
             log_error=lambda message: log(level="WARNING", message=message),
+            delivery_records=execution_snapshot["delivery_records"],
+            on_delivery_state=persist_delivery_state,
         )
         _log_scheduled_message_run_result(raw_task, result)
         record_scheduled_sends = getattr(bot, "_record_scheduled_message_send_successes", None)
@@ -257,6 +317,8 @@ def run_due_fixed_material_outreach(bot, now=None):
         if bot._sync_runtime_plan_fields(raw_task, plan):
             changed = True
         task = dict(task)
+        guard_task = getattr(bot, "_material_outreach_ui_guard", None)
+        task["_ui_task_key"], task["_ui_task_version"] = guard_task(raw_task) if callable(guard_task) else ("", 0)
         scheduled_at = str(plan.get("next_fire_at") or "").strip()
         if bot._material_outreach_queue_time_due(task, scheduled_at, now=now):
             cycle_records = bot._material_outreach_preface_cycle_records(task.get("task_id"), scheduled_at=scheduled_at)
@@ -320,6 +382,8 @@ def run_due_random_material_outreach(bot, now=None):
                 changed = True
             continue
         task = dict(task)
+        guard_task = getattr(bot, "_material_outreach_ui_guard", None)
+        task["_ui_task_key"], task["_ui_task_version"] = guard_task(raw_task) if callable(guard_task) else ("", 0)
         task["time_start"], task["time_end"] = material_random_time_window(
             bot.config.config.get("everyday_start_stop_bot_switch", False),
             bot.config.config.get("everyday_start_bot_time", "08:00"),
@@ -389,6 +453,17 @@ def run_due_moments_task_list(bot, now=None):
     for task in tasks:
         if not isinstance(task, dict):
             continue
+        if task.get("status") == STATUS_RUNNING:
+            before_definition, _runtime, _history = split_moments_task_storage(task)
+            recovered = recover_interrupted_moments_task(task, now=now)
+            task.clear()
+            task.update(recovered)
+            after_definition, _runtime, _history = split_moments_task_storage(task)
+            if after_definition != before_definition:
+                definitions_dirty = True
+            bot._save_moments_runtime_history_records(task)
+            changed = True
+            continue
         if not task.get("enabled", True) or task.get("status") != STATUS_PENDING:
             continue
         execute_after = str(task.get("execute_after") or "").strip()
@@ -436,7 +511,10 @@ def run_due_moments_task_list(bot, now=None):
             changed = True
             continue
         before_definition, _runtime, _history = split_moments_task_storage(task)
+        guard_task = getattr(bot, "_moments_ui_guard", None)
+        task_key, task_version = guard_task(task) if callable(guard_task) else ("", 0)
         running_task = mark_moments_task_running(task, now=now)
+        running_task["execution_snapshot"] = base_snapshot
         task.clear()
         task.update(running_task)
         after_definition, _runtime, _history = split_moments_task_storage(task)
@@ -451,6 +529,8 @@ def run_due_moments_task_list(bot, now=None):
                 "images": resolved_images,
                 "privacy": bot._panel_moments_privacy(task.get("visibility_type")),
                 "tags": list(task.get("tags") or []),
+                "_ui_task_key": task_key,
+                "_ui_task_version": task_version,
             }
         )
         before_definition, _runtime, _history = split_moments_task_storage(task)
@@ -477,53 +557,12 @@ def run_due_moments_task_list(bot, now=None):
             bot._save_moments_task_definitions_only(tasks)
 
 
-def run_due_moments_like_task(bot, now=None):
-    now = now or datetime.now()
-    if not getattr(bot.config, "moments_like_switch", False):
-        bot._moments_like_next_time = None
-        bot._moments_like_runtime_task = {}
-        return
-    bot._moments_like_runtime_task = compile_task_plan(
-        {
-            "id": "moments-like",
-            "schedule_mode": "interval_next",
-            "repeat_mode": "repeat",
-            "interval_min": int(getattr(bot.config, "moments_like_min", 1) or 1),
-            "interval_max": int(getattr(bot.config, "moments_like_max", 1) or 1),
-            "next_fire_at": str(bot._moments_like_runtime_task.get("next_fire_at") or "").strip(),
-            "status": str(bot._moments_like_runtime_task.get("status") or "pending").strip() or "pending",
-            "last_run_at": str(bot._moments_like_runtime_task.get("last_run_at") or "").strip(),
-            "last_error": str(bot._moments_like_runtime_task.get("last_error") or "").strip(),
-        },
-        now=now,
-    )
-    next_fire_at = str(bot._moments_like_runtime_task.get("next_fire_at") or "").strip()
-    if next_fire_at and next_fire_at != str(bot._moments_like_next_time or ""):
-        bot._moments_like_next_time = next_fire_at
-        try:
-            readable = datetime.fromisoformat(next_fire_at).strftime("%H:%M:%S")
-            log(message=f"随机朋友圈点赞：下次触发 {readable}")
-        except ValueError:
-            pass
-    if not is_task_due(bot._moments_like_runtime_task, now=now):
-        return
-    execute_moments_like_task(
-        task=bot._moments_like_runtime_task,
-        perform_like=bot._do_moments_like,
-        log_info=lambda message: log(message=message),
-        log_error=lambda message: log(level="ERROR", message=message),
-    )
-    bot._moments_like_runtime_task = advance_task_plan_after_success(bot._moments_like_runtime_task, now=now)
-    bot._moments_like_next_time = str(bot._moments_like_runtime_task.get("next_fire_at") or "").strip() or None
-
-
 def process_unified_runtime_tasks(bot, now=None):
     now = now or datetime.now()
     bot._run_due_scheduled_message_tasks(now=now)
     bot._run_due_fixed_material_outreach(now=now)
     bot._run_due_moments_task_list(now=now)
     bot._run_due_random_material_outreach(now=now)
-    bot._run_due_moments_like_task(now=now)
 
 
 def process_pending_runtime_task_reload(bot):

@@ -9,8 +9,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
+import tempfile
+import threading
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +36,24 @@ WARNING_WXID_CONFLICT = "wxid_conflict"
 
 _TAG_SPLIT_RE = re.compile(r"[,，、;；/|｜\n\r\t]+")
 _SAFE_NAME_RE = re.compile(r"[^0-9A-Za-z_.-]+")
+_DIRECTORY_LOCKS_GUARD = threading.Lock()
+_DIRECTORY_LOCKS: dict[str, threading.RLock] = {}
+
+
+def _directory_lock_for_path(path: str | Path) -> threading.RLock:
+    key = str(Path(path).resolve())
+    with _DIRECTORY_LOCKS_GUARD:
+        lock = _DIRECTORY_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _DIRECTORY_LOCKS[key] = lock
+        return lock
+
+
+@contextmanager
+def directory_lock(path: str | Path):
+    with _directory_lock_for_path(path):
+        yield
 
 
 def _iso_timestamp(now: Any = None) -> str:
@@ -889,20 +911,32 @@ def directory_path(base_dir: str | Path, wx_id: str) -> Path:
 
 def load_directory(path: str | Path, wx_id: str = "") -> dict[str, Any]:
     path = Path(path)
-    if not path.exists():
-        return default_directory(wx_id)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return default_directory(wx_id)
+    with directory_lock(path):
+        if not path.exists():
+            return default_directory(wx_id)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            return default_directory(wx_id)
     return _normalize_directory_shape(data, wx_id)
 
 
 def save_directory(path: str | Path, directory: dict[str, Any]) -> None:
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     normalized = _normalize_directory_shape(directory or {}, _clean_text((directory or {}).get("wx_id")) if isinstance(directory, dict) else "")
-    path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = json.dumps(normalized, ensure_ascii=False, indent=2)
+    with directory_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, path)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
 
 
 def sync_identity_calibration_from_directory(

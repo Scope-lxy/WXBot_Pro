@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 from core.account_storage import account_module_file, resolve_account_id
 from feature.material_outreach import (
@@ -153,13 +154,13 @@ class MaterialOutreachStorage:
         )
         return history["progress_records"]
 
-    def update_progress_records_for_send(self, snapshot, targets, *, success, error="", now=None, limit=1000):
+    def update_progress_records_for_send(self, snapshot, targets, *, success=False, status="", error="", now=None, limit=1000):
         by_name = {}
         for contact in (snapshot or {}).get("targets") or []:
             send_name = str((contact or {}).get("send_name") or "").strip()
             if send_name and send_name not in by_name:
                 by_name[send_name] = contact
-        status = "success" if success else "failed"
+        status = str(status or "").strip() or ("success" if success else "failed")
         records = []
         for target in targets or []:
             send_name = str(target or "").strip()
@@ -182,6 +183,70 @@ class MaterialOutreachStorage:
                 )
             )
         return self.append_progress_records(records, limit=limit)
+
+    def freeze_interrupted_sends(self, task_id, *, now=None, limit=1000):
+        """Turn latest inflight deliveries into uncertain and report unresolved sends."""
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            return []
+        stamp = (now or datetime.now()).replace(microsecond=0).isoformat()
+
+        def mutate(payload):
+            items = [item for item in (payload.get("progress_records") or []) if isinstance(item, dict)]
+            latest = {}
+            for item in items:
+                if str(item.get("task_id") or "").strip() != task_id:
+                    continue
+                key = (
+                    str(item.get("run_id") or "").strip(),
+                    str(item.get("contact_key") or item.get("send_name") or "").strip(),
+                )
+                latest[key] = item
+            recovered = []
+            for item in latest.values():
+                if str(item.get("status") or "").strip() != "inflight":
+                    continue
+                frozen = {
+                    **item,
+                    "status": "uncertain",
+                    "status_label": "待人工确认",
+                    "detail": "上次运行在微信提交后中断，已禁止自动重发",
+                    "created_at": stamp,
+                }
+                items.append(frozen)
+                recovered.append(frozen)
+            if limit and len(items) > int(limit):
+                items = items[-int(limit):]
+            payload["progress_records"] = items
+            payload["_recovered_unresolved"] = recovered
+            return payload
+
+        history = self.mutate_history(mutate)
+        recovered = list(history.pop("_recovered_unresolved", []) or [])
+        latest = {}
+        for item in history.get("progress_records", []) or []:
+            if str(item.get("task_id") or "").strip() != task_id:
+                continue
+            key = (
+                str(item.get("run_id") or "").strip(),
+                str(item.get("contact_key") or item.get("send_name") or "").strip(),
+            )
+            latest[key] = item
+        return recovered or [item for item in latest.values() if str(item.get("status") or "").strip() == "uncertain"]
+
+    def freeze_all_interrupted_sends(self, *, now=None, limit=1000):
+        """Freeze every latest inflight delivery when an account namespace loads."""
+        task_ids = {
+            str(item.get("task_id") or "").strip()
+            for item in self.load_progress_records()
+            if isinstance(item, dict)
+            and str(item.get("status") or "").strip() == "inflight"
+            and str(item.get("task_id") or "").strip()
+        }
+        recovered = []
+        for task_id in sorted(task_ids):
+            recovered.extend(self.freeze_interrupted_sends(task_id, now=now, limit=limit))
+        return recovered
 
     def load_ai_pending_queue(self):
         return self.load_runtime().get("ai_pending_queue", [])

@@ -8,8 +8,7 @@
 - `docs/WXBot Pro 使用说明.md`：面板怎么配、功能怎么用、常见问题。
 - `docs/WXBot Pro 开发指南.md`：代码结构、运行链路、数据真源和改动边界。
 - `docs/WXBot Pro 设计规范.md`：面板 UI 排版规范。
-- `docs/微信 UI 并发实测结果.md`：微信主窗口 / 子窗口并发实测结果。
-- `docs/wechat-cli 本地数据集成探测.md`：本地只读数据源的安装、账号校验和集成边界。
+- `docs/微信 UI 并发实测结果.md`：真实微信 UI 并发边界和生产调度证据。
 - `docs/人设编写规范模板.md`：基础人设和人设近况模板。
 - `docs/伪BUG记录.md`：已接受机制与排查时不要重复误报的点。
 - `AGENTS.md`：AI 协作规则、Windows 编码注意事项和项目红线。
@@ -28,7 +27,8 @@
 - `打开软件.bat`：启动入口。创建或复用 Python 3.12 `venv`，安装依赖后运行 `web_server.py`。
 - `web_server.py`：Flask 面板和管理 API，负责登录、配置读写、接口测试、备份、页面 API，以及启动 / 停止机器人。
 - `templates/dashboard.html`：面板主体。
-- `wxbot_core.py`：机器人运行时总编排，负责 wxautox4、微信监听、AI 回复、统一任务扫描和真实微信发送。
+- `wxbot_core.py`：机器人运行时总编排，负责监听业务、AI 回复、统一任务扫描和向 UI owner 提交纯数据意图。
+- `core/wechat_ui_runtime.py`：唯一持有 wxautox4 对象的 owner 适配层，负责真实微信读取、发送和窗口操作。
 - `core/`：底座能力，例如配置、Prompt、媒体、记忆、发送、通讯录身份校准和调度。
 - `feature/`：业务规则，例如监听维护、管理员工作台、素材转发、定时任务和发圈任务。
 - `extension/`：外部增强，例如邮件通知、Webhook、SiverPanel 远程访问。
@@ -49,7 +49,7 @@
 
 `打开软件.bat` 自己维护 Python 依赖清单，不读取外部 `requirements.txt`。它会兜底安装 `Pillow`，并在系统缺少 `ffmpeg` / `ffprobe` 时下载到 `venv/tools/ffmpeg/`。
 
-`wechat-cli` 是项目级外部工具，但默认禁用。只有 `config.json` 里 `wechat_cli_enabled=true` 且未设置 `WXBOT_DISABLE_WECHAT_CLI=1` 时，启动脚本才会准备 `venv/tools/wechat-cli/`、创建隔离 `pyenv` 并检测初始化。多账号候选不会自动猜测绑定。
+生产环境不安装、不初始化、不检测也不读取 `wechat-cli`。通讯录、上下文补洞和关系扫描都走已登记的微信 UI owner 路径；不要恢复本地数据库旁路。
 
 ### 面板层
 
@@ -60,14 +60,14 @@
 - 接口连通性测试和视觉能力测试，并写入 `api_capability_map`。
 - Prompt、人设近况、Prompt 预览、会话记忆、聊天记录、通讯录、素材转发、发圈任务、备份等页面 API。
 - 统一任务工作台 API：`/api/task-workbench/<module>` 与 `/api/task-workbench/<module>/runtime`。
-- 启动 / 停止机器人：`/start_bot` 后台创建 `WXBot` 并调用 `run()`；`/get_startup_status` 轮询真实启动结果；`/stop_bot` 等待线程退出。
-- `wechat-cli` 状态卡：关闭态所有检测、更新和读取入口都短路为 `disabled`；开启前必须弹出风控确认；`检查更新` 只提示 Git HEAD，不自动更新。
+- 启动 / 停止机器人：`/start_bot` 后台创建 `WXBot` 并调用 `run()`；`/get_startup_status` 轮询真实启动结果；`/stop_bot` 立即返回 `stopping`，owner 先拒绝新意图并取消未开始队列，当前动作结束后由机器人线程执行 `StopListening()` 收尾。
+- UI 卡死恢复：watchdog 只用专用退出码 `86` 退出；`打开软件.bat` 只响应该退出码，滚动 30 分钟最多自动重启 3 次。用户主动停止不自动启动机器人。
 
 ### 机器人层
 
-`WXBot.__init__()` 初始化配置、聊天接口主备状态、回复轮数存储、Prompt 系统、素材转发、发圈草稿、监听缓存、消息合并缓存和发送锁。
+`WXBot.__init__()` 初始化配置、聊天接口主备状态、回复轮数存储、Prompt 系统、素材转发、发圈草稿和消息合并状态；微信 UI owner 在监听初始化时创建。
 
-真正接入微信发生在 `init_wx_listeners()`：创建 `WeChat` 对象、读取当前 `wx_id`、初始化账号隔离数据目录、启动监听器，并注册管理员、白名单、群聊、自定义转发来源和素材来源监听。
+真正接入微信发生在 `init_wx_listeners()`：启动 UI owner，由 `WeChatUIRuntime` 在 owner 线程创建 `WeChat`、读取当前 `wx_id`、启动监听器并注册管理员、白名单、群聊、自定义转发来源和素材来源。业务层只接收纯身份和消息快照。
 
 `WXBot.main()` 每轮负责微信在线 / 窗口状态检测、新好友检测、全局监听刷新、运行中任务热更新、统一时间任务扫描、AI 自动转发待发送队列、管理员发圈草稿预览和通讯录自动维护检查。
 
@@ -85,19 +85,29 @@
 -> 私聊好友消息先写聊天记录，再进入连续消息合并队列
 -> AI 回复前按需补齐最近上下文，再读取 history 组装 Prompt
 -> 回复预处理（清洗、准入、必要时重写 / 兜底）
--> 拆分多条、人工延迟
--> SendMsg / SendFiles / message.forward(...)
+-> 拆分多条、后续气泡间隔
+-> 向唯一 UI owner 提交 SendMsg / SendFiles / forward 等纯数据意图
 -> 成功发送后写入输出记录
 -> 按需更新会话记忆
 ```
 
-去重口径按“同一会话 + 同一发送者 + 同一类型 + 同一内容”的短时间重复回调处理，不按回调来源区分放行。
+去重优先使用微信消息 `id`、`hash` 或控件纯标量身份；内容相同但身份不同仍是两次真实发送。只有微信未提供任何稳定身份和时间时，才按“同一会话 + 发送者 + 类型 + 内容”做 2 秒兜底，避免同一个无身份回调瞬间重复触发。
 
 私聊 `self` 消息会先排除机器人自己回复的回显；确认是手动回复后，写入本地聊天记录、推进该好友消息序号、清理旧 AI 回复，不主动触发 AI。下一条好友消息会重新进入 AI 流程，并在 history 中带上这条手动回复。
 
 机器人自己发出的私聊消息用 outbound echo 账本过滤微信 `self` 回调。覆盖入口包括 AI 文本 / 语音回复、轻量延后发送队列、运行时发送、关键词回复、定时消息、自定义转发、普通素材转发和 AI 自动素材转发。通讯录维护、关系扫描和标签同步等低优先级 UI 任务启动前要避让未消费 echo。
 
+关系标签同步不使用不可拆分批次。每个联系人单独提交一个 `CONTACT_EDIT`，一次调度最多处理 1 人；面板“标签同步间隔”控制下一联系人最早提交时间，默认 30 秒、范围 1–100 秒。该间隔用于限制微信资料页操作频率，不承担聊天插队职责；后到聊天最多等待当前联系人操作，不能被一批联系人连续阻塞。好友资料编辑沿用 `ChatWith -> ChatInfo -> EditFriendInfo`，并在 owner 内保留旧版实机验证过的窗口置前和移开鼠标步骤，避免搜索框、搜索结果或资料浮层残留焦点。失败联系人保留待同步状态，10 分钟后再重试；成功或失败结果必须先写回当前联系人记录，不能只写成功日志却仍把本地状态保留为待同步。
+
+所有微信动作统一非抢占：当前发送、转发、素材读取、朋友圈、关系扫描、资料修改、新好友或监听任务完整结束前，后到图片 / 引用回调只能等待 owner FIFO 授权，不得直接下载。不要为媒体建立越过队列的高优先级通道。
+
+单个业务动作失败不等于微信客户端失效。`Find Control Timeout`、目标会话不匹配、资料页不适用或业务返回失败只结束 / 延后当前任务，不得立即提交 `REBIND`。通用重试层只有识别到 Windows `1400` 无效窗口句柄或 COM/RPC 客户端断开等明确绑定失效时，才允许重绑后再试一次。监听器恢复也必须先探活现有客户端并只重建监听器；只有探活确认客户端绑定失效时才能升级为整客户端重绑。其余严重卡死交给专用 watchdog 处理。
+
+通讯录批次使用全屏障：从启动采集子进程到 `SwitchToChat` 恢复完成，UI owner 不执行任何后到微信意图，消息业务线程也不调用 AI。普通回调只复制纯数据入队；图片 / 引用回调向 owner FIFO 预约后在原回调线程下载，通讯录期间只等待、不下载。恢复后按 FIFO 处理。不要恢复通讯录期间轻量文字、语音重读或图片下载穿插。
+
 ## 运行中同步
+
+面板交互使用 `templates/static/jquery-3.6.0.min.js` 本地资源。不要改回外部 CDN 单点依赖，否则网络不可用时页面仍能显示但启动、停止和保存按钮不会绑定事件。
 
 `/save_config` 在机器人运行中做两类同步：
 
@@ -122,10 +132,11 @@
 
 仍应留在 `wxbot_core.py`：
 
-- wxautox4 对象创建和窗口控制。
-- 监听注册、主循环、线程编排。
-- 真实 `SendMsg`、`SendFiles`、`message.forward(...)`、`new.accept(...)`、朋友圈打开 / 发布等微信动作。
-- 聊天主备切换、发送锁、主循环健康检查、运行中任务热更新入口。
+- 监听业务注册、主循环和业务线程编排。
+- 聊天主备切换、AI / TTS / Prompt、消息合并、任务扫描、主循环健康检查和运行中热更新入口。
+- 纯数据 UI 意图的生成与发送结果回写；不得缓存或直接调用 wxautox4 对象。
+
+`core/wechat_ui_runtime.py` 保留 `WeChat` 创建、窗口定位、真实 `SendMsg / SendFiles / SendAudio / forward / quote / new.accept` 和朋友圈、联系人资料等 owner 内动作。
 
 ## 数据真源
 
@@ -135,7 +146,6 @@
 - `data/config/webhook.json`：Webhook 配置。
 - `data/config/reply_count.json`：私聊回复轮数限制计数。
 - `data/config/runtime_metrics_v1.json`：状态面板、数据图表和管理员 `/状态` 使用的小时级运行统计。
-- `data/config/wechat_cli_account_bindings.json`：wxautox4 账号命名空间到 `wechat-cli` 数据库目录的活体校验绑定。
 - `data/prompt/`：人格模板和人格近况文件。
 - `data/system_prompts/`：系统 Prompt 片段及其备份。
 - `data/accounts/<wx_id>/memory/`：聊天记录。
@@ -145,6 +155,8 @@
 - `data/accounts/<wx_id>/tasks/`：关键词、自定义转发、定时消息、素材转发、发圈等任务模块。
 - `data/accounts/<wx_id>/relationship_scan/relationships.json`：关系扫描结果。
 - `data/accounts/<wx_id>/friend_request/state.json`：好友申请设置、候选人和执行记录。
+- `data/accounts/<wx_id>/ui_delivery/journal.json`：语音、文件、转发和 quote 的非幂等微信投递账本。
+- `data/accounts/<wx_id>/unanswered_inbound/records.json`：私聊 AI 生成中断恢复记录；只恢复已经进入 AI 分支的消息。
 - `data/accounts/<wx_id>/config/voice_reply_state.json`：语音回复运行态。
 - `data/accounts/<wx_id>/moments_drafts/active_draft.json`：管理员发圈草稿运行态。
 - `data/accounts/default/`：只有没有运行中微信号、没有 `last_wx_id`、也没有历史账号数据时才使用。
@@ -164,11 +176,15 @@
 
 ## 关键行为边界
 
-### 微信 UI 锁
+### 微信 UI owner
 
-微信 UI 锁保护一整轮真实微信动作，不只是主窗口切换。即使已有缓存子窗口，`SendMsg`、`SendFiles`、`SendAudio`、群聊 `quote`、素材源历史读取、备注 / 标签编辑仍可能改变微信焦点或可见列表。
+全部真实微信动作只由一个 UI owner 线程执行，包括监听、私聊 / 群聊回复、文件和语音、quote、素材转发、定时消息、朋友圈、备注 / 标签、关系扫描、新好友和好友申请。业务线程只提交纯数据意图；wxautox `Chat`、`Message`、`NewFriend`、朋友圈和 UIA 对象不得跨线程缓存。朋友圈和联系人高层入口在缺少 owner 时直接失败，好友申请 UIA 适配器还必须收到 owner 线程断言，不能依赖调用者自觉。
 
-运行时任务发送、轻量延后发送队列、私聊 / 群聊自动回复、管理员回复、素材源读取和联系人资料编辑必须拿到全局 UI 锁后连续完成。拿不到锁时，按各自策略排队、延后或跳过。
+监听器或桌面对象失效时也不能在业务线程重新创建 `WeChat`。恢复必须提交独占 `REBIND` 意图，由 `WeChatUIRuntime` 在 owner 线程停止旧客户端、创建新客户端并恢复原监听名单；生产边界测试只允许 owner runtime 和通讯录最小 worker 构造 `WeChat`。实机已验证重建前后微信身份一致、固定监听恢复且子窗口可继续读取。
+
+owner 按 FIFO 执行，已经开始的动作不可被后到任务抢占。AI 拆分气泡、quote 后续文字、关键词多项、新好友欢迎和定时消息都逐项提交；每一项开始前复核会话或任务版本，让新消息、人工 `self`、停止或配置变化取消尚未开始的剩余项。通讯录最小采集子进程是唯一并发例外，但批次运行期间生产 owner 使用全屏障，全部聊天读取、下载和发送等待恢复后再按 FIFO 执行。调用方不设置固定排队等待秒数，必须等待意图完成、主动停止或版本校验取消；轻操作 30 秒、独占操作 180 秒和通讯录 300 秒是当前动作自身的卡死边界，不能拿来充当队列等待上限，否则会产生调用方已报失败但微信稍后仍执行的晚到操作。
+
+非幂等恢复必须区分调用前、调用中和成功落盘后。文件、语音、quote、转发和动作组由 `UIDeliveryJournal` 统一冻结；定时、朋友圈、素材和好友申请使用各自正式状态真源；新好友接受和资料修改在重启后重读微信真源。隔离子进程故障矩阵覆盖 11 类共 33 个强退位置，禁止用捕获普通异常代替进程退出测试。
 
 ### 动态监听
 
@@ -178,20 +194,19 @@
 
 ### 上下文补洞
 
-会话记忆页只暴露两个开关：
+保存聊天历史并带入上下文时，AI 回复前只在启动首次回复、窗口恢复或当前入站不在本地尾部等强理由下读取一次当前窗口 `GetAllMessage()`，不周期巡检，也不滚动深历史。实机 wxautox4 的普通气泡 `Message.time` 为 `null`，时间只存在于独立 `TimeMessage`，因此快照规范化时让后续气泡继承最近的时间分隔，并保持同一时间组的窗口顺序。
 
-- `memory_context_repair_low_risk_switch`：显示为“自动补最近上下文”，默认开，统一控制 CLI 补洞和低风险 UI 当前渲染消息兜底。
-- `memory_context_repair_high_risk_switch`：显示为“补上下文时允许滚动微信窗口”，默认关，只控制高风险滚动 UI 补洞。
+补洞恢复 `52e35e7` 的成熟规则：当前可见窗口是事实来源，锚点只用于判断对齐状态，不限制补洞范围；遍历整个可见快照，把本地缺少的对方消息和人工 self 消息补入。无锚点时也把当前可见快照作为新的历史尾部，不因本地已有 history 而放弃。运行时 `message.id/hash/hash_text` 不写入 history，也不作为跨重启身份，因为实机已证实 id 在重建客户端后会变化、相同图片 hash 也可能相同。私聊按方向、类型、内容和邻近时间逐次匹配，群聊额外包含发送者；每条本地记录最多抵消一个可见气泡，因此重复短句和相同图片按出现次数保留。微信明确给出的时间分隔可用于邻近时间匹配；可见前缀或无时间快照为保持顺序而推算出的时间只决定插入位置，必须再按方向、类型和内容一对一抵消本地已有气泡，且该临时标记不得写入 history。日期解析同时接受微信快照的 `YYYY-MM-DD` 与本地 `YYYY/MM/DD`，落盘统一为后者。快照比较、补差额和写盘必须在同一把会话记忆锁内完成，重复执行同一快照新增数必须为 `0`。系统消息和未识别语音占位不写入模型上下文。冷却、锚点数量和读取上限均为内部参数，面板不暴露技术开关。
 
-不要把冷却、锚点数量、读取上限等内部参数重新暴露到 UI。
-
-CLI 补洞必须通过账号绑定校验。真实 `wxid_...` 可按目录匹配；`scope_*` 命名空间必须经文件传输助手活体校验并保存绑定。私聊同名和群聊重名都必须用最近锚点消息消歧，不能猜 wxid 或 `@chatroom`。
-
-补洞写入前过滤未识别语音占位，并按同方向 / 类型 / 内容的近时间重复去重。私聊无锚点时可按最近可见消息补入；群聊没有锚点、找不到 CLI 目标或目标不唯一时跳过补入，避免污染上下文。
+机器人运行且监听正常时，人工 `self` 消息走实时回调直接保存，并推进私聊会话版本、取消尚未发送的旧回复，不依赖补洞。每个回调事件只允许一个记忆保存点，用 `_wxbot_memory_persisted` 防止“入队前保存 + 回调尾部保存”双写；没有当前进程稳定 id 的两条同文消息必须保留，不能退回内容级短时去重。
 
 ### 通讯录与身份
 
-通讯录自动维护的完整资料采集必须走 `feature/contact_auto_collector_worker.py` 最小子进程。主进程负责微信 UI 锁、300s 硬超时、PID 级 kill / `taskkill /T /F` 兜底和 `SwitchToChat` 恢复；不要把 `GetFriendDetails` 搬回主进程。
+通讯录自动维护和手动建档的完整资料采集必须走 `feature/contact_auto_collector_worker.py` 最小子进程。主进程负责 owner 调度、300s 硬超时、PID 级 kill / `taskkill /T /F` 兜底和 `SwitchToChat` 恢复；不要把 `GetFriendDetails` 搬回主进程。每批 50 人、完整轮 7 天固定为内部参数。
+
+worker 每批必须按 `SwitchToContact -> 聚焦通讯录列表 -> Home -> 验证顶部固定入口“新的朋友” -> GetFriendDetails(50)` 执行；只发送 Home 而不验证回顶不算成功。当前 wxautox4 `GetFriendDetails` 的 callback 实机语义与 `.pyi` 注释相反：返回 `False` 会继续寻找，第一次返回 `True` 会停止 callback，并从命中项开始读取，命中项包含在返回结果且计入 `n`。
+
+callback 中的名称只用于精确定位，不能把同名出现次数当身份。worker 必须用微信号 / wxid，缺失时用完整资料指纹复核首项身份，并按同一稳定身份去除虚拟列表重复行。下一批游标只能从批次尾部选择“此前未出现同名、且本批同名只对应一个稳定身份”的安全项；没有安全游标或身份不一致时整批失败，不猜测位置。主游标失败后持久化切换备用游标，备用游标也失败则从顶部重开。正常 50 人批次短批后，下一轮固定执行 `n=2` 尾部探针；只有原始结果至少 2 行、全部 identity 等于请求锚点且没有第二身份时才确认完整轮结束。单行、异常或 300 秒超时保留原游标和 `tail_confirm_pending`，不能写 `last_full_scan_completed_at`。游标和身份锚点只属于维护状态，不得写进联系人真源字段。
 
 身份校准跟随通讯录维护、手动建档和备注修复成功触发，不在每条消息热路径刷新通讯录或扫描目录。聊天记录、会话记忆、关系扫描、任务引用和回复计数的改名 / 合并都通过账号级联系人合并链路处理，合并前写入 `contact_merge_backups/`。
 
@@ -205,7 +220,9 @@ AI 可见 history 统一走 `core/chat_history_format.py::build_model_visible_hi
 
 私聊图片进入连续消息合并队列，最多 `9` 张。群聊图片本身只缓存到群级 pending visual context，后续文本触发 AI 且命中问图意图时才消费。
 
-语音消息依赖微信自己的转文字结果，优先调用 wxauto 官方 `msg.to_text()`。私聊只有时长、暂无文字时，每 5 秒对原语音对象重试一次，最多 3 次；群聊不做延后重试。未识别占位、`voicemsg` XML 和失败状态不进入 AI / history，也不发送兜底提示。
+子窗口实时图片 / 引用沿用旧版稳定方式，只能由 `core/wechat_ui_runtime.py` 在原 wxautox 回调线程调用原消息下载方法，并且必须先取得 owner FIFO 预约时段；发送、转发、素材读取、朋友圈、关系扫描、资料修改、新好友、监听和通讯录等任何当前动作都不可被抢占。下载后只有本地路径标量进入业务队列，原始 Message 不跨线程。`feature/listening.py` 和 `feature/message_routing.py` 不保留直接下载回退；全局监听必须使用 `UIClientFacade`，主动 quote / 素材操作由 owner 重新读取并唯一定位。
+
+生产路径禁止调用 `msg.to_text()`，也不跨线程保留原始语音 `Message`。只有时长的私聊或已开启语音识别的群聊，在约 5 秒、10 秒各用普通 `GetAllMessage()` 读取一份新快照；按会话、方向、发送者、时长、hash 和窗口顺序匹配。未识别占位、`voicemsg` XML 和失败状态不进入 AI / history，也不发送兜底提示。
 
 ### 发送、预处理与统计
 
@@ -219,7 +236,21 @@ AI 回复发送前统一走回复预处理：先按 `clean_ai_reply_switch` 清�
 
 ### 任务与素材
 
-定时消息、素材转发、发圈任务、朋友圈点赞都走统一时间模型。新增任务类面板时优先复用现有任务工作台 contract / storage / service。
+定时消息、素材转发和发圈任务走统一时间模型。新增任务类面板时优先复用现有任务工作台 contract / storage / service。
+
+非幂等动作在调用前持久化执行围栏。定时消息按“目标 × 内容”保存 `pending / inflight / done / failed / queued / uncertain`；好友申请真正提交只做一次；素材批次预写 `inflight`；朋友圈发布前保存快照。进程中断后无法确认结果的一律进入 `uncertain` 或待确认，禁止自动重放。好友申请候选生成前必须重新计算 `duplicate_send_name`，并与 `send_name_unsearchable` 一起排除；`contact_key` 不能让微信的名称搜索具备同名消歧能力，禁止在无法唯一定位时自动提交。
+
+普通语音、文件、转发和 quote 由 `core/ui_delivery_journal.py` 在 owner 调用前写入 `inflight`，明确返回后写 `done`；调用异常或启动时发现遗留 `inflight` 时收敛为 `uncertain`。关键词、定时任务、新好友欢迎、quote 后续文字和 AI 拆分气泡都逐项提交；每项开始前复核会话或任务版本，新消息、停止或配置变化可以取消尚未开始的剩余项。不得把已完成、结果未知和尚未开始的多项合并成一个模糊结果，更不得把根本未开始的后续项一并冻结。
+
+私聊和群聊 AI 恢复由 `core/unanswered_inbound.py` 记录 `routing / ai_started / replay_pending / replaying / send_started / resolved / uncertain`。重启先把 `ai_started / replay_pending / replaying` 原子收敛为 `replay_pending`，初始化账号、MemoryManager、Prompt 和监听缓存后再按 private/group 重新排队；恢复沿用原记录，不生成记录链。首次真实发送前必须写 `send_started`，重启发现该状态时转为 `uncertain` 并禁止自动重发；`routing` 阶段同样收敛为未知，避免把关键词、限流或人工接管误恢复成 AI 回复。
+
+owner 在真实微信动作前通过 `task_version_provider` 复核配置或任务定义真源；关键词和自定义转发必须读取账号级 `rules.json`，不能从已移除规则字段的全局配置计算版本。联系人目标保存 `contact_key`，执行前解析当前发送名；已失效、无法唯一解析或通讯录选择项缺少 `contact_key` 时拒绝执行。只有明确的自由输入目标允许按精确名称执行。好友申请提交前 claim 若因版本校验取消，使用 claim token 恢复为 `pending`；候选刷新必须继承活动 claim token，只有已经进入真实提交且结果未知时才保留 `uncertain`。
+
+手动关系全量扫描是一个连续、不可抢占的 owner 独占事务：先回顶部，连续读取和滚动，连续 8 次无新增自然完成；中间不放行回复，也不允许手动停止。1000 次只作防无限循环保险，命中时必须标记 `partial`。heartbeat 只延长长事务整体截止线，单个底层 UI 调用卡死仍由 watchdog 恢复。
+
+全量扫描每次 `roll_down()` 后直接读取下一屏，不恢复旧分片方案遗留的 1 秒等待；开始和结束回顶后各保留 1 秒稳定等待。自动短扫描看到 `full_scan_running=true` 时直接跳过；如果已在 owner 前等待，owner 返回后必须重新加载最新状态再合并，不能用排队前的旧 `runtime` 覆盖全量扫描完成状态。
+
+最终生产压力使用 `tools/probe_production_acceptance.py` 只读观察。它从启动时的日志 EOF 开始计数，避免把单元测试旧日志混入证据；同时记录面板 HTTP、本机 `/runtime_health` 的机器人在线状态、10001-10999 的实际监听面板数、通讯录 worker 数、运行期间变更的关键 JSON 和运行指标差值。默认 7200 秒及全部事件类别是自动门禁；正式采样间隔不得超过 5 秒，活动必须覆盖首尾桶且不能出现超过一个空桶的断层。每个 `WXBot` 实例生成独立 32 位 `runtime_id`，owner 排队、入站、通讯录批次和人工介入事件都携带该 ID；观察器只计入 `/runtime_health` 当前返回的唯一稳定实例，测试或旧实例日志不能拼成通过。缺事件、运行实例变化、机器人或 UI owner 任一采样点未运行、多个面板进程族/worker、结束时 worker 残留、面板不可达、JSON 损坏或故障日志都会失败。报告不保存昵称、消息正文或正文哈希，只保留事件时间、日志文件名和字节偏移；`/runtime_health` 只允许本机访问，只在面板内机器人线程、UI owner 和非停止状态同时成立时返回 `bot_running=true`。即使自动门禁通过，错误窗口、真实重复/漏发，以及第 25 项通讯录批次内四类入站的接续时序仍必须人工复核。
 
 定时消息内容模型是可选 `1` 条文案 + 最多 `9` 个本地文件，发送顺序固定为先文案、后文件。
 
@@ -233,7 +264,7 @@ AI 回复发送前统一走回复预处理：先按 `clean_ai_reply_switch` 清�
 - 微信监听注册、动态子窗口缓存和全局监听按需补窗。
 - 消息回调分流顺序。
 - 管理员接管态、发圈态和素材来源静默规则优先级。
-- 发送前清洗、拆分多条和延迟策略。
+- 发送前清洗、拆分多条和后续气泡间隔策略；不再设置首条回复延迟。
 - outbound echo 过滤和私聊 `self` 手动接管判定。
 - 回复轮数计数和超限结束语。
 - 会话记忆提取、提案合并和保护规则。

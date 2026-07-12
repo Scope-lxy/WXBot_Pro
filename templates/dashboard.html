@@ -267,56 +267,6 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
 
-    <!-- wechat-cli 本地读取状态卡片 -->
-    <div class="cfg-card" id="wechat-cli-card">
-      <div class="ui-head ui-head--page">
-        <i class="bi bi-database-check"></i>
-        <h5>wechat-cli 当前状态</h5>
-        <div class="ui-head__actions">
-          <button type="button" id="btn-check-wechat-cli-update" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2 ui-btn--push">
-            检查更新
-          </button>
-        </div>
-      </div>
-      <div class="cfg-flow">
-        <div id="wechat-cli-checking" style="display:none;color:var(--muted);font-size:13px;padding:4px 0;">
-          <i class="bi bi-hourglass-split"></i> 正在检测本地读取能力...
-        </div>
-        <div id="wechat-cli-ok" class="page-inline-notice page-inline-notice--success" style="display:none;">
-          <i class="bi bi-database-check page-inline-notice__icon"></i>
-          <div class="page-inline-notice__content">
-            <div class="page-inline-notice__title" id="wechat-cli-ok-title">wechat-cli 本地读取可用</div>
-            <div><span id="wechat-cli-ok-message">通讯录维护和聊天记录自动补全等功能将会优先使用该插件。</span><span id="wechat-cli-version-ok" style="margin-left:10px;"></span></div>
-          </div>
-        </div>
-        <div id="wechat-cli-fail" style="display:none;">
-          <div class="page-inline-notice page-inline-notice--danger">
-            <i class="bi bi-database-exclamation page-inline-notice__icon"></i>
-            <div class="page-inline-notice__content">
-              <div class="page-inline-notice__title" id="wechat-cli-fail-title">wechat-cli 本地读取不可用</div>
-              <div><span id="wechat-cli-fail-message">机器人已自动回退微信界面读取。</span><span id="wechat-cli-version-fail" style="margin-left:10px;"></span></div>
-              <div id="wechat-cli-fail-detail" style="display:none;margin-top:4px;color:inherit;"></div>
-            </div>
-          </div>
-        </div>
-        <div id="wechat-cli-error" style="display:none;color:var(--muted);font-size:13px;padding:4px 0;">
-          <i class="bi bi-wifi-off"></i> 检测失败，请查看日志后重试
-        </div>
-        <div class="cfg-action-row wechat-cli-actions">
-          <input type="checkbox" id="wechat_cli_enabled" {% if config.get('wechat_cli_enabled', False) %}checked{% endif %} hidden>
-          <button type="button" id="btn-toggle-wechat-cli" class="ui-btn ui-btn--primary ui-btn--l2 wechat-cli-toggle {% if config.get('wechat_cli_enabled', False) %}is-cli-enabled{% endif %}">
-            <i class="bi {% if config.get('wechat_cli_enabled', False) %}bi-power{% else %}bi-plug-fill{% endif %}"></i> <span id="wechat_cli_enabled_label">{% if config.get('wechat_cli_enabled', False) %}关闭 CLI{% else %}开启 CLI{% endif %}</span>
-          </button>
-          <button type="button" id="btn-check-wechat-cli" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2">
-            <i class="bi bi-arrow-repeat"></i> 重新检测
-          </button>
-          <button type="button" id="btn-repair-wechat-cli" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2" style="display:none;">
-            <i class="bi bi-tools"></i> 尝试修复
-          </button>
-        </div>
-      </div>
-    </div>
-
     <div class="cfg-card" id="status-main-card">
       <div class="ui-head ui-head--page"><i class="bi bi-speedometer2"></i><h5>运行状态</h5><span class="desc" id="status-refresh-hint">每5秒自动刷新</span></div>
       <!-- 运行状态总览 -->
@@ -346,7 +296,6 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="status-section-title">功能状态</div>
       <div id="function-status-grid" class="function-status-grid">
         <div class="detail-row"><span class="detail-key">全局人设</span><span class="detail-val" id="sv-default-prompt">-</span></div>
-        <div class="detail-row"><span class="detail-key">回复延迟</span><span class="detail-val" id="sv-delay">-</span></div>
         <div class="detail-row"><span class="detail-key">回复清洗</span><span class="detail-val" id="sv-clean-reply">-</span></div>
         <div class="detail-row"><span class="detail-key">识别图片内容</span><span class="detail-val" id="sv-image-recognition">-</span></div>
         <div class="detail-row"><span class="detail-key">使用语音回复</span><span class="detail-val" id="sv-voice-reply">-</span></div>
@@ -430,7 +379,6 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-router"></i>
         <h5>远程访问服务</h5>
-        <span class="desc">接入 SiverPanel 远程连接访问服务</span>
       </div>
       <div class="cfg-flow">
         <div class="page-inline-notice page-inline-notice--success">
@@ -470,7 +418,6 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div class="switch-row" style="margin-bottom:0;">
           <input class="form-check-input" type="checkbox" id="siver_panel_enabled" {% if config.get('siver_panel_enabled', False) %}checked{% endif %}>
           <label for="siver_panel_enabled">开启远程访问服务</label>
-          <span class="switch-desc">开启后，面板启动时会自动尝试使用当前激活码和安全入口连接远程服务</span>
         </div>
 
         <div style="display:flex;justify-content:center;padding:18px 20px;border:1px solid #bfdbfe;border-radius:14px;background:linear-gradient(135deg,#eff6ff 0%,#f8fbff 100%);">
@@ -629,7 +576,7 @@ html.icons-pref-local [class*=" bi-"]::before {
           <i class="bi bi-save"></i> 保存配置
         </button>
       </div>
-      <div class="cfg-hint" style="margin-top:8px;">点击左侧单选框选择当前使用的接口 · 选择 DusAPI 时接口地址自动填写 · <a href="https://dusapi.com" target="_blank" style="color:#07C160;">dusapi.com 获取 Key</a></div>
+      <div class="cfg-hint" style="margin-top:8px;">选择 DusAPI 时接口地址自动填写 · <a href="https://dusapi.com" target="_blank" style="color:#07C160;">dusapi.com 获取 Key</a></div>
     </div>
     {% set tts_configs = config.get('tts_configs', []) %}
     <div class="cfg-card">
@@ -721,7 +668,6 @@ html.icons-pref-local [class*=" bi-"]::before {
           <i class="bi bi-save"></i> 保存配置
         </button>
       </div>
-      <div class="cfg-hint" style="margin-top:8px;">点击左侧单选框选择当前使用的语音接口；不同接口可配置不同的语音模型、地址、Key 和音色。</div>
     </div>
     <div class="cfg-card" id="backup-chat-api-card">
       <div class="ui-head ui-head--page">
@@ -883,10 +829,8 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-database-check"></i>
         <h5>会话记忆配置</h5>
-        <span class="desc">控制会话记忆读取、维护和排除名单</span>
         <div class="ui-head__actions">
           <label class="ui-switch ui-switch--l1 ui-head-switch" for="chat_memory_switch">
-            <span id="chat_memory_switch_label">{% if config.get('chat_memory_switch', True) %}已启用{% else %}已停用{% endif %}</span>
             <input class="form-check-input" type="checkbox" id="chat_memory_switch" {% if config.get('chat_memory_switch', True) %}checked{% endif %}>
             <span class="ui-switch-knob"></span>
           </label>
@@ -901,7 +845,7 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div class="col-12 col-md-4">
           <label class="cfg-label" for="chat_memory_message_threshold">触发整理消息数</label>
           <input type="number" class="form-control" id="chat_memory_message_threshold" min="10" max="200" value="{{ config.get('chat_memory_message_threshold', 100) }}">
-          <div class="cfg-hint">待整理消息达到该数量后，尝试整理会话记忆</div>
+          <div class="cfg-hint">累计达到这个消息数后，才会开始整理会话记忆</div>
         </div>
         <div class="col-12 col-md-4">
           <label class="cfg-label" for="chat_memory_protected_recent_count">排除整理消息数</label>
@@ -911,7 +855,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
     <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-person-dash"></i><h5>会话记忆黑名单</h5><span class="desc">这些好友不会读取或自动维护会话记忆</span><div class="ui-head__actions"><button type="button" class="ui-btn ui-btn--add ui-btn--l1" id="btn-add-chat-memory-exclude"><i class="bi bi-plus-circle"></i> 添加黑名单</button></div></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-person-dash"></i><h5>会话记忆黑名单</h5><div class="ui-head__actions"><button type="button" class="ui-btn ui-btn--add ui-btn--l1" id="btn-add-chat-memory-exclude"><i class="bi bi-plus-circle"></i> 添加黑名单</button></div></div>
       <div class="mb-2">
         <div class="cfg-hint">黑名单的好友将按人设设定正常回复，但不会自动创建、维护、读取会话记忆</div>
       </div>
@@ -978,7 +922,7 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Listen ===== -->
   <div class="config-panel" id="tab-listen">
     <div class="cfg-card">
-      <div class="ui-head ui-head--page listen-page-head"><i class="bi bi-ear"></i><h5>私聊监听</h5><span class="desc">配置需要监听的联系人</span></div>
+      <div class="ui-head ui-head--page listen-page-head"><i class="bi bi-ear"></i><h5>私聊监听</h5></div>
       <div class="listen-page-summary" id="listen_page_summary">
         <span class="ui-pill ui-pill--status {% if config.AllListen_switch %}is-danger{% else %}is-success{% endif %}" id="listen_summary_mode">{% if config.AllListen_switch %}黑名单模式{% else %}白名单模式{% endif %}</span>
         <span id="listen_summary_whitelist" class="ui-pill is-success">白名单 {{ config.get('listen_list', [])|length }}</span>
@@ -1047,21 +991,18 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
         </div>
         <div class="listen-mode-card">
-          <div class="ui-head ui-head--section"><div class="ui-head__main"><h5>私聊设置</h5><span class="desc">控制监听范围与自动回复方式</span></div></div>
-          <div class="switch-row switch-row--primary switch-row--inline-desc">
+          <div class="ui-head ui-head--section"><div class="ui-head__main"><h5>私聊设置</h5></div></div>
+          <div class="switch-row switch-row--primary">
             <input class="form-check-input" type="checkbox" id="AllListen_switch" name="AllListen_switch" {% if config.AllListen_switch %}checked{% endif %}>
-            <label for="AllListen_switch"><span class="switch-title">监听全部私聊</span></label>
-            <span class="switch-desc">监听除黑名单外的全部私聊</span>
+            <label for="AllListen_switch"><span class="switch-title">监听全部私聊（黑名单除外）</span></label>
           </div>
-          <div class="switch-row switch-row--inline-desc">
+          <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="chat_listen_only" name="chat_listen_only" {% if config.get('chat_listen_only', False) %}checked{% endif %}>
-            <label for="chat_listen_only"><span class="switch-title">仅监听，不自动回复</span></label>
-            <span class="switch-desc">仅关闭AI自动回复，不影响其他功能</span>
+            <label for="chat_listen_only"><span class="switch-title">关闭 AI 回复，其他功能照常</span></label>
           </div>
-          <div class="switch-row switch-row--inline-desc">
+          <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="AllListen_filter_mute" name="AllListen_filter_mute" {% if config.AllListen_filter_mute %}checked{% endif %}>
             <label for="AllListen_filter_mute"><span class="switch-title">跳过微信免打扰会话</span></label>
-            <span class="switch-desc">若有异常，请把屏幕缩放设为 100% 并重启</span>
           </div>
         </div>
       </div>
@@ -1070,7 +1011,6 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-image"></i>
         <h5>内容识别</h5>
-        <span class="desc">配置私聊中的图片与语音理解能力</span>
         <div class="ui-head__actions">
           <select class="form-select ui-head-select recognition-api-select" id="chat_image_recognition_api" name="chat_image_recognition_api" title="辅助识图接口">
             {% for cfg in config.api_configs %}
@@ -1083,25 +1023,23 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
       </div>
       <div class="recognition-card-grid">
-        <div class="switch-row switch-row--inline-desc recognition-inline-row">
+        <div class="switch-row recognition-inline-row">
           <input class="form-check-input" type="checkbox" id="chat_image_recognition_switch"
                  name="chat_image_recognition_switch"
                  {% if config.chat_image_recognition_switch %}checked{% endif %}>
           <label for="chat_image_recognition_switch"><span class="switch-title">识别图片消息</span></label>
-          <span class="switch-desc">调用模型识别图片内容，识别结果与模型能力相关</span>
         </div>
         <div class="switch-row switch-row--inline-desc recognition-inline-row">
           <input class="form-check-input" type="checkbox" id="chat_voice_recognition_switch"
                  name="chat_voice_recognition_switch"
                  {% if config.get('chat_voice_recognition_switch', False) %}checked{% endif %}>
-          <label for="chat_voice_recognition_switch"><span class="switch-title">识别语音消息</span></label>
-          <span class="switch-desc">微信必须开启「语音自动转文字」功能</span>
+          <label for="chat_voice_recognition_switch"><span class="switch-title">识别语音转文字的消息</span></label>
         </div>
       </div>
     </div>
     {% set chat_merge_delay = config.get('chat_message_merge_delay', 20) | int %}
     <div class="cfg-card chat-ability-card chat-ability-card--reply">
-      <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5><span class="desc">配置私聊回复的组织方式与节奏</span></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5></div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--voice-reply">
           <div class="ui-head ui-head--item">
@@ -1156,12 +1094,12 @@ html.icons-pref-local [class*=" bi-"]::before {
               <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="chat_voice_session_minutes">临时语音模式时长（分钟）</label>
                 <input type="number" class="form-control" id="chat_voice_session_minutes" min="1" max="1440" value="{{ config.get('chat_voice_session_minutes', 10) }}">
-                <div class="cfg-hint">命中语音触发后，临时保持语音回复偏好的有效时间。</div>
+                <div class="cfg-hint">触发后在这段时间内延续语音回复，超时后自动结束</div>
               </div>
               <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="chat_voice_session_turns">每次最多连续语音（条）</label>
                 <input type="number" class="form-control" id="chat_voice_session_turns" min="1" max="20" value="{{ config.get('chat_voice_session_turns', 5) }}">
-                <div class="cfg-hint">一次临时语音模式内最多连续发送多少条语音回复。</div>
+                <div class="cfg-hint">达到条数后结束本次语音模式，后续恢复文字回复</div>
               </div>
               <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="chat_voice_reply_request_keywords">触发关键词</label>
@@ -1208,21 +1146,26 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
           <div id="chat_split_settings" class="chat-ability-settings">
             <div class="row g-3">
-              <div class="col-12 col-lg-6">
+              <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="chat_split_max_chars">每条消息尽量不超过</label>
                 <input type="number" class="form-control" id="chat_split_max_chars" min="10" max="2000"
                        value="{{ config.get('chat_split_max_chars', 100) }}" placeholder="100">
                 <div class="cfg-hint">软限制：系统优先保证语义完整，不会为字数强行切断内容</div>
               </div>
-              <div class="col-12 col-lg-6">
+              <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="chat_split_max_count">最多拆成消息数</label>
                 <input type="number" class="form-control" id="chat_split_max_count" min="1" max="10"
                        value="{{ config.get('chat_split_max_count', 4) }}" placeholder="4">
                 <div class="cfg-hint">硬限制：单次回复不会超过此条数</div>
               </div>
-            </div>
-            <div class="chat-ability-note">
-              AI 已经显式换行拆好的内容会原样发送；其余回复会优先按换行、句号、问号、感叹号、逗号等自然边界拆分。纯中文短回复里的空格停顿也会自动拆成气泡。超过最多条数时，系统会尽量把各条气泡重新分配得更自然、更均衡。
+              <div class="col-12 col-lg-4">
+                <label class="cfg-label" for="chat_split_reply_delay_switch">拆分消息发送延迟</label>
+                <select class="form-select" id="chat_split_reply_delay_switch">
+                  <option value="true" {% if config.get('chat_split_reply_delay_switch', True) %}selected{% endif %}>开启</option>
+                  <option value="false" {% if not config.get('chat_split_reply_delay_switch', True) %}selected{% endif %}>关闭</option>
+                </select>
+                <div class="cfg-hint">开启后，第二条及后续气泡会自然停顿</div>
+              </div>
             </div>
           </div>
         </div>
@@ -1239,7 +1182,6 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <label class="cfg-label" for="chat_message_merge_delay">等待时间（秒）</label>
                 <input type="number" class="form-control" id="chat_message_merge_delay" min="1" max="60" step="1"
                        value="{{ (chat_merge_delay if chat_merge_delay >= 1 and chat_merge_delay <= 60 else 20) | int }}" placeholder="20">
-                <div class="cfg-hint">好友停顿多久后再统一交给 AI，默认 20 秒，范围 1-60 秒</div>
               </div>
             </div>
             <div class="chat-ability-note">同一好友连续消息会先合并：普通消息按上方时间等待停顿；含图片最多等 2 倍且封顶 120 秒；一直不停发则最长 3 倍且封顶 180 秒后先回复一轮。</div>
@@ -1252,7 +1194,7 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Group ===== -->
   <div class="config-panel" id="tab-group">
     <div class="cfg-card">
-      <div class="ui-head ui-head--page group-page-head"><i class="bi bi-people"></i><h5>群聊监听</h5><span class="desc">配置群聊相关功能</span></div>
+      <div class="ui-head ui-head--page group-page-head"><i class="bi bi-people"></i><h5>群聊监听</h5></div>
       <div class="group-page-summary" id="group_page_summary">
         <span class="ui-pill ui-pill--status {% if config.group_switch %}is-success{% else %}is-danger{% endif %}" id="group_summary_switch">群聊回复：{% if config.group_switch %}开{% else %}关{% endif %}</span>
         <span id="group_summary_at" class="ui-pill is-info">仅@回复：{% if config.group_reply_at %}开{% else %}关{% endif %}</span>
@@ -1262,7 +1204,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="group-config-shell">
         <div class="group-rule-card">
             <div class="ui-head ui-head--section">
-            <div class="ui-head__main"><h5>监听群名单</h5><span class="desc">添加需要生效的群聊范围</span></div>
+            <div class="ui-head__main"><h5>监听群名单</h5></div>
             <div class="ui-head__actions">
               <button type="button" class="ui-btn ui-btn--add ui-btn--l3" id="btn-add-group-item"><i class="bi bi-plus-circle"></i> 添加群组</button>
             </div>
@@ -1293,17 +1235,15 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
         <div class="group-strategy-card">
           <div class="group-option-panel adaptive-switch-panel">
-            <div class="ui-head ui-head--section"><div class="ui-head__main"><h5>群聊设置</h5><span class="desc">控制群聊监听、回复与欢迎策略</span></div></div>
+            <div class="ui-head ui-head--section"><div class="ui-head__main"><h5>群聊设置</h5></div></div>
             <div class="group-switch-grid">
-              <div class="switch-row switch-row--primary switch-row--full switch-row--inline-desc">
+              <div class="switch-row switch-row--primary switch-row--full">
                 <input class="form-check-input" type="checkbox" id="group_switch" name="group_switch" {% if config.group_switch %}checked{% endif %}>
-                <label for="group_switch"><span class="switch-title">启用群聊监听</span></label>
-                <span class="switch-desc">开启后才会处理群消息</span>
+                <label for="group_switch"><span class="switch-title">启用群聊监听（仅名单内）</span></label>
               </div>
-              <div class="switch-row switch-row--full switch-row--inline-desc">
+              <div class="switch-row switch-row--full">
                 <input class="form-check-input" type="checkbox" id="group_listen_only" name="group_listen_only" {% if config.get('group_listen_only', False) %}checked{% endif %}>
-                <label for="group_listen_only"><span class="switch-title">仅监听，不自动回复</span></label>
-                <span class="switch-desc">仅关闭AI自动回复，不影响其他功能</span>
+                <label for="group_listen_only"><span class="switch-title">关闭 AI 回复，其他功能照常</span></label>
               </div>
               <div class="switch-row" data-group-listen-only-dependent="reply-at">
                 <input class="form-check-input" type="checkbox" id="group_reply_at" name="group_reply_at" {% if config.group_reply_at %}checked{% endif %}>
@@ -1314,20 +1254,14 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <label for="group_reply_at_msg"><span class="switch-title">回复时@对方</span></label>
               </div>
               <input class="form-check-input" type="checkbox" id="group_reply_quote" name="group_reply_quote" checked hidden>
-              <div class="switch-row switch-row--full switch-row--inline-desc">
+              <div class="switch-row switch-row--full">
                 <input class="form-check-input" type="checkbox" id="group_welcome" name="group_welcome" {% if config.group_welcome %}checked{% endif %}>
-                <label for="group_welcome"><span class="switch-title">启用入群欢迎</span></label>
-                <span class="switch-desc">新成员加入时自动发送</span>
+                <label for="group_welcome"><span class="switch-title">启用入群欢迎消息</span></label>
               </div>
             </div>
           </div>
           <div class="group-welcome-panel">
             <div id="group_welcome_settings" class="group-welcome-settings">
-              <div class="group-welcome-block group-welcome-probability">
-                <label class="cfg-label" for="group_welcome_random">欢迎概率</label>
-                <input type="range" class="form-range flex-grow-1" id="group_welcome_random" name="group_welcome_random" min="0" max="1" step="0.01" value="{{ config.group_welcome_random }}">
-                <span id="group_welcome_random_number">{{ (config.group_welcome_random * 100) | int }}%</span>
-              </div>
               <div class="group-welcome-block">
                 <label class="cfg-label visually-hidden" for="group_welcome_msg">欢迎消息</label>
                 <textarea class="form-control" id="group_welcome_msg" name="group_welcome_msg" placeholder="欢迎新朋友！请先查看群公告！">{{ config.group_welcome_msg }}</textarea>
@@ -1341,7 +1275,6 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-image"></i>
         <h5>内容识别</h5>
-        <span class="desc">配置群聊中的图片与语音理解能力</span>
         <div class="ui-head__actions">
           <select class="form-select ui-head-select recognition-api-select" id="group_image_recognition_api" name="group_image_recognition_api" title="辅助识图接口">
             {% for cfg in config.api_configs %}
@@ -1354,30 +1287,27 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
       </div>
       <div class="recognition-card-grid">
-        <div class="switch-row switch-row--inline-desc recognition-inline-row">
+        <div class="switch-row recognition-inline-row">
           <input class="form-check-input" type="checkbox" id="group_image_recognition_switch"
                  name="group_image_recognition_switch"
                  {% if config.group_image_recognition_switch %}checked{% endif %}>
           <label for="group_image_recognition_switch"><span class="switch-title">识别图片消息</span></label>
-          <span class="switch-desc">调用 AI 大模型识别图片内容</span>
         </div>
         <div class="switch-row switch-row--inline-desc recognition-inline-row">
           <input class="form-check-input" type="checkbox" id="group_voice_recognition_switch"
                  name="group_voice_recognition_switch"
                  {% if config.get('group_voice_recognition_switch', False) %}checked{% endif %}>
-          <label for="group_voice_recognition_switch"><span class="switch-title">识别语音消息</span></label>
-          <span class="switch-desc">微信必须开启「语音自动转文字」功能</span>
+          <label for="group_voice_recognition_switch"><span class="switch-title">识别语音转文字的消息</span></label>
         </div>
       </div>
     </div>
     <div class="cfg-card chat-ability-card chat-ability-card--reply">
-      <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5><span class="desc">配置群聊回复的组织方式</span></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5></div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--voice-reply">
           <div class="ui-head ui-head--item">
             <div class="ui-head__main">
               <h5>使用语音回复</h5>
-              <span class="desc">群聊命中请求关键词时，按群聊规则优先发送语音条</span>
             </div>
             <div class="ui-head__actions">
               <label class="ui-switch ui-switch--l3 ui-head-switch" for="group_voice_reply_switch">
@@ -1392,7 +1322,7 @@ html.icons-pref-local [class*=" bi-"]::before {
               <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="group_voice_reply_request_keywords">触发关键词</label>
                 <input type="text" class="form-control" id="group_voice_reply_request_keywords" placeholder="声音；语音；别打字；说给我听" value="{{ config.get('group_voice_reply_request_keywords', []) | join('；') }}">
-                <div class="cfg-hint">群消息包含任一关键词时，本轮回复优先尝试发语音；多个关键词用分号分隔。</div>
+                <div class="cfg-hint">多个关键词用分号分隔</div>
               </div>
               <div class="col-12 col-lg-4 cfg-inline-combo-col">
                 <label class="cfg-label" for="group_voice_reply_limit_hours">语音回复循环规则</label>
@@ -1434,21 +1364,26 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
           <div id="group_split_settings" class="chat-ability-settings">
             <div class="row g-3">
-              <div class="col-12 col-lg-6">
+              <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="group_split_max_chars">每条消息尽量不超过</label>
                 <input type="number" class="form-control" id="group_split_max_chars" min="10" max="2000"
                        value="{{ config.get('group_split_max_chars', 100) }}" placeholder="100">
                 <div class="cfg-hint">软限制：系统优先保证语义完整，不会为字数强行切断内容</div>
               </div>
-              <div class="col-12 col-lg-6">
+              <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="group_split_max_count">最多拆成消息数</label>
                 <input type="number" class="form-control" id="group_split_max_count" min="1" max="10"
                        value="{{ config.get('group_split_max_count', 4) }}" placeholder="4">
                 <div class="cfg-hint">硬限制：单次回复不会超过此条数</div>
               </div>
-            </div>
-            <div class="chat-ability-note">
-              AI 已经显式换行拆好的内容会原样发送；其余回复会优先按换行、句号、问号、感叹号、逗号等自然边界拆分。超过最多条数时，系统会尽量把各条气泡重新分配得更自然、更均衡。
+              <div class="col-12 col-lg-4">
+                <label class="cfg-label" for="group_split_reply_delay_switch">拆分消息发送延迟</label>
+                <select class="form-select" id="group_split_reply_delay_switch">
+                  <option value="true" {% if config.get('group_split_reply_delay_switch', True) %}selected{% endif %}>开启</option>
+                  <option value="false" {% if not config.get('group_split_reply_delay_switch', True) %}selected{% endif %}>关闭</option>
+                </select>
+                <div class="cfg-hint">开启后，第二条及后续气泡会自然停顿</div>
+              </div>
             </div>
           </div>
         </div>
@@ -1459,14 +1394,13 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Friend ===== -->
   <div class="config-panel" id="tab-friend">
     <div class="cfg-card new-friend-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-person-plus"></i><h5>通过新好友</h5><span class="desc">通过新好友流程：自动通过、归档和欢迎消息</span></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-person-plus"></i><h5>通过新好友</h5></div>
       <div class="new-friend-config-shell">
         <div class="new-friend-main-stack">
           <div class="new-friend-block">
             <div class="ui-head ui-head--section">
               <div class="ui-head__main">
                 <h5>自动通过</h5>
-                <span class="desc">机器人定期检查并通过可接受的新好友申请</span>
               </div>
               <div class="ui-head__actions">
                 <label class="ui-switch ui-switch--l2 ui-head-switch" for="new_friend_switch" title="自动通过新好友申请">
@@ -1478,14 +1412,12 @@ html.icons-pref-local [class*=" bi-"]::before {
             <div class="new-friend-l3-group new-friend-interval-group">
               <div class="new-friend-interval-grid">
                 <div>
-                  <label class="cfg-label" for="new_friend_check_min">最短检查间隔</label>
+                  <label class="cfg-label" for="new_friend_check_min">最短检查间隔（秒，60-3600）</label>
                   <input type="number" class="form-control" id="new_friend_check_min" name="new_friend_check_min" min="60" max="3600" value="{{ config.new_friend_check_min|default(60) }}">
-                  <div class="cfg-hint">默认 60 秒（范围 60-3600）</div>
                 </div>
                 <div>
-                  <label class="cfg-label" for="new_friend_check_max">最长检查间隔</label>
+                  <label class="cfg-label" for="new_friend_check_max">最长检查间隔（秒，60-3600）</label>
                   <input type="number" class="form-control" id="new_friend_check_max" name="new_friend_check_max" min="60" max="3600" value="{{ config.new_friend_check_max|default(300) }}">
-                  <div class="cfg-hint">默认 300 秒（范围 60-3600）</div>
                 </div>
               </div>
             </div>
@@ -1495,7 +1427,6 @@ html.icons-pref-local [class*=" bi-"]::before {
             <div class="ui-head ui-head--section new-friend-welcome-head">
               <div class="ui-head__main">
                 <h5>欢迎消息</h5>
-                <span class="desc">通过好友后发送文字或文件</span>
               </div>
               <div class="ui-head__actions">
                 <button type="button" class="ui-btn ui-btn--add ui-btn--l2 js-add-new-friend-file"><i class="bi bi-plus-circle"></i> 添加文件</button>
@@ -1510,7 +1441,6 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>自动修改备注和标签</h5>
-              <span class="desc">通过好友时，设置了备注规则或自动打标签就自动同步</span>
             </div>
             <div class="ui-head__actions">
               <label class="ui-switch ui-switch--l2 ui-head-switch" for="new_friend_archive_switch" title="自动修改备注和标签">
@@ -1520,14 +1450,6 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
           </div>
           <div class="new-friend-l3-group new-friend-remark-group">
-            <div class="new-friend-nickname-row">
-              <label class="ui-switch ui-switch--l3 ui-head-switch new-friend-inline-switch" for="new_friend_remark_use_nickname" title="备注包含好友原始昵称">
-                <input class="form-check-input" type="checkbox" id="new_friend_remark_use_nickname" name="new_friend_remark_use_nickname" {% if config.get('new_friend_remark_use_nickname', True) %}checked{% endif %}>
-                <span class="ui-switch-knob"></span>
-              </label>
-              <label class="new-friend-nickname-label" for="new_friend_remark_use_nickname">备注包含好友原始昵称</label>
-              <span class="cfg-hint">关闭后仅使用前缀、后缀和时间戳生成备注</span>
-            </div>
             <div class="new-friend-field-grid">
               <div>
                 <label class="cfg-label" for="new_friend_remark_prefix">备注前缀</label>
@@ -1720,7 +1642,7 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Keyword ===== -->
   <div class="config-panel" id="tab-keyword">
     <div class="cfg-card keyword-reply-card">
-      <div class="ui-head ui-head--page" data-account-scope="keyword_reply"><i class="bi bi-key"></i><h5>关键词回复</h5><span class="desc">设置关键词自动回复规则</span></div>
+      <div class="ui-head ui-head--page" data-account-scope="keyword_reply"><i class="bi bi-key"></i><h5>关键词回复</h5></div>
       {% set keyword_count = config.keyword_dict|length %}
       <div class="keyword-reply-summary">
         <div class="summary-status-row">
@@ -1736,7 +1658,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="keyword-reply-body">
         <div class="keyword-rule-card ui-workbench-pane ui-workbench-pane--list">
           <div class="ui-head ui-head--section">
-            <div class="ui-head__main"><h5>具体规则</h5><span class="desc">命中关键词后发送对应回复</span></div>
+            <div class="ui-head__main"><h5>具体规则</h5></div>
             <div class="ui-head__actions"><button type="button" class="ui-btn ui-btn--add ui-btn--l2" id="btn-add-keyword"><i class="bi bi-plus-circle"></i> 添加关键词</button></div>
           </div>
           <div id="keyword_container" class="keyword-rule-list ui-workbench-scroll-body">
@@ -1778,22 +1700,19 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
         <div class="keyword-trigger-card ui-workbench-pane ui-workbench-pane--detail">
           <div class="ui-head ui-head--section">
-            <div class="ui-head__main"><h5>触发范围</h5><span class="desc">控制关键词规则在哪些会话中生效</span></div>
+            <div class="ui-head__main"><h5>触发范围</h5></div>
           </div>
-          <div class="switch-row switch-row--inline-desc">
+          <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="chat_keyword_switch" name="chat_keyword_switch" {% if config.chat_keyword_switch %}checked{% endif %}>
             <label for="chat_keyword_switch"><span class="switch-title">私聊关键词回复</span></label>
-            <span class="switch-desc">只影响私聊关键词规则</span>
           </div>
-          <div class="switch-row switch-row--inline-desc">
+          <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="group_keyword_switch" name="group_keyword_switch" {% if config.group_keyword_switch %}checked{% endif %}>
             <label for="group_keyword_switch"><span class="switch-title">群聊关键词回复</span></label>
-            <span class="switch-desc">只影响群聊关键词规则</span>
           </div>
-          <div class="switch-row switch-row--inline-desc keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
+          <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
             <input class="form-check-input" type="checkbox" id="group_keyword_at_only" name="group_keyword_at_only" {% if config.group_keyword_at_only %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
             <label for="group_keyword_at_only"><span class="switch-title">群聊仅在被@时触发</span></label>
-            <span class="switch-desc">只影响群聊关键词回复</span>
           </div>
         </div>
       </div>
@@ -1858,7 +1777,7 @@ html.icons-pref-local [class*=" bi-"]::before {
             <div class="page-inline-notice page-inline-notice--danger">
               <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
               <div class="page-inline-notice__content">
-                CLI 开启且可用时读取本地通讯录；CLI 关闭或不可用时改用微信界面建档，建档期间请不要操作微信
+                建档通过微信界面读取完整联系人资料，运行期间请不要手动操作微信
               </div>
             </div>
             <div class="relationship-scan-table identity-calibration-table" id="identity-calibration-card">
@@ -1885,20 +1804,11 @@ html.icons-pref-local [class*=" bi-"]::before {
               </label>
             </div>
           </div>
-          <div class="contact-maintenance-auto-grid">
+          <div class="contact-maintenance-auto-grid contact-maintenance-auto-grid--stacked">
             <div>
               <label class="cfg-label" for="contact_directory_auto_maintenance_interval_minutes">每批维护间隔</label>
               <input type="number" class="form-control" id="contact_directory_auto_maintenance_interval_minutes" min="5" max="1440" value="{{ config.get('contact_directory_auto_maintenance_interval_minutes', 20) }}">
               <div class="cfg-hint">单位：分钟，这是最低间隔；如果机器人一直没空，实际间隔可能更久</div>
-            </div>
-            <div>
-              <label class="cfg-label" for="contact_directory_auto_maintenance_batch_size">每批维护人数</label>
-              <select class="form-select" id="contact_directory_auto_maintenance_batch_size">
-                <option value="20" {% if config.get('contact_directory_auto_maintenance_batch_size', 50) == 20 %}selected{% endif %}>安全 - 20 人</option>
-                <option value="50" {% if config.get('contact_directory_auto_maintenance_batch_size', 50) == 50 %}selected{% endif %}>标准 - 50 人</option>
-                <option value="80" {% if config.get('contact_directory_auto_maintenance_batch_size', 50) == 80 %}selected{% endif %}>暴力 - 80 人</option>
-              </select>
-              <div class="cfg-hint">wechat-cli 可用时自动全量校准；这里仅控制微信界面回退时的单批人数</div>
             </div>
             <div>
               <label class="cfg-label">维护时间段</label>
@@ -1909,11 +1819,6 @@ html.icons-pref-local [class*=" bi-"]::before {
               </div>
               <div class="cfg-hint">只有在这个时间段内，才会尝试自动维护；支持跨天，例如 22:00 - 07:00</div>
             </div>
-            <div>
-              <label class="cfg-label" for="contact_directory_auto_maintenance_full_scan_interval_days">每轮维护间隔</label>
-              <input type="number" class="form-control" id="contact_directory_auto_maintenance_full_scan_interval_days" min="1" max="30" value="{{ config.get('contact_directory_auto_maintenance_full_scan_interval_days', 7) }}">
-              <div class="cfg-hint">单位：天。上一轮维护完后，隔多久自动开始下一轮</div>
-            </div>
           </div>
         </div>
       </div>
@@ -1921,12 +1826,12 @@ html.icons-pref-local [class*=" bi-"]::before {
     {% set relationship_settings = relationship_scan_seed.get('settings', {}) if relationship_scan_seed else {} %}
     {% set relationship_summary = relationship_scan_seed.get('summary', {}) if relationship_scan_seed else {} %}
     {% set relationship_scan_source = relationship_summary.get('last_scan_source', '') %}
-    {% set relationship_scan_source_label = '本地快照' if relationship_scan_source == 'wechat_cli' else ('微信界面' if relationship_scan_source == 'wxauto_ui' else '') %}
+    {% set relationship_scan_source_label = '微信界面' if relationship_scan_source else '' %}
     <div class="cfg-card relationship-scan-card">
       <div class="ui-head ui-head--page">
         <i class="bi bi-person-check"></i>
         <h5>关系扫描</h5>
-        <span class="desc">优先读取本地会话快照，自动识别把你拉黑、删除的好友</span>
+        <span class="desc">读取微信会话列表，自动识别把你拉黑、删除的好友</span>
       </div>
       <div class="contact-maintenance-summary relationship-scan-summary">
         <span class="ui-pill ui-pill--status contact-maintenance-pill {% if relationship_summary.get('auto_scan_enabled', True) %}is-success{% else %}is-danger{% endif %}" id="relationship-scan-auto-pill">
@@ -1968,16 +1873,13 @@ html.icons-pref-local [class*=" bi-"]::before {
               <button type="button" id="btn-relationship-scan-full" class="ui-btn ui-btn--secondary ui-btn--l2">
                 <i class="bi bi-arrow-down-up"></i> 全量扫描
               </button>
-              <button type="button" id="btn-relationship-scan-stop" class="ui-btn ui-btn--secondary ui-btn--l2">
-                <i class="bi bi-stop-circle"></i> 停止扫描
-              </button>
               <button type="button" id="btn-relationship-scan-clear" class="ui-btn ui-btn--danger ui-btn--l2">
                 <i class="bi bi-trash3"></i> 清空结果
               </button>
             </div>
             <div class="page-inline-notice page-inline-notice--danger">
               <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
-              <div class="page-inline-notice__content">CLI 开启且可用时读取本地会话快照；CLI 关闭或不可用时自动扫描只轻量读取当前会话列表，手动全量扫描才会滚动微信会话列表</div>
+              <div class="page-inline-notice__content">立即扫描只读取当前会话列表；手动全量扫描会连续滚动到末尾，完成前不会插入其他微信界面操作</div>
             </div>
             <div class="relationship-scan-table">
               <div class="relationship-scan-row relationship-scan-row--head">
@@ -1993,7 +1895,7 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>自动扫描</h5>
-              <span class="desc">开启 wechat-cli 时自动扫描走本地快照；禁用或不可用时轻量读取当前会话列表</span>
+              <span class="desc">自动扫描会轻量读取当前微信会话列表</span>
             </div>
             <div class="ui-head__actions">
               <label class="ui-switch ui-switch--l2 ui-head-switch" for="relationship_scan_auto_enabled" title="开启自动扫描">
@@ -2002,7 +1904,7 @@ html.icons-pref-local [class*=" bi-"]::before {
               </label>
             </div>
           </div>
-          <div class="contact-maintenance-auto-grid">
+          <div class="contact-maintenance-auto-grid contact-maintenance-auto-grid--stacked">
             <div>
               <label class="cfg-label" for="relationship_scan_auto_sync_wechat_tags">同步到微信标签</label>
               <select class="form-select" id="relationship_scan_auto_sync_wechat_tags">
@@ -2012,18 +1914,9 @@ html.icons-pref-local [class*=" bi-"]::before {
               <div class="cfg-hint">微信空闲时自动添加或移除实际好友标签</div>
             </div>
             <div>
-              <label class="cfg-label" for="relationship_scan_sync_batch_size">每轮同步标签</label>
-              <input type="number" class="form-control" id="relationship_scan_sync_batch_size" min="1" max="10" value="{{ relationship_settings.get('sync_batch_size', 5) }}">
-              <div class="cfg-hint">每轮真实修改微信标签的人数，范围 1-10</div>
-            </div>
-            <div>
-              <label class="cfg-label" for="relationship_scan_sync_interval_minutes">每轮同步间隔</label>
-              <input type="number" class="form-control" id="relationship_scan_sync_interval_minutes" min="1" max="1440" value="{{ relationship_settings.get('sync_interval_minutes', 10) }}">
-              <div class="cfg-hint">单位：分钟。默认 10 分钟，避免连续占用微信改标签</div>
-            </div>
-            <div>
-              <label class="cfg-label">自动扫描规则</label>
-              <div class="cfg-hint">自动：每 6000 秒最多读取 1000 个最近会话；立即扫描：1000 个；全量扫描：10000 个</div>
+              <label class="cfg-label" for="relationship_scan_wechat_tag_sync_interval_seconds">标签同步间隔</label>
+              <input type="number" class="form-control" id="relationship_scan_wechat_tag_sync_interval_seconds" min="1" max="100" step="1" value="{{ relationship_settings.get('wechat_tag_sync_interval_seconds', 30) }}">
+              <div class="cfg-hint">单位：秒；这是最低间隔，实际可能因微信任务排队更久</div>
             </div>
           </div>
         </div>
@@ -2073,7 +1966,6 @@ html.icons-pref-local [class*=" bi-"]::before {
         <span class="desc">监听指定来源，按规则将消息转发给目标</span>
         <div class="ui-head__actions">
           <label class="ui-switch ui-switch--l1 ui-head-switch" for="custom_forward_switch">
-            <span>{% if config.custom_forward_switch %}已启用{% else %}已停用{% endif %}</span>
             <input class="form-check-input" type="checkbox" id="custom_forward_switch" name="custom_forward_switch" {% if config.custom_forward_switch %}checked{% endif %}>
             <span class="ui-switch-knob"></span>
           </label>
@@ -2208,10 +2100,9 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="material-detail-section custom-forward-detail-section custom-forward-param-section">
             <div class="custom-forward-param-list">
               {% if rule_type == 'keyword' %}
-              <div class="switch-row custom-forward-param-row switch-row--inline-desc fwd-takeover-row">
+              <div class="switch-row custom-forward-param-row fwd-takeover-row">
                 <input class="form-check-input fwd-pause-chat-reply" id="fwd_pause_chat_reply_{{ rule.id }}" type="checkbox" onchange="toggleFwdPauseChatReply(this)" {% if rule.get('pause_ai_reply_on_match', False) %}checked{% endif %}>
                 <label for="fwd_pause_chat_reply_{{ rule.id }}"><span class="switch-title">命中后暂停AI回复</span></label>
-                <span class="switch-desc">管理员可接管相关对话</span>
               </div>
               {% endif %}
               {% if rule_type == 'all' %}
@@ -2223,10 +2114,9 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <label for="fwd_forward_group_friend_{{ rule.id }}"><span class="switch-title">转发好友的群内聊天</span></label>
               </div>
               {% endif %}
-              <div class="switch-row custom-forward-param-row switch-row--inline-desc fwd-source-config">
+              <div class="switch-row custom-forward-param-row fwd-source-config">
                 <input class="form-check-input fwd-with-source" id="fwd_with_source_{{ rule.id }}" type="checkbox" {% if rule.forward_with_source %}checked{% endif %}>
-                <label for="fwd_with_source_{{ rule.id }}"><span class="switch-title">转发时附带来源信息</span></label>
-                <span class="switch-desc">自动补发来源窗口/发送人</span>
+                <label for="fwd_with_source_{{ rule.id }}"><span class="switch-title">附带来源会话和发送人</span></label>
               </div>
             </div>
           </div>
@@ -2623,7 +2513,7 @@ html.icons-pref-local [class*=" bi-"]::before {
               <div class="switch-row">
                 <input class="form-check-input" type="checkbox" id="material_source_silent" name="material_source_silent" {% if config.material_source_silent %}checked{% endif %}>
                 <label for="material_source_silent">素材来源静默</label>
-                <span class="cfg-hint">素材来源只收集素材，不触发 AI 回复；管理员指令不受影响。</span>
+                <span class="cfg-hint">不回复，只响应管理员指令和素材入池</span>
               </div>
               <div class="material-source-head">
                 <label class="cfg-label">素材来源</label>
@@ -3050,40 +2940,6 @@ html.icons-pref-local [class*=" bi-"]::before {
   </div>
   <div class="config-panel" id="tab-moments">
 
-    <!-- 随机朋友圈点赞 -->
-    <div class="cfg-card" id="moments-like-card" style="margin-bottom:20px;">
-      <div class="ui-head ui-head--page">
-        <i class="bi bi-hand-thumbs-up"></i>
-        <h5>随机朋友圈点赞</h5>
-        <span class="desc">开启后，将随机自动打开朋友圈给对第一条点赞。</span>
-        <div class="ui-head__actions">
-          <label class="ui-switch ui-switch--l1 moments-like-header-switch" for="moments_like_switch">
-            <span id="moments_like_switch_label">{% if config.moments_like_switch %}已启用{% else %}已停用{% endif %}</span>
-            <input class="form-check-input" type="checkbox" id="moments_like_switch" {% if config.moments_like_switch %}checked{% endif %}>
-            <span class="ui-switch-knob"></span>
-          </label>
-        </div>
-      </div>
-      <div class="cfg-flow cfg-flow--page">
-        <div class="page-inline-notice page-inline-notice--note">
-          <i class="bi bi-info-circle-fill page-inline-notice__icon"></i>
-          <div class="page-inline-notice__content">
-            注意：机器人启动后才生效，请确认微信没有关闭朋友圈功能
-          </div>
-        </div>
-        <div class="moments-like-options-grid">
-        <div class="moments-like-option">
-          <label class="cfg-label" for="moments_like_min">最小间隔（分钟）</label>
-          <input type="number" class="form-control" id="moments_like_min" min="1" max="1440" value="{{ config.moments_like_min }}">
-        </div>
-        <div class="moments-like-option">
-          <label class="cfg-label" for="moments_like_max">最大间隔（分钟）</label>
-          <input type="number" class="form-control" id="moments_like_max" min="1" max="1440" value="{{ config.moments_like_max }}">
-        </div>
-      </div>
-      </div>
-    </div>
-
     <div class="cfg-card ai-moments-card" id="ai-moments-card">
       <div class="ui-head ui-head--page">
         <i class="bi bi-stars ui-head__icon"></i>
@@ -3260,7 +3116,7 @@ html.icons-pref-local [class*=" bi-"]::before {
   <div class="config-panel" id="tab-other">
     <div class="cfg-card">
       <div class="ui-head ui-head--page">
-        <i class="bi bi-chat-left-dots"></i><h5>回复次数限制</h5><span class="desc">超出设定次数后不再调用 AI 自动回复</span>
+        <i class="bi bi-chat-left-dots"></i><h5>回复次数限制</h5>
         <label class="ui-switch ui-switch--l1 ui-head-switch" for="text_reply_limit_switch" title="启用回复次数限制">
           <input class="form-check-input" type="checkbox" id="text_reply_limit_switch" {% if config.get('text_reply_limit_switch', False) %}checked{% endif %}>
           <span class="ui-switch-knob"></span>
@@ -3301,14 +3157,14 @@ html.icons-pref-local [class*=" bi-"]::before {
                 只回复一次
               </label>
             </div>
-            <div class="cfg-hint">当单个好友回复次数超限时，机器人将发送此固定回复；留空则不回复</div>
+            <div class="cfg-hint">留空时超限后静默；可由 AI 生成，并可设置只提示一次</div>
           </div>
         </div>
       </div>
     </div>
 
     <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-exclamation-octagon"></i><h5>接口报错回复</h5><span class="desc">AI / 模型接口报错时的兜底回复</span></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-exclamation-octagon"></i><h5>接口报错回复</h5></div>
       <div class="cfg-page-form">
         <div class="cfg-page-field">
         <label class="cfg-label" for="api_error_reply" style="font-weight:600;">固定回复内容</label>
@@ -3321,7 +3177,6 @@ html.icons-pref-local [class*=" bi-"]::before {
             只回复一次
           </label>
         </div>
-        <div class="cfg-hint">当调用 AI / 模型接口失败时，机器人将发送此固定回复；留空则不回复</div>
         </div>
       </div>
     </div>
@@ -3366,43 +3221,7 @@ html.icons-pref-local [class*=" bi-"]::before {
 
     <div class="cfg-card">
       <div class="ui-head ui-head--page">
-        <i class="bi bi-hourglass-split"></i><h5>模拟发送延迟</h5><span class="desc">模拟人工操作的发送等待时间，关闭后立即回复</span>
-        <label class="ui-switch ui-switch--l1 ui-head-switch" for="reply_delay_switch" title="启用发送延迟">
-          <input class="form-check-input" type="checkbox" id="reply_delay_switch" {% if config.get('reply_delay_switch', True) %}checked{% endif %}>
-          <span class="ui-switch-knob"></span>
-        </label>
-      </div>
-      <div id="reply-delay-settings" style="{% if not config.get('reply_delay_switch', True) %}display:none;{% endif %}">
-        <div class="row g-3">
-          <div class="col-md-4">
-            <label class="cfg-label" for="reply_delay_first_min">首条回复最小延迟（秒，1 ~ 600）</label>
-            <input type="number" class="form-control" id="reply_delay_first_min" min="1" max="600"
-              value="{{ config.get('reply_delay_first_min', 1) }}" placeholder="1">
-            <div class="cfg-hint">收到消息后，执行首条回复前额外等待的最短时间</div>
-          </div>
-          <div class="col-md-4">
-            <label class="cfg-label" for="reply_delay_first_max">首条回复最大延迟（秒，1 ~ 600）</label>
-            <input type="number" class="form-control" id="reply_delay_first_max" min="1" max="600"
-              value="{{ config.get('reply_delay_first_max', 5) }}" placeholder="5">
-            <div class="cfg-hint">收到消息后，执行首条回复前额外等待的最长时间</div>
-          </div>
-          <div class="col-md-4">
-            <label class="cfg-label" for="reply_delay_split_speed_mode">拆分消息发送延迟</label>
-            <select class="form-select" id="reply_delay_split_speed_mode">
-              {% set split_speed_mode = config.get('reply_delay_split_speed_mode', 'fast') %}
-              <option value="slow" {% if split_speed_mode == 'slow' %}selected{% endif %}>较慢</option>
-              <option value="normal" {% if split_speed_mode == 'normal' %}selected{% endif %}>标准</option>
-              <option value="fast" {% if split_speed_mode == 'fast' %}selected{% endif %}>较快</option>
-            </select>
-            <div class="cfg-hint">控制拆分后的后续消息发送节奏</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="cfg-card">
-      <div class="ui-head ui-head--page">
-        <i class="bi bi-clock-history"></i><h5>定时启停</h5><span class="desc">设置机器人每日自动启停时间</span>
+        <i class="bi bi-clock-history"></i><h5>定时启停</h5>
         <label class="ui-switch ui-switch--l1 ui-head-switch" for="everyday_start_stop_bot_switch" title="启用定时启停">
           <input class="form-check-input" type="checkbox" id="everyday_start_stop_bot_switch" name="everyday_start_stop_bot_switch" {% if config.everyday_start_stop_bot_switch %}checked{% endif %}>
           <span class="ui-switch-knob"></span>
@@ -3422,7 +3241,7 @@ html.icons-pref-local [class*=" bi-"]::before {
 
     <div class="cfg-card">
       <div class="ui-head ui-head--page">
-        <i class="bi bi-folder2-open"></i><h5>自动清理缓存</h5><span class="desc">控制微信下载和 AI 处理缓存的保留时间</span>
+        <i class="bi bi-folder2-open"></i><h5>自动清理缓存</h5>
       </div>
       <div class="cfg-page-form">
         <div class="row g-3">
@@ -3444,11 +3263,10 @@ html.icons-pref-local [class*=" bi-"]::before {
     </div>
 
     <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-shield-lock"></i><h5>管理员设置</h5><span class="desc">设置机器人管理员微信名</span></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-shield-lock"></i><h5>管理员设置</h5></div>
       <div class="mb-3">
-        <label class="cfg-label" for="admin">管理员名称</label>
+        <label class="cfg-label" for="admin">管理员微信备注名或昵称</label>
         <input type="text" class="form-control" id="admin" name="admin" value="{{ config.admin }}">
-        <div class="cfg-hint">填写管理员的微信备注名或昵称</div>
       </div>
       <div class="cfg-note-block">
         <div class="cfg-note-title"><i class="bi bi-info-circle"></i> 什么是管理员？</div>
@@ -3462,7 +3280,7 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Account ===== -->
   <div class="config-panel" id="tab-account">
     <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-person-gear"></i><h5>后台账号密码</h5><span class="desc">修改 Web 管理面板的登录账号</span></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-person-gear"></i><h5>后台账号密码</h5></div>
       <div class="mb-3">
         <label class="cfg-label" for="acc-username">用户名</label>
         <input type="text" class="form-control" id="acc-username" placeholder="请输入新用户名" autocomplete="off">
@@ -3515,7 +3333,6 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
       <div id="email-msg" class="cfg-feedback"></div>
       <button type="button" id="btn-save-email" class="ui-btn ui-btn--primary ui-btn--l2"><i class="bi bi-save"></i> 立即保存</button>
-      <div class="cfg-hint" style="margin-top:10px;">配置保存在 <code>email.json</code> 中，保存后立即生效</div>
       </div>
     </div>
   </div>
@@ -3573,7 +3390,6 @@ html.icons-pref-local [class*=" bi-"]::before {
         <button type="button" id="btn-save-webhook" class="ui-btn ui-btn--primary ui-btn--l2"><i class="bi bi-save"></i> 保存配置</button>
         <button type="button" id="btn-test-webhook" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2"><i class="bi bi-send"></i> 发送测试</button>
       </div>
-      <div class="cfg-hint" style="margin-top:10px;">配置保存在 <code>webhook.json</code> 中，保存后立即生效</div>
       </div>
     </div>
   </div>
@@ -3588,7 +3404,6 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="memory_switch" {% if config.get('memory_switch', True) %}checked{% endif %}>
             <label class="form-check-label" for="memory_switch">保存聊天记录</label>
-            <span class="switch-desc">保存原始聊天记录流水，用于查看和提取会话记忆</span>
           </div>
           <label class="cfg-label" for="memory_max_count">最大保存条数（100 ~ 5000）</label>
           <input type="number" class="form-control" id="memory_max_count" min="100" max="5000"
@@ -3599,7 +3414,6 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="memory_context_switch" {% if config.get('memory_context_switch', config.get('memory_switch', True)) %}checked{% endif %}>
             <label class="form-check-label" for="memory_context_switch">带入最近聊天</label>
-            <span class="switch-desc">把最近的聊天作为上下文发给 AI ，优化 AI 回复效果</span>
           </div>
           <label class="cfg-label" for="memory_context_count">带入最近聊天记录</label>
           <div class="cfg-inline-combo cfg-inline-combo--memory-context">
@@ -3611,22 +3425,6 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
           </div>
           <div class="cfg-hint">按真实聊天顺序带入最近消息；微信时间分隔线只作为消息时间，不占条数</div>
-        </div>
-        <div class="memory-config-section memory-repair-section">
-          <div class="switch-row">
-            <input class="form-check-input" type="checkbox" id="memory_context_repair_low_risk_switch" {% if config.get('memory_context_repair_low_risk_switch', True) %}checked{% endif %}>
-            <label class="form-check-label" for="memory_context_repair_low_risk_switch">自动补最近上下文</label>
-            <span class="switch-desc">开启 CLI 补洞和低风险 UI 兜底</span>
-          </div>
-          <div class="cfg-hint">AI 回复前按需校准最近上下文；优先读本地微信数据库，连续失败时读取当前已渲染的微信消息兜底</div>
-        </div>
-        <div class="memory-config-section memory-repair-section">
-          <div class="switch-row">
-            <input class="form-check-input" type="checkbox" id="memory_context_repair_high_risk_switch" {% if config.get('memory_context_repair_high_risk_switch', False) %}checked{% endif %}>
-            <label class="form-check-label" for="memory_context_repair_high_risk_switch">补上下文时允许滚动微信窗口</label>
-            <span class="switch-desc">高风险 UI 补洞</span>
-          </div>
-          <div class="cfg-hint">低风险补洞仍无法对齐时，允许滚动当前微信窗口读取更多已加载历史；会占用微信操作锁，默认关闭</div>
         </div>
       </div>
     </div>
@@ -3726,7 +3524,7 @@ html.icons-pref-local [class*=" bi-"]::before {
 </div>
 
 <!-- ===== Scripts ===== -->
-<script src="https://s4.zstatic.net/npm/jquery@3.6.0/dist/jquery.min.js"></script>
+<script src="{{ url_for('static', filename='jquery-3.6.0.min.js') }}"></script>
 <script src="https://s4.zstatic.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 window.__BASE_PATH__ = {{ (request.script_root or '') | tojson }};
@@ -5293,7 +5091,6 @@ $(function(){
   }
   function relationshipScanSourceLabel(source){
     source = String(source || '').trim();
-    if(source === 'wechat_cli') return '本地快照';
     if(source === 'wxauto_ui') return '微信界面';
     return '';
   }
@@ -5330,10 +5127,7 @@ $(function(){
     $('#relationship-scan-synced-today').text(String(summary.wechat_synced_today || 0));
     $('#relationship-scan-pending-sync').text(String(summary.wechat_pending || 0));
     if(fullScanRunning){
-      $('#relationship-scan-result-desc').text(
-        '全量扫描中 ' + String(progress.unique_count || 0) + ' 个会话，滚动 ' +
-        String(progress.scrolled_rounds || 0) + '/' + String(progress.max_scrolls || 1000) + ' 轮'
-      );
+      $('#relationship-scan-result-desc').text('全量扫描中，正在连续读取会话');
     } else if(progress.status === 'failed'){
       $('#relationship-scan-result-desc').text(progress.message || '全量扫描失败');
     } else {
@@ -5342,12 +5136,10 @@ $(function(){
     }
     $('#relationship-scan-last-time').text('最近扫描 ' + (summary.last_scan_at ? relationshipScanShortTime(summary.last_scan_at) : '未扫描'));
     $('#btn-relationship-scan-full').prop('disabled', fullScanRunning);
-    $('#btn-relationship-scan-stop').prop('disabled', !fullScanRunning);
     updateRelationshipScanPolling(fullScanRunning);
     $('#relationship_scan_auto_enabled').prop('checked', settings.auto_scan_enabled !== false);
     $('#relationship_scan_auto_sync_wechat_tags').val(settings.auto_sync_wechat_tags !== false ? 'auto' : 'off');
-    $('#relationship_scan_sync_batch_size').val(settings.sync_batch_size || 5);
-    $('#relationship_scan_sync_interval_minutes').val(settings.sync_interval_minutes || 10);
+    $('#relationship_scan_wechat_tag_sync_interval_seconds').val(settings.wechat_tag_sync_interval_seconds || 30);
     if(!records.length){
       $('#relationship-scan-record-list').addClass('is-empty').html('<div class="relationship-scan-empty">暂无关系扫描记录</div>');
       return;
@@ -5373,8 +5165,7 @@ $(function(){
       settings: {
         auto_scan_enabled: $('#relationship_scan_auto_enabled').is(':checked'),
         auto_sync_wechat_tags: $('#relationship_scan_auto_sync_wechat_tags').val() !== 'off',
-        sync_batch_size: Math.max(1, Math.min(10, parseInt($('#relationship_scan_sync_batch_size').val()) || 5)),
-        sync_interval_minutes: Math.max(1, Math.min(1440, parseInt($('#relationship_scan_sync_interval_minutes').val()) || 10))
+        wechat_tag_sync_interval_seconds: Number($('#relationship_scan_wechat_tag_sync_interval_seconds').val()) || 30
       }
     };
   }
@@ -5430,9 +5221,7 @@ $(function(){
         renderRelationshipScan(res.payload || {});
         showMsg('relationship-scan-msg', res.message || fallbackMessage, true);
         loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
-        if(url !== '/relationship_scan/stop'){
-          refreshFriendRequestCandidatesAfterContactChange(_contactDirectoryBrowserState.wxId);
-        }
+        refreshFriendRequestCandidatesAfterContactChange(_contactDirectoryBrowserState.wxId);
       } else {
         showMsg('relationship-scan-msg', res.message || fallbackMessage + '失败', false);
       }
@@ -7683,17 +7472,6 @@ $(function(){
     }
   });
 
-  // ===== Range Slider =====
-  $('#group_welcome_random').on('input change',function(){
-    var v=parseFloat($(this).val());
-    $('#group_welcome_random_number').text(Math.round(v*100)+'%');
-  });
-
-  // ===== 发送延迟开关联动 =====
-  $('#reply_delay_switch').on('change', function(){
-    $('#reply-delay-settings').toggle(this.checked);
-  });
-
   // ===== 回复轮数限制开关联动 =====
   $('#text_reply_limit_switch').on('change', function(){
     $('#chat-max-round-settings').toggle(this.checked);
@@ -8937,21 +8715,18 @@ $(function(){
     runRelationshipScanAction('/relationship_scan/scan', 'btn-relationship-scan-now', '扫描中...', '关系扫描完成');
   });
   $('#btn-relationship-scan-full').click(function(){
-    svModal.confirm('全量扫描会优先读取本地快照；如果回退微信界面，才会滚动微信主窗口会话列表。确定现在开始？', function(){
+    svModal.confirm('全量扫描会从会话列表顶部连续扫描到末尾，期间不插入其他微信操作，也不能中途停止。确定现在开始？', function(){
       runRelationshipScanAction('/relationship_scan/full_scan', 'btn-relationship-scan-full', '启动中...', '全量扫描已开始').done(function(){
         loadRelationshipScanStatus(_contactDirectoryBrowserState.wxId, {silent:true});
       });
     }, '全量扫描确认', '开始扫描', '取消');
-  });
-  $('#btn-relationship-scan-stop').click(function(){
-    runRelationshipScanAction('/relationship_scan/stop', 'btn-relationship-scan-stop', '停止中...', '停止扫描');
   });
   $('#btn-relationship-scan-clear').click(function(){
     svModal.confirm('确定清空当前微信号的全部关系扫描结果？记录和待同步队列都会清空，并会暂停自动扫描和微信标签同步；已同步到微信的标签不会自动撤销。', function(){
       runRelationshipScanAction('/relationship_scan/clear', 'btn-relationship-scan-clear', '清空中...', '清空结果');
     }, '清空确认', '确定清空', '取消');
   });
-  $(document).on('change', '#relationship_scan_auto_enabled,#relationship_scan_auto_sync_wechat_tags,#relationship_scan_sync_batch_size,#relationship_scan_sync_interval_minutes', function(){
+  $(document).on('change', '#relationship_scan_auto_enabled,#relationship_scan_auto_sync_wechat_tags,#relationship_scan_wechat_tag_sync_interval_seconds', function(){
     saveRelationshipScanSettings({silent:true});
   });
   $('#btn-friend-request-add-rule').click(function(){
@@ -9571,9 +9346,9 @@ $(function(){
       '<div class="material-detail-separator"></div>'+
       '<div class="material-detail-section custom-forward-detail-section custom-forward-param-section">'+
       '<div class="custom-forward-param-list">'+
-      (type==='keyword' ? '<div class="switch-row custom-forward-param-row switch-row--inline-desc fwd-takeover-row"><input class="form-check-input fwd-pause-chat-reply" id="fwd_pause_chat_reply_'+ruleId+'" type="checkbox" onchange="toggleFwdPauseChatReply(this)"><label for="fwd_pause_chat_reply_'+ruleId+'"><span class="switch-title">命中后暂停AI回复</span></label><span class="switch-desc">管理员可接管相关对话</span></div>' : '')+
+      (type==='keyword' ? '<div class="switch-row custom-forward-param-row fwd-takeover-row"><input class="form-check-input fwd-pause-chat-reply" id="fwd_pause_chat_reply_'+ruleId+'" type="checkbox" onchange="toggleFwdPauseChatReply(this)"><label for="fwd_pause_chat_reply_'+ruleId+'"><span class="switch-title">命中后暂停AI回复</span></label></div>' : '')+
       (type==='all' ? '<div class="switch-row custom-forward-param-row fwd-group-friend-row"><label class="ui-switch ui-switch--l3 custom-forward-param-switch" for="fwd_forward_group_friend_'+ruleId+'"><input class="form-check-input fwd-forward-group-friend" id="fwd_forward_group_friend_'+ruleId+'" type="checkbox"><span class="ui-switch-knob"></span></label><label for="fwd_forward_group_friend_'+ruleId+'"><span class="switch-title">转发好友的群内聊天</span></label></div>' : '')+
-      '<div class="switch-row custom-forward-param-row switch-row--inline-desc fwd-source-config"><input class="form-check-input fwd-with-source" id="fwd_with_source_'+ruleId+'" type="checkbox"><label for="fwd_with_source_'+ruleId+'"><span class="switch-title">转发时附带来源信息</span></label><span class="switch-desc">自动补发来源窗口/发送人</span></div>'+
+      '<div class="switch-row custom-forward-param-row fwd-source-config"><input class="form-check-input fwd-with-source" id="fwd_with_source_'+ruleId+'" type="checkbox"><label for="fwd_with_source_'+ruleId+'"><span class="switch-title">附带来源会话和发送人</span></label></div>'+
       '</div>'+
       '</div>'+
       '</div>';
@@ -10791,13 +10566,7 @@ $(function(){
       });
     });
   });
-  function syncMomentsLikeSwitchLabel(){
-    $('#moments_like_switch_label').text($('#moments_like_switch').is(':checked') ? '已启用' : '已停用');
-  }
-  $('#moments_like_switch').on('change',syncMomentsLikeSwitchLabel);
-  syncMomentsLikeSwitchLabel();
   function syncChatMemorySwitchLabel(){
-    $('#chat_memory_switch_label').text($('#chat_memory_switch').is(':checked') ? '已启用' : '已停用');
   }
   $('#chat_memory_switch').on('change',syncChatMemorySwitchLabel);
   syncChatMemorySwitchLabel();
@@ -11330,10 +11099,12 @@ $(function(){
     if(!$switch.length) return;
     $switch.toggleClass('off', !enabled);
     $switch.attr('aria-pressed', enabled ? 'true' : 'false');
-    $switch.find('span').first().text(enabled ? enabledText : disabledText);
+    if(enabledText != null && disabledText != null){
+      $switch.find('span').not('.ui-switch-knob').first().text(enabled ? enabledText : disabledText);
+    }
   }
   function syncCustomForwardSwitchState(){
-    syncMaterialSwitchLabel('#custom_forward_switch', '已启用', '已停用');
+    syncMaterialSwitchLabel('#custom_forward_switch', null, null);
     var enabled = $('#custom_forward_switch').is(':checked');
     $('#custom-forward-switch-pill')
       .toggleClass('is-success', enabled)
@@ -11821,7 +11592,6 @@ $(function(){
       api_index:api_index,
       backup_chat_api_index:parseInt($('#backup_chat_api_index').val(), 10),
       backup_chat_api_failover_threshold:parseInt($('#backup_chat_api_failover_threshold').val(), 10)||3,
-      wechat_cli_enabled:$('#wechat_cli_enabled').is(':checked'),
       AllListen_switch:$('#AllListen_switch').is(':checked'),
       AllListen_filter_mute:$('#AllListen_filter_mute').is(':checked'),
       chat_listen_only:$('#chat_listen_only').is(':checked'),
@@ -11835,7 +11605,6 @@ $(function(){
       new_friend_archive_switch:$('#new_friend_archive_switch').is(':checked'),
       new_friend_check_min:parseInt($('#new_friend_check_min').val())||60,
       new_friend_check_max:parseInt($('#new_friend_check_max').val())||300,
-      new_friend_remark_use_nickname:$('#new_friend_remark_use_nickname').is(':checked'),
       new_friend_remark_prefix:$('#new_friend_remark_prefix').val(),
       new_friend_remark_prefix_timestamp:$('#new_friend_remark_prefix_timestamp').is(':checked'),
       new_friend_remark_suffix:$('#new_friend_remark_suffix').val(),
@@ -11854,12 +11623,9 @@ $(function(){
       chat_memory_interval_hours:parseInt($('#chat_memory_interval_hours').val())||12,
       chat_memory_protected_recent_count:Math.max(0, Math.min(200, parseInt($('#chat_memory_protected_recent_count').val())||20)),
       chat_memory_exclude_list:[],
-      group_welcome_random:parseFloat($('#group_welcome_random').val()),
       keyword_dict:{},
       scheduled_message_task_list:[],
       contact_directory_auto_maintenance_switch:$('#contact_directory_auto_maintenance_switch').is(':checked'),
-      contact_directory_auto_maintenance_full_scan_interval_days:Math.max(1,Math.min(30,parseInt($('#contact_directory_auto_maintenance_full_scan_interval_days').val())||7)),
-      contact_directory_auto_maintenance_batch_size:parseInt($('#contact_directory_auto_maintenance_batch_size').val())||50,
       contact_directory_auto_maintenance_interval_minutes:Math.max(5,Math.min(1440,parseInt($('#contact_directory_auto_maintenance_interval_minutes').val())||20)),
       contact_directory_auto_maintenance_window_start:$.trim($('#contact_directory_auto_maintenance_window_start').val()||'00:00'),
       contact_directory_auto_maintenance_window_end:$.trim($('#contact_directory_auto_maintenance_window_end').val()||'23:59'),
@@ -11876,9 +11642,6 @@ $(function(){
       ai_material_outreach_preface_enabled:$('#ai_material_outreach_preface_enabled').val() !== 'false',
       ai_material_outreach_preface_goal:$('#ai_material_outreach_preface_enabled').val() !== 'false' ? materialAiPrefaceGoalValue($('#ai_material_outreach_preface_goal').val()) : '',
       ai_material_outreach_preface_intensity:$('#ai_material_outreach_preface_enabled').val() !== 'false' ? $.trim($('#ai_material_outreach_preface_intensity').val()||'') : '',
-      moments_like_switch:$('#moments_like_switch').is(':checked'),
-      moments_like_min:Math.max(1,Math.min(1440,parseInt($('#moments_like_min').val())||60)),
-      moments_like_max:Math.max(1,Math.min(1440,parseInt($('#moments_like_max').val())||120)),
       everyday_start_stop_bot_switch:$('#everyday_start_stop_bot_switch').is(':checked'),
       everyday_start_bot_time:$('#everyday_start_bot_time').val(),
       everyday_stop_bot_time:$('#everyday_stop_bot_time').val(),
@@ -11889,12 +11652,6 @@ $(function(){
         var v=parseInt($('#memory_context_count').val(), 10);
         return isNaN(v) ? 50 : Math.max(1, Math.min(200, v));
       })(),
-      memory_context_repair_low_risk_switch:$('#memory_context_repair_low_risk_switch').is(':checked'),
-      memory_context_repair_high_risk_switch:$('#memory_context_repair_high_risk_switch').is(':checked'),
-      reply_delay_switch:$('#reply_delay_switch').is(':checked'),
-      reply_delay_first_min:Math.max(1,parseInt($('#reply_delay_first_min').val())||1),
-      reply_delay_first_max:Math.max(1,parseInt($('#reply_delay_first_max').val())||5),
-      reply_delay_split_speed_mode:$('#reply_delay_split_speed_mode').val()||'fast',
       wxauto_save_cache_retention_days:parseInt($('#wxauto_save_cache_retention_days').val(),10)||0,
       chat_image_recognition_switch:$('#chat_image_recognition_switch').is(':checked'),
       chat_voice_recognition_switch:$('#chat_voice_recognition_switch').is(':checked'),
@@ -11929,9 +11686,11 @@ $(function(){
       text_reply_limit_reply:$('#text_reply_limit_reply').val().trim(),
       text_reply_limit_reply_once:$('#text_reply_limit_reply_once').is(':checked'),
       chat_split_reply_switch:$('#chat_split_reply_switch').is(':checked'),
+      chat_split_reply_delay_switch:$('#chat_split_reply_delay_switch').val() !== 'false',
       chat_split_max_chars:Math.max(1,parseInt($('#chat_split_max_chars').val())||100),
       chat_split_max_count:Math.max(1,parseInt($('#chat_split_max_count').val())||4),
       group_split_reply_switch:$('#group_split_reply_switch').is(':checked'),
+      group_split_reply_delay_switch:$('#group_split_reply_delay_switch').val() !== 'false',
       group_split_max_chars:Math.max(1,parseInt($('#group_split_max_chars').val())||100),
       group_split_max_count:Math.max(1,parseInt($('#group_split_max_count').val())||4),
       siver_panel_enabled:$('#siver_panel_enabled').is(':checked'),
@@ -12287,9 +12046,6 @@ $(function(){
     if(status === 'success'){
       clearBotStartupPolling();
       svModal.success(message || '机器人已启动', '启动成功');
-      if ($('#wechat_cli_enabled').is(':checked') && typeof window.checkWechatCliStatus === 'function') {
-        setTimeout(function(){ window.checkWechatCliStatus(false); }, 1200);
-      }
       return;
     }
     if(status === 'error'){
@@ -13009,7 +12765,6 @@ $(function(){
       $('#status-meta-model').text(d.current_interface || '未连接');
       $('#status-uptime').text(d.uptime || '-');
 
-      $('#sv-delay').text(statusEnabledText(!!d.reply_delay_switch));
       $('#sv-default-prompt').text(statusValueOrDash(d.default_prompt));
       $('#sv-clean-reply').text(statusEnabledText(!!d.clean_ai_reply_switch));
       $('#sv-voice-reply').text(statusScopeText(!!d.chat_voice_reply_switch, !!d.group_voice_reply_switch));
@@ -13851,220 +13606,6 @@ $(function(){
     $('#activate-version-ok, #activate-version-fail').text(text);
   }
 
-  function renderWechatCliVersion(version) {
-    var text = version ? '当前版本：' + version : '当前版本：未检测到';
-    $('#wechat-cli-version-ok, #wechat-cli-version-fail').text(text);
-  }
-
-  function syncWechatCliEnabledState() {
-    var enabled = $('#wechat_cli_enabled').is(':checked');
-    var $btn = $('#btn-toggle-wechat-cli');
-    var $label = $('#wechat_cli_enabled_label');
-    $btn.toggleClass('is-cli-enabled', enabled);
-    $btn.attr('aria-pressed', enabled ? 'true' : 'false');
-    $btn.attr('title', enabled ? '关闭后不会安装、初始化或调用 wechat-cli' : '开启前需要确认微信风控和账号风险');
-    $btn.find('i').attr('class', enabled ? 'bi bi-power' : 'bi bi-plug-fill');
-    $label.text(enabled ? '关闭 CLI' : '开启 CLI');
-    $('#btn-check-wechat-cli').prop('disabled', !enabled);
-    $('#btn-check-wechat-cli-update').prop('disabled', !enabled);
-    if (!enabled) {
-      renderWechatCliStatus({
-        state: 'disabled',
-        title: 'wechat-cli 已关闭',
-        message: '本地 CLI 读取已关闭，机器人只会使用微信界面读取。',
-        detail: '保存配置后，后续启动不会安装、初始化或调用 wechat-cli。'
-      });
-    }
-  }
-
-  function setWechatCliEnabledSilently(enabled) {
-    if (!enabled) {
-      clearWechatCliStatusPolling();
-    }
-    $('#wechat_cli_enabled').prop('checked', !!enabled);
-    syncWechatCliEnabledState();
-  }
-
-  function renderWechatCliStatus(data) {
-    data = data || {};
-    $('#wechat-cli-checking, #wechat-cli-ok, #wechat-cli-fail, #wechat-cli-error').hide();
-    renderWechatCliVersion(data.version || '');
-    if (data.state === 'disabled') {
-      $('#wechat-cli-fail .page-inline-notice__icon').attr('class', 'bi bi-shield-x page-inline-notice__icon');
-      $('#wechat-cli-fail-title').text(data.title || 'wechat-cli 已关闭');
-      $('#wechat-cli-fail-message').text(data.message || '本地 CLI 读取已关闭，机器人只会使用微信界面读取。');
-      if (data.detail) {
-        $('#wechat-cli-version-fail').text((data.version ? '当前版本：' + data.version : '当前版本：未检测到') + '　' + data.detail);
-      } else {
-        renderWechatCliVersion(data.version || '');
-      }
-      $('#wechat-cli-fail-detail').hide().text('');
-      $('#wechat-cli-fail').show();
-      $('#btn-repair-wechat-cli').hide();
-      return;
-    }
-    if (data.checking || data.state === 'checking') {
-      $('#wechat-cli-checking').show();
-      $('#btn-repair-wechat-cli').hide();
-      return;
-    }
-    if (data.available) {
-      $('#wechat-cli-ok .page-inline-notice__icon').attr('class', 'bi bi-database-check page-inline-notice__icon');
-      $('#wechat-cli-ok-title').text(data.title || 'wechat-cli 已开启');
-      $('#wechat-cli-ok-message').text(data.message || '本地 CLI 读取已开启，相关功能会优先使用 wechat-cli。');
-      $('#wechat-cli-ok').css('display', 'grid');
-      $('#btn-repair-wechat-cli').hide();
-      return;
-    }
-    $('#wechat-cli-fail .page-inline-notice__icon').attr('class', 'bi bi-database-exclamation page-inline-notice__icon');
-    $('#wechat-cli-fail-title').text(data.title || 'wechat-cli 本地读取不可用');
-    $('#wechat-cli-fail-message').text(data.message || '机器人已自动回退微信界面读取。');
-    if (data.detail) {
-      $('#wechat-cli-fail-detail').text(data.detail).show();
-    } else {
-      $('#wechat-cli-fail-detail').hide().text('');
-    }
-    $('#wechat-cli-fail').show();
-    $('#btn-repair-wechat-cli').show();
-  }
-
-  var _wechatCliStatusPollTimer = null;
-  var _wechatCliStatusPollCount = 0;
-  function clearWechatCliStatusPolling() {
-    if (_wechatCliStatusPollTimer) {
-      clearTimeout(_wechatCliStatusPollTimer);
-      _wechatCliStatusPollTimer = null;
-    }
-  }
-
-  window.checkWechatCliStatus = function(manual) {
-    var $btn = $('#btn-check-wechat-cli');
-    if (manual) {
-      clearWechatCliStatusPolling();
-      _wechatCliStatusPollCount = 0;
-      $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 检测中...');
-    } else {
-      clearWechatCliStatusPolling();
-    }
-    $('#wechat-cli-checking').show();
-    $('#wechat-cli-ok, #wechat-cli-fail, #wechat-cli-error').hide();
-    $.ajax({
-      url: '/check_wechat_cli_status' + (manual ? '?force=1' : ''),
-      method: 'GET',
-      dataType: 'json',
-      timeout: 60000,
-      success: function(res) {
-        if (res.status !== 'success') {
-          $('#wechat-cli-checking').hide();
-          $('#wechat-cli-error').show();
-          return;
-        }
-        var data = res.data || {};
-        renderWechatCliStatus(data);
-        if (!manual && (data.checking || data.state === 'checking') && _wechatCliStatusPollCount < 40) {
-          clearWechatCliStatusPolling();
-          _wechatCliStatusPollCount += 1;
-          _wechatCliStatusPollTimer = setTimeout(function(){ window.checkWechatCliStatus(false); }, 1500);
-        } else if (!manual && (data.checking || data.state === 'checking')) {
-          clearWechatCliStatusPolling();
-          $('#wechat-cli-checking').hide();
-          $('#wechat-cli-error').show();
-          _wechatCliStatusPollCount = 0;
-        } else if (!(data.checking || data.state === 'checking')) {
-          clearWechatCliStatusPolling();
-          _wechatCliStatusPollCount = 0;
-        }
-      },
-      error: function() {
-        clearWechatCliStatusPolling();
-        _wechatCliStatusPollCount = 0;
-        $('#wechat-cli-checking').hide();
-        $('#wechat-cli-error').show();
-      },
-      complete: function() {
-        if (manual) $btn.prop('disabled', !$('#wechat_cli_enabled').is(':checked')).html('<i class="bi bi-arrow-repeat"></i> 重新检测');
-      }
-    });
-  }
-
-  $('#btn-toggle-wechat-cli').on('click', function(){
-    var enabled = $('#wechat_cli_enabled').is(':checked');
-    if (enabled) {
-      setWechatCliEnabledSilently(false);
-      return;
-    }
-    svModal.custom({
-      icon: '<i class="bi bi-exclamation-triangle-fill" style="color:#FA5151;font-size:36px;"></i>',
-      title: '开启 CLI 风险确认',
-      body: '开启 CLI 插件可以大幅加速相关功能的效率，但存在微信风控、账号封禁的风险，确定开启？',
-      boxClass: 'ui-modal-box--danger',
-      buttons: [
-        {text: '取消', variant: 'secondary'},
-        {
-          text: '确定开启',
-          className: 'ui-btn ui-btn--danger ui-modal-danger-action',
-          action: function(){
-            setWechatCliEnabledSilently(true);
-            checkWechatCliStatus(false);
-          }
-        }
-      ]
-    });
-  });
-  $('#btn-check-wechat-cli').on('click', function() { checkWechatCliStatus(true); });
-  $('#btn-check-wechat-cli-update').on('click', function() {
-    var $btn = $('#btn-check-wechat-cli-update');
-    $btn.prop('disabled', true).text('检查中...');
-    $.ajax({
-      url: '/check_wechat_cli_update',
-      method: 'GET',
-      dataType: 'json',
-      timeout: 60000,
-      success: function(res) {
-        if ((res || {}).status !== 'success') {
-          svModal.error('wechat-cli 更新检查失败：' + escapeHtml((res || {}).message || '未知错误'));
-          return;
-        }
-        var data = res.data || {};
-        var rows = [];
-        if (data.local_version) rows.push('当前版本：' + escapeHtml(data.local_version));
-        if (data.local_commit) rows.push('本地提交：' + escapeHtml(data.local_commit));
-        if (data.remote_commit) rows.push('远端提交：' + escapeHtml(data.remote_commit));
-        var body = escapeHtml(data.message || data.title || '更新检查完成。');
-        if (rows.length) body += '<div style="margin-top:10px;color:#64748b;font-size:12.5px;line-height:1.8;">' + rows.join('<br>') + '</div>';
-        svModal.alert(body, data.update_available ? '发现 wechat-cli 更新' : 'wechat-cli 更新检查');
-      },
-      error: function(xhr) {
-        svModal.error('wechat-cli 更新检查请求失败：' + (xhr.responseText || xhr.status));
-      },
-      complete: function() {
-        $btn.prop('disabled', !$('#wechat_cli_enabled').is(':checked')).text('检查更新');
-      }
-    });
-  });
-  $('#btn-repair-wechat-cli').on('click', function() {
-    var $btn = $('#btn-repair-wechat-cli');
-    $btn.prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 检查中...');
-    $.ajax({
-      url: '/repair_wechat_cli_status',
-      method: 'POST',
-      dataType: 'json',
-      timeout: 60000,
-      success: function(res) {
-        renderWechatCliStatus((res || {}).data || {});
-        var data = (res || {}).data || {};
-        var title = data.available ? 'wechat-cli 已可用' : 'wechat-cli 修复建议';
-        svModal.alert(escapeHtml((res || {}).message || '已重新检测 wechat-cli 状态。'), title);
-      },
-      error: function(xhr) {
-        svModal.error('wechat-cli 修复检查失败：' + (xhr.responseText || xhr.status));
-      },
-      complete: function() {
-        $btn.prop('disabled', false).html('<i class="bi bi-tools"></i> 尝试修复');
-      }
-    });
-  });
-
   window.checkActivate = function(manual) {
     if (manual) $('#btn-check-activate').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 检测中...');
     $('#activate-card').show();
@@ -14127,10 +13668,6 @@ $(function(){
     });
   });
   checkActivate(false);
-  syncWechatCliEnabledState();
-  if ($('#wechat_cli_enabled').is(':checked')) {
-    checkWechatCliStatus(false);
-  }
 
 });
 </script>

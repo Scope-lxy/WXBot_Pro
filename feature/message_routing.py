@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
+import re
 from contextlib import nullcontext
 from datetime import datetime
 
@@ -28,6 +29,31 @@ def _bot_log(bot, *args, **kwargs) -> None:
 def _bot_time_module(bot):
     module = sys.modules.get(getattr(bot.__class__, "__module__", ""))
     return getattr(module, "time", time) if module else time
+
+
+def record_runtime_inbound_event(bot, message, chat_type="") -> None:
+    if getattr(message, "attr", "") in {"self", "system"}:
+        return
+    if bool(getattr(message, "_wxbot_runtime_inbound_logged", False)):
+        return
+    runtime_id = str(getattr(bot, "_runtime_instance_id", "") or "").strip().lower()
+    if len(runtime_id) != 32 or any(char not in "0123456789abcdef" for char in runtime_id):
+        return
+    scope = "group" if str(chat_type or "").strip().lower() == "group" else "private"
+    message_type = str(getattr(message, "type", "") or "unknown").strip().lower() or "unknown"
+    if message_type not in {"text", "image", "voice", "video", "file", "quote", "link", "emotion"}:
+        message_type = "unknown"
+    try:
+        _bot_log(
+            bot,
+            message=f"运行事件：入站消息 scope={scope} type={message_type} runtime_id={runtime_id}",
+        )
+    except Exception:
+        return
+    try:
+        setattr(message, "_wxbot_runtime_inbound_logged", True)
+    except Exception:
+        pass
 
 
 def _recognition_switches_for_chat(bot, chat):
@@ -73,31 +99,50 @@ def voice_content_state(content):
     return "valid"
 
 
-def try_voice_to_text(bot, msg, chat=None) -> bool:
-    converter = getattr(msg, "to_text", None)
-    if not callable(converter):
-        return False
+VOICE_DURATION_RE = re.compile(r"语音\s*(\d+)\s*[\"”]?\s*秒", re.IGNORECASE)
 
-    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
-    if not release_wechat_lock:
-        return False
 
-    try:
-        text = converter()
-    except Exception:
-        return False
-    finally:
-        release_wechat_lock()
+def voice_duration_seconds(content):
+    match = VOICE_DURATION_RE.search(str(content or ""))
+    return int(match.group(1)) if match else None
 
-    state = voice_content_state(text)
-    if state == "pending":
-        return False
-    try:
-        msg.content = str(text or "").strip()
-        msg._wxbot_media_prepared = True
-    except Exception:
-        pass
-    return state == "valid"
+
+def match_pending_voice_snapshot(items, messages):
+    """Match one fresh visible-window snapshot to queued voice placeholders."""
+    candidates = [message for message in messages or [] if str(getattr(message, "type", "")).lower() == "voice"]
+    used = set()
+    matched = {}
+    for item in items or []:
+        signature = item.get("signature") or {}
+        wanted_attr = str(signature.get("attr") or "")
+        wanted_sender = str(signature.get("sender") or "")
+        wanted_duration = signature.get("duration")
+        wanted_hash = signature.get("hash")
+        options = []
+        for index, candidate in enumerate(candidates):
+            if index in used:
+                continue
+            if wanted_attr and str(getattr(candidate, "attr", "") or "") != wanted_attr:
+                continue
+            if wanted_sender and str(getattr(candidate, "sender", "") or "") != wanted_sender:
+                continue
+            duration = voice_duration_seconds(getattr(candidate, "content", ""))
+            if wanted_duration is not None and duration is not None and duration != wanted_duration:
+                continue
+            options.append((index, candidate))
+        if not options:
+            continue
+        if wanted_hash not in {None, ""}:
+            hash_options = [
+                option for option in options
+                if getattr(option[1], "hash", None) == wanted_hash
+            ]
+            if hash_options:
+                options = hash_options
+        index, candidate = options[0]
+        used.add(index)
+        matched[item.get("key")] = candidate
+    return matched
 
 
 def mark_failed_voice_silent_ignore(bot, msg) -> None:
@@ -130,19 +175,28 @@ def prepare_message_media(bot, msg, chat) -> None:
     try:
         if image_enabled:
             if msg.type == "image":
-                down_path = msg.download()
+                down_path = bot._ui_download_message(chat, msg)
                 if down_path:
                     msg.content = str(down_path)
                 else:
                     _bot_log(bot, "ERROR", "消息处理：图片下载失败，详情：未返回文件路径")
+                    msg._skip_ai_reply = True
+                    mark_skip_memory = getattr(bot, "_mark_message_skip_memory", None)
+                    if callable(mark_skip_memory):
+                        mark_skip_memory(msg)
             elif msg.type == "quote":
-                down_path = msg.download_quote_image()
+                down_path = bot._ui_download_message(chat, msg, quote_image=True)
                 if down_path:
                     msg.content = str(msg.content) + "+引用的图片:" + str(down_path)
                 else:
                     _bot_log(bot, "INFO", "引用内容不是图片或视频")
     except Exception as exc:
         _bot_log(bot, level="ERROR", message=f"消息处理：图片下载失败，请尝试将 Windows 屏幕缩放设置为 100%，详情：{exc}")
+        if msg.type == "image":
+            msg._skip_ai_reply = True
+            mark_skip_memory = getattr(bot, "_mark_message_skip_memory", None)
+            if callable(mark_skip_memory):
+                mark_skip_memory(msg)
 
     if msg.type != "voice":
         return
@@ -155,14 +209,8 @@ def prepare_message_media(bot, msg, chat) -> None:
     if state == "failed":
         mark_failed_voice_silent_ignore(bot, msg)
         return
-    if try_voice_to_text(bot, msg, chat):
-        return
-    state = voice_content_state(getattr(msg, "content", ""))
-    if state == "failed":
-        mark_failed_voice_silent_ignore(bot, msg)
-        return
     queue_pending = getattr(bot, "_queue_pending_private_voice_transcription", None)
-    if callable(queue_pending) and getattr(msg, "attr", "") == "friend":
+    if callable(queue_pending):
         queue_pending(chat, msg)
         mark_skip_memory = getattr(bot, "_mark_message_skip_memory", None)
         if callable(mark_skip_memory):

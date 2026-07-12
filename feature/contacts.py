@@ -18,19 +18,14 @@ from core.contact_profiles import (
     contact_display_name,
     directory_path as contact_directory_path,
     contact_send_name,
+    directory_lock as contact_directory_lock,
     load_directory as load_contact_directory,
-    merge_cli_contact_basics,
     merge_directory as merge_contact_directory,
     normalize_tag_list,
     repair_candidates as contact_repair_candidates,
     save_directory as save_contact_directory,
 )
-from core.local_wechat_reader import read_local_contacts_with_status
-from core.wechat_window import (
-    bring_wechat_main_window_to_front,
-    move_cursor_to_wechat_main_window_center,
-    run_with_wechat_rebind_retry,
-)
+from core.wechat_window import run_with_wechat_rebind_retry
 from core.wechat_observability import warn_slow_wechat_ui_action
 from core import wechat_ui_actions
 from core.logger import log
@@ -47,17 +42,14 @@ _MODE_SETTINGS = {
     MODE_STANDARD: {"count": 50, "interval": 0.5, "label": "立即建档"},
 }
 
-AUTO_BATCH_SIZE_CHOICES = (20, 50, 80)
 AUTO_BATCH_SIZE_DEFAULT = 50
 AUTO_INTERVAL_DEFAULT_MINUTES = 20
 AUTO_INTERVAL_MIN_MINUTES = 5
 AUTO_INTERVAL_MAX_MINUTES = 1440
 AUTO_FULL_SCAN_DEFAULT_DAYS = 7
-AUTO_FULL_SCAN_MIN_DAYS = 1
-AUTO_FULL_SCAN_MAX_DAYS = 30
 AUTO_WINDOW_START_DEFAULT = "00:00"
 AUTO_WINDOW_END_DEFAULT = "23:59"
-AUTO_TAIL_CONFIRM_RETRY_LIMIT = 3
+AUTO_TAIL_PROBE_COUNT = 2
 STOP_MAINTENANCE_HINT = "已请求停止建档，当前批次会继续跑完，并在本批返回后停止。"
 CONTACT_PROFILES_READING_ATTR = "_contact_profiles_reading_active"
 CONTACT_CURSOR_MATCH_SETTLE_SECONDS = 1.0
@@ -65,9 +57,6 @@ CONTACT_READ_PROGRESS_LOG_INTERVAL = 20
 AUTO_MAINTENANCE_READ_TIMEOUT_SECONDS = 600
 AUTO_MAINTENANCE_COLLECT_HARD_TIMEOUT_SECONDS = 300
 AUTO_MAINTENANCE_ACTIVITY_GRACE_SECONDS = 10
-LOCAL_CONTACT_READ_LIMIT = 10000
-CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS = 1800
-CLI_CONTACT_BASICS_SYNC_IDLE_RECHECK_SECONDS = 3600
 
 
 def _clean_text(value: Any) -> str:
@@ -82,10 +71,6 @@ def _bot_log(bot, *args, **kwargs) -> None:
 
 def _should_log_contact_read_progress(count: int) -> bool:
     return count > 0 and count % CONTACT_READ_PROGRESS_LOG_INTERVAL == 0
-
-
-def local_wechat_reader_enabled(bot) -> bool:
-    return bool(getattr(bot, "_local_wechat_reader_enabled", False))
 
 
 def _runtime_base_dir() -> str:
@@ -127,6 +112,104 @@ def _contact_auto_collector_lock_path() -> str:
     runtime_dir = os.path.join(_runtime_base_dir(), "runtime")
     os.makedirs(runtime_dir, exist_ok=True)
     return os.path.join(runtime_dir, "contact_auto_collector.lock")
+
+
+def _contact_auto_collector_registry_path() -> str:
+    runtime_dir = os.path.join(_runtime_base_dir(), "runtime")
+    os.makedirs(runtime_dir, exist_ok=True)
+    return os.path.join(runtime_dir, "contact_auto_collector.json")
+
+
+def _write_contact_auto_collector_registry(*, pid: int, script_path: str, request_path: str) -> str:
+    path = _contact_auto_collector_registry_path()
+    temp_path = path + ".tmp"
+    payload = {
+        "pid": int(pid or 0),
+        "script_path": os.path.abspath(script_path),
+        "request_path": os.path.abspath(request_path),
+        "created_at": time.time(),
+    }
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+    os.replace(temp_path, path)
+    return path
+
+
+def _clear_contact_auto_collector_registry(path: str, *, pid: int) -> None:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if int(payload.get("pid") or 0) != int(pid or 0):
+            return
+    except FileNotFoundError:
+        return
+    except Exception:
+        pass
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+def _windows_process_command_line(pid: int) -> str | None:
+    if os.name != "nt" or not pid:
+        return None
+    command = (
+        "$p=Get-CimInstance Win32_Process -Filter \"ProcessId = " + str(int(pid)) + "\";"
+        "if($null -eq $p){exit 3};"
+        "[Console]::OutputEncoding=[Text.UTF8Encoding]::new();"
+        "$p.CommandLine"
+    )
+    completed = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        timeout=10,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if completed.returncode == 3:
+        return ""
+    if completed.returncode != 0:
+        return None
+    return str(completed.stdout or "").strip()
+
+
+def cleanup_orphaned_contact_auto_collector() -> dict[str, Any]:
+    path = _contact_auto_collector_registry_path()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return {"found": False, "terminated": False}
+    except Exception as exc:
+        return {"found": True, "terminated": False, "error": str(exc)}
+
+    pid = int(payload.get("pid") or 0)
+    command_line = _windows_process_command_line(pid)
+    script_path = os.path.abspath(str(payload.get("script_path") or ""))
+    request_path = os.path.abspath(str(payload.get("request_path") or ""))
+    verified = bool(
+        command_line
+        and script_path.lower() in command_line.lower()
+        and request_path.lower() in command_line.lower()
+    )
+    terminated = False
+    if verified:
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            timeout=10,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        terminated = completed.returncode == 0
+    if command_line is not None:
+        _clear_contact_auto_collector_registry(path, pid=pid)
+    return {"found": True, "pid": pid, "verified": verified, "terminated": terminated}
 
 
 def _acquire_contact_auto_collector_process_lock():
@@ -272,10 +355,6 @@ def friend_info_edit_noop(response: Any) -> bool:
     return "未进行任何修改" in _clean_text(response.get("message"))
 
 
-def bring_wechat_to_front() -> int:
-    return bring_wechat_main_window_to_front(wait=0.3)
-
-
 def _chat_info_tags(raw_info: Any) -> list[str] | None:
     if not isinstance(raw_info, dict):
         return None
@@ -328,12 +407,6 @@ def contact_auto_maintenance_read_timeout_seconds(count: Any) -> int:
 
 
 def normalize_auto_maintenance_batch_size(value: Any) -> int:
-    try:
-        value = int(value)
-    except (TypeError, ValueError):
-        return AUTO_BATCH_SIZE_DEFAULT
-    if value in AUTO_BATCH_SIZE_CHOICES:
-        return value
     return AUTO_BATCH_SIZE_DEFAULT
 
 
@@ -346,11 +419,7 @@ def coerce_auto_maintenance_interval_minutes(value: Any) -> int:
 
 
 def coerce_auto_maintenance_full_scan_interval_days(value: Any) -> int:
-    try:
-        value = int(value)
-    except (TypeError, ValueError):
-        value = AUTO_FULL_SCAN_DEFAULT_DAYS
-    return max(AUTO_FULL_SCAN_MIN_DAYS, min(AUTO_FULL_SCAN_MAX_DAYS, value))
+    return AUTO_FULL_SCAN_DEFAULT_DAYS
 
 
 def coerce_auto_maintenance_window_time(value: Any, default_value: str) -> str:
@@ -462,6 +531,7 @@ def edit_friend_info_via_chat_profile(
     target_name: str,
     *,
     expected_names: set[str] | None = None,
+    contact_key: str = "",
     remark: str | None = None,
     add_tags: list[str] | None = None,
     remove_tags: list[str] | None = None,
@@ -476,51 +546,22 @@ def edit_friend_info_via_chat_profile(
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化，请先启动机器人并保持微信主窗口可用。")
 
-    with wechat_ui_actions.hold(bot):
-        bring_wechat_to_front()
-        chat_with = getattr(bot.wx, "ChatWith", None)
-        if not callable(chat_with):
-            raise RuntimeError("当前微信客户端不支持打开好友聊天窗口")
-        with warn_slow_wechat_ui_action(f"ChatWith({target_name})"):
-            chat_with(target_name, exact=True)
-        bring_wechat_to_front()
-        move_cursor_to_wechat_main_window_center()
-
-        chat_info = {}
-        get_chat_info = getattr(bot.wx, "ChatInfo", None)
-        if callable(get_chat_info):
-            chat_info = get_chat_info() or {}
-            if isinstance(chat_info, dict):
-                chat_type = _clean_text(chat_info.get("chat_type"))
-                chat_name = _clean_text(chat_info.get("chat_name"))
-                allowed_names = {name for name in (expected_names or set()) if _clean_text(name)}
-                allowed_names.add(target_name)
-                if chat_type and chat_type != "friend":
-                    raise RuntimeError(f"当前会话不是好友会话：{chat_type}")
-                if chat_name and allowed_names and chat_name not in allowed_names:
-                    raise RuntimeError(f"当前会话不是目标好友：{chat_name}")
-                if remark is None and _tags_update_is_noop(_chat_info_tags(chat_info), add_tags=add_tags, remove_tags=remove_tags):
-                    return {
-                        "status": "成功",
-                        "message": "标签已满足要求，未进行任何修改",
-                        "noop": True,
-                    }
-
-        bring_wechat_to_front()
-        move_cursor_to_wechat_main_window_center()
-        with warn_slow_wechat_ui_action(f"EditFriendInfo({target_name})"):
-            response = bot.wx.EditFriendInfo(
-                remark=remark,
-                add_tags=add_tags,
-                remove_tags=remove_tags,
-                tag_wait=0.8,
-            )
-        if friend_info_edit_noop(response):
-            response = dict(response)
-            response["status"] = "成功"
-            response["noop"] = True
-        elif not friend_info_edit_success(response):
-            raise RuntimeError(f"修改好友信息未返回明确成功：{response}")
+    owner = getattr(bot, "_ui_owner", None)
+    if owner is not None:
+        response = owner.call(
+            wechat_ui_actions.UIIntent(
+                wechat_ui_actions.UIIntentKind.CONTACT_EDIT,
+                {
+                    "target": target_name,
+                    "contact_key": _clean_text(contact_key),
+                    "expected_names": sorted(expected_names or set()),
+                    "remark": remark,
+                    "add_tags": list(add_tags or []),
+                    "remove_tags": list(remove_tags or []),
+                },
+            ),
+            wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
+        )
         if close_dynamic_listener:
             close_dynamic_listener_after_friend_edit(
                 bot,
@@ -531,6 +572,8 @@ def edit_friend_info_via_chat_profile(
             )
         return response
 
+    raise RuntimeError("好友资料 UI 只能由微信 UI owner 执行")
+
 
 def modify_friend_tags_via_chat_profile(
     bot,
@@ -539,6 +582,7 @@ def modify_friend_tags_via_chat_profile(
     add_tags: list[str] | None = None,
     remove_tags: list[str] | None = None,
     log_prefix: str = "[通讯录维护]",
+    rebind_attempts: int = 2,
 ) -> dict[str, Any]:
     add_tags = [str(item or "").strip() for item in (add_tags or []) if str(item or "").strip()]
     remove_tags = [str(item or "").strip() for item in (remove_tags or []) if str(item or "").strip()]
@@ -565,6 +609,7 @@ def modify_friend_tags_via_chat_profile(
     action_label = "添加" if add_tags else "移除"
     for target in targets:
         target_name = _clean_text((target or {}).get("name"))
+        contact_key = _clean_text((target or {}).get("contact_key"))
         record = {
             "name": target_name,
             "add_tags": add_tags,
@@ -583,6 +628,7 @@ def modify_friend_tags_via_chat_profile(
                 bot,
                 target_name,
                 expected_names={target_name},
+                contact_key=contact_key,
                 add_tags=add_tags,
                 remove_tags=remove_tags,
                 log_prefix=log_prefix,
@@ -592,7 +638,7 @@ def modify_friend_tags_via_chat_profile(
             response = run_with_wechat_rebind_retry(
                 bot,
                 apply_single_tag_update,
-                attempts=2,
+                attempts=max(1, int(rebind_attempts or 1)),
                 on_retry=lambda exc, _attempt: _bot_log(
                     bot,
                     level="WARNING",
@@ -612,7 +658,8 @@ def modify_friend_tags_via_chat_profile(
         result["message"] = "部分好友标签修改成功"
     elif result["failed_count"]:
         result["status"] = "failed"
-        result["message"] = "好友标签修改失败"
+        first_error = next((_clean_text(item.get("error")) for item in records if item.get("error")), "")
+        result["message"] = f"好友标签修改失败：{first_error}" if first_error else "好友标签修改失败"
     else:
         result["status"] = "success"
         result["message"] = "好友标签修改成功"
@@ -623,7 +670,7 @@ def contact_name_matches(name: Any, start_name: Any) -> bool:
     start_name = _clean_text(start_name)
     if not start_name:
         return True
-    return _clean_text(name).startswith(start_name)
+    return _clean_text(name) == start_name
 
 
 def _detail_name(raw_detail: Any) -> str:
@@ -650,6 +697,38 @@ def start_names_from_details(raw_details: list[Any] | tuple[Any, ...] | None, *,
     return names
 
 
+def start_cursors_from_details(
+    raw_details: list[Any] | tuple[Any, ...] | None,
+    result_identities: list[str] | tuple[str, ...] | None = None,
+    *,
+    limit: int = 2,
+) -> list[tuple[str, str]]:
+    details = list(raw_details or [])
+    identities = list(result_identities or [])
+    cursors: list[tuple[str, str]] = []
+    for index in range(len(details) - 1, -1, -1):
+        name = _clean_text(_detail_name(details[index]))
+        if not name:
+            continue
+        identity = _clean_text(identities[index]) if index < len(identities) else ""
+        cursor = (name, identity)
+        if cursor in cursors:
+            continue
+        cursors.append(cursor)
+        if len(cursors) >= max(1, int(limit or 1)):
+            break
+    return cursors
+
+
+def _detail_identity(raw_detail: Any, *, name: str) -> str:
+    if isinstance(raw_detail, dict):
+        for key in ("微信号", "wechat_id", "wxid"):
+            value = _clean_text(raw_detail.get(key))
+            if value:
+                return f"id:{value}"
+    return f"name:{name}"
+
+
 def build_refresh_run_policy(run_kind: str, *, count: int) -> dict[str, Any]:
     run_kind = _clean_text(run_kind) or "manual_standard"
     is_auto = run_kind == "auto_maintenance"
@@ -668,22 +747,31 @@ def analyze_refresh_batch(
     raw_details: list[Any] | tuple[Any, ...] | None,
     requested_count: int,
     current_start_name: Any,
+    current_start_identity: Any = "",
     previous_next_start_name: Any = "",
+    previous_next_start_identity: Any = "",
+    result_identities: list[str] | tuple[str, ...] | None = None,
     allow_short_batch_complete: bool = True,
 ) -> dict[str, Any]:
     details = list(raw_details or [])
     names = []
-    for item in details:
+    result_identity_values = list(result_identities or [])
+    identities = []
+    for index, item in enumerate(details):
         name = _detail_name(item)
         if name:
             names.append(name)
+            identity = _clean_text(result_identity_values[index]) if index < len(result_identity_values) else ""
+            identities.append(identity or _detail_identity(item, name=name))
     next_start_name = names[-1] if names else ""
-    unique_names = list(dict.fromkeys(names))
-    repeat_count = max(0, len(names) - len(unique_names))
-    repeated_tail = len(names) > 1 and len(unique_names) == 1
+    next_start_identity = identities[-1] if identities else ""
+    repeat_count = max(0, len(identities) - len(set(identities)))
     previous_next = _clean_text(previous_next_start_name)
     current_start = _clean_text(current_start_name)
-    advanced = bool(next_start_name) and _clean_text(next_start_name) not in {previous_next, current_start}
+    previous_cursor = (previous_next, _clean_text(previous_next_start_identity))
+    current_cursor = (current_start, _clean_text(current_start_identity))
+    next_cursor = (_clean_text(next_start_name), _clean_text(next_start_identity))
+    advanced = bool(next_start_name) and next_cursor not in {previous_cursor, current_cursor}
     short_batch = len(details) < max(1, int(requested_count or 1))
     if not details:
         return {
@@ -691,14 +779,16 @@ def analyze_refresh_batch(
             "completed": False,
             "advanced": False,
             "next_start_name": "",
+            "next_start_identity": "",
             "repeat_count": 0,
         }
-    if repeated_tail or (not advanced and repeat_count > 0):
+    if repeat_count > 0:
         return {
             "outcome": "suspicious_repeat",
             "completed": False,
             "advanced": False,
             "next_start_name": next_start_name,
+            "next_start_identity": next_start_identity,
             "repeat_count": repeat_count,
         }
     if short_batch and advanced:
@@ -708,6 +798,7 @@ def analyze_refresh_batch(
                 "completed": False,
                 "advanced": True,
                 "next_start_name": next_start_name,
+                "next_start_identity": next_start_identity,
                 "repeat_count": repeat_count,
             }
         return {
@@ -715,6 +806,7 @@ def analyze_refresh_batch(
             "completed": True,
             "advanced": True,
             "next_start_name": next_start_name,
+            "next_start_identity": next_start_identity,
             "repeat_count": repeat_count,
         }
     if not advanced:
@@ -723,6 +815,7 @@ def analyze_refresh_batch(
             "completed": False,
             "advanced": False,
             "next_start_name": next_start_name,
+            "next_start_identity": next_start_identity,
             "repeat_count": repeat_count,
         }
     return {
@@ -730,6 +823,7 @@ def analyze_refresh_batch(
         "completed": False,
         "advanced": True,
         "next_start_name": next_start_name,
+        "next_start_identity": next_start_identity,
         "repeat_count": repeat_count,
     }
 
@@ -795,66 +889,6 @@ def auto_maintenance_full_scan_is_due(
     return current >= last_full_scan + timedelta(days=interval)
 
 
-def cli_contact_basics_sync_is_due(
-    directory: dict[str, Any] | None,
-    *,
-    interval_days: Any,
-    now: Any = None,
-) -> bool:
-    maintenance = (directory or {}).get("maintenance") if isinstance(directory, dict) else {}
-    if not isinstance(maintenance, dict):
-        maintenance = {}
-    if maintenance.get("status") == "running":
-        return False
-    subjects = (directory or {}).get("subjects") if isinstance(directory, dict) else []
-    if not isinstance(subjects, list) or not subjects:
-        last_failed = _parse_maintenance_time(maintenance.get("last_cli_contact_basics_sync_failed_at"))
-        if last_failed is not None:
-            current = now if isinstance(now, datetime) else _parse_maintenance_time(now) or datetime.now()
-            if current < last_failed + timedelta(seconds=CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS):
-                return False
-        return True
-    last_run = _parse_maintenance_time(maintenance.get("last_cli_contact_basics_sync_completed_at"))
-    if last_run is None:
-        last_failed = _parse_maintenance_time(maintenance.get("last_cli_contact_basics_sync_failed_at"))
-        if last_failed is not None:
-            current = now if isinstance(now, datetime) else _parse_maintenance_time(now) or datetime.now()
-            if current < last_failed + timedelta(seconds=CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS):
-                return False
-        return True
-    interval = coerce_auto_maintenance_full_scan_interval_days(interval_days)
-    current = now if isinstance(now, datetime) else _parse_maintenance_time(now) or datetime.now()
-    return current >= last_run + timedelta(days=interval)
-
-
-def cli_contact_basics_next_check_at(
-    directory: dict[str, Any] | None,
-    *,
-    interval_days: Any,
-    now: Any = None,
-) -> datetime:
-    maintenance = (directory or {}).get("maintenance") if isinstance(directory, dict) else {}
-    if not isinstance(maintenance, dict):
-        maintenance = {}
-    current = now if isinstance(now, datetime) else _parse_maintenance_time(now) or datetime.now()
-    last_failed = _parse_maintenance_time(maintenance.get("last_cli_contact_basics_sync_failed_at"))
-    if last_failed is not None:
-        failure_retry_at = last_failed + timedelta(seconds=CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS)
-        if current < failure_retry_at:
-            return failure_retry_at
-    subjects = (directory or {}).get("subjects") if isinstance(directory, dict) else []
-    if not isinstance(subjects, list) or not subjects:
-        return current
-    last_run = _parse_maintenance_time(maintenance.get("last_cli_contact_basics_sync_completed_at"))
-    if last_run is None:
-        return current
-    due_at = last_run + timedelta(days=coerce_auto_maintenance_full_scan_interval_days(interval_days))
-    if current >= due_at:
-        return current
-    idle_recheck_at = current + timedelta(seconds=CLI_CONTACT_BASICS_SYNC_IDLE_RECHECK_SECONDS)
-    return min(due_at, idle_recheck_at)
-
-
 def effective_start_name(
     directory: dict[str, Any] | None,
     start_name: Any = "",
@@ -882,9 +916,11 @@ def maintenance_snapshot(
     status: str,
     paused: bool | None = None,
     start_name: Any = "",
+    start_identity: Any = "",
     count_returned: int | None = None,
     matched_name: Any = "",
     next_start_name: Any = "",
+    next_start_identity: Any = "",
     last_error: Any = "",
     callback_names: list[str] | None = None,
     now: Any = None,
@@ -897,8 +933,10 @@ def maintenance_snapshot(
     if paused is not None:
         maintenance["paused"] = bool(paused)
     maintenance["last_start_name"] = _clean_text(start_name)
+    maintenance["last_start_identity"] = _clean_text(start_identity)
     maintenance["matched_name"] = _clean_text(matched_name)
     maintenance["next_start_name"] = _clean_text(next_start_name)
+    maintenance["next_start_identity"] = _clean_text(next_start_identity)
     maintenance["last_error"] = _clean_text(last_error)
     if count_returned is not None:
         maintenance["collected_count"] = max(0, int(count_returned))
@@ -990,19 +1028,101 @@ def restore_contact_directory_back_to_chat(bot) -> bool:
 def run_contact_auto_maintenance_collector(
     *,
     start_name: str,
+    start_identity: str = "",
     count: int,
     timeout_seconds: int | None = None,
 ) -> dict[str, Any]:
+    handle = start_contact_auto_maintenance_collector(
+        start_name=start_name,
+        start_identity=start_identity,
+        count=count,
+        timeout_seconds=timeout_seconds,
+    )
+    while True:
+        done, result = handle.poll()
+        if done:
+            if isinstance(result, BaseException):
+                raise result
+            return result
+        time.sleep(0.1)
+
+
+class ContactAutoCollectorProcess:
+    def __init__(self, proc, cmd, output_path, temp_dir, release_lock, timeout_seconds, registry_path):
+        self.proc = proc
+        self.cmd = cmd
+        self.output_path = output_path
+        self.temp_dir = temp_dir
+        self.release_lock = release_lock
+        self.deadline = time.monotonic() + timeout_seconds
+        self.timeout_seconds = timeout_seconds
+        self.registry_path = registry_path
+        self.closed = False
+
+    def _close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.release_lock()
+        finally:
+            try:
+                _clear_contact_auto_collector_registry(self.registry_path, pid=self.proc.pid)
+            finally:
+                self.temp_dir.cleanup()
+
+    def terminate(self):
+        if self.closed:
+            return
+        _terminate_contact_auto_collector_process(self.proc)
+        self._close()
+
+    def poll(self):
+        if self.closed:
+            return True, RuntimeError("通讯录采集器已结束")
+        if self.proc.poll() is None:
+            if time.monotonic() < self.deadline:
+                return False, None
+            cleanup = _terminate_contact_auto_collector_process(self.proc)
+            error = RuntimeError(_contact_auto_collector_timeout_message(self.timeout_seconds, cleanup))
+            self._close()
+            return True, error
+        try:
+            stdout, stderr = self.proc.communicate()
+            payload = {}
+            if os.path.exists(self.output_path):
+                with open(self.output_path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            if self.proc.returncode != 0 or not payload.get("ok"):
+                detail = _clean_text(payload.get("error")) or _clean_text(stderr) or _clean_text(stdout)
+                raise RuntimeError(f"通讯录采集失败：{detail or '子进程未返回有效结果'}")
+            return True, payload
+        except BaseException as exc:
+            return True, exc
+        finally:
+            self._close()
+
+
+def start_contact_auto_maintenance_collector(
+    *,
+    start_name: str,
+    start_identity: str = "",
+    count: int,
+    timeout_seconds: int | None = None,
+):
     release_process_lock = _acquire_contact_auto_collector_process_lock()
     if not release_process_lock:
         raise RuntimeError("通讯录采集器正在运行，已跳过本次自动维护")
     timeout_seconds = max(1, int(timeout_seconds or AUTO_MAINTENANCE_COLLECT_HARD_TIMEOUT_SECONDS))
+    temp_dir = tempfile.TemporaryDirectory(prefix="wxbot_contact_collect_")
+    proc = None
     try:
-        with tempfile.TemporaryDirectory(prefix="wxbot_contact_collect_") as temp_dir:
-            request_path = os.path.join(temp_dir, "request.json")
-            output_path = os.path.join(temp_dir, "output.json")
+            temp_dir_path = temp_dir.name
+            request_path = os.path.join(temp_dir_path, "request.json")
+            output_path = os.path.join(temp_dir_path, "output.json")
             request_payload = {
                 "start_name": _clean_text(start_name),
+                "start_identity": _clean_text(start_identity),
                 "count": max(1, int(count or 1)),
             }
             with open(request_path, "w", encoding="utf-8") as f:
@@ -1034,26 +1154,26 @@ def run_contact_auto_maintenance_collector(
                 errors="replace",
                 **run_kwargs,
             )
-            try:
-                stdout, stderr = proc.communicate(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired as exc:
-                cleanup = _terminate_contact_auto_collector_process(proc)
-                raise RuntimeError(_contact_auto_collector_timeout_message(timeout_seconds, cleanup)) from exc
-            completed = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
-
-            payload: dict[str, Any] = {}
-            if os.path.exists(output_path):
-                try:
-                    with open(output_path, "r", encoding="utf-8") as f:
-                        payload = json.load(f)
-                except Exception as exc:
-                    raise RuntimeError(f"通讯录采集结果读取失败：{exc}") from exc
-            if completed.returncode != 0 or not payload.get("ok"):
-                detail = _clean_text(payload.get("error")) or _clean_text(completed.stderr) or _clean_text(completed.stdout)
-                raise RuntimeError(f"通讯录采集失败：{detail or '子进程未返回有效结果'}")
-            return payload
-    finally:
+            registry_path = _write_contact_auto_collector_registry(
+                pid=proc.pid,
+                script_path=cmd[3],
+                request_path=request_path,
+            )
+            return ContactAutoCollectorProcess(
+                proc,
+                cmd,
+                output_path,
+                temp_dir,
+                release_process_lock,
+                timeout_seconds,
+                registry_path,
+            )
+    except Exception:
+        if proc is not None:
+            _terminate_contact_auto_collector_process(proc)
+        temp_dir.cleanup()
         release_process_lock()
+        raise
 
 
 def refresh_run_kind(mode: str, *, automatic: bool = False) -> str:
@@ -1115,11 +1235,7 @@ def contact_directory_auto_maintenance_enabled(bot):
 
 
 def contact_directory_auto_maintenance_batch_size_value(bot):
-    if hasattr(bot, "contact_directory_auto_maintenance_batch_size"):
-        value = getattr(bot, "contact_directory_auto_maintenance_batch_size")
-    else:
-        value = getattr(bot.config, "contact_directory_auto_maintenance_batch_size", AUTO_BATCH_SIZE_DEFAULT)
-    return normalize_auto_maintenance_batch_size(value)
+    return AUTO_BATCH_SIZE_DEFAULT
 
 
 def contact_directory_auto_maintenance_interval_minutes_value(bot):
@@ -1131,11 +1247,7 @@ def contact_directory_auto_maintenance_interval_minutes_value(bot):
 
 
 def contact_directory_auto_maintenance_full_scan_interval_days_value(bot):
-    if hasattr(bot, "contact_directory_auto_maintenance_full_scan_interval_days"):
-        value = getattr(bot, "contact_directory_auto_maintenance_full_scan_interval_days")
-    else:
-        value = getattr(bot.config, "contact_directory_auto_maintenance_full_scan_interval_days", 7)
-    return coerce_auto_maintenance_full_scan_interval_days(value)
+    return AUTO_FULL_SCAN_DEFAULT_DAYS
 
 
 def contact_directory_auto_maintenance_window_start_value(bot):
@@ -1252,7 +1364,9 @@ def contact_directory_auto_cycle_state(directory):
         "status": status,
         "started_at": str(maintenance.get("auto_cycle_started_at") or "").strip(),
         "next_start_name": str(maintenance.get("auto_cycle_next_start_name") or "").strip(),
+        "next_start_identity": str(maintenance.get("auto_cycle_next_start_identity") or "").strip(),
         "backup_start_name": str(maintenance.get("auto_cycle_backup_start_name") or "").strip(),
+        "backup_start_identity": str(maintenance.get("auto_cycle_backup_start_identity") or "").strip(),
         "last_progress_at": str(maintenance.get("auto_cycle_last_progress_at") or "").strip(),
         "last_outcome": str(maintenance.get("auto_cycle_last_outcome") or "").strip(),
         "last_restart_at": str(maintenance.get("auto_cycle_last_restart_at") or "").strip(),
@@ -1276,7 +1390,9 @@ def reset_legacy_tail_complete_auto_cycle(directory, *, now=None) -> tuple[dict[
         now=now,
         auto_cycle_status="reset_required",
         auto_cycle_next_start_name="",
+        auto_cycle_next_start_identity="",
         auto_cycle_backup_start_name="",
+        auto_cycle_backup_start_identity="",
         auto_cycle_last_outcome="legacy_tail_complete_reset",
         auto_cycle_retry_count=0,
         last_full_scan_completed_at="",
@@ -1290,7 +1406,10 @@ def write_contact_directory_auto_cycle_state(directory, *, now=None, **updates):
     maintenance = directory.setdefault("maintenance", {})
     stamp = maintenance_now(now).strftime("%Y-%m-%d %H:%M:%S")
     for key, value in updates.items():
-        if key in {"auto_cycle_batches_completed", "auto_cycle_retry_count"}:
+        if key in {
+            "auto_cycle_batches_completed",
+            "auto_cycle_retry_count",
+        }:
             try:
                 maintenance[key] = max(0, int(value or 0))
             except (TypeError, ValueError):
@@ -1302,7 +1421,9 @@ def write_contact_directory_auto_cycle_state(directory, *, now=None, **updates):
     maintenance.setdefault("auto_cycle_status", "idle")
     maintenance.setdefault("auto_cycle_started_at", "")
     maintenance.setdefault("auto_cycle_next_start_name", "")
+    maintenance.setdefault("auto_cycle_next_start_identity", "")
     maintenance.setdefault("auto_cycle_backup_start_name", "")
+    maintenance.setdefault("auto_cycle_backup_start_identity", "")
     maintenance.setdefault("auto_cycle_last_progress_at", "")
     maintenance.setdefault("auto_cycle_last_outcome", "")
     maintenance.setdefault("auto_cycle_last_restart_at", "")
@@ -1319,6 +1440,32 @@ def save_contact_profiles_directory(bot, directory):
         directory["wx_id"] = wx_id
     save_contact_directory(directory_file, directory)
     return directory
+
+
+def save_contact_maintenance_state(bot, directory, *, directory_file=None, wx_id=""):
+    """Persist only maintenance fields without overwriting newer contacts."""
+    load_directory_fn = getattr(bot, "_load_contact_profiles_directory", None)
+    save_directory_fn = getattr(bot, "_save_contact_profiles_directory", None)
+    if directory_file is None and callable(load_directory_fn):
+        _initial, directory_file, loaded_wx_id = load_directory_fn()
+        wx_id = str(loaded_wx_id or wx_id or "").strip()
+    elif directory_file is None:
+        directory_file, wx_id = contact_profiles_directory_file(bot)
+    with contact_directory_lock(directory_file):
+        if callable(load_directory_fn):
+            latest, _loaded_file, loaded_wx_id = load_directory_fn()
+            wx_id = str(loaded_wx_id or wx_id or "").strip()
+        else:
+            latest = load_contact_directory(directory_file, wx_id=wx_id)
+        latest = latest if isinstance(latest, dict) else {}
+        latest["maintenance"] = copy.deepcopy((directory or {}).get("maintenance") or {})
+        if wx_id:
+            latest["wx_id"] = wx_id
+        if callable(save_directory_fn):
+            save_directory_fn(latest)
+        else:
+            save_contact_directory(directory_file, latest)
+        return latest
 
 
 def mark_contact_directory_full_scan_completed(bot, directory, *, automatic: bool = False, now=None):
@@ -1345,120 +1492,24 @@ def mark_contact_directory_full_scan_completed(bot, directory, *, automatic: boo
         updated = write_cycle_fn(directory, **updates)
     else:
         updated = write_contact_directory_auto_cycle_state(directory, **updates)
-    save_directory_fn = getattr(bot, "_save_contact_profiles_directory", None)
-    if callable(save_directory_fn):
-        save_directory_fn(updated)
-    else:
-        save_contact_profiles_directory(bot, updated)
-    return updated
-
-
-def refresh_contact_profiles_cli_contact_basics(
-    bot,
-    *,
-    automatic=False,
-):
-    if not local_wechat_reader_enabled(bot):
-        return None
-
-    load_directory_fn = getattr(bot, "_load_contact_profiles_directory", None)
-    if callable(load_directory_fn):
-        directory, directory_file, wx_id = load_directory_fn()
-    else:
-        directory, directory_file, wx_id = load_contact_profiles_directory(bot)
-    if not wx_id:
-        return None
-
-    save_directory_fn = getattr(bot, "_save_contact_profiles_directory", None)
-
-    def save_directory_snapshot(snapshot):
-        if callable(save_directory_fn):
-            save_directory_fn(snapshot)
-        else:
-            save_contact_directory(directory_file, snapshot)
-
-    local_result = read_local_contacts_with_status(
-        limit=LOCAL_CONTACT_READ_LIMIT,
-        expected_wx_id=wx_id,
-    )
-    if not local_result.ok:
-        failed = copy.deepcopy(directory or {})
-        failed_maintenance = failed.setdefault("maintenance", {})
-        failed_maintenance["last_cli_contact_basics_sync_error"] = local_result.error
-        failed_maintenance["last_cli_contact_basics_sync_failed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        save_directory_snapshot(failed)
-        _bot_log(
-            bot,
-            level="WARNING",
-            message=f"[通讯录维护] CLI 基础资料同步失败：{local_result.error}",
-        )
-        return None
-    raw_details = coerce_detail_list(local_result.items)
-    if not raw_details:
-        _bot_log(bot, level="WARNING", message="[通讯录维护] CLI 基础资料同步未返回联系人")
-        return None
-
-    try:
-        merged = merge_cli_contact_basics(
-            directory,
-            raw_details,
-            wx_id=wx_id,
-            now=datetime.now(),
-        )
-        finished = copy.deepcopy(merged)
-        summarize_growth_fn = getattr(bot, "_summarize_directory_growth", None)
-        if callable(summarize_growth_fn):
-            growth = summarize_growth_fn(directory, finished)
-        else:
-            growth = summarize_directory_growth(directory, finished)
-        finished_maintenance = finished.setdefault("maintenance", {})
-        finished_maintenance["last_cli_contact_basics_sync_completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        finished_maintenance["last_cli_contact_basics_sync_count"] = len(raw_details)
-        finished_maintenance["last_cli_contact_basics_sync_new_unique_count"] = growth["new_unique_count"]
-        finished_maintenance["last_cli_contact_basics_sync_total_unique_count"] = growth["directory_total_unique_count"]
-        finished_maintenance["last_cli_contact_basics_sync_error"] = ""
-        save_directory_snapshot(finished)
-        sync_identity_fn = getattr(bot, "_sync_contact_identity_from_contact_directory", None)
-        if callable(sync_identity_fn):
-            synced_directory = sync_identity_fn(finished)
-            if isinstance(synced_directory, dict):
-                finished = synced_directory
-        sync_relationship_fn = getattr(bot, "_sync_relationship_state_from_contact_directory", None)
-        if callable(sync_relationship_fn):
-            synced_directory = sync_relationship_fn(finished)
-            if isinstance(synced_directory, dict):
-                finished = synced_directory
-        _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] CLI 基础资料同步完成，更新 {len(raw_details)} 个好友")
-        return {
-            "wx_id": wx_id,
-            "count_synced": len(raw_details),
-            "directory": finished,
-            "automatic": bool(automatic),
-            "new_unique_count": growth["new_unique_count"],
-            "directory_total_unique_count": growth["directory_total_unique_count"],
-        }
-    except Exception as exc:
-        failed = copy.deepcopy(directory or {})
-        failed_maintenance = failed.setdefault("maintenance", {})
-        failed_maintenance["last_cli_contact_basics_sync_error"] = str(exc)
-        failed_maintenance["last_cli_contact_basics_sync_failed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        save_directory_snapshot(failed)
-        _bot_log(bot, level="ERROR", message=f"[通讯录维护] CLI 基础资料同步失败：{exc}")
-        return None
+    return save_contact_maintenance_state(bot, updated)
 
 
 def refresh_contact_profiles_single_batch(
     bot,
     mode="standard",
     start_name="",
+    start_identity="",
     interval=None,
     *,
     use_saved_position=False,
     count_override=None,
     log_start_finish=True,
     previous_next_start_name="",
+    previous_next_start_identity="",
     run_kind="manual_standard",
     logical_start_name=None,
+    logical_start_identity=None,
     switch_back_to_chat=True,
     block_on_wechat_lock=True,
 ):
@@ -1484,6 +1535,8 @@ def refresh_contact_profiles_single_batch(
             settings["count"] = max(1, int(count_override))
         except (TypeError, ValueError):
             pass
+    if getattr(bot, "_ui_owner", None) is not None:
+        settings["count"] = 50
     read_interval = 0 if run_kind == "auto_maintenance" else settings["interval"]
     callback_start_name = effective_start_name(
         directory,
@@ -1491,6 +1544,8 @@ def refresh_contact_profiles_single_batch(
         use_saved_position=bool(use_saved_position),
     )
     used_start_name = str(logical_start_name or callback_start_name or "").strip()
+    callback_start_identity = _clean_text(start_identity)
+    used_start_identity = _clean_text(logical_start_identity or callback_start_identity)
     if log_start_finish:
         _bot_log(bot, message=f"[通讯录维护] 开始{mode_label}，起点：{used_start_name or '通讯录头部'}")
     running_directory = maintenance_snapshot(
@@ -1499,11 +1554,21 @@ def refresh_contact_profiles_single_batch(
         status="running",
         paused=False,
         start_name=used_start_name,
+        start_identity=used_start_identity,
     )
-    save_contact_directory(directory_file, running_directory)
+    running_directory = save_contact_maintenance_state(
+        bot,
+        running_directory,
+        directory_file=directory_file,
+        wx_id=wx_id,
+    )
 
     callback_names = []
     matched_name = ""
+    raw_result_count = 0
+    raw_result_identities: list[str] = []
+    result_identities: list[str] = []
+    cursor_candidates: list[dict[str, str]] = []
     callback_seen_names = set()
 
     def callback_detail_name(detail):
@@ -1538,33 +1603,20 @@ def refresh_contact_profiles_single_batch(
 
     local_contact_source = False
     result = []
-    if run_kind != "auto_maintenance" and local_wechat_reader_enabled(bot) and not pause_requested():
-        local_result = read_local_contacts_with_status(
-            limit=LOCAL_CONTACT_READ_LIMIT,
-            expected_wx_id=wx_id,
-        )
-        if local_result.ok and local_result.items:
-            result = local_result.items
-            local_contact_source = True
-            _bot_log(bot, message=f"[通讯录维护] 已从 CLI 读取基础通讯录 {len(local_result.items)} 个好友")
-        elif not local_result.ok:
-            _bot_log(
-                bot,
-                level="WARNING",
-                message=f"[通讯录维护] CLI 基础通讯录读取失败，已切换微信界面建档：{local_result.error}",
-            )
-
-    if not local_contact_source:
-        release_wechat_lock = wechat_ui_actions.acquire(bot, blocking=bool(block_on_wechat_lock))
+    if True:
+        if getattr(bot, "_ui_owner", None) is not None:
+            release_wechat_lock = lambda: None
+        else:
+            release_wechat_lock = wechat_ui_actions.acquire(bot, blocking=bool(block_on_wechat_lock))
         if not release_wechat_lock:
             raise RuntimeError("微信操作繁忙，已跳过本次通讯录维护")
         try:
             def read_friend_details():
-                nonlocal matched_name
+                nonlocal matched_name, raw_result_count, raw_result_identities, result_identities, cursor_candidates
                 if pause_requested():
                     _bot_log(bot, message="[通讯录维护] 检测到停止请求，跳过本次读取")
                     return []
-                if run_kind != "auto_maintenance":
+                if run_kind != "auto_maintenance" and getattr(bot, "_ui_owner", None) is None:
                     prepare_window_fn = getattr(bot, "_prepare_contact_directory_window", None)
                     if callable(prepare_window_fn):
                         prepare_window_fn()
@@ -1574,18 +1626,21 @@ def refresh_contact_profiles_single_batch(
                 try:
                     with warn_slow_wechat_ui_action(f"GetFriendDetails(n={settings['count']})"):
                         setattr(bot, CONTACT_PROFILES_READING_ATTR, True)
-                        if run_kind == "auto_maintenance":
+                        if run_kind == "auto_maintenance" or getattr(bot, "_ui_owner", None) is not None:
                             timeout_seconds = contact_auto_maintenance_collect_hard_timeout_seconds(settings["count"])
                             collector_fn = getattr(bot, "_run_contact_auto_maintenance_collector", None)
                             if callable(collector_fn):
                                 payload = collector_fn(
                                     start_name=callback_start_name,
+                                    start_identity=callback_start_identity,
                                     count=settings["count"],
                                     timeout_seconds=timeout_seconds,
+                                    run_kind=run_kind,
                                 )
                             else:
                                 payload = run_contact_auto_maintenance_collector(
                                     start_name=callback_start_name,
+                                    start_identity=callback_start_identity,
                                     count=settings["count"],
                                     timeout_seconds=timeout_seconds,
                                 )
@@ -1605,6 +1660,26 @@ def refresh_contact_profiles_single_batch(
                                     read_count = len(callback_seen_names)
                                     if _should_log_contact_read_progress(read_count):
                                         _bot_log(bot, message=f"[通讯录维护] 已读取联系人 {read_count} 人，当前：{name_text}")
+                            result_identities = [
+                                _clean_text(value)
+                                for value in (payload.get("result_identities") or [])
+                            ]
+                            raw_result_identities = [
+                                _clean_text(value)
+                                for value in (payload.get("raw_result_identities") or [])
+                                if _clean_text(value)
+                            ]
+                            raw_result_count = int(payload.get("raw_result_count") or len(raw_result_identities))
+                            cursor_candidates = [
+                                {
+                                    "name": _clean_text(item.get("name")),
+                                    "identity": _clean_text(item.get("identity")),
+                                }
+                                for item in (payload.get("cursor_candidates") or [])
+                                if isinstance(item, dict)
+                                and _clean_text(item.get("name"))
+                                and _clean_text(item.get("identity"))
+                            ]
                             result = payload.get("result") or []
                         else:
                             kwargs = {
@@ -1633,7 +1708,7 @@ def refresh_contact_profiles_single_batch(
             result = run_with_wechat_rebind_retry(
                 bot,
                 read_friend_details,
-                attempts=1 if run_kind == "auto_maintenance" else 2,
+                attempts=1 if run_kind == "auto_maintenance" or getattr(bot, "_ui_owner", None) is not None else 2,
                 on_retry=lambda exc, _attempt: _bot_log(
                     bot,
                     level="WARNING",
@@ -1644,48 +1719,52 @@ def refresh_contact_profiles_single_batch(
             release_wechat_lock()
     try:
         raw_details = coerce_detail_list(result)
+        if not raw_result_count:
+            raw_result_count = len(raw_details)
+        if not raw_result_identities:
+            raw_result_identities = [
+                _detail_identity(detail, name=_detail_name(detail))
+                for detail in raw_details
+            ]
         if not callback_seen_names:
             total_details = len(raw_details)
             for index, detail in enumerate(raw_details, start=1):
                 label = str(detail.get("备注") or detail.get("昵称") or detail.get("微信号") or f"联系人{index}")
                 if _should_log_contact_read_progress(index):
                     _bot_log(bot, message=f"[通讯录维护] 已读取联系人 {index}/{total_details} 人，当前：{label}")
-        if local_contact_source:
-            merged = merge_cli_contact_basics(
-                running_directory,
-                raw_details,
-                wx_id=wx_id,
-                now=datetime.now(),
-            )
-            analysis = {
-                "outcome": "cli_contact_basics_sync_complete",
-                "completed": bool(raw_details),
-                "advanced": bool(raw_details),
-                "next_start_name": "",
-                "repeat_count": 0,
-            }
-        else:
+        with contact_directory_lock(directory_file):
+            latest_before_merge = load_contact_directory(directory_file, wx_id=wx_id)
             merged = merge_contact_directory(
-                running_directory,
+                latest_before_merge,
                 raw_details,
                 wx_id=wx_id,
                 now=datetime.now(),
                 mark_missing=False,
             )
-            analysis = analyze_refresh_batch(
-                raw_details=raw_details,
-                requested_count=settings["count"],
-                current_start_name=used_start_name,
-                previous_next_start_name=previous_next_start_name,
-                allow_short_batch_complete=run_kind != "auto_maintenance",
-            )
-        cursor_start_names = start_names_from_details(raw_details, limit=2)
-        if local_contact_source:
-            next_start_name = ""
-            backup_start_name = ""
-        else:
-            next_start_name = str(analysis.get("next_start_name") or "") or (cursor_start_names[0] if cursor_start_names else "")
-            backup_start_name = cursor_start_names[1] if len(cursor_start_names) > 1 else ""
+        cursor_points = [
+            (item["name"], item["identity"])
+            for item in cursor_candidates[:2]
+        ] or start_cursors_from_details(
+            raw_details,
+            result_identities,
+            limit=2,
+        )
+        next_start_name, next_start_identity = cursor_points[0] if cursor_points else ("", "")
+        backup_start_name, backup_start_identity = (
+            cursor_points[1] if len(cursor_points) > 1 else ("", "")
+        )
+        analysis = analyze_refresh_batch(
+            raw_details=raw_details,
+            requested_count=settings["count"],
+            current_start_name=used_start_name,
+            current_start_identity=used_start_identity,
+            previous_next_start_name=previous_next_start_name,
+            previous_next_start_identity=previous_next_start_identity,
+            result_identities=result_identities,
+            allow_short_batch_complete=run_kind != "auto_maintenance",
+        )
+        next_start_name = str(analysis.get("next_start_name") or next_start_name)
+        next_start_identity = _clean_text(analysis.get("next_start_identity") or next_start_identity)
         latest_directory = load_contact_directory(directory_file, wx_id=wx_id)
         externally_paused = bool(((latest_directory or {}).get("maintenance") or {}).get("paused", False))
         finished = maintenance_snapshot(
@@ -1694,9 +1773,11 @@ def refresh_contact_profiles_single_batch(
             status="paused" if externally_paused else "idle",
             paused=externally_paused,
             start_name=used_start_name,
+            start_identity=used_start_identity,
             count_returned=len(raw_details),
             matched_name=matched_name,
             next_start_name=next_start_name,
+            next_start_identity=next_start_identity,
             callback_names=callback_names,
         )
         summarize_growth_fn = getattr(bot, "_summarize_directory_growth", None)
@@ -1710,11 +1791,18 @@ def refresh_contact_profiles_single_batch(
         finished_maintenance["last_batch_repeat_count"] = int(analysis.get("repeat_count", 0) or 0)
         finished_maintenance["last_batch_outcome"] = str(analysis.get("outcome") or "")
         finished_maintenance["retry_count"] = 0
-        if local_contact_source and not externally_paused:
-            finished_maintenance["last_cli_contact_basics_sync_completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            finished_maintenance["last_cli_contact_basics_sync_count"] = len(raw_details)
-            finished_maintenance["last_cli_contact_basics_sync_error"] = ""
-        save_contact_directory(directory_file, finished)
+        with contact_directory_lock(directory_file):
+            latest_before_save = load_contact_directory(directory_file, wx_id=wx_id)
+            persisted = merge_contact_directory(
+                latest_before_save,
+                raw_details,
+                wx_id=wx_id,
+                now=datetime.now(),
+                mark_missing=False,
+            )
+            persisted["maintenance"] = copy.deepcopy(finished.get("maintenance") or {})
+            save_contact_directory(directory_file, persisted)
+            finished = persisted
         sync_identity_fn = getattr(bot, "_sync_contact_identity_from_contact_directory", None)
         if callable(sync_identity_fn):
             synced_directory = sync_identity_fn(finished)
@@ -1731,6 +1819,12 @@ def refresh_contact_profiles_single_batch(
             else:
                 if run_kind == "auto_maintenance":
                     _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] 自动维护本批完成，本次读取 {len(raw_details)} 个好友")
+                    runtime_id = str(getattr(bot, "_runtime_instance_id", "") or "").strip().lower()
+                    if len(runtime_id) == 32 and all(char in "0123456789abcdef" for char in runtime_id):
+                        try:
+                            _bot_log(bot, message=f"运行事件：通讯录批次完成 runtime_id={runtime_id}")
+                        except Exception:
+                            pass
                 else:
                     _bot_log(bot, level="SUCCESS", message=f"[通讯录维护] {mode_label}完成，本次读取 {len(raw_details)} 个好友")
         return {
@@ -1740,11 +1834,16 @@ def refresh_contact_profiles_single_batch(
             "used_start_name": used_start_name,
             "matched_name": matched_name,
             "next_start_name": next_start_name,
+            "next_start_identity": next_start_identity,
             "backup_start_name": backup_start_name,
+            "backup_start_identity": backup_start_identity,
             "count_requested": settings["count"],
             "count_returned": len(raw_details),
             "interval": read_interval,
             "callback_names": callback_names,
+            "result_identities": result_identities,
+            "raw_result_count": raw_result_count,
+            "raw_result_identities": raw_result_identities,
             "directory": finished,
             "stopped_early": externally_paused,
             "analysis": analysis,
@@ -1766,6 +1865,7 @@ def refresh_contact_profiles_single_batch(
             status="paused" if externally_paused else "error",
             paused=externally_paused,
             start_name=used_start_name,
+            start_identity=used_start_identity,
             last_error=str(exc),
             callback_names=callback_names,
         )
@@ -1778,6 +1878,7 @@ def refresh_contact_profiles_batch(
     bot,
     mode="standard",
     start_name="",
+    start_identity="",
     interval=None,
     *,
     use_saved_position=False,
@@ -1798,6 +1899,7 @@ def refresh_contact_profiles_batch(
             result = single_batch_fn(
                 mode=mode,
                 start_name=start_name,
+                start_identity=start_identity,
                 interval=interval,
                 use_saved_position=use_saved_position,
                 count_override=count_override,
@@ -1809,6 +1911,7 @@ def refresh_contact_profiles_batch(
                 bot,
                 mode=mode,
                 start_name=start_name,
+                start_identity=start_identity,
                 interval=interval,
                 use_saved_position=use_saved_position,
                 count_override=count_override,
@@ -1820,11 +1923,12 @@ def refresh_contact_profiles_batch(
 
     initial_start_name = str(start_name or "").strip()
     current_start_name = initial_start_name
+    current_start_identity = _clean_text(start_identity)
     total_count = 0
     batches_completed = 0
     stopped_early = False
     last_result = None
-    seen_starts: set[str] = set()
+    seen_starts: set[tuple[str, str]] = set()
     retry_count = 0
     stopped_reason = ""
     load_directory_fn = getattr(bot, "_load_contact_profiles_directory", None)
@@ -1852,13 +1956,16 @@ def refresh_contact_profiles_batch(
             result = single_batch_fn(
                 mode=mode,
                 start_name=current_start_name,
+                start_identity=current_start_identity,
                 interval=interval,
                 use_saved_position=False,
                 count_override=count_override,
                 log_start_finish=False,
                 previous_next_start_name=current_start_name,
+                previous_next_start_identity=current_start_identity,
                 run_kind=run_kind,
                 logical_start_name=current_start_name,
+                logical_start_identity=current_start_identity,
                 switch_back_to_chat=False,
                 block_on_wechat_lock=block_on_wechat_lock,
             )
@@ -1867,13 +1974,16 @@ def refresh_contact_profiles_batch(
                 bot,
                 mode=mode,
                 start_name=current_start_name,
+                start_identity=current_start_identity,
                 interval=interval,
                 use_saved_position=False,
                 count_override=count_override,
                 log_start_finish=False,
                 previous_next_start_name=current_start_name,
+                previous_next_start_identity=current_start_identity,
                 run_kind=run_kind,
                 logical_start_name=current_start_name,
+                logical_start_identity=current_start_identity,
                 switch_back_to_chat=False,
                 block_on_wechat_lock=block_on_wechat_lock,
             )
@@ -1890,10 +2000,6 @@ def refresh_contact_profiles_batch(
 
         analysis = result.get("analysis") or {}
         outcome = str(analysis.get("outcome") or "").strip()
-        if outcome == "cli_contact_basics_sync_complete":
-            stopped_reason = "directory_complete"
-            result["completed"] = True
-            break
         if outcome in {"suspicious_repeat", "not_advanced", "empty_batch"}:
             if retry_count >= int(policy.get("retry_limit", 0) or 0):
                 stopped_reason = "stalled"
@@ -1904,6 +2010,9 @@ def refresh_contact_profiles_batch(
             continue
 
         next_start_name = str(result.get("next_start_name", "") or "").strip()
+        next_start_identity = _clean_text(result.get("next_start_identity"))
+        next_cursor = (next_start_name, next_start_identity)
+        current_cursor = (current_start_name, current_start_identity)
 
         retry_count = 0
         if policy.get("max_total") is not None and total_count >= int(policy["max_total"]):
@@ -1916,13 +2025,14 @@ def refresh_contact_profiles_batch(
             result["completed"] = True
             break
 
-        if not next_start_name or next_start_name == current_start_name or next_start_name in seen_starts:
+        if not next_start_name or next_cursor == current_cursor or next_cursor in seen_starts:
             stopped_reason = "stalled"
             result["completed"] = False
             break
 
-        seen_starts.add(next_start_name)
+        seen_starts.add(next_cursor)
         current_start_name = next_start_name
+        current_start_identity = next_start_identity
 
     if last_result is None:
         raise RuntimeError("建档未启动，请重试")
@@ -1973,9 +2083,9 @@ def check_contact_directory_auto_maintenance(bot, now=None):
 
     load_directory_fn = getattr(bot, "_load_contact_profiles_directory", None)
     if callable(load_directory_fn):
-        directory, _, wx_id = load_directory_fn()
+        directory, directory_file, wx_id = load_directory_fn()
     else:
-        directory, _, wx_id = load_contact_profiles_directory(bot)
+        directory, directory_file, wx_id = load_contact_profiles_directory(bot)
     if not wx_id:
         return False
     now_fn = getattr(bot, "_maintenance_now", None)
@@ -2057,9 +2167,20 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         return False
 
     cycle_start_name = cycle["next_start_name"]
+    cycle_start_identity = cycle["next_start_identity"]
     if cycle["status"] == "reset_required":
         cycle_start_name = ""
+        cycle_start_identity = ""
         active_cycle = False
+    elif cycle_start_name and not cycle_start_identity:
+        _bot_log(bot, level="WARNING", message="[通讯录维护] 当前游标缺少身份锚点，本轮从通讯录头部重开")
+        cycle_start_name = ""
+        active_cycle = False
+    tail_probe_active = bool(
+        active_cycle
+        and cycle_start_name
+        and cycle["last_outcome"] in {"short_advanced", "tail_confirm_pending"}
+    )
     if cycle_start_name:
         backup_label = f"，备用游标：{cycle['backup_start_name']}" if cycle["backup_start_name"] else ""
         _bot_log(bot, message=f"[通讯录维护] 自动维护使用游标：{cycle_start_name}{backup_label}")
@@ -2082,7 +2203,9 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     auto_cycle_status="running",
                     auto_cycle_started_at=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
                     auto_cycle_next_start_name="",
+                    auto_cycle_next_start_identity="",
                     auto_cycle_backup_start_name="",
+                    auto_cycle_backup_start_identity="",
                     auto_cycle_last_progress_at="",
                     auto_cycle_last_outcome="",
                     auto_cycle_last_restart_at=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2096,7 +2219,9 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     auto_cycle_status="running",
                     auto_cycle_started_at=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
                     auto_cycle_next_start_name="",
+                    auto_cycle_next_start_identity="",
                     auto_cycle_backup_start_name="",
+                    auto_cycle_backup_start_identity="",
                     auto_cycle_last_progress_at="",
                     auto_cycle_last_outcome="",
                     auto_cycle_last_restart_at=now_dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -2113,28 +2238,88 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             batch_size = batch_size_fn()
         else:
             batch_size = contact_directory_auto_maintenance_batch_size_value(bot)
-        refresh_batch_fn = getattr(bot, "refresh_contact_profiles_batch", None)
-        if callable(refresh_batch_fn):
-            result = refresh_batch_fn(
+        request_count = AUTO_TAIL_PROBE_COUNT if tail_probe_active else batch_size
+        try:
+            refresh_batch_fn = getattr(bot, "refresh_contact_profiles_batch", None)
+            if callable(refresh_batch_fn):
+                result = refresh_batch_fn(
                 mode="standard",
                 start_name=cycle_start_name,
-                use_saved_position=bool(cycle_start_name),
-                count_override=batch_size,
-                run_to_completion=False,
-                automatic=True,
-                block_on_wechat_lock=False,
-            )
-        else:
-            result = refresh_contact_profiles_batch(
+                start_identity=cycle_start_identity,
+                    use_saved_position=bool(cycle_start_name),
+                    count_override=request_count,
+                    run_to_completion=False,
+                    automatic=True,
+                    block_on_wechat_lock=False,
+                )
+            else:
+                result = refresh_contact_profiles_batch(
+                    bot,
+                mode="standard",
+                start_name=cycle_start_name,
+                start_identity=cycle_start_identity,
+                    use_saved_position=bool(cycle_start_name),
+                    count_override=request_count,
+                    run_to_completion=False,
+                    automatic=True,
+                    block_on_wechat_lock=False,
+                )
+        except Exception as exc:
+            retry_count = cycle["retry_count"] + 1
+            fallback_start_name = cycle_start_name
+            fallback_start_identity = cycle_start_identity
+            fallback_backup_name = cycle["backup_start_name"]
+            fallback_backup_identity = cycle["backup_start_identity"]
+            fallback_status = "stalled"
+            fallback_outcome = "batch_failed"
+            if tail_probe_active:
+                fallback_status = "running"
+                fallback_outcome = "tail_confirm_pending"
+            elif cycle_start_name and fallback_backup_name and cycle_start_name != fallback_backup_name:
+                fallback_start_name = fallback_backup_name
+                fallback_start_identity = fallback_backup_identity
+                fallback_backup_name = ""
+                fallback_backup_identity = ""
+                fallback_outcome = "primary_cursor_failed"
+            elif cycle_start_name:
+                fallback_status = "reset_required"
+                fallback_start_name = ""
+                fallback_start_identity = ""
+                fallback_backup_name = ""
+                fallback_backup_identity = ""
+                fallback_outcome = "cursor_batch_failed"
+            failure_updates = {
+                "auto_cycle_status": fallback_status,
+                "auto_cycle_next_start_name": fallback_start_name,
+                "auto_cycle_next_start_identity": fallback_start_identity,
+                "auto_cycle_backup_start_name": fallback_backup_name,
+                "auto_cycle_backup_start_identity": fallback_backup_identity,
+                "auto_cycle_last_outcome": fallback_outcome,
+                "auto_cycle_retry_count": retry_count,
+            }
+            if callable(write_cycle_fn):
+                failed_directory = write_cycle_fn(directory, now=now_dt, **failure_updates)
+            else:
+                failed_directory = write_contact_directory_auto_cycle_state(directory, now=now_dt, **failure_updates)
+            failed_directory.setdefault("maintenance", {})["last_error"] = str(exc)
+            save_contact_maintenance_state(
                 bot,
-                mode="standard",
-                start_name=cycle_start_name,
-                use_saved_position=bool(cycle_start_name),
-                count_override=batch_size,
-                run_to_completion=False,
-                automatic=True,
-                block_on_wechat_lock=False,
+                failed_directory,
+                directory_file=directory_file,
+                wx_id=wx_id,
             )
+            if tail_probe_active:
+                next_step = f"保留尾部游标：{fallback_start_name}，稍后重试"
+            elif fallback_start_name:
+                next_step = f"改用游标：{fallback_start_name}"
+            else:
+                next_step = "从通讯录头部重开"
+            _bot_log(
+                bot,
+                level="WARNING",
+                message=f"[通讯录维护] 本批读取失败：{exc}；下一轮{next_step}",
+            )
+            raise
         refreshed_directory = result.get("directory") or {}
         if callable(cycle_state_fn):
             refreshed_cycle = cycle_state_fn(refreshed_directory)
@@ -2143,18 +2328,29 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         analysis = result.get("analysis") or {}
         outcome = str(analysis.get("outcome") or "").strip()
         next_start_name = str(result.get("next_start_name") or "").strip()
+        next_start_identity = _clean_text(result.get("next_start_identity"))
         backup_start_name = str(result.get("backup_start_name") or "").strip()
+        backup_start_identity = _clean_text(result.get("backup_start_identity"))
         finished_dt = maintenance_now(None)
         stamp = finished_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-        tail_confirmation_active = (
-            cycle["last_outcome"] in {"short_advanced", "tail_confirm_pending"}
+        raw_result_identities = [
+            _clean_text(value)
+            for value in (result.get("raw_result_identities") or [])
+            if _clean_text(value)
+        ]
+        raw_result_count = int(result.get("raw_result_count") or len(raw_result_identities))
+        tail_probe_no_new_identity = bool(
+            tail_probe_active
             and outcome in {"not_advanced", "suspicious_repeat"}
-            and bool(cycle_start_name)
+            and raw_result_count >= AUTO_TAIL_PROBE_COUNT
+            and len(raw_result_identities) == raw_result_count
+            and all(identity == cycle_start_identity for identity in raw_result_identities)
         )
-        tail_confirm_retry_count = refreshed_cycle["retry_count"] + 1 if tail_confirmation_active else 0
-        confirmed_tail_complete = tail_confirmation_active and tail_confirm_retry_count >= AUTO_TAIL_CONFIRM_RETRY_LIMIT
-        if bool(result.get("completed")) or confirmed_tail_complete:
+        tail_confirm_retry_count = refreshed_cycle["retry_count"] + 1 if tail_probe_active else 0
+        confirmed_tail_complete = tail_probe_no_new_identity
+        ordinary_batch_complete = bool(result.get("completed")) and not tail_probe_active
+        if ordinary_batch_complete or confirmed_tail_complete:
             if confirmed_tail_complete:
                 _bot_log(
                     bot,
@@ -2167,7 +2363,9 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     now=finished_dt,
                     auto_cycle_status="completed",
                     auto_cycle_next_start_name="",
+                    auto_cycle_next_start_identity="",
                     auto_cycle_backup_start_name="",
+                    auto_cycle_backup_start_identity="",
                     auto_cycle_last_progress_at=stamp,
                     auto_cycle_last_outcome="completed",
                     auto_cycle_retry_count=0,
@@ -2180,20 +2378,22 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     now=finished_dt,
                     auto_cycle_status="completed",
                     auto_cycle_next_start_name="",
+                    auto_cycle_next_start_identity="",
                     auto_cycle_backup_start_name="",
+                    auto_cycle_backup_start_identity="",
                     auto_cycle_last_progress_at=stamp,
                     auto_cycle_last_outcome="completed",
                     auto_cycle_retry_count=0,
                     auto_cycle_batches_completed=refreshed_cycle["batches_completed"] + 1,
                     last_full_scan_completed_at=stamp,
                 )
-        elif tail_confirmation_active:
+        elif tail_probe_active and outcome in {"not_advanced", "suspicious_repeat"}:
             _bot_log(
                 bot,
                 level="WARNING",
                 message=(
                     f"[通讯录维护] 自动维护短批次后游标暂未推进：{cycle_start_name}，"
-                    f"继续确认尾部 {tail_confirm_retry_count}/{AUTO_TAIL_CONFIRM_RETRY_LIMIT}"
+                    "本轮未取得足够的重复身份凭据，稍后继续确认尾部"
                 ),
             )
             if callable(write_cycle_fn):
@@ -2202,7 +2402,9 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     now=finished_dt,
                     auto_cycle_status="running",
                     auto_cycle_next_start_name=cycle_start_name,
+                    auto_cycle_next_start_identity=cycle_start_identity,
                     auto_cycle_backup_start_name=cycle["backup_start_name"],
+                    auto_cycle_backup_start_identity=cycle["backup_start_identity"],
                     auto_cycle_last_outcome="tail_confirm_pending",
                     auto_cycle_retry_count=tail_confirm_retry_count,
                     auto_cycle_batches_completed=refreshed_cycle["batches_completed"] + 1,
@@ -2213,7 +2415,9 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     now=finished_dt,
                     auto_cycle_status="running",
                     auto_cycle_next_start_name=cycle_start_name,
+                    auto_cycle_next_start_identity=cycle_start_identity,
                     auto_cycle_backup_start_name=cycle["backup_start_name"],
+                    auto_cycle_backup_start_identity=cycle["backup_start_identity"],
                     auto_cycle_last_outcome="tail_confirm_pending",
                     auto_cycle_retry_count=tail_confirm_retry_count,
                     auto_cycle_batches_completed=refreshed_cycle["batches_completed"] + 1,
@@ -2233,7 +2437,9 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     now=finished_dt,
                     auto_cycle_status="running",
                     auto_cycle_next_start_name=next_start_name,
+                    auto_cycle_next_start_identity=next_start_identity,
                     auto_cycle_backup_start_name=backup_start_name,
+                    auto_cycle_backup_start_identity=backup_start_identity,
                     auto_cycle_last_progress_at=stamp,
                     auto_cycle_last_outcome=outcome,
                     auto_cycle_retry_count=0,
@@ -2245,7 +2451,9 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     now=finished_dt,
                     auto_cycle_status="running",
                     auto_cycle_next_start_name=next_start_name,
+                    auto_cycle_next_start_identity=next_start_identity,
                     auto_cycle_backup_start_name=backup_start_name,
+                    auto_cycle_backup_start_identity=backup_start_identity,
                     auto_cycle_last_progress_at=stamp,
                     auto_cycle_last_outcome=outcome,
                     auto_cycle_retry_count=0,
@@ -2255,16 +2463,22 @@ def check_contact_directory_auto_maintenance(bot, now=None):
             retry_count = refreshed_cycle["retry_count"] + 1
             fallback_status = "stalled"
             fallback_start_name = cycle_start_name or next_start_name
+            fallback_start_identity = cycle_start_identity if cycle_start_name else next_start_identity
             fallback_backup_name = cycle["backup_start_name"] if cycle_start_name != cycle["backup_start_name"] else ""
+            fallback_backup_identity = cycle["backup_start_identity"]
             fallback_outcome = outcome or "stalled"
             if cycle_start_name and retry_count == 1 and cycle["backup_start_name"] and cycle_start_name != cycle["backup_start_name"]:
                 fallback_start_name = cycle["backup_start_name"]
+                fallback_start_identity = cycle["backup_start_identity"]
                 fallback_backup_name = ""
+                fallback_backup_identity = ""
                 fallback_outcome = outcome or "primary_cursor_failed"
             elif cycle_start_name or retry_count >= 3:
                 fallback_status = "reset_required"
                 fallback_start_name = ""
+                fallback_start_identity = ""
                 fallback_backup_name = ""
+                fallback_backup_identity = ""
             _bot_log(
                 bot,
                 level="WARNING",
@@ -2280,7 +2494,9 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     now=finished_dt,
                     auto_cycle_status=fallback_status,
                     auto_cycle_next_start_name=fallback_start_name,
+                    auto_cycle_next_start_identity=fallback_start_identity,
                     auto_cycle_backup_start_name=fallback_backup_name,
+                    auto_cycle_backup_start_identity=fallback_backup_identity,
                     auto_cycle_last_outcome=fallback_outcome,
                     auto_cycle_retry_count=retry_count,
                 )
@@ -2290,105 +2506,23 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     now=finished_dt,
                     auto_cycle_status=fallback_status,
                     auto_cycle_next_start_name=fallback_start_name,
+                    auto_cycle_next_start_identity=fallback_start_identity,
                     auto_cycle_backup_start_name=fallback_backup_name,
+                    auto_cycle_backup_start_identity=fallback_backup_identity,
                     auto_cycle_last_outcome=fallback_outcome,
                     auto_cycle_retry_count=retry_count,
                 )
-        if callable(save_directory_fn):
-            save_directory_fn(refreshed_directory)
-        else:
-            save_contact_profiles_directory(bot, refreshed_directory)
+        refreshed_directory = save_contact_maintenance_state(
+            bot,
+            refreshed_directory,
+            directory_file=directory_file,
+            wx_id=wx_id,
+        )
         return True
     finally:
         flush_lightweight = getattr(bot, "_flush_lightweight_send_queue", None)
         if callable(flush_lightweight):
             flush_lightweight()
-
-
-def check_contact_directory_cli_contact_basics_auto_sync(bot, now=None):
-    if not local_wechat_reader_enabled(bot):
-        return False
-    if not getattr(bot, "wx", None):
-        return False
-    now_fn = getattr(bot, "_maintenance_now", None)
-    if callable(now_fn):
-        now_dt = now_fn(now)
-    else:
-        now_dt = maintenance_now(now)
-    current_ts = now_dt.timestamp()
-    next_check_at = float(getattr(bot, "_contact_cli_contact_basics_next_check_at", 0.0) or 0.0)
-    if next_check_at and current_ts < next_check_at:
-        return False
-    sync_lock = getattr(bot, "_contact_cli_contact_basics_sync_lock", None)
-    if not hasattr(sync_lock, "acquire") or not hasattr(sync_lock, "release"):
-        sync_lock = threading.Lock()
-        try:
-            setattr(bot, "_contact_cli_contact_basics_sync_lock", sync_lock)
-        except Exception:
-            pass
-    if not sync_lock.acquire(blocking=False):
-        return False
-
-    def schedule_next_check(check_at: datetime) -> None:
-        try:
-            setattr(bot, "_contact_cli_contact_basics_next_check_at", check_at.timestamp())
-        except Exception:
-            pass
-
-    def schedule_delay(seconds: int | float) -> None:
-        schedule_next_check(now_dt + timedelta(seconds=max(1, float(seconds or 1))))
-
-    try:
-        load_directory_fn = getattr(bot, "_load_contact_profiles_directory", None)
-        if callable(load_directory_fn):
-            directory, _, wx_id = load_directory_fn()
-        else:
-            directory, _, wx_id = load_contact_profiles_directory(bot)
-        if not wx_id:
-            schedule_delay(CLI_CONTACT_BASICS_SYNC_IDLE_RECHECK_SECONDS)
-            return False
-        full_scan_days_fn = getattr(bot, "_contact_directory_auto_maintenance_full_scan_interval_days_value", None)
-        if callable(full_scan_days_fn):
-            full_scan_days = full_scan_days_fn()
-        else:
-            full_scan_days = contact_directory_auto_maintenance_full_scan_interval_days_value(bot)
-        if not cli_contact_basics_sync_is_due(directory, interval_days=full_scan_days, now=now_dt):
-            schedule_next_check(cli_contact_basics_next_check_at(
-                directory,
-                interval_days=full_scan_days,
-                now=now_dt,
-            ))
-            return False
-        if has_active_contact_maintenance_conflict(bot):
-            schedule_delay(60)
-            return False
-        flush_lightweight = getattr(bot, "_flush_lightweight_send_queue", None)
-        if callable(flush_lightweight):
-            flush_lightweight()
-        pending_queue_fn = getattr(bot, "_has_pending_lightweight_send_queue", None)
-        if callable(pending_queue_fn):
-            has_pending_queue = pending_queue_fn()
-        else:
-            has_pending_queue = has_pending_lightweight_send_queue(bot)
-        if has_pending_queue:
-            schedule_delay(60)
-            return False
-        result = refresh_contact_profiles_cli_contact_basics(bot, automatic=True)
-        if result:
-            schedule_delay(min(
-                CLI_CONTACT_BASICS_SYNC_IDLE_RECHECK_SECONDS,
-                coerce_auto_maintenance_full_scan_interval_days(full_scan_days) * 86400,
-            ))
-            _bot_log(
-                bot,
-                level="SUCCESS",
-                message=f"[通讯录维护] CLI 基础资料自动同步完成 {result.get('count_synced', 0)} 个好友",
-            )
-            return True
-        schedule_delay(CLI_CONTACT_BASICS_SYNC_FAILURE_RETRY_SECONDS)
-        return False
-    finally:
-        sync_lock.release()
 
 
 def set_contact_profiles_paused(bot, paused=True):
@@ -2410,8 +2544,12 @@ def set_contact_profiles_paused(bot, paused=True):
         last_error="" if paused else (directory.get("maintenance") or {}).get("last_error", ""),
         callback_names=[],
     )
-    save_contact_directory(directory_file, updated)
-    return updated
+    return save_contact_maintenance_state(
+        bot,
+        updated,
+        directory_file=directory_file,
+        wx_id=_wx_id,
+    )
 
 
 def contact_repair_before_display(contact):
@@ -2427,6 +2565,7 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
         raise RuntimeError("微信客户端未初始化，请先启动机器人并保持微信主窗口可用。")
 
     load_directory_fn = getattr(bot, "_load_contact_profiles_directory", None)
+    save_directory_fn = getattr(bot, "_save_contact_profiles_directory", None)
     if callable(load_directory_fn):
         directory, directory_file, wx_id = load_directory_fn()
     else:
@@ -2462,6 +2601,10 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
         for index, candidate in enumerate(candidates, start=1):
             contact_key = str(candidate.get("contact_key") or "")
             suggested_remark = str(candidate.get("suggested_remark") or "").strip()
+            if callable(load_directory_fn):
+                current_directory, _loaded_file, _loaded_wx_id = load_directory_fn()
+            else:
+                current_directory = load_contact_directory(directory_file, wx_id=wx_id)
             contact = next(
                 (
                     item for item in (current_directory.get("subjects") or [])
@@ -2485,6 +2628,7 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
                     bot,
                     target_name,
                     expected_names=contact_expected_chat_names(contact, target_name),
+                    contact_key=contact_key,
                     remark=suggested_remark,
                     log_prefix="[通讯录维护]",
                 )
@@ -2523,13 +2667,21 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
                 _bot_log(bot, level="WARNING", message=f"[通讯录维护] 备注修复失败 {index}/{len(candidates)}：{target_display} -> {suggested_remark}，错误：{error}")
 
             if success:
-                current_directory = apply_repaired_remark(
-                    current_directory,
-                    contact_key,
-                    suggested_remark,
-                    now=datetime.now(),
-                )
-                save_contact_directory(directory_file, current_directory)
+                with contact_directory_lock(directory_file):
+                    if callable(load_directory_fn):
+                        current_directory, _loaded_file, _loaded_wx_id = load_directory_fn()
+                    else:
+                        current_directory = load_contact_directory(directory_file, wx_id=wx_id)
+                    current_directory = apply_repaired_remark(
+                        current_directory,
+                        contact_key,
+                        suggested_remark,
+                        now=datetime.now(),
+                    )
+                    if callable(save_directory_fn):
+                        save_directory_fn(current_directory)
+                    else:
+                        save_contact_directory(directory_file, current_directory)
                 sync_identity_fn = getattr(bot, "_sync_contact_identity_from_contact_directory", None)
                 if callable(sync_identity_fn):
                     sync_identity_fn(current_directory)

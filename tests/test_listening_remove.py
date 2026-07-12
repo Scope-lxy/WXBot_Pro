@@ -343,6 +343,40 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertEqual(dispatched, [(bot, sub_chat, msg)])
 
+    def test_alllisten_owner_facade_requests_prepared_pure_messages(self):
+        calls = []
+        msg = SimpleNamespace(id="1", type="image", attr="friend", sender="张三", content="C:/temp/a.png")
+
+        class OwnerFacade:
+            is_ui_owner_facade = True
+
+            def GetNextNewMessage(self, **kwargs):
+                calls.append(kwargs)
+                return {"chat_name": "张三", "chat_type": "private", "msg": [msg]}
+
+        sub_chat = SimpleNamespace(who="张三", chat_type="private")
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[],
+            config=SimpleNamespace(
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=True,
+                chat_voice_recognition_switch=False,
+                memory_switch=False,
+                custom_forward_switch=False,
+            ),
+            wx=OwnerFacade(),
+            memory_manager=None,
+            add_chat_to_listen=lambda _chat: sub_chat,
+            is_chat_listened=lambda _chat: False,
+            _handle_material_source_message=lambda _chat, _msg: False,
+            process_message=lambda _chat, _message: True,
+        )
+
+        listening.alllisten_mode(bot, last_time=9999999999)
+
+        self.assertEqual(calls, [{"filter_mute": False, "callback": None, "download_media": True}])
+
     def test_alllisten_reuses_cached_subwindow_when_chat_already_listened(self):
         processed = []
         add_calls = []
@@ -477,14 +511,11 @@ class RemoveListenChatTests(unittest.TestCase):
             type="image",
             attr="friend",
             sender="张三",
-            content="",
-            download=lambda: r"C:\tmp\global-image.png",
+            content=r"C:\tmp\global-image.png",
+            _wxbot_media_prepared=True,
         )
 
-        def get_next_new_message(**kwargs):
-            callback = kwargs.get("callback")
-            if callable(callback):
-                callback(msg)
+        def get_next_new_message(**_kwargs):
             return {"chat_name": "张三", "chat_type": "private", "msg": [msg]}
 
         image_saves = []

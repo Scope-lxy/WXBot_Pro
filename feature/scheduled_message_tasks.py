@@ -102,6 +102,17 @@ def _normalize_execution_snapshot(snapshot):
         "raw_material": deepcopy(snapshot.get("raw_material")) if isinstance(snapshot.get("raw_material"), dict) else {},
         "batch_id": _clean_str(snapshot.get("batch_id")),
         "run_id": _clean_str(snapshot.get("run_id")),
+        "delivery_records": [
+            {
+                "key": _clean_str(item.get("key")),
+                "target": _clean_str(item.get("target")),
+                "message_index": int(item.get("message_index") or 0),
+                "status": _clean_str(item.get("status")) or "pending",
+                "error": _clean_str(item.get("error")),
+            }
+            for item in (snapshot.get("delivery_records") or [])
+            if isinstance(item, dict) and _clean_str(item.get("key"))
+        ],
     }
 
 
@@ -324,6 +335,23 @@ def mark_scheduled_message_running(task, *, run_id, started_at):
     running["current_run_id"] = _clean_str(run_id)
     running["run_started_at"] = _clean_str(started_at)
     return running
+
+
+def recover_interrupted_scheduled_message_task(task):
+    recovered = build_scheduled_message_task(task)
+    if recovered.get("status") != STATUS_RUNNING:
+        return recovered
+    snapshot = _normalize_execution_snapshot(recovered.get("pending_snapshot"))
+    for record in snapshot.get("delivery_records") or []:
+        if record.get("status") == "inflight":
+            record["status"] = "uncertain"
+            record["error"] = "进程在发送结果落盘前中断"
+    recovered["pending_snapshot"] = snapshot
+    return return_scheduled_message_task(
+        recovered,
+        reason="interrupted_uncertain",
+        summary="上次发送被异常中断，已停止自动重发，请核实待确认记录",
+    )
 
 
 def _append_run_history(task, run_record):
@@ -605,7 +633,7 @@ def apply_scheduled_message_run_result(task, result, *, now=None, choice=None, r
         result = {**result, "execution_snapshot": execution_snapshot}
     result_type = _clean_str(result.get("result_type")) or "all_failed"
     finished_at = _iso_datetime(now)
-    if result_type in {"all_failed", "manual_stop"}:
+    if result_type in {"all_failed", "manual_stop", "uncertain"}:
         return return_scheduled_message_run(task, result, finished_at=finished_at)
 
     task = build_scheduled_message_task(task)

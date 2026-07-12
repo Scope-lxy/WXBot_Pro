@@ -5,22 +5,27 @@ from __future__ import annotations
 import copy
 import json
 import random
+import uuid
 from datetime import datetime, time as datetime_time, timedelta
 from pathlib import Path
 from typing import Any
 
 from core.account_storage import account_area_file
 from core.contact_profiles import (
+    WARNING_DUPLICATE_SEND_NAME,
+    WARNING_SEND_NAME_UNSEARCHABLE,
     contact_display_name,
     contact_identity_key,
     contact_send_name,
     directory_path,
     load_directory,
+    mark_send_name_conflicts,
     normalize_tag_list,
 )
 from core.logger import log
 from core import wechat_ui_actions
 from feature.friend_request_senders import ConversationVerifySender
+from feature.task_workbench_storage import file_lock_for_path
 
 
 SCHEMA_VERSION = 1
@@ -231,7 +236,10 @@ def save_state(base_dir: str | Path, state: dict[str, Any]) -> dict[str, Any]:
     state = normalize_state(state, wx_id=_clean_text((state or {}).get("wx_id")))
     state["updated_at"] = _iso_timestamp()
     path = state_path(base_dir, state["wx_id"])
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    with file_lock_for_path(path):
+        temp_path = path.with_name(path.name + ".tmp")
+        temp_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(path)
     return state
 
 
@@ -246,7 +254,7 @@ def normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
     send_target = _clean_text(candidate.get("send_target")) or _clean_text(candidate.get("send_name")) or name
     candidate_id = _clean_text(candidate.get("candidate_id")) or _clean_text(candidate.get("contact_key")) or send_target
     status = _clean_text(candidate.get("status")) or "pending"
-    if status not in {"pending", "sent", "skipped", "failed", "accepted", "archived"}:
+    if status not in {"pending", "sent", "skipped", "failed", "uncertain", "accepted", "archived"}:
         status = "pending"
     return {
         "candidate_id": candidate_id,
@@ -265,6 +273,7 @@ def normalize_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "last_attempt_at": _clean_text(candidate.get("last_attempt_at")),
         "next_retry_at": _clean_text(candidate.get("next_retry_at")),
         "sent_at": _clean_text(candidate.get("sent_at")),
+        "claim_token": _clean_text(candidate.get("claim_token")),
     }
 
 
@@ -281,13 +290,17 @@ def _reset_daily_runtime_if_needed(state: dict[str, Any], *, now: Any = None) ->
 def build_candidates_from_directory(directory: dict[str, Any], settings: dict[str, Any]) -> list[dict[str, Any]]:
     if settings.get("add_object") != ADD_OBJECT_DELETED_ME:
         return []
+    directory = mark_send_name_conflicts(directory)
     include_tags = set(settings["include_tags"])
+    unsafe_warnings = {WARNING_DUPLICATE_SEND_NAME, WARNING_SEND_NAME_UNSEARCHABLE}
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
     for subject in directory.get("subjects") or []:
         if not isinstance(subject, dict):
             continue
         if subject.get("status", "active") != "active":
+            continue
+        if unsafe_warnings.intersection(subject.get("warnings") or []):
             continue
         tags = normalize_tag_list(subject.get("tags"))
         tag_set = set(tags)
@@ -331,6 +344,7 @@ def refresh_candidates(base_dir: str | Path, wx_id: str, *, contact_base_dir: st
             candidate["last_attempt_at"] = old.get("last_attempt_at", "")
             candidate["next_retry_at"] = old.get("next_retry_at", "")
             candidate["sent_at"] = old.get("sent_at", "")
+            candidate["claim_token"] = old.get("claim_token", "")
         candidates.append(candidate)
     state["candidates"] = candidates
     return save_state(base_dir, state)
@@ -463,6 +477,10 @@ def record_execution(state: dict[str, Any], candidate: dict[str, Any], result: d
         runtime["next_run_at"] = (current + timedelta(minutes=_next_interval_minutes(normalize_settings(state.get("settings"))))).replace(microsecond=0).isoformat()
     elif status == "skipped":
         candidate["status"] = "skipped"
+    elif status == "uncertain":
+        candidate["status"] = "uncertain"
+        candidate["next_retry_at"] = ""
+        runtime["today_uncertain"] = int(runtime.get("today_uncertain", 0) or 0) + 1
     else:
         candidate["status"] = "failed"
         current = _parse_time(timestamp) or datetime.now()
@@ -470,6 +488,7 @@ def record_execution(state: dict[str, Any], candidate: dict[str, Any], result: d
         runtime["today_failed"] = int(runtime.get("today_failed", 0) or 0) + 1
     candidate["last_attempt_at"] = timestamp
     candidate["last_result"] = message
+    candidate["claim_token"] = ""
     runtime["last_result"] = f"{candidate.get('name') or candidate.get('send_target')}: {message}"
     execution = {
         "at": timestamp,
@@ -487,52 +506,122 @@ def record_execution(state: dict[str, Any], candidate: dict[str, Any], result: d
 
 
 def save_execution_state(base_dir: str | Path, state: dict[str, Any]) -> dict[str, Any]:
-    latest = load_state(base_dir, _clean_text(state.get("wx_id")) or "default")
-    latest_candidates = {item.get("candidate_id"): item for item in latest.get("candidates") or []}
-    for candidate in state.get("candidates") or []:
-        candidate_id = candidate.get("candidate_id")
-        if candidate_id in latest_candidates:
-            latest_candidates[candidate_id].update(copy.deepcopy(candidate))
-    latest["runtime"] = copy.deepcopy(state.get("runtime") or {})
-    latest["executions"] = copy.deepcopy(state.get("executions") or [])
-    return save_state(base_dir, latest)
+    wx_id = _clean_text(state.get("wx_id")) or "default"
+    path = state_path(base_dir, wx_id)
+    with file_lock_for_path(path):
+        latest = load_state(base_dir, wx_id)
+        latest_candidates = {item.get("candidate_id"): item for item in latest.get("candidates") or []}
+        for candidate in state.get("candidates") or []:
+            candidate_id = candidate.get("candidate_id")
+            if candidate_id in latest_candidates:
+                latest_candidates[candidate_id].update(copy.deepcopy(candidate))
+        latest["runtime"] = copy.deepcopy(state.get("runtime") or {})
+        latest["executions"] = copy.deepcopy(state.get("executions") or [])
+        return save_state(base_dir, latest)
 
 
 def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
     wx_id = _clean_text(getattr(bot, "wx_id", "")) or "default"
-    state = load_state(bot.config.DATA_DIR, wx_id)
-    settings = normalize_settings(state.get("settings"))
-    if not state.get("candidates"):
-        state = refresh_candidates(bot.config.DATA_DIR, wx_id)
-    candidate, reason = next_pending_candidate(state, now=now, ignore_schedule=bool(force))
-    if not candidate:
-        state.setdefault("runtime", {})["last_result"] = reason
-        state = save_state(bot.config.DATA_DIR, state)
-        return {"status": "skipped", "message": reason, "payload": friend_request_payload(state)}
-    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
-    if not release_wechat_lock:
-        message = "微信操作锁占用中，稍后会自动重试"
-        candidate["last_result"] = message
-        state.setdefault("runtime", {})["last_result"] = f"{candidate.get('name') or candidate.get('send_target')}: {message}"
-        state = save_state(bot.config.DATA_DIR, state)
+    owner = getattr(bot, "_ui_owner", None)
+    release_wechat_lock = (lambda: None) if owner is not None else wechat_ui_actions.try_acquire(bot)
+    if release_wechat_lock is None:
+        path = state_path(bot.config.DATA_DIR, wx_id)
+        with file_lock_for_path(path):
+            state = load_state(bot.config.DATA_DIR, wx_id)
+            candidate, _reason = next_pending_candidate(state, now=now, ignore_schedule=bool(force))
+            message = "微信操作锁占用中，稍后会自动重试"
+            if candidate:
+                candidate["last_result"] = message
+                state.setdefault("runtime", {})["last_result"] = f"{candidate.get('name') or candidate.get('send_target')}: {message}"
+            else:
+                state.setdefault("runtime", {})["last_result"] = message
+            state = save_state(bot.config.DATA_DIR, state)
         return {"status": "skipped", "message": message, "payload": friend_request_payload(state)}
     addmsg = ""
     try:
-        addmsg = select_message_for_candidate(state, candidate)
-        sender = ConversationVerifySender()
+        path = state_path(bot.config.DATA_DIR, wx_id)
+        with file_lock_for_path(path):
+            state = load_state(bot.config.DATA_DIR, wx_id)
+            if not state.get("candidates"):
+                state = refresh_candidates(bot.config.DATA_DIR, wx_id)
+            settings = normalize_settings(state.get("settings"))
+            candidate, reason = next_pending_candidate(state, now=now, ignore_schedule=bool(force))
+            if not candidate:
+                state.setdefault("runtime", {})["last_result"] = reason
+                state = save_state(bot.config.DATA_DIR, state)
+                return {"status": "skipped", "message": reason, "payload": friend_request_payload(state)}
+            addmsg = select_message_for_candidate(state, candidate)
+            # Claim the candidate before the non-idempotent UI call. A concurrent
+            # manual/automatic trigger must observe this fence and skip it.
+            claim_token = uuid.uuid4().hex
+            candidate["status"] = "uncertain"
+            candidate["claim_token"] = claim_token
+            candidate["next_retry_at"] = ""
+            candidate["last_attempt_at"] = _iso_timestamp(now)
+            candidate["last_result"] = "好友申请正在提交；若进程中断需人工核实"
+            state = save_state(bot.config.DATA_DIR, state)
         try:
-            result = sender.send(
-                bot,
-                candidate.get("conversation_keyword"),
-                addmsg=addmsg,
-                remark=candidate.get("remark") or candidate.get("name") or candidate.get("conversation_keyword"),
-                tags=settings.get("success_tags") or [],
-                permission=settings.get("permission") or "不设置",
-            )
+            if owner is not None:
+                guard = getattr(bot, "_friend_request_ui_guard", None)
+                task_key, task_version = guard(state, candidate) if callable(guard) else ("", 0)
+                result = owner.call(
+                    wechat_ui_actions.UIIntent(
+                        wechat_ui_actions.UIIntentKind.FRIEND_REQUEST,
+                        {
+                            "target": _clean_text(candidate.get("conversation_keyword")),
+                            "contact_key": _clean_text(candidate.get("contact_key")),
+                            "task_key": task_key,
+                            "addmsg": addmsg,
+                            "remark": _clean_text(candidate.get("remark") or candidate.get("name") or candidate.get("conversation_keyword")),
+                            "tags": list(settings.get("success_tags") or []),
+                            "permission": _clean_text(settings.get("permission")) or "不设置",
+                            "max_attempts": 2,
+                        },
+                        task_version=task_version,
+                    ),
+                    wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
+                )
+            else:
+                sender = ConversationVerifySender()
+                result = sender.send(
+                    bot,
+                    candidate.get("conversation_keyword"),
+                    addmsg=addmsg,
+                    remark=candidate.get("remark") or candidate.get("name") or candidate.get("conversation_keyword"),
+                    tags=settings.get("success_tags") or [],
+                    permission=settings.get("permission") or "不设置",
+                )
+        except wechat_ui_actions.IntentCancelled as exc:
+            result = {"status": "cancelled", "message": _clean_text(exc) or "好友申请已取消"}
         except Exception as exc:
-            result = {"status": "failed", "message": _clean_text(exc) or "好友申请发送异常"}
+            result = {"status": "uncertain", "message": _clean_text(exc) or "好友申请提交结果未知"}
     finally:
         release_wechat_lock()
+    if _clean_text(result.get("status")) == "cancelled":
+        path = state_path(bot.config.DATA_DIR, wx_id)
+        with file_lock_for_path(path):
+            latest = load_state(bot.config.DATA_DIR, wx_id)
+            latest_candidate = next((
+                item for item in (latest.get("candidates") or [])
+                if _clean_text(item.get("candidate_id")) == _clean_text(candidate.get("candidate_id"))
+            ), None)
+            if (
+                latest_candidate is not None
+                and _clean_text(latest_candidate.get("claim_token")) == claim_token
+                and _clean_text(latest_candidate.get("status")) == "uncertain"
+            ):
+                latest_candidate["status"] = "pending"
+                latest_candidate["claim_token"] = ""
+                latest_candidate["last_attempt_at"] = ""
+                latest_candidate["next_retry_at"] = ""
+                latest_candidate["last_result"] = "规则已更新，本次尚未提交微信"
+                latest = save_state(bot.config.DATA_DIR, latest)
+        return {
+            "status": "skipped",
+            "message": result.get("message", ""),
+            "payload": friend_request_payload(latest),
+            "result": result,
+        }
     state = record_execution(state, candidate, result, addmsg=addmsg, now=now)
     state = save_execution_state(bot.config.DATA_DIR, state)
     try:
@@ -553,6 +642,8 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
         log(level="SUCCESS", message=f"[好友申请] 已发送好友申请：{target_label}")
     elif status == "failed":
         log(level="WARNING", message=f"[好友申请] 发送失败：{target_label}，{_clean_text(result.get('message')) or '未知原因'}")
+    elif status == "uncertain":
+        log(level="WARNING", message=f"[好友申请] 提交结果待核实：{target_label}，不会自动重发")
     return {"status": result.get("status", "failed"), "message": result.get("message", ""), "payload": friend_request_payload(state), "result": result}
 
 

@@ -593,6 +593,31 @@ def mark_moments_task_running(task, *, now=None):
     )
 
 
+def recover_interrupted_moments_task(task, *, now=None):
+    now = now or datetime.now()
+    normalized = normalize_moments_task(task, now=now)
+    if normalized.get("status") != STATUS_RUNNING:
+        return normalized
+    normalized.update({
+        "status": STATUS_PENDING_CONFIRM,
+        "enabled": True,
+        "execute_after": "",
+        "queued_at": "",
+        "queued_mode": "",
+        "executed_at": now.replace(microsecond=0).isoformat(),
+        "execution_result": "uncertain",
+        "execution_message": "发布过程被异常中断，结果待核实，不会自动重发",
+        "updated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+    snapshot = normalized.get("execution_snapshot")
+    if isinstance(snapshot, dict):
+        normalized["execution_snapshot"] = {
+            **snapshot,
+            "result_summary": normalized["execution_message"],
+        }
+    return normalized
+
+
 def cancel_queued_moments_task(task, *, now=None):
     now = now or datetime.now()
     return normalize_moments_task(

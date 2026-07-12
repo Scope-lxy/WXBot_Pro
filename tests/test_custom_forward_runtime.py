@@ -105,6 +105,40 @@ class CustomForwardRuntimeTests(unittest.TestCase):
 
         self.assertEqual(bot.echoes, [])
 
+    def test_owner_forward_never_uses_callback_message_object(self):
+        class Bot:
+            _ui_owner = object()
+
+            def __init__(self):
+                self.calls = []
+                self.echoes = []
+
+            def _ui_forward_message(self, chat, message, target, **kwargs):
+                self.calls.append((chat.who, message, target, kwargs))
+                return True
+
+            def _remember_private_outbound_echo(self, *args, **kwargs):
+                self.echoes.append((args, kwargs))
+
+        class Message:
+            type = "miniapp"
+
+            def forward(self, *_args, **_kwargs):
+                raise AssertionError("owner 模式不得在回调线程直接转发原消息对象")
+
+        bot = Bot()
+        message = Message()
+        send_custom_forward_action(
+            bot,
+            {"kind": "forward", "target": "张三", "source_message": "给你看这个"},
+            SimpleNamespace(who="素材源"),
+            message,
+        )
+
+        self.assertEqual(len(bot.calls), 1)
+        self.assertEqual(bot.calls[0][2], "张三")
+        self.assertEqual(bot.calls[0][3]["preface"], "给你看这个")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
-from collections.abc import Iterable
 
 
 MOUSEEVENTF_LEFTDOWN = 0x0002
@@ -154,19 +154,47 @@ def click_wechat_main_window_chat_nav(*, wait: float = 0.1) -> bool:
         return False
 
 
-def rebind_wechat_client(bot, *, versions: Iterable[str] = ("微信", "WeChat")):
-    last_exc = None
-    for version_name in versions:
-        try:
-            from wxautox4 import WeChat
+def rebind_wechat_client(bot):
+    owner = getattr(bot, "_ui_owner", None)
+    runtime = getattr(bot, "_ui_runtime", None)
+    if owner is None or runtime is None:
+        client = getattr(bot, "wx", None)
+        if client is not None:
+            return client
+        raise RuntimeError("微信 UI owner 尚未初始化，不能重建微信客户端")
 
-            bot.wx = WeChat(version=version_name)
-            return bot.wx
-        except Exception as exc:
-            last_exc = exc
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("未能初始化微信客户端")
+    from core.wechat_ui_actions import UI_CALL_WAIT_TIMEOUT, UIIntent, UIIntentKind
+    from core.wechat_ui_runtime import UIClientFacade
+
+    if owner.owner_thread_id == threading.get_ident():
+        identity = runtime.rebind({})
+    else:
+        identity = owner.call(UIIntent(UIIntentKind.REBIND), UI_CALL_WAIT_TIMEOUT)
+    bot._ui_identity = dict(identity or {})
+    bot.wx = UIClientFacade(owner, bot._ui_identity)
+    return bot.wx
+
+
+def is_wechat_client_binding_failure(exc) -> bool:
+    values = [str(exc or "")]
+    values.extend(str(item or "") for item in (getattr(exc, "args", ()) or ()))
+    text = " ".join(values).lower()
+    winerror = getattr(exc, "winerror", None)
+    hresult = getattr(exc, "hresult", None)
+    numeric_args = {item for item in (getattr(exc, "args", ()) or ()) if isinstance(item, int)}
+    if winerror == 1400 or 1400 in numeric_args:
+        return True
+    if hresult in {-2147417848, -2147023174} or numeric_args.intersection({-2147417848, -2147023174}):
+        return True
+    return any(marker in text for marker in (
+        "无效的窗口句柄",
+        "invalid window handle",
+        "rpc_e_disconnected",
+        "对象已与其客户端断开连接",
+        "object invoked has disconnected from its clients",
+        "rpc 服务器不可用",
+        "rpc server is unavailable",
+    ))
 
 
 def run_with_wechat_rebind_retry(
@@ -185,7 +213,10 @@ def run_with_wechat_rebind_retry(
             return action()
         except Exception as exc:
             last_exc = exc
-            if attempt >= max(1, int(attempts or 1)):
+            if (
+                attempt >= max(1, int(attempts or 1))
+                or not is_wechat_client_binding_failure(exc)
+            ):
                 raise
             if callable(on_retry):
                 on_retry(exc, attempt)

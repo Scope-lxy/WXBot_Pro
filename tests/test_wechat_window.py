@@ -1,33 +1,56 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from core.wechat_window import rebind_wechat_client
+from core.wechat_ui_actions import UI_CALL_WAIT_TIMEOUT, UIIntentKind
+from core.wechat_ui_runtime import UIClientFacade
+from core.wechat_window import rebind_wechat_client, run_with_wechat_rebind_retry
 
 
 class WeChatWindowTests(unittest.TestCase):
-    def test_rebind_keeps_wxautox_default_resize_size(self):
-        from wxautox4.param import WxParam
+    def test_rebind_submits_owner_intent_and_keeps_facade(self):
+        submitted = []
 
-        original_size = WxParam.CHAT_WINDOW_SIZE
-        WxParam.CHAT_WINDOW_SIZE = (1200, 6000)
-        calls = []
+        class FakeOwner:
+            owner_thread_id = None
 
-        class FakeWeChat:
-            def __init__(self, **kwargs):
-                calls.append((kwargs, WxParam.CHAT_WINDOW_SIZE))
+            def call(self, intent, timeout):
+                submitted.append((intent, timeout))
+                return {"nickname": "测试账号", "wx_id": "wxid-test"}
 
-        class FakeBot:
-            wx = None
+        bot = type("FakeBot", (), {
+            "wx": None,
+            "_ui_owner": FakeOwner(),
+            "_ui_runtime": object(),
+        })()
+        client = rebind_wechat_client(bot)
 
-        try:
-            with patch("wxautox4.WeChat", FakeWeChat):
-                bot = FakeBot()
-                client = rebind_wechat_client(bot, versions=("微信",))
-        finally:
-            WxParam.CHAT_WINDOW_SIZE = original_size
-
+        self.assertIsInstance(client, UIClientFacade)
         self.assertIs(client, bot.wx)
-        self.assertEqual(calls, [({"version": "微信"}, (1200, 6000))])
+        self.assertEqual(submitted[0][0].kind, UIIntentKind.REBIND)
+        self.assertIs(submitted[0][1], UI_CALL_WAIT_TIMEOUT)
+        self.assertEqual(bot._ui_identity["wx_id"], "wxid-test")
+
+    def test_business_failure_does_not_rebind_or_retry(self):
+        action = Mock(side_effect=RuntimeError("Find Control Timeout: EditControl"))
+        bot = object()
+
+        with patch("core.wechat_window.rebind_wechat_client") as rebind:
+            with self.assertRaisesRegex(RuntimeError, "Find Control Timeout"):
+                run_with_wechat_rebind_retry(bot, action, attempts=2)
+
+        action.assert_called_once()
+        rebind.assert_not_called()
+
+    def test_invalid_window_handle_rebinds_once_and_retries(self):
+        action = Mock(side_effect=[OSError(1400, "MoveWindow", "无效的窗口句柄。"), "ok"])
+        bot = object()
+
+        with patch("core.wechat_window.rebind_wechat_client") as rebind:
+            result = run_with_wechat_rebind_retry(bot, action, attempts=2)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(action.call_count, 2)
+        rebind.assert_called_once_with(bot)
 
 
 if __name__ == "__main__":
