@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 import time
 import re
-from contextlib import nullcontext
 from datetime import datetime
 
 from core import runtime_chat_state, wechat_ui_actions
@@ -15,8 +14,6 @@ from core.message_pipeline import (
     is_unrecognized_voice_placeholder,
     voice_message_body,
 )
-from feature import takeover_runtime
-from feature.custom_forward_runtime import handle_custom_forward, handle_custom_forward_takeover
 from feature.keyword_reply import normalize_keyword_reply_actions, plan_group_keyword_reply
 
 
@@ -232,45 +229,15 @@ def handle_friend_message_callback(bot, msg, chat, *, text: str):
     bot.last_msg_sender = msg.sender
     _update_alllisten_timestamp(bot, chat.who)
 
-    admin_reply_context = (
-        takeover_runtime.capture_admin_chat_replies(bot, chat)
-        if chat.who == bot.config.cmd
-        else nullcontext()
-    )
-    with admin_reply_context:
-        if chat.who == bot.config.cmd and bot._handle_admin_forward_input(chat, msg):
-            bot._mark_message_skip_memory(msg)
-            return True
-        if chat.who == bot.config.cmd and bot._handle_admin_moments_input(chat, msg):
-            bot._mark_message_skip_memory(msg)
-            return True
-        if bot._handle_material_source_message(chat, msg):
-            if chat.who == getattr(bot.config, "cmd", ""):
-                bot._mark_message_skip_memory(msg)
-            return True
+    if bot._handle_material_source_message(chat, msg):
+        return True
 
-        takeover_handled = False
-        if getattr(bot.config, "custom_forward_switch", False):
-            try:
-                takeover_handled = handle_custom_forward_takeover(bot, chat, msg)
-            except Exception as exc:
-                _bot_log(bot, level="ERROR", message=f"自定义转发人工接管处理出错: {exc}")
-
-        if takeover_handled:
-            result = True
-        else:
-            result = bot.process_message(chat, msg)
-            if getattr(bot.config, "custom_forward_switch", False):
-                try:
-                    handle_custom_forward(bot, chat, msg)
-                except Exception as exc:
-                    _bot_log(bot, level="ERROR", message=f"自定义转发处理出错: {exc}")
-
-        if not result:
-            bot.is_err(
-                bot.wx.nickname + " wxbot处理监听新消息失败！",
-                text + "\n" + bot._result_error_text(result),
-            )
+    result = bot.process_message(chat, msg)
+    if not result:
+        bot.is_err(
+            bot.wx.nickname + " wxbot处理监听新消息失败！",
+            text + "\n" + bot._result_error_text(result),
+        )
     return None
 
 
@@ -288,7 +255,6 @@ def _is_monitored_chat(bot, chat) -> bool:
             chat.who in getattr(bot.config, "group", [])
             and getattr(bot.config, "group_switch", False)
         )
-        or chat.who == getattr(bot.config, "cmd", "")
     )
 
 
@@ -354,18 +320,8 @@ def route_process_message(bot, chat, message):
     if not _is_monitored_chat(bot, chat):
         return {"action": "skip"}
 
-    if (
-        chat.who != getattr(bot.config, "cmd", "")
-        and getattr(chat, "chat_type", "") != "group"
-        and runtime_chat_state.is_single_chat_reply_paused(bot, chat.who)
-    ):
-        return {"action": "takeover_mirror"}
-
     if chat.who in getattr(bot.config, "group", []):
         return _route_group_message(bot, chat, message)
-
-    if chat.who == getattr(bot.config, "cmd", ""):
-        return {"action": "admin_command"}
 
     if (
         getattr(bot.config, "AllListen_switch", False)

@@ -1,4 +1,4 @@
-﻿"""Unified service for task workbench API."""
+"""Unified service for task workbench API."""
 
 from __future__ import annotations
 
@@ -12,16 +12,6 @@ from feature.material_outreach import (
     normalize_material_outreach_runtime_payload,
 )
 from feature.material_outreach_preface import cancel_preface_pending_record
-from feature.moments_tasks import (
-    cancel_queued_moments_task,
-    deserialize_moments_task_collection,
-    moments_task_has_ai_candidates,
-    moments_task_publish_text,
-    normalize_moments_task,
-    queue_moments_task,
-    split_moments_task_storage,
-    serialize_moments_task_collection,
-)
 from feature.scheduled_message_tasks import (
     STATUS_PENDING,
     STATUS_RUNNING,
@@ -46,7 +36,6 @@ from feature.task_display_titles import (
     is_likely_local_file_path,
     material_outreach_record_title,
     material_outreach_task_title,
-    moments_task_title,
     scheduled_message_task_title,
 )
 
@@ -85,9 +74,6 @@ def clear_executions(module, *, data_dir, wx_id, hooks=None):
     if module == "scheduled_message":
         _clear_scheduled_message_executions(data_dir=data_dir, wx_id=wx_id)
         message = "已清空定时消息执行记录"
-    elif module == "moments":
-        _clear_moments_executions(data_dir=data_dir, wx_id=wx_id)
-        message = "已清空朋友圈执行记录"
     else:
         _clear_material_outreach_executions(data_dir=data_dir, wx_id=wx_id)
         message = "已清空素材转发执行记录"
@@ -111,36 +97,11 @@ def queue_task(module, task_id, *, data_dir, wx_id, payload=None, hooks=None):
             "定时消息会按任务设置自动安排发送，不支持手动加入",
             400,
         )
-    elif module == "moments":
-        updated_task = _queue_moments_task(
-            task_id,
-            data_dir=data_dir,
-            wx_id=wx_id,
-            payload=payload,
-            hooks=hooks,
-        )
-        response = build_workbench_payload(module, data_dir=data_dir, wx_id=wx_id, active_task_id=task_id)
-        response["message"] = "已加入等待发布"
     else:
         raise TaskWorkbenchServiceError(
             "素材转发会按任务设置自动安排转发，不支持手动加入",
             400,
         )
-
-    queue_item = _find_queue_item(response.get("runtime", {}).get("queue"), f"manual:{task_id}")
-    if queue_item is None:
-        queue_item = build_queue_item(
-            module=module,
-            task_id=task_id,
-            source="manual",
-            title=moments_task_title(updated_task),
-            detail=_clean(_moments_pending_snapshot(updated_task).get("media_summary")) or "无图片",
-            scheduled_at=_clean(updated_task.get("execute_after")) or "等待调度",
-            status=_normalize_queue_status(updated_task.get("status")),
-        )
-    response["task"] = _build_task_view(module, updated_task)
-    response["queue_item"] = queue_item
-    return response
 
 
 def cancel_queue_item(module, queue_id, *, data_dir, wx_id, hooks=None):
@@ -154,14 +115,6 @@ def cancel_queue_item(module, queue_id, *, data_dir, wx_id, hooks=None):
         raise TaskWorkbenchServiceError(
             "定时消息会按任务设置自动安排发送，不支持手动取消",
             400,
-        )
-    elif module == "moments":
-        task_id = _require_manual_task_id(queue_id)
-        updated_task, message = _cancel_moments_queue_item(
-            task_id,
-            data_dir=data_dir,
-            wx_id=wx_id,
-            hooks=hooks,
         )
     else:
         if queue_id.startswith("manual:"):
@@ -340,43 +293,10 @@ def _material_outreach_records_targets_summary(records):
     return f"{names[0]}、{names[1]} 等 {len(names)} 人"
 
 
-def _summarize_moments_tags(tags):
-    tags = _clean_list(tags)
-    if not tags:
-        return ""
-    if len(tags) == 1:
-        return tags[0]
-    if len(tags) == 2:
-        return "、".join(tags)
-    return f"{tags[0]}、{tags[1]} 等 {len(tags)} 个标签"
 
 
-def _moments_visibility_summary(task):
-    task = task if isinstance(task, dict) else {}
-    visibility_type = _clean(task.get("visibility_type")) or "all"
-    tags_summary = _summarize_moments_tags(task.get("tags"))
-    if visibility_type == "include":
-        return f"仅 {tags_summary} 可见" if tags_summary else "部分好友可见"
-    if visibility_type == "exclude":
-        return f"不给 {tags_summary} 看" if tags_summary else "排除部分好友"
-    return "全部好友可见"
 
 
-def _moments_pending_snapshot(task):
-    task = task if isinstance(task, dict) else {}
-    text = moments_task_publish_text(task)
-    images = _clean_list(task.get("images"))
-    return runtime_snapshot(
-        raw_targets=[
-            {
-                "visibility_type": _clean(task.get("visibility_type")) or "all",
-                "tags": _clean_list(task.get("tags")),
-            }
-        ],
-        raw_messages=[{"type": "text", "text": text}] if text else [],
-        raw_media=[{"type": "image", "path": image} for image in images],
-        targets_summary=_moments_visibility_summary(task),
-    )
 
 
 def _snapshot_field_kwargs(snapshot, *, include_result_summary):
@@ -439,24 +359,17 @@ def _build_task_view(module, task, *, runtime=None):
 def _task_title(module, task):
     if module == "scheduled_message":
         return scheduled_message_task_title(task)
-    if module == "moments":
-        return moments_task_title(task)
     return material_outreach_task_title(task)
 
 
 def _task_summary(module, task):
     if module == "scheduled_message":
         return _scheduled_attachment_summary(task.get("msgs"))
-    if module == "moments":
-        snapshot = _moments_pending_snapshot(task)
-        return _clean(snapshot.get("media_summary")) or "无图片"
     return _material_outreach_task_copy_summary(task)
 
 
 def _task_status(module, task):
-    if module in {"scheduled_message", "material_outreach"}:
-        return "enabled" if bool(task.get("enabled", True)) else "disabled"
-    return _clean(task.get("status"))
+    return "enabled" if bool(task.get("enabled", True)) else "disabled"
 
 
 def _task_instance_stats(module, task_id, runtime):
@@ -465,7 +378,7 @@ def _task_instance_stats(module, task_id, runtime):
         "instance_pending": 0,
         "instance_running": 0,
     }
-    if module == "moments" or not task_id:
+    if not task_id:
         return stats
     queue = list((runtime or {}).get("queue") or [])
     for item in queue:
@@ -484,8 +397,6 @@ def _task_editable(module, task):
     status = _clean(task.get("status"))
     if module == "scheduled_message":
         return status != "running"
-    if module == "moments":
-        return status != "pending"
     return status != "running"
 
 
@@ -516,36 +427,6 @@ def _build_task_fields_for_module(module, task):
             notes=_clean(task.get("return_reason")),
             module_fields={
                 "scheduled_message": {
-                    "enabled": bool(task.get("enabled", True)),
-                }
-            },
-        )
-
-    if module == "moments":
-        return build_task_fields(
-            content={
-                "text": _clean(task.get("raw_text")),
-                "selected": _clean(task.get("selected_caption")),
-                "candidates": _clean_list(task.get("candidates")),
-                "images": _clean_list(task.get("images")),
-            },
-            targets={
-                "mode": _clean(task.get("visibility_type")) or "all",
-                "contact_ids": [],
-                "tag_ids": _clean_list(task.get("tags")),
-                "custom_names": [],
-                "visibility": _clean(task.get("visibility_type")) or "all",
-            },
-            tags=_clean_list(task.get("tags")),
-            schedule={
-                "mode": _clean(task.get("publish_rule")) or "random",
-                "value": _clean(task.get("publish_time")),
-                "window": _clean(task.get("publish_window")),
-            },
-            notes=_clean(task.get("execution_message")),
-            module_fields={
-                "moments": {
-                    "copy_mode": _clean(task.get("copy_mode")) or "ai",
                     "enabled": bool(task.get("enabled", True)),
                 }
             },
@@ -596,13 +477,6 @@ def _build_runtime_hints_for_module(module, task, *, instance_stats=None):
             "instance_pending": int(instance_stats.get("instance_pending") or 0),
             "instance_running": int(instance_stats.get("instance_running") or 0),
         }
-    elif module == "moments":
-        hints = {
-            "enabled": bool(task.get("enabled", True)),
-            "execute_after": _clean(task.get("execute_after")),
-            "queued_mode": _clean(task.get("queued_mode")),
-            "ai_generation_status": _clean(task.get("ai_generation_status")),
-        }
     else:
         hints = {
             "enabled": bool(task.get("enabled", True)),
@@ -621,9 +495,6 @@ def _build_runtime(module, *, tasks, data_dir, wx_id):
     if module == "scheduled_message":
         queue = _sort_runtime_items(_build_scheduled_message_manual_queue(tasks), time_field="scheduled_at")
         executions = _sort_runtime_items(_build_scheduled_message_executions(tasks), time_field="executed_at")
-    elif module == "moments":
-        queue = _sort_runtime_items(_build_moments_manual_queue(tasks), time_field="scheduled_at")
-        executions = _sort_runtime_items(_build_moments_executions(tasks), time_field="executed_at")
     else:
         queue = _sort_runtime_items(_build_material_outreach_queue(tasks, data_dir=data_dir, wx_id=wx_id), time_field="scheduled_at")
         executions = _sort_runtime_items(_build_material_outreach_executions(data_dir=data_dir, wx_id=wx_id), time_field="executed_at")
@@ -663,8 +534,6 @@ def _build_runtime_stats(queue, executions):
 def _load_tasks(module, *, data_dir, wx_id):
     if module == "scheduled_message":
         return _load_scheduled_message_tasks(data_dir=data_dir, wx_id=wx_id)
-    if module == "moments":
-        return _load_moments_tasks(data_dir=data_dir, wx_id=wx_id)
     return _load_material_outreach_tasks(data_dir=data_dir, wx_id=wx_id)
 
 
@@ -738,74 +607,14 @@ def _save_scheduled_message_runtime_and_history_record(task, *, data_dir, wx_id)
     return runtime_record, history_record
 
 
-def _load_moments_tasks(*, data_dir, wx_id):
-    storage = _storage("moments", data_dir=data_dir, wx_id=wx_id)
-    definitions = storage.load_tasks()
-    runtime_map = storage.load_runtime()
-    history_map = storage.load_history()
-    return deserialize_moments_task_collection(definitions, runtime_map, history_map)
 
 
-def _save_moments_tasks(tasks, *, data_dir, wx_id):
-    storage = _storage("moments", data_dir=data_dir, wx_id=wx_id)
-    normalized = [
-        normalize_moments_task(task)
-        for task in (tasks or [])
-        if isinstance(task, dict)
-    ]
-    definitions, runtime_map, history_map = serialize_moments_task_collection(normalized)
-    storage.save_tasks(definitions)
-    storage.save_runtime(runtime_map)
-    storage.save_history(history_map)
-    return normalized
 
 
-def _save_moments_definitions_only(tasks, *, data_dir, wx_id):
-    storage = _storage("moments", data_dir=data_dir, wx_id=wx_id)
-    normalized = [
-        normalize_moments_task(task)
-        for task in (tasks or [])
-        if isinstance(task, dict)
-    ]
-    definitions, _runtime_map, _history_map = serialize_moments_task_collection(normalized)
-    storage.save_tasks(definitions)
-    return normalized
 
 
-def _save_moments_runtime_record(task, *, data_dir, wx_id):
-    storage = _storage("moments", data_dir=data_dir, wx_id=wx_id)
-    definition, runtime_record, _history = split_moments_task_storage(task)
-    task_id = _clean(definition.get("id"))
-    if not task_id:
-        raise TaskWorkbenchServiceError("朋友圈任务ID无效", 400)
-    storage.mutate_runtime(
-        lambda runtime_map: {
-            **(runtime_map if isinstance(runtime_map, dict) else {}),
-            task_id: runtime_record,
-        }
-    )
-    return runtime_record
 
 
-def _save_moments_runtime_and_history_record(task, *, data_dir, wx_id):
-    storage = _storage("moments", data_dir=data_dir, wx_id=wx_id)
-    definition, runtime_record, history_record = split_moments_task_storage(task)
-    task_id = _clean(definition.get("id"))
-    if not task_id:
-        raise TaskWorkbenchServiceError("朋友圈任务ID无效", 400)
-    storage.mutate_runtime(
-        lambda runtime_map: {
-            **(runtime_map if isinstance(runtime_map, dict) else {}),
-            task_id: runtime_record,
-        }
-    )
-    storage.mutate_history(
-        lambda history_map: {
-            **(history_map if isinstance(history_map, dict) else {}),
-            task_id: history_record,
-        }
-    )
-    return runtime_record, history_record
 
 
 def _load_material_outreach_tasks(*, data_dir, wx_id):
@@ -1029,124 +838,14 @@ def _cancel_scheduled_message_queue_item(task_id, *, data_dir, wx_id, hooks):
     return updated_task, message
 
 
-def _build_moments_manual_queue(tasks):
-    items = []
-    for task in tasks or []:
-        if not isinstance(task, dict):
-            continue
-        task_id = _clean(task.get("id"))
-        normalized_status = _normalize_queue_status(task.get("status"))
-        if not task_id or normalized_status not in {"pending", "running"}:
-            continue
-        snapshot = _moments_pending_snapshot(task)
-        items.append(
-            build_queue_item(
-                module="moments",
-                task_id=task_id,
-                source="manual",
-                title=moments_task_title(task),
-                detail=_clean(snapshot.get("media_summary")) or "无图片",
-                scheduled_at=_clean(task.get("execute_after")) or "等待调度",
-                status=normalized_status,
-                **_snapshot_field_kwargs(snapshot, include_result_summary=False),
-            )
-        )
-    return items
 
 
-def _build_moments_executions(tasks):
-    items = []
-    for task in tasks or []:
-        if not isinstance(task, dict):
-            continue
-        task_id = _clean(task.get("id"))
-        executed_at = _clean(task.get("executed_at")) or _clean(task.get("updated_at"))
-        execution_result = _clean(task.get("execution_result"))
-        snapshot = task.get("execution_snapshot") if isinstance(task.get("execution_snapshot"), dict) else {}
-        if not (_clean(task.get("executed_at")) or execution_result):
-            continue
-        elif execution_result in {"failed", "error"}:
-            item_result = "failed"
-        else:
-            item_result = "success"
-        result_summary = (
-            _clean(task.get("execution_message")) or execution_result
-            if item_result == "failed"
-            else ""
-        )
-        items.append(
-            build_execution_item(
-                module="moments",
-                execution_id=f"{task_id}:{_clean(task.get('executed_at')) or 'execution'}",
-                task_id=task_id,
-                title=_clean(snapshot.get("content_summary")) or moments_task_title(task),
-                detail=_clean(snapshot.get("media_summary")) or "无图片",
-                executed_at=executed_at,
-                status="executed",
-                result=item_result,
-                result_message=_clean(task.get("execution_message")) or execution_result or "已执行",
-                result_summary=result_summary,
-                **_snapshot_field_kwargs(snapshot, include_result_summary=False),
-            )
-        )
-    items.sort(key=lambda item: _clean(item.get("executed_at")), reverse=True)
-    return items[:50]
 
 
-def _clear_moments_executions(*, data_dir, wx_id):
-    storage = _storage("moments", data_dir=data_dir, wx_id=wx_id)
-    history_map = storage.load_history()
-    history_map = dict(history_map) if isinstance(history_map, dict) else {}
-    for task_id, record in list(history_map.items()):
-        if isinstance(record, dict):
-            history_map[task_id] = {
-                **record,
-                "executed_at": "",
-                "execution_result": "",
-                "execution_message": "",
-                "execution_snapshot": {},
-            }
-    storage.save_history(history_map)
 
 
-def _queue_moments_task(task_id, *, data_dir, wx_id, payload, hooks):
-    mode = _clean(payload.get("mode") or "queue")
-    if mode == "immediate":
-        raise TaskWorkbenchServiceError("朋友圈任务不支持立即执行，请先确认生成待发布实例", 400)
-    if mode != "queue":
-        mode = "queue"
-
-    tasks = _load_moments_tasks(data_dir=data_dir, wx_id=wx_id)
-    task = _find_task(tasks, task_id)
-    if task is None:
-        raise TaskWorkbenchServiceError("朋友圈任务不存在", 404)
-    if _clean(task.get("status")) != "pending_confirm":
-        raise TaskWorkbenchServiceError("只有待确认的朋友圈任务可以发布", 400)
-    if not moments_task_has_ai_candidates(task):
-        raise TaskWorkbenchServiceError("AI文案模式需要先生成 AI候选，或切换为原始文案后再发布", 400)
-    if not task.get("selected_caption") and not task.get("raw_text") and not task.get("images"):
-        raise TaskWorkbenchServiceError("这条朋友圈任务没有可发布内容", 400)
-
-    updated_task = queue_moments_task(task, mode=mode)
-    _save_moments_runtime_and_history_record(updated_task, data_dir=data_dir, wx_id=wx_id)
-    _call_reload(hooks)
-    return updated_task
 
 
-def _cancel_moments_queue_item(task_id, *, data_dir, wx_id, hooks):
-    tasks = _load_moments_tasks(data_dir=data_dir, wx_id=wx_id)
-    task = _find_task(tasks, task_id)
-    if task is None:
-        raise TaskWorkbenchServiceError("朋友圈任务不存在", 404)
-    if _clean(task.get("status")) == "pending":
-        updated_task = cancel_queued_moments_task(task)
-    elif _clean(task.get("status")) == "pending_confirm":
-        updated_task = normalize_moments_task(task)
-    else:
-        raise TaskWorkbenchServiceError("这条朋友圈任务不在等待发布中", 400)
-    _save_moments_runtime_and_history_record(updated_task, data_dir=data_dir, wx_id=wx_id)
-    _call_reload(hooks)
-    return updated_task, "已取消这条等待发布的朋友圈"
 
 
 def _material_outreach_record_status(source_kind, record):

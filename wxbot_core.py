@@ -53,7 +53,6 @@ is_wxautox = True  # 标识当前使用的是 wxautox Plus 版本
 # 本地模块导入
 # ============================================================
 from extension import email as email_send
-from extension import webhook as webhook_send
 from core.api import (
     API_ERROR_REPLY_TEXT,
     APIConfigSnapshot,
@@ -70,7 +69,6 @@ from core.api import (
 from core.logger import install_thread_exception_logger, log, set_thread_exception_observer
 from core.wechat_observability import warn_slow_wechat_ui_action
 from core.prompt_system import (
-    CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
     ChatMemoryStore,
     PromptSystem,
     SystemPromptStore,
@@ -89,7 +87,10 @@ from core.account_storage import (
 from core import runtime_chat_state, wechat_ui_actions
 from core.wechat_ui_runtime import OwnedChat, UIClientFacade, WeChatUIRuntime
 from core.ui_delivery_journal import UIDeliveryJournal
-from core.unanswered_inbound import UnansweredInboundStore
+from core.unanswered_inbound import (
+    VOICE_PENDING_MAX_STARTUP_RECOVERIES,
+    UnansweredInboundStore,
+)
 from core.chat_history_format import (
     build_model_visible_history,
     format_history_message,
@@ -157,7 +158,6 @@ from core.wxbot_config import LONG_REPLY_SEGMENT_CHARS, WXBotConfig
 from feature.voice_reply import DEFAULT_CHAT_VOICE_REPLY_KEYWORDS, DEFAULT_GROUP_VOICE_REPLY_KEYWORDS
 from feature.voice_reply import (
     VoiceReplyLimiter,
-    VoiceSessionManager,
     build_tts_context_text,
     classify_voice_reply_text,
     group_voice_candidate,
@@ -177,12 +177,7 @@ from core.contact_profiles import (
     resolve_target_selector,
     save_directory as save_contact_directory,
 )
-from feature.custom_forward import (
-    is_custom_forward_source,
-    iter_custom_forward_listen_sources,
-)
-from feature import contacts, friend_request, listening, message_routing, relationship_scan, takeover_runtime
-from feature import admin_forward_flow, admin_moments_flow
+from feature import contacts, friend_request, listening, message_routing, relationship_scan
 
 
 PENDING_VISUAL_CONTEXT_TTL_SECONDS = 600
@@ -226,7 +221,6 @@ PRIVATE_OUTBOUND_HISTORY_STOP_WAIT_SECONDS = 5
 CHAT_MEMORY_BACKGROUND_INTERVAL_SECONDS = 30
 PRIVATE_MESSAGE_PIPELINE_MAX_QUEUED_BATCHES = 1
 from feature import runtime_task_runner
-from feature.admin_commands import dispatch_admin_command
 from feature.keyword_reply import (
     normalize_keyword_reply_actions,
     plan_private_keyword_reply,
@@ -283,30 +277,6 @@ from feature.material_outreach_preface import (
     normalize_preface_pending_queue,
 )
 from feature.material_outreach_storage import MaterialOutreachStorage
-from feature.moments_tasks import (
-    STATUS_EXECUTED,
-    STATUS_PENDING,
-    append_draft_image,
-    append_draft_text,
-    clear_active_draft,
-    copy_moments_admin_upload,
-    create_empty_draft,
-    delete_managed_moments_uploads,
-    deserialize_moments_task_collection,
-    draft_has_material,
-    load_active_draft,
-    moments_task_has_ai_candidates,
-    moments_task_from_admin_draft,
-    moments_task_publish_text,
-    moments_visibility_to_privacy,
-    normalize_moments_task,
-    parse_moments_candidates,
-    queue_moments_task,
-    render_preview_reply,
-    save_active_draft,
-    serialize_moments_task_collection,
-    split_moments_task_storage,
-)
 from feature.ai_material_outreach import (
     AI_AUTO_OUTREACH_TASK_ID,
     AI_AUTO_OUTREACH_TASK_NAME,
@@ -419,7 +389,6 @@ configure_local_ffmpeg_for_wxauto()
 
 IMAGE_PARSE_PROMPT_FILE = "image_parse.md"
 CLOSING_REPLY_PROMPT_FILE = "closing_reply.md"
-MOMENTS_CAPTION_PROMPT_FILE = "moments_caption.md"
 MATERIAL_OUTREACH_DECISION_PROMPT_FILE = "material_decision.md"
 MATERIAL_OUTREACH_PREFACE_PROMPT_FILE = "material_preface.md"
 PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS = 30 * 60
@@ -498,11 +467,8 @@ class WXBot:
         self._runtime_task_reload_lock = threading.RLock()
         self._runtime_task_reload_requested = False
         self._set_material_outreach_namespace()
-        self._set_admin_moments_draft_namespace()
-        self._set_admin_forward_draft_namespace()
         self._pause_chat_reply        = False  # 暂停私聊 AI 自动回复标志
         self._pause_group_reply       = False  # 暂停群聊 AI 自动回复标志
-        self._pause_chat_reply_users  = set()  # 单个好友人工接管暂停列表
         self.memory_manager      = None         # 记忆管理器（init_wx_listeners 时创建）
         self.all_Mode_listen_list = []           # 全局模式下的动态监听列表，元素格式：[昵称, 最新消息时间戳]
         self._listen_chats       = {}
@@ -585,7 +551,6 @@ class WXBot:
         elif (
             is_private
             and getattr(message, "attr", "") == "self"
-            and conversation.who != getattr(self.config, "cmd", "")
         ):
             if not self._mark_message_seen(conversation.who, message):
                 return True
@@ -728,7 +693,7 @@ class WXBot:
         self._unanswered_inbound_store = unanswered_store
         self._unanswered_inbound_context = threading.local()
         self._pending_unanswered_inbound_recovery = unanswered_store.recover_for_replay()
-        self._pending_voice_transcription_recovery = unanswered_store.pending("voice_pending")
+        self._pending_voice_transcription_recovery = unanswered_store.prepare_voice_pending_recovery()
         self._pending_awaiting_ui_recovery = unanswered_store.pending("awaiting_ui")
         return dict(self._ui_identity)
 
@@ -785,6 +750,7 @@ class WXBot:
                 _wxbot_received_at=float(record.get("received_at") or time.time()),
             )
             message._wxbot_voice_pending_record_id = str(record.get("record_id") or "")
+            message._wxbot_voice_recovery_attempts = int(record.get("voice_recovery_attempts", 0) or 0)
             message._wxbot_voice_history_only = True
             self._queue_pending_private_voice_transcription(
                 OwnedChat(self._ui_owner, str(record.get("conversation") or "")),
@@ -897,16 +863,6 @@ class WXBot:
                     continue
                 definition, _runtime, _history = split_scheduled_message_task_storage(task)
                 return self._ui_task_definition_version(definition)
-        if category == "moments":
-            storage = self._moments_task_storage()
-            tasks = storage.load_tasks() if storage is not None else None
-            if tasks is None:
-                tasks = getattr(self.config, "moments_task_list", []) or []
-            for task in tasks:
-                if not isinstance(task, dict) or str(task.get("id") or "").strip() != task_id:
-                    continue
-                definition, _runtime, _history = split_moments_task_storage(task)
-                return self._ui_task_definition_version(definition)
         if category == "material_outreach":
             storage = self._material_outreach_storage()
             tasks = storage.load_tasks() if storage is not None else None
@@ -916,7 +872,7 @@ class WXBot:
                 current_id = str(task.get("id") or task.get("task_id") or "").strip() if isinstance(task, dict) else ""
                 if current_id == task_id:
                     return self._ui_task_definition_version(task)
-        if category in {"contact_auto", "new_friend", "keyword", "group_welcome", "custom_forward"}:
+        if category in {"contact_auto", "new_friend", "keyword", "group_welcome"}:
             definition = self._config_ui_task_definition(category)
             return self._ui_task_definition_version(definition) if definition else 0
         if category == "relationship_auto":
@@ -980,26 +936,18 @@ class WXBot:
                 "group_welcome_msg",
                 "group",
             ),
-            "custom_forward": (
-                "custom_forward_switch",
-                "custom_forward_list",
-            ),
         }.get(category, ())
         definition = {field: config_data.get(field) for field in fields}
-        if category in {"keyword", "custom_forward"}:
-            path_method = (
-                "_keyword_rules_file" if category == "keyword" else "_custom_forward_rules_file"
-            )
-            field = "keyword_dict" if category == "keyword" else "custom_forward_list"
-            fallback = {} if category == "keyword" else []
-            path_provider = getattr(self.config, path_method, None)
+        if category == "keyword":
+            field = "keyword_dict"
+            fallback = {}
+            path_provider = getattr(self.config, "_keyword_rules_file", None)
             path = path_provider() if callable(path_provider) else None
             if path:
                 try:
                     with open(path, "r", encoding="utf-8-sig") as handle:
                         loaded = json.load(handle)
-                    expected_type = dict if category == "keyword" else list
-                    definition[field] = loaded if isinstance(loaded, expected_type) else fallback
+                    definition[field] = loaded if isinstance(loaded, dict) else fallback
                 except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                     definition[field] = fallback
         return definition
@@ -1031,14 +979,6 @@ class WXBot:
             return "", 0
         task_key = f"scheduled_message:{task_id}"
         definition, _runtime, _history = split_scheduled_message_task_storage(task)
-        return task_key, self._ui_task_definition_version(definition)
-
-    def _moments_ui_guard(self, task):
-        task_id = str((task or {}).get("id") or "").strip()
-        if not task_id:
-            return "", 0
-        task_key = f"moments:{task_id}"
-        definition, _runtime, _history = split_moments_task_storage(task)
         return task_key, self._ui_task_definition_version(definition)
 
     def _material_outreach_ui_guard(self, task):
@@ -1520,17 +1460,7 @@ class WXBot:
                     message=f"素材转发：恢复 {len(recovered)} 条提交结果未知记录，已禁止自动重发",
                 )
 
-    def _set_admin_moments_draft_namespace(self, wx_id=None):
-        wx_id = resolve_account_id(wx_id, fallback_default=True)
-        base_dir = str(account_area_dir(self.config.DATA_DIR, wx_id, "moments_drafts", create=True))
-        os.makedirs(base_dir, exist_ok=True)
-        self._moments_draft_file = os.path.join(base_dir, "active_draft.json")
 
-    def _set_admin_forward_draft_namespace(self, wx_id=None):
-        wx_id = resolve_account_id(wx_id, fallback_default=True)
-        base_dir = str(account_area_dir(self.config.DATA_DIR, wx_id, "forward_drafts", create=True))
-        os.makedirs(base_dir, exist_ok=True)
-        self._forward_draft_file = os.path.join(base_dir, "active_draft.json")
 
     def _get_material_source_read_lock(self, source):
         source = str(source or "").strip()
@@ -2246,12 +2176,6 @@ class WXBot:
             email_send.send_email(subject=id, content=content)
         except Exception as email_err:
             log(level="ERROR", message=f"发送报错邮箱失败：{email_err}")
-        try:
-            ok, message = webhook_send.send_message(id, content)
-            if not ok:
-                log(level="ERROR", message=f"发送 Webhook 通知失败：{message}")
-        except Exception as webhook_err:
-            log(level="ERROR", message=f"发送 Webhook 通知异常：{webhook_err}")
 
     def key_pass(self, year, month, day, hour, minute, second):
         """
@@ -2289,7 +2213,6 @@ class WXBot:
         for field in (
             'api_configs',
             'api_index',
-            'moments_api_index',
             'api_capability_map',
             'backup_chat_api_index',
             'backup_chat_api_failover_threshold',
@@ -2335,11 +2258,6 @@ class WXBot:
             return None
         return TaskWorkbenchStorage(data_dir, self._task_storage_wx_id(wx_id), "scheduled_message")
 
-    def _moments_task_storage(self, *, wx_id=None):
-        data_dir = self._task_storage_data_dir()
-        if not data_dir:
-            return None
-        return TaskWorkbenchStorage(data_dir, self._task_storage_wx_id(wx_id), "moments")
 
     def _material_outreach_storage(self, *, wx_id=None):
         data_dir = self._task_storage_data_dir()
@@ -2418,53 +2336,8 @@ class WXBot:
         ]
         storage.save_tasks(normalized)
 
-    def _save_moments_task_definitions_only(self, tasks):
-        storage = self._moments_task_storage()
-        if storage is None:
-            return
-        normalized = [
-            normalize_moments_task(task)
-            for task in (tasks or [])
-            if isinstance(task, dict)
-        ]
-        definitions, _runtime_map, _history_map = serialize_moments_task_collection(normalized)
-        storage.save_tasks(definitions)
 
-    def _save_moments_runtime_record(self, task):
-        storage = self._moments_task_storage()
-        if storage is None:
-            return
-        definition, runtime_record, _history = split_moments_task_storage(task)
-        task_id = str(definition.get("id") or "").strip()
-        if not task_id:
-            return
-        storage.mutate_runtime(
-            lambda runtime_map: {
-                **(runtime_map if isinstance(runtime_map, dict) else {}),
-                task_id: runtime_record,
-            }
-        )
 
-    def _save_moments_runtime_history_records(self, task):
-        storage = self._moments_task_storage()
-        if storage is None:
-            return
-        definition, runtime_record, history_record = split_moments_task_storage(task)
-        task_id = str(definition.get("id") or "").strip()
-        if not task_id:
-            return
-        storage.mutate_runtime(
-            lambda runtime_map: {
-                **(runtime_map if isinstance(runtime_map, dict) else {}),
-                task_id: runtime_record,
-            }
-        )
-        storage.mutate_history(
-            lambda history_map: {
-                **(history_map if isinstance(history_map, dict) else {}),
-                task_id: history_record,
-            }
-        )
 
     def _compile_fixed_runtime_plan(self, task, *, default_time="08:00", now=None):
         task = normalize_fixed_task_schedule(task, default_time=default_time, start_at_key="start_at")
@@ -2981,24 +2854,8 @@ class WXBot:
     def _run_due_random_material_outreach(self, now=None):
         runtime_task_runner.run_due_random_material_outreach(self, now=now)
 
-    def _resolve_panel_moments_images(self, images):
-        data_dir = str(getattr(self.config, "DATA_DIR", "") or "")
-        resolved = []
-        for image in images or []:
-            text = str(image or "").strip()
-            if not text:
-                continue
-            if os.path.isabs(text):
-                resolved.append(text)
-            else:
-                resolved.append(os.path.abspath(os.path.join(data_dir, text)))
-        return resolved
 
-    def _panel_moments_privacy(self, visibility_type):
-        return moments_visibility_to_privacy(visibility_type)
 
-    def _run_due_moments_task_list(self, now=None):
-        runtime_task_runner.run_due_moments_task_list(self, now=now)
 
     def _process_unified_runtime_tasks(self, now=None):
         runtime_task_runner.process_unified_runtime_tasks(self, now=now)
@@ -3097,29 +2954,6 @@ class WXBot:
         )
         return result
 
-    def _execute_moments_publish_task(self, task):
-        owner = getattr(self, "_ui_owner", None)
-        if owner is None:
-            raise RuntimeError("朋友圈 UI 只能由微信 UI owner 执行")
-        task = dict(task or {})
-        task_key = str(task.pop("_ui_task_key", "") or "")
-        task_version = int(task.pop("_ui_task_version", 0) or 0)
-        try:
-            return owner.call(
-                wechat_ui_actions.UIIntent(
-                    wechat_ui_actions.UIIntentKind.MOMENTS,
-                    {
-                        "task": task,
-                        "task_key": task_key,
-                        "nickname": str(self._ui_identity.get("nickname") or ""),
-                    },
-                    task_version=task_version,
-                ),
-                wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
-            )
-        except wechat_ui_actions.IntentCancelled as exc:
-            log(level="INFO", message=f"朋友圈任务已更新或取消，本次未发布：{exc}")
-            return False
 
     def send_material_outreach(self, task):
         if self.is_stop_requested():
@@ -4937,10 +4771,6 @@ class WXBot:
                 msg,
                 getattr(chat, "chat_type", ""),
             )
-            if takeover_runtime.consume_admin_chat_echo_message(self, chat, msg):
-                self._mark_message_skip_memory(msg)
-                self._consume_private_reply_runtime_echo(chat.who, getattr(msg, "content", ""))
-                return True
             msg_type_label = {
                 "text": "文本",
                 "voice": "语音",
@@ -4979,25 +4809,6 @@ class WXBot:
                         )
 
             elif msg.attr == "self":
-                # 自己账号同步过来的消息（如从手机向文件传输助手发送指令）
-                # 仅当当前窗口与管理员配置匹配时才作为指令处理
-                if chat.who == self.config.cmd:
-                    self._record_received_message()
-                    self.last_msg_time   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    self.last_msg_sender = msg.sender
-                    with takeover_runtime.capture_admin_chat_replies(self, chat):
-                        admin_chat = chat
-                        if self._handle_admin_forward_input(admin_chat, msg):
-                            return True
-                        if self._handle_admin_moments_input(admin_chat, msg):
-                            return True
-                        result = self.process_command(admin_chat, msg)
-                        if not result:
-                            self.is_err(
-                                self.wx.nickname + f" wxbot处理管理员指令失败！",
-                                text + '\n' + self._result_error_text(result),
-                            )
-                        return True
                 if self._handle_material_source_message(chat, msg):
                     return True
 
@@ -5027,7 +4838,6 @@ class WXBot:
     def _is_ordinary_private_self_message(self, chat, message):
         return (
             getattr(message, "attr", "") == "self"
-            and getattr(chat, "who", "") != getattr(self.config, "cmd", "")
             and getattr(chat, "chat_type", "private") != "group"
         )
 
@@ -5081,11 +4891,6 @@ class WXBot:
         if (
             getattr(message, "type", "") == "voice"
             and message_routing.voice_content_state(getattr(message, "content", "")) != "valid"
-        ):
-            return True
-        if (
-            getattr(message, "attr", "") == "self"
-            and getattr(chat, "who", "") == getattr(self.config, "cmd", "")
         ):
             return True
         return False
@@ -5238,13 +5043,11 @@ class WXBot:
         api_error_should_mark = False
         preprocess_fallback_should_mark = False
         voice_candidate = False
-        start_voice_session = False
         image_reply_context_used = False
-        voice_session_manager = VoiceSessionManager(
-            getattr(self, "_voice_reply_state", None) or load_voice_reply_state(self._voice_reply_state_path())
+        self._voice_reply_state = (
+            getattr(self, "_voice_reply_state", None)
+            or load_voice_reply_state(self._voice_reply_state_path())
         )
-        self._voice_reply_state = voice_session_manager.state
-        voice_now = datetime.now()
         try:
             message_type = str(getattr(message, "type", "") or "").strip().lower()
             message_body = strip_message_shell(getattr(message, "content", ""), message_type)
@@ -5263,8 +5066,11 @@ class WXBot:
                     reply_actions,
                     delivery_id=self._stable_inbound_delivery_id("private-keyword", chat, message),
                 )
-                if send_success and self.config.text_reply_limit_switch and user_key:
-                    self.reply_count_store.increment_ai_count(user_key)
+                if send_success and getattr(self.config, "chat_text_reply_limit_switch", False) and user_key:
+                    self.reply_count_store.increment_ai_count(
+                        user_key,
+                        limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 24),
+                    )
                 if send_success:
                     self._record_reply_metric_success(chat.who, chat_type="private")
                     self._record_keyword_reply_success(chat.who, chat_type="private", action_count=len(reply_actions))
@@ -5279,13 +5085,7 @@ class WXBot:
                 if self.config.memory_switch and self.config.memory_context_switch and self.memory_manager:
                     self._repair_private_context_before_ai(chat, message)
                     history = self._get_model_context_history(str(getattr(chat, "who", "") or "").strip())
-                voice_candidate, start_voice_session = private_voice_candidate(
-                    self.config,
-                    chat.who,
-                    message,
-                    voice_session_manager,
-                    now=voice_now,
-                )
+                voice_candidate = private_voice_candidate(self.config, message)
                 if getattr(message, "attr", "") == "friend":
                     if (
                         getattr(message, "type", "") in {"text", "voice", "image"}
@@ -5432,42 +5232,25 @@ class WXBot:
         if voice_candidate and not api_error_reply and not preprocess_fallback_should_mark:
             clean_reply = clean_ai_reply_text(reply)
             if classify_voice_reply_text(clean_reply) == "normal":
-                section_id = ""
-                if start_voice_session:
-                    section_id = str(uuid.uuid4())
-                elif voice_session_manager.is_private_session_active(chat.who, now=voice_now):
-                    section_id = voice_session_manager.get_private_session_section_id(chat.who)
-                    if not section_id:
-                        section_id = str(uuid.uuid4())
                 context_text = self._private_voice_context_text(message)
                 if self._try_send_voice_reply(
                     chat,
                     clean_reply,
                     state_key=f"private:{chat.who}",
-                    cooldown_minutes=getattr(self.config, 'chat_voice_reply_cooldown_minutes', 10) if start_voice_session else 0,
                     limit_count=getattr(self.config, 'chat_voice_reply_limit_count', 50),
                     limit_hours=getattr(self.config, 'chat_voice_reply_limit_hours', 24),
                     context_text=context_text,
-                    section_id=section_id,
+                    section_id=str(uuid.uuid4()),
                     expected_sequence=reply_message_sequence,
                 ):
                     if image_reply_context_used:
                         self._clear_pending_visual_context(chat.who)
-                    if start_voice_session:
-                        voice_session_manager.start_private_session(
-                            chat.who,
-                            now=voice_now,
-                            minutes=getattr(self.config, 'chat_voice_session_minutes', 10),
-                            turns=getattr(self.config, 'chat_voice_session_turns', 5),
-                            section_id=section_id,
-                        )
-                    elif section_id:
-                        voice_session_manager.set_private_session_section_id(chat.who, section_id)
-                    if voice_session_manager.is_private_session_active(chat.who, now=voice_now):
-                        voice_session_manager.consume_private_turn(chat.who)
                     self._save_voice_reply_state()
-                    if self.config.text_reply_limit_switch and user_key:
-                        self.reply_count_store.increment_ai_count(user_key)
+                    if getattr(self.config, "chat_text_reply_limit_switch", False) and user_key:
+                        self.reply_count_store.increment_ai_count(
+                            user_key,
+                            limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 24),
+                        )
                     self._record_reply_metric_success(chat.who, chat_type="private")
                     self._log_reply_contents(
                         "私聊",
@@ -5498,8 +5281,11 @@ class WXBot:
         if send_success and preprocess_fallback_should_mark:
             self.reply_count_store.mark_preprocess_fallback_notified(user_key)
 
-        if send_success and self.config.text_reply_limit_switch and user_key and not api_error_reply:
-            self.reply_count_store.increment_ai_count(user_key)
+        if send_success and getattr(self.config, "chat_text_reply_limit_switch", False) and user_key and not api_error_reply:
+            self.reply_count_store.increment_ai_count(
+                user_key,
+                limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 24),
+            )
 
         if send_success:
             self._record_reply_metric_success(chat.who, chat_type="private")
@@ -5536,8 +5322,8 @@ class WXBot:
                 chat_type='private',
                 protected_count=getattr(
                     self.config,
-                    'chat_memory_protected_recent_count',
-                    CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
+                    'memory_context_count',
+                    50,
                 ),
             )
             if updated:
@@ -5643,8 +5429,7 @@ class WXBot:
         处理单条消息的核心分发逻辑：
         1. 黑/白名单过滤
         2. 群聊消息（含 @ 检测和关键词回复）
-        3. 管理员命令解析
-        4. 普通好友 AI 回复
+        3. 普通好友 AI 回复
 
         :param chat:    聊天窗口子对象
         :param message: 消息对象
@@ -5660,8 +5445,19 @@ class WXBot:
             return True
         if action == "skip":
             return True
-        if action == "takeover_mirror":
-            return takeover_runtime.mirror_takeover_message_to_admin(self, chat, message)
+        group_user_key = ""
+        if action in {"group_keyword_reply", "group_ai"}:
+            group_user_key = self._get_group_reply_once_key(chat, message)
+            limit_handled, limit_result = self._check_text_reply_limit_runtime(
+                chat,
+                group_user_key,
+                message=message,
+                chat_type="group",
+            )
+            if limit_handled:
+                if action == "group_ai":
+                    self._resolve_group_unanswered("", message)
+                return limit_result
         if action == "group_keyword_reply":
             log(level="DEBUG", message=f"群组 {chat.who}：命中关键词回复，内容：{message.content}")
             reply_actions = route.get("reply_actions", [])
@@ -5671,6 +5467,11 @@ class WXBot:
                 delivery_id=self._stable_inbound_delivery_id("group-keyword", chat, message),
             )
             if send_success:
+                if getattr(self.config, "group_text_reply_limit_switch", False) and group_user_key:
+                    self.reply_count_store.increment_ai_count(
+                        group_user_key,
+                        limit_hours=getattr(self.config, "group_text_reply_limit_hours", 24),
+                    )
                 self._record_reply_metric_success(chat.who, chat_type="group")
                 self._record_keyword_reply_success(chat.who, chat_type="group", action_count=len(reply_actions))
             time.sleep(1)
@@ -5821,13 +5622,17 @@ class WXBot:
                         chat,
                         clean_reply,
                         state_key=f"group:{chat.who}",
-                        cooldown_minutes=getattr(self.config, 'group_voice_reply_cooldown_minutes', 0),
                         limit_count=getattr(self.config, 'group_voice_reply_limit_count', 99),
                         limit_hours=getattr(self.config, 'group_voice_reply_limit_hours', 24),
                         context_text=group_context_text,
                         unanswered_record_id=group_record_id,
                     ):
                         self._save_voice_reply_state()
+                        if getattr(self.config, "group_text_reply_limit_switch", False) and group_user_key:
+                            self.reply_count_store.increment_ai_count(
+                                group_user_key,
+                                limit_hours=getattr(self.config, "group_text_reply_limit_hours", 24),
+                            )
                         self._record_reply_metric_success(chat.who, chat_type="group")
                         self._log_reply_contents(
                             "群聊",
@@ -5905,13 +5710,18 @@ class WXBot:
                     group_user_key = self._get_group_reply_once_key(chat, message)
                     if group_user_key:
                         self.reply_count_store.mark_preprocess_fallback_notified(group_user_key)
+                if (
+                    not group_api_error_reply
+                    and getattr(self.config, "group_text_reply_limit_switch", False)
+                    and group_user_key
+                ):
+                    self.reply_count_store.increment_ai_count(
+                        group_user_key,
+                        limit_hours=getattr(self.config, "group_text_reply_limit_hours", 24),
+                    )
                 self._record_reply_metric_success(chat.who, chat_type="group")
                 self._log_reply_contents("群聊", chat.who, sent_reply_items)
             self._resolve_group_unanswered(group_record_id, message)
-            return result
-
-        if action == "admin_command":
-            result = self.process_command(chat, message)
             return result
 
         if action == "private_ai":
@@ -5952,17 +5762,6 @@ class WXBot:
             api_index = 0
         self.config.api_index = api_index
         self.config.config['api_index'] = api_index
-
-        try:
-            moments_api_index = int(config_data.get('moments_api_index', getattr(self.config, 'moments_api_index', 0)))
-        except (TypeError, ValueError):
-            moments_api_index = 0
-        if api_configs:
-            moments_api_index = max(0, min(len(api_configs) - 1, moments_api_index))
-        else:
-            moments_api_index = 0
-        self.config.moments_api_index = moments_api_index
-        self.config.config['moments_api_index'] = moments_api_index
 
         api_capability_map = config_data.get('api_capability_map', getattr(self.config, 'api_capability_map', {}))
         if not isinstance(api_capability_map, dict):
@@ -6652,7 +6451,8 @@ class WXBot:
         return False
 
     def _reply_once_user_data(self, user_key):
-        limit_hours = getattr(self.config, "text_reply_limit_hours", 24)
+        scope = "group" if str(user_key or "").startswith("group:") else "chat"
+        limit_hours = getattr(self.config, f"{scope}_text_reply_limit_hours", 24)
         return self.reply_count_store.get_user(user_key, now=datetime.now(), limit_hours=limit_hours)
 
     def _ensure_pending_private_voice_transcription_state(self):
@@ -6671,6 +6471,22 @@ class WXBot:
         first_seen_at = float(item.get("first_seen_at") or time.time())
         max_wait = VOICE_TRANSCRIPTION_RETRY_DELAY_SECONDS * VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS
         return time.time() - first_seen_at >= max_wait
+
+    def _terminalize_exhausted_voice_recovery(self, items):
+        store = getattr(self, "_unanswered_inbound_store", None)
+        if store is None:
+            return 0
+        terminalized = 0
+        for item in items or []:
+            if not item.get("history_only"):
+                continue
+            attempts = int(item.get("voice_recovery_attempts", 0) or 0)
+            record_id = str(item.get("record_id") or "")
+            if attempts < VOICE_PENDING_MAX_STARTUP_RECOVERIES or not record_id:
+                continue
+            if store.mark_voice_history_unavailable(record_id):
+                terminalized += 1
+        return terminalized
 
     @staticmethod
     def _is_unresolved_pending_voice_message(message):
@@ -6834,6 +6650,7 @@ class WXBot:
             "reread_attempts": 0,
             "record_id": record_id,
             "history_only": history_only,
+            "voice_recovery_attempts": int(getattr(message, "_wxbot_voice_recovery_attempts", 0) or 0),
         }
         created_task = False
         with self._chat_merge_lock:
@@ -6911,13 +6728,17 @@ class WXBot:
             if pending:
                 self._reschedule_pending_private_voice_transcription(chat, pending, reason="重读时微信操作锁忙")
             if expired:
+                terminalized = self._terminalize_exhausted_voice_recovery(expired)
                 with self._chat_merge_lock:
                     for item in expired:
                         item_key = item.get("key")
                         if item_key:
                             self._drop_pending_private_voice_placeholder_locked(name, item_key)
                     self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
-                log(message=f"私聊 {name}：{len(expired)} 条语音重读仍未得到有效文字，已保留待下次启动恢复")
+                log(message=(
+                    f"私聊 {name}：{len(expired)} 条语音重读仍未得到有效文字；"
+                    f"{terminalized} 条已达到恢复上限并结束，其他记录留待下次启动补历史"
+                ))
             return True
         try:
             for item in items:
@@ -6937,13 +6758,17 @@ class WXBot:
             if pending:
                 self._reschedule_pending_private_voice_transcription(chat, pending, reason=f"重读失败：{exc}")
             if expired:
+                terminalized = self._terminalize_exhausted_voice_recovery(expired)
                 with self._chat_merge_lock:
                     for item in expired:
                         item_key = item.get("key")
                         if item_key:
                             self._drop_pending_private_voice_placeholder_locked(name, item_key)
                     self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
-                log(message=f"私聊 {name}：{len(expired)} 条语音重读仍未得到有效文字，已保留待下次启动恢复，最后一次重读失败：{exc}")
+                log(message=(
+                    f"私聊 {name}：{len(expired)} 条语音重读仍未得到有效文字；"
+                    f"{terminalized} 条已达到恢复上限并结束，最后一次重读失败：{exc}"
+                ))
             return True
         finally:
             release_wechat_lock()
@@ -7007,7 +6832,11 @@ class WXBot:
         if pending_items:
             self._reschedule_pending_private_voice_transcription(chat, pending_items, reason="结果仍未就绪")
         if expired_items:
-            log(message=f"私聊 {name}：{len(expired_items)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字，已保留待下次启动恢复")
+            terminalized = self._terminalize_exhausted_voice_recovery(expired_items)
+            log(message=(
+                f"私聊 {name}：{len(expired_items)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字；"
+                f"{terminalized} 条已达到恢复上限并结束，其他记录留待下次启动补历史"
+            ))
         return True
 
     def _save_incoming_memory_message(self, chat, message, *, chat_type=None):
@@ -7687,8 +7516,6 @@ class WXBot:
         if not name:
             return False
         config = getattr(self, "config", None)
-        if name == getattr(config, "cmd", ""):
-            return False
         if name in getattr(config, "group", []):
             return False
         return True
@@ -8749,7 +8576,6 @@ class WXBot:
         clean_reply,
         *,
         state_key,
-        cooldown_minutes,
         limit_count,
         limit_hours,
         context_text="",
@@ -8771,12 +8597,9 @@ class WXBot:
         if not limiter.can_send(
             state_key,
             now=now,
-            cooldown_minutes=cooldown_minutes,
             limit_count=limit_count,
             limit_hours=limit_hours,
         ):
-            if not limiter._passes_cooldown(state_key, now=now, cooldown_minutes=cooldown_minutes):
-                return False
             if self._should_log_voice_reply_limit_warning(
                 state_key,
                 limiter,
@@ -8842,8 +8665,6 @@ class WXBot:
             finally:
                 release_wechat_lock()
             if ReplyCountStore.was_send_success(result) or self._private_reply_send_allows_memory_save(result):
-                if chat.who == getattr(self.config, "cmd", ""):
-                    takeover_runtime.remember_admin_echo_message(self, clean_reply)
                 if self._save_private_reply_memory_message(chat, clean_reply, msg_type="voice"):
                     self._mark_private_outbound_echo_group_persisted(echo_group_id)
                 else:
@@ -8968,8 +8789,6 @@ class WXBot:
                                 self._settle_private_outbound_echo_send(echo_group_id, None)
                                 raise
                             result = send_result
-                            if chat.who == getattr(self.config, "cmd", ""):
-                                takeover_runtime.remember_admin_echo_message(self, segment)
                             current_success = ReplyCountStore.was_send_success(send_result)
                             if current_success and isinstance(sent_items, list):
                                 sent_items.append(self._format_reply_log_item(segment))
@@ -8999,7 +8818,7 @@ class WXBot:
             log(level="ERROR", message=f"关键词回复命中但没有可发送内容，已停止处理：{chat.who}")
             return False, False
         is_group_chat = getattr(chat, "chat_type", "") == "group" or chat.who in getattr(self.config, "group", [])
-        private_chat = not is_group_chat and chat.who != getattr(self.config, "cmd", "")
+        private_chat = not is_group_chat
         if private_chat and not self._private_reply_can_continue(chat):
             return False, True
         release_wechat_lock = None
@@ -9146,9 +8965,16 @@ class WXBot:
             return ""
         return f"group:{group_name}:{sender}" if sender else f"group:{group_name}"
 
-    def _get_text_reply_limit_count(self, user_name):
-        """获取私聊用户的回复轮数上限；当前统一使用全局配置。"""
-        return self.config.text_reply_limit_count
+    def _text_reply_limit_settings(self, chat_type):
+        scope = "group" if chat_type == "group" else "chat"
+        return {
+            "switch": bool(getattr(self.config, f"{scope}_text_reply_limit_switch", False)),
+            "count": getattr(self.config, f"{scope}_text_reply_limit_count", 99),
+            "hours": getattr(self.config, f"{scope}_text_reply_limit_hours", 24),
+            "ai_reply": bool(getattr(self.config, f"{scope}_text_reply_limit_ai_reply", True)),
+            "reply": str(getattr(self.config, f"{scope}_text_reply_limit_reply", "") or "").strip(),
+            "reply_once": bool(getattr(self.config, f"{scope}_text_reply_limit_reply_once", False)),
+        }
 
     def _memory_context_raw_limit(self, message_limit):
         try:
@@ -9205,22 +9031,59 @@ class WXBot:
             log(level="WARNING", message=f"读取轮数超限结束语上下文失败: {e}")
             return []
 
-    def _build_text_reply_limit_ai_prompt(self, chat_name):
+    def _build_text_reply_limit_ai_prompt(self, chat_name, *, chat_type="private"):
         system = getattr(self, "prompt_system", None)
         if system is None:
             system = self._init_prompt_system()
         return system.render_template_prompt(
             CLOSING_REPLY_PROMPT_FILE,
             chat_name,
-            chat_type="private",
+            chat_type=chat_type,
         )
 
-    def _generate_text_reply_limit_reply(self, chat, message):
-        prompt = self._build_text_reply_limit_ai_prompt(chat.who)
+    def _generate_text_reply_limit_reply(self, chat, message, *, chat_type="private"):
+        prompt = self._build_text_reply_limit_ai_prompt(chat.who, chat_type=chat_type)
         history = self._text_reply_limit_history(chat.who)
         content = str(getattr(message, 'content', '') or '').strip()
-        reply = self._get_chat_api(chat.who).chat(content, prompt=prompt, history=history)
+        if chat_type == "group":
+            sender = str(getattr(message, "sender", "") or "").strip()
+            if sender:
+                content = f"{sender}: {content}"
+            api = self._get_group_api(chat.who)
+        else:
+            api = self._get_chat_api(chat.who)
+        reply = api.chat(content, prompt=prompt, history=history)
         return str(reply or '').strip()
+
+    def _send_text_reply_limit_parts(self, chat, message, parts, *, chat_type, sent_items=None):
+        if chat_type != "group":
+            return self._send_private_ai_reply_parts(chat, parts, sent_items=sent_items)
+
+        send_success = False
+        result = True
+        at_sender = bool(getattr(self.config, "group_reply_at_msg", False))
+        quote_first = bool(getattr(self.config, "group_reply_quote", False))
+        sender = str(getattr(message, "sender", "") or "").strip()
+        for index, part in enumerate(parts or []):
+            if isinstance(chat, OwnedChat):
+                if quote_first and index == 0:
+                    result = self._ui_quote_message(chat, message, part, at=sender if at_sender else "")
+                else:
+                    result = chat.SendMsg(msg=part, at=sender if at_sender and index == 0 else None)
+            else:
+                with wechat_ui_actions.hold(self):
+                    with self._get_chat_send_lock(chat.who):
+                        if quote_first and index == 0:
+                            result = message.quote(part, at=sender if at_sender else None)
+                        else:
+                            result = chat.SendMsg(part, at=sender if at_sender and index == 0 else None)
+            current_success = ReplyCountStore.was_send_success(result)
+            send_success = send_success or current_success
+            if current_success and isinstance(sent_items, list):
+                sent_items.append(
+                    self._format_reply_log_item(part, kind="quote" if quote_first and index == 0 else "text")
+                )
+        return send_success, result
 
     def _should_log_text_reply_limit_warning(self, user_key, user_data, *, limit_count, limit_hours):
         warning_keys = getattr(self, "_text_reply_limit_warning_keys", None)
@@ -9237,12 +9100,13 @@ class WXBot:
         warning_keys.add(key)
         return True
 
-    def _check_text_reply_limit(self, chat, user_key, message=None):
-        """检查并处理私聊回复轮数超限；返回 (是否已处理, 发送结果)。"""
-        if not self.config.text_reply_limit_switch or not user_key:
+    def _check_text_reply_limit(self, chat, user_key, message=None, *, chat_type="private"):
+        """检查并处理当前会话对象的回复次数限制；返回 (是否已处理, 发送结果)。"""
+        settings = self._text_reply_limit_settings(chat_type)
+        if not settings["switch"] or not user_key:
             return False, True
-        max_round = self._get_text_reply_limit_count(user_key)
-        limit_hours = getattr(self.config, "text_reply_limit_hours", 24)
+        max_round = settings["count"]
+        limit_hours = settings["hours"]
         if self.reply_count_store.can_consume(
             user_key,
             limit_count=max_round,
@@ -9250,8 +9114,14 @@ class WXBot:
         ):
             return False, True
         user_data = self.reply_count_store.get_user(user_key, limit_hours=limit_hours)
-        if self.config.text_reply_limit_reply_once and user_data.get("limit_notified"):
+        if settings["reply_once"] and user_data.get("limit_notified"):
             return True, True
+        scene_label = "群聊" if chat_type == "group" else "私聊"
+        target_label = str(getattr(chat, "who", "") or "")
+        if chat_type == "group":
+            sender = str(getattr(message, "sender", "") or "").strip()
+            if sender:
+                target_label = f"{target_label} / {sender}"
         if self._should_log_text_reply_limit_warning(
             user_key,
             user_data,
@@ -9260,13 +9130,13 @@ class WXBot:
         ):
             log(
                 level="WARNING",
-                message=f"私聊 {chat.who} 触发回复上限：{limit_hours} 小时最多 {max_round} 轮",
+                message=f"{scene_label} {target_label} 触发回复上限：{limit_hours} 小时最多 {max_round} 轮",
             )
         reply_text = ""
-        if getattr(self.config, 'text_reply_limit_ai_reply', False):
+        if settings["ai_reply"]:
             try:
-                log(message=f"私聊 {chat.who} 触发轮数超限，使用 AI 自动生成结束语")
-                reply_text = self._generate_text_reply_limit_reply(chat, message)
+                log(message=f"{scene_label} {target_label} 触发轮数超限，使用 AI 自动生成结束语")
+                reply_text = self._generate_text_reply_limit_reply(chat, message, chat_type=chat_type)
                 if is_api_error_reply(reply_text):
                     log(level="WARNING", message="轮数超限结束语生成遇到 API 错误，转入接口报错回复策略")
                     if getattr(self.config, "api_error_reply_once", False):
@@ -9275,14 +9145,16 @@ class WXBot:
                             return True, True
                     parts = self._api_error_reply_parts()
                     sent_reply_items = []
-                    send_success, result = self._send_private_ai_reply_parts(
+                    send_success, result = self._send_text_reply_limit_parts(
                         chat,
+                        message,
                         parts,
+                        chat_type=chat_type,
                         sent_items=sent_reply_items,
                     )
                     if send_success:
-                        self._record_reply_metric_success(chat.who, chat_type="private")
-                        self._log_reply_contents("私聊", chat.who, sent_reply_items)
+                        self._record_reply_metric_success(chat.who, chat_type=chat_type)
+                        self._log_reply_contents(scene_label, chat.who, sent_reply_items)
                         if getattr(self.config, "api_error_reply_once", False):
                             self.reply_count_store.mark_api_err_notified(user_key)
                     return True, result
@@ -9290,29 +9162,28 @@ class WXBot:
                 log(level="WARNING", message=f"轮数超限结束语生成失败，已静默跳过: {e}")
                 reply_text = ""
         else:
-            reply_text = str(getattr(self.config, 'text_reply_limit_reply', '') or '').strip()
+            reply_text = settings["reply"]
         if not reply_text:
             return True, True
 
         sent_reply_items = []
-        send_success, result = self._send_private_ai_reply_parts(
+        send_success, result = self._send_text_reply_limit_parts(
             chat,
+            message,
             [reply_text],
+            chat_type=chat_type,
             sent_items=sent_reply_items,
         )
         if send_success:
-            self._record_reply_metric_success(chat.who, chat_type="private")
-            self._log_reply_contents("私聊", chat.who, sent_reply_items)
-            if self.config.text_reply_limit_reply_once:
+            self._record_reply_metric_success(chat.who, chat_type=chat_type)
+            self._log_reply_contents(scene_label, chat.who, sent_reply_items)
+            if settings["reply_once"]:
                 self.reply_count_store.mark_limit_notified(user_key)
         return True, result
 
-    def _check_text_reply_limit_runtime(self, chat, user_key, message=None):
-        return self._check_text_reply_limit(chat, user_key, message=message)
+    def _check_text_reply_limit_runtime(self, chat, user_key, message=None, *, chat_type="private"):
+        return self._check_text_reply_limit(chat, user_key, message=message, chat_type=chat_type)
 
-    def _is_custom_forward_source(self, chat_who):
-        """判断某个会话是否是任意自定义转发规则的监听来源"""
-        return is_custom_forward_source(self.config.custom_forward_list, chat_who)
 
     def _material_source_runtime_enabled(self):
         sources = [
@@ -9970,539 +9841,39 @@ class WXBot:
                 log_message += f"，标题：{title}"
             log(message=log_message)
             return True
-        if getattr(self.config, 'material_source_silent', True) and chat.who != self.config.cmd:
+        if getattr(self.config, 'material_source_silent', True):
             log(message=f"[素材转发] 素材源 {chat.who} 非素材消息已静默跳过")
             return True
         return False
 
     # ----------------------------------------------------------
-    # 管理员命令分发
     # ----------------------------------------------------------
 
-    def process_command(self, chat, message):
-        """
-        解析并分发管理员指令。
-        当前仅保留运行控制台相关指令；未命中时回退到管理员普通对话。
 
-        :param chat:    管理员聊天窗口子对象
-        :param message: 消息对象
-        :return:        操作结果
-        """
-        result = dispatch_admin_command(self, chat, message)
-        if result is not None:
-            self._mark_message_skip_memory(message)
-            return result
-        if getattr(message, "attr", None) == "self":
-            workspace_result = takeover_runtime.route_admin_plain_message(self, chat, message)
-            if workspace_result is not None:
-                self._mark_message_skip_memory(message)
-                return workspace_result
-        if getattr(message, "attr", None) != "self":
-            return self._enqueue_private_message_for_ai(chat, message)
-        return True
 
-    def _load_admin_moments_draft(self):
-        path = getattr(self, "_moments_draft_file", "")
-        if not path:
-            return None
-        return load_active_draft(path)
 
-    def _save_admin_moments_draft(self, draft):
-        path = getattr(self, "_moments_draft_file", "")
-        if not path:
-            return draft
-        save_active_draft(path, draft)
-        return draft
 
-    def _load_admin_forward_draft(self):
-        path = getattr(self, "_forward_draft_file", "")
-        if not path:
-            return None
-        return load_active_draft(path)
 
-    def _save_admin_forward_draft(self, draft):
-        path = getattr(self, "_forward_draft_file", "")
-        if not path:
-            return draft
-        save_active_draft(path, draft)
-        return draft
 
-    def start_admin_moments_draft(self, chat):
-        draft = self._load_admin_moments_draft()
-        if admin_moments_flow.is_active_draft(draft):
-            return chat.SendMsg("当前已有未完成的发圈草稿，发送 /取消发圈 后可重新开始")
-        draft = create_empty_draft(source="admin_command")
-        admin_moments_flow.arm_auto_cancel(draft)
-        self._save_admin_moments_draft(draft)
-        return chat.SendMsg(admin_moments_flow.start_prompt())
 
-    def start_admin_forward_draft(self, chat):
-        draft = self._load_admin_forward_draft()
-        if admin_forward_flow.is_active_draft(draft):
-            return chat.SendMsg("当前已有未完成的转发任务，完成或取消后再重新开始")
-        draft = {
-            "draft_id": f"forward_{uuid.uuid4().hex[:8]}",
-            "status": "waiting_material",
-            "source": "admin_command",
-        }
-        admin_forward_flow.arm_auto_cancel(draft)
-        self._save_admin_forward_draft(draft)
-        return chat.SendMsg(admin_forward_flow.start_prompt())
 
-    def cancel_admin_forward_draft(self, chat, *, message="这次转发任务已取消"):
-        path = getattr(self, "_forward_draft_file", "")
-        if path:
-            clear_active_draft(path)
-        return chat.SendMsg(message)
 
-    def cancel_admin_moments_draft(self, chat):
-        draft = self._load_admin_moments_draft()
-        self._delete_admin_moments_managed_uploads((draft or {}).get("images") or [])
-        path = getattr(self, "_moments_draft_file", "")
-        if path:
-            clear_active_draft(path)
-        return chat.SendMsg("这次发圈任务已取消")
 
-    def _copy_admin_moments_image_to_uploads(self, draft, image_path):
-        data_dir = self._task_storage_data_dir()
-        wx_id = self._task_storage_wx_id()
-        if not data_dir or not wx_id:
-            return image_path
-        return copy_moments_admin_upload(
-            image_path,
-            data_dir=data_dir,
-            wx_id=wx_id,
-            draft_id=(draft or {}).get("draft_id") or "admin",
-        )
 
-    def _delete_admin_moments_managed_uploads(self, images):
-        data_dir = self._task_storage_data_dir()
-        wx_id = self._task_storage_wx_id()
-        if not data_dir or not wx_id:
-            return 0
-        return delete_managed_moments_uploads(images, data_dir=data_dir, wx_id=wx_id)
 
-    def _get_admin_moments_target_chat(self, chat=None):
-        if chat is not None:
-            return chat
-        if getattr(self, "wx", None) and hasattr(self.wx, "ChatWith"):
-            try:
-                with wechat_ui_actions.hold(self):
-                    target = self.wx.ChatWith(who=self.config.cmd)
-                if target is not None:
-                    return target
-            except Exception:
-                pass
-        return SimpleNamespace(SendMsg=lambda message: message)
 
-    def _get_admin_moments_raw_text(self, draft):
-        return "\n".join(
-            str(item or "").strip()
-            for item in (draft or {}).get("texts", [])
-            if str(item or "").strip()
-        ).strip() or "（未提供）"
 
-    def _admin_forward_tag_options(self):
-        directory, _directory_file, _wx_id = self._load_contact_profiles_directory()
-        return admin_forward_flow.top_contact_tags(directory, limit=9)
 
-    def _store_admin_forward_material(self, chat, message):
-        materials, entry, material_id = collect_material_source_message(
-            self._load_material_outreach_materials(),
-            chat.who,
-            message,
-            material_id_factory=lambda: f"mat_{uuid.uuid4().hex}",
-            limit_map=getattr(self.config, "material_source_pool_limit_map", {}) or {},
-        )
-        if not entry:
-            return None
-        self._save_material_outreach_materials(materials)
-        self._material_runtime_messages[material_id] = message
-        return entry
 
-    def _create_admin_forward_task(self, draft):
-        selector = normalize_target_selector({
-            "mode": "include" if draft.get("include_tags") else ("exclude" if draft.get("exclude_tags") else "all"),
-            "base": "all_friends",
-            "include_tags": list(draft.get("include_tags") or []),
-            "exclude_tags": list(draft.get("exclude_tags") or []),
-            "include_contact_keys": [],
-            "exclude_contact_keys": [],
-        })
-        task = {
-            "id": f"admin_forward_{int(time.time() * 1000)}",
-            "name": "管理员转发任务",
-            "enabled": True,
-            "trigger_strategy": "fixed",
-            "mode": "fixed",
-            "start_at": str(draft.get("scheduled_at") or "").strip(),
-            "fixed_material_id": str(draft.get("material_id") or "").strip(),
-            "material_types": [str(draft.get("material_type") or "").strip()] if str(draft.get("material_type") or "").strip() else ["all"],
-            "target_selector": selector,
-            "preface_mode": "none",
-            "preface_text": "",
-            "preface_random_emojis": False,
-            "ai_preface_goal": DEFAULT_AI_PREFACE_GOAL,
-            "ai_preface_intensity": "",
-            "ai_preface_extra_instruction": "",
-            "ai_preface_failure_mode": "send_without_preface",
-            "batch_material_strategy": "fixed",
-        }
-        task = normalize_fixed_task_schedule(task, default_time="08:00", start_at_key="start_at")
-        task["repeat_type"] = "once"
-        tasks = list(getattr(self.config, "material_outreach_list", []) or [])
-        tasks.append(task)
-        next_tasks = [dict(item) for item in tasks if isinstance(item, dict)]
-        tasks_file = self._material_outreach_tasks_file(create_parent=True)
-        save_json_list(tasks_file, next_tasks)
-        self._set_runtime_task_list("material_outreach_list", next_tasks)
-        if hasattr(self, "request_runtime_task_reload"):
-            self.request_runtime_task_reload()
-        return next_tasks[-1]
 
-    def _build_admin_moments_generation_prompt(self, draft):
-        text_block = self._get_admin_moments_raw_text(draft)
-        system = getattr(self, "prompt_system", None)
-        if system is None:
-            system = self._init_prompt_system()
-        return system.render_moments_caption_prompt(self.config.cmd, text_block)
 
-    def _parse_admin_moments_candidates(self, raw_reply):
-        return parse_moments_candidates(raw_reply, cleaner=sanitize_ai_output_text)
 
-    def _resolve_admin_moments_api_index(self):
-        api_configs = getattr(self.config, "api_configs", []) or []
-        if not api_configs:
-            return -1
-        try:
-            configured = int(getattr(self.config, "moments_api_index", 0))
-        except (TypeError, ValueError):
-            configured = 0
-        if 0 <= configured < len(api_configs):
-            return configured
-        return 0
 
-    def _generate_admin_moments_candidates(self, draft):
-        api_index = self._resolve_admin_moments_api_index()
-        if api_index < 0:
-            raise RuntimeError("未找到可用的发朋友圈专用接口")
-        api = self._get_other_api(api_index)
-        prompt = self._build_admin_moments_generation_prompt(draft)
-        raw_text = self._get_admin_moments_raw_text(draft)
-        message_text = "请基于这次素材生成 3 条可直接发布的朋友圈文案候选。"
-        if raw_text and raw_text != "（未提供）":
-            message_text = f"{message_text}\n\n原始短文案：\n{raw_text}"
-        images = [
-            str(item or "").strip()
-            for item in (draft or {}).get("images", [])
-            if str(item or "").strip()
-        ]
-        if images:
-            raw_reply = api.chat(
-                message_text,
-                prompt=prompt,
-                history=[],
-                stream=False,
-                image_paths=images,
-            )
-        else:
-            raw_reply = api.chat(
-                message_text,
-                prompt=prompt,
-                history=[],
-                stream=False,
-            )
-        return self._parse_admin_moments_candidates(raw_reply)
 
-    def regenerate_admin_moments_draft(self, chat=None, trigger="manual"):
-        draft = self._load_admin_moments_draft()
-        target = self._get_admin_moments_target_chat(chat)
-        if not draft or not draft_has_material(draft):
-            return target.SendMsg("请先发送文案或图片，再生成朋友圈预览")
-        try:
-            candidates = self._generate_admin_moments_candidates(draft)
-        except Exception as exc:
-            log(level="ERROR", message=f"发圈预览生成失败：{exc}")
-            return target.SendMsg("本次朋友圈文案生成失败，请检查发朋友圈专用接口状态、图片可读性，或稍后重试。")
-        draft["status"] = "preview_ready"
-        draft["generated_candidates"] = list(candidates or [])[:3]
-        draft["preview_generated_at"] = datetime.now().replace(microsecond=0).isoformat()
-        draft["auto_preview_deadline"] = ""
-        draft["auto_cancel_deadline"] = ""
-        draft["selected_candidate_index"] = 0
-        self._save_admin_moments_draft(draft)
-        return target.SendMsg(render_preview_reply(draft))
 
-    def publish_admin_moments_draft(self, chat, candidate_index=None):
-        draft = self._load_admin_moments_draft()
-        candidates = [
-            str(item or "").strip()
-            for item in (draft or {}).get("generated_candidates", [])
-            if str(item or "").strip()
-        ]
-        if not draft or draft.get("status") != "preview_ready" or not candidates:
-            return chat.SendMsg("请先生成朋友圈预览，再选择要发布的文案序号")
-        if candidate_index in (None, 0):
-            return chat.SendMsg(admin_moments_flow.build_candidate_selection_reply(draft))
-        try:
-            task = moments_task_from_admin_draft(draft, candidate_index=candidate_index)
-        except ValueError:
-            return chat.SendMsg("当前只能发布第 1 到第 3 条预览文案，请重新选择")
-        try:
-            queued_task = queue_moments_task(task, mode="immediate")
-            tasks = getattr(self.config, "moments_task_list", None)
-            if not isinstance(tasks, list):
-                tasks = []
-            previous_tasks = list(tasks)
-            next_tasks = list(tasks)
-            next_tasks.append(queued_task)
-            self._save_moments_task_definitions_only(next_tasks)
-            try:
-                self._save_moments_runtime_record(queued_task)
-            except Exception:
-                try:
-                    self._save_moments_task_definitions_only(previous_tasks)
-                except Exception as rollback_exc:
-                    log(level="ERROR", message=f"朋友圈任务回滚任务定义失败：{rollback_exc}")
-                raise
-            self._set_runtime_task_list("moments_task_list", next_tasks)
-            if hasattr(self, "request_runtime_task_reload"):
-                try:
-                    self.request_runtime_task_reload()
-                except Exception as exc:
-                    log(level="WARNING", message=f"管理员发圈任务运行中同步失败，将在下次刷新后生效：{exc}")
-        except Exception as exc:
-            log(level="ERROR", message=f"朋友圈任务加入待执行失败：{exc}")
-            return chat.SendMsg("朋友圈任务加入待执行失败，请稍后重试")
-        path = getattr(self, "_moments_draft_file", "")
-        if path:
-            clear_active_draft(path)
-        return chat.SendMsg("发圈任务已创建，已加入待执行队列")
 
-    def _handle_admin_forward_input(self, chat, message):
-        if chat.who != getattr(self.config, "cmd", ""):
-            return False
-        draft = self._load_admin_forward_draft()
-        if not admin_forward_flow.is_active_draft(draft):
-            return False
-        content = str(getattr(message, "content", "") or "").strip()
-        if not content or content.startswith("/"):
-            return False
 
-        status = str(draft.get("status") or "").strip()
-        if status == "waiting_material":
-            entry = self._store_admin_forward_material(chat, message)
-            if not entry:
-                chat.SendMsg("请直接转发一条素材消息给我")
-                return True
-            draft["status"] = "waiting_target_scope"
-            draft["material_id"] = str(entry.get("id") or "").strip()
-            draft["material_type"] = str(entry.get("type_bucket") or entry.get("type") or "").strip()
-            draft["material_type_label"] = material_type_label(draft["material_type"]) or "素材"
-            draft["material_preview"] = str(entry.get("content_preview") or "").strip()
-            draft["tag_options"] = self._admin_forward_tag_options()
-            self._save_admin_forward_draft(draft)
-            chat.SendMsg(admin_forward_flow.render_target_prompt(draft["tag_options"]))
-            return True
 
-        if status == "waiting_target_scope":
-            parsed = admin_forward_flow.parse_target_scope(content, draft.get("tag_options") or [])
-            if parsed is None:
-                chat.SendMsg("请直接回复上面的编号")
-                return True
-            draft["target_mode"] = parsed["mode"]
-            draft["include_tags"] = list(parsed["include_tags"])
-            draft["exclude_tags"] = []
-            if parsed["mode"] == "all":
-                draft["status"] = "waiting_target_exclude"
-                self._save_admin_forward_draft(draft)
-                chat.SendMsg(admin_forward_flow.render_exclude_prompt(draft.get("tag_options") or []))
-                return True
-            draft["status"] = "waiting_delay"
-            self._save_admin_forward_draft(draft)
-            chat.SendMsg(admin_forward_flow.render_delay_prompt())
-            return True
-
-        if status == "waiting_target_exclude":
-            exclude_tags = admin_forward_flow.parse_exclude_scope(content, draft.get("tag_options") or [])
-            if exclude_tags is None:
-                chat.SendMsg("请直接回复上面的编号")
-                return True
-            draft["exclude_tags"] = list(exclude_tags)
-            draft["status"] = "waiting_delay"
-            self._save_admin_forward_draft(draft)
-            chat.SendMsg(admin_forward_flow.render_delay_prompt())
-            return True
-
-        if status == "waiting_delay":
-            delay_minutes = admin_forward_flow.parse_delay_minutes(content)
-            if delay_minutes is None:
-                chat.SendMsg("请回复 1、2、3，或直接回复分钟数")
-                return True
-            scheduled_at = (datetime.now() + timedelta(minutes=delay_minutes)).replace(microsecond=0)
-            draft["delay_minutes"] = delay_minutes
-            draft["scheduled_at"] = scheduled_at.isoformat()
-            draft["status"] = "confirming"
-            self._save_admin_forward_draft(draft)
-            chat.SendMsg(admin_forward_flow.build_confirmation_reply(draft))
-            return True
-
-        if status == "confirming":
-            if content == "1":
-                self._create_admin_forward_task(draft)
-                self.cancel_admin_forward_draft(chat, message="转发任务已创建")
-                return True
-            if content == "0":
-                self.cancel_admin_forward_draft(chat)
-                return True
-            chat.SendMsg("请回复 1 或 0")
-            return True
-        return False
-
-    def _handle_admin_moments_input(self, chat, message):
-        if chat.who != getattr(self.config, "cmd", ""):
-            return False
-        draft = self._load_admin_moments_draft()
-        if not admin_moments_flow.is_active_draft(draft):
-            return False
-        content = str(getattr(message, "content", "") or "").strip()
-        if not content or content.startswith("/"):
-            return False
-        if draft.get("status") == "confirming":
-            if content == "1":
-                candidate_index = int(draft.get("selected_candidate_index") or 0)
-                if candidate_index <= 0:
-                    chat.SendMsg("请先选择要发布的文案序号")
-                    return True
-                preview_draft = dict(draft)
-                preview_draft["status"] = "preview_ready"
-                self._save_admin_moments_draft(preview_draft)
-                self.publish_admin_moments_draft(chat, candidate_index=candidate_index)
-                return True
-            if content == "0":
-                self.cancel_admin_moments_draft(chat)
-                return True
-            chat.SendMsg(admin_moments_flow.invalid_confirm_prompt())
-            return True
-        if draft.get("status") == "preview_ready":
-            if content in {"1", "2", "3"}:
-                try:
-                    selected = int(content)
-                except ValueError:
-                    selected = 0
-                candidates = [
-                    str(item or "").strip()
-                    for item in (draft.get("generated_candidates") or [])
-                    if str(item or "").strip()
-                ]
-                if 1 <= selected <= len(candidates):
-                    admin_moments_flow.select_candidate_for_confirmation(draft, selected)
-                    self._save_admin_moments_draft(draft)
-                    chat.SendMsg(admin_moments_flow.build_confirmation_reply(draft))
-                    return True
-                chat.SendMsg("请选择 1 到 3 的文案序号")
-                return True
-        now = datetime.now()
-        image_path = self._existing_local_image_path(content)
-        try:
-            if image_path:
-                stored_image_path = self._copy_admin_moments_image_to_uploads(draft, image_path)
-                append_draft_image(draft, stored_image_path, now=now)
-            else:
-                append_draft_text(draft, content, now=now)
-        except ValueError as exc:
-            if str(exc) == "最多只能收 9 张图片":
-                chat.SendMsg(admin_moments_flow.image_limit_prompt())
-                return True
-            raise
-        admin_moments_flow.clear_auto_cancel(draft)
-        self._save_admin_moments_draft(draft)
-        return True
-
-    def _check_admin_moments_auto_preview(self, now=None):
-        now = now or datetime.now()
-        draft = self._load_admin_moments_draft()
-        if not draft or draft.get("status") != "collecting":
-            return None
-        cancel_deadline = str(draft.get("auto_cancel_deadline") or "").strip()
-        if cancel_deadline and not draft_has_material(draft):
-            try:
-                if now >= datetime.fromisoformat(cancel_deadline):
-                    path = getattr(self, "_moments_draft_file", "")
-                    if path:
-                        clear_active_draft(path)
-                    target = self._get_admin_moments_target_chat(None)
-                    return target.SendMsg("这次发圈任务已超时取消")
-            except ValueError:
-                pass
-        deadline = str(draft.get("auto_preview_deadline") or "").strip()
-        if not deadline:
-            return None
-        try:
-            if now < datetime.fromisoformat(deadline):
-                return None
-        except ValueError:
-            return None
-        return self.regenerate_admin_moments_draft(None, trigger="auto")
-
-    def _check_admin_forward_timeout(self, now=None):
-        now = now or datetime.now()
-        draft = self._load_admin_forward_draft()
-        if not draft or str(draft.get("status") or "").strip() != "waiting_material":
-            return None
-        deadline = str(draft.get("auto_cancel_deadline") or "").strip()
-        if not deadline:
-            return None
-        try:
-            if now < datetime.fromisoformat(deadline):
-                return None
-        except ValueError:
-            return None
-        target = self._get_admin_moments_target_chat(None)
-        return self.cancel_admin_forward_draft(target, message="这次转发任务已超时取消")
-
-    def handle_select_api_config(self, chat, message):
-        """处理 /选择接口 N 指令：切换到第 N 个接口配置（1-indexed）"""
-        num_str = re.sub("/选择接口", "", message.content).strip()
-        try:
-            n = int(num_str)
-        except ValueError:
-            return chat.SendMsg("接口序号无效，请输入数字，如：/选择接口 2")
-        idx = n - 1
-        if idx < 0 or idx >= len(self.config.api_configs):
-            return chat.SendMsg(f"接口 {n} 不存在，当前共 {len(self.config.api_configs)} 个接口")
-        self.config.config['api_index'] = idx
-        self.config.save_config()
-        self.config.refresh_config()
-        self.api = self._init_api()
-        self.api_cache = {}   # 默认接口已切换，清除群组接口缓存
-        self._reset_chat_api_failover_state(active_index=idx)
-        cfg = self.config.api_configs[idx]
-        return chat.SendMsg(f"已切换至接口 {n}\nSDK：{cfg.get('sdk', '')}\n模型：{cfg.get('model', '')}")
-
-    def handle_clear_memory(self, chat, message):
-        """处理 /清除记忆 指令：清除管理员（当前聊天）的对话记忆"""
-        if not self.memory_manager:
-            return chat.SendMsg("记忆功能未初始化")
-        self.memory_manager.clear_messages(self.config.cmd)
-        return chat.SendMsg(f"已清除「{self.config.cmd}」的对话记忆")
-
-    def handle_clear_user_memory(self, chat, message):
-        """处理 /清除用户记忆 xxx 指令：清除指定用户/群的记忆"""
-        name = re.sub("/清除用户记忆", "", message.content).strip()
-        if not name:
-            return chat.SendMsg("请提供用户或群名称，如：/清除用户记忆 张三")
-        if not self.memory_manager:
-            return chat.SendMsg("记忆功能未初始化")
-        self.memory_manager.clear_messages(name)
-        return chat.SendMsg(f"已清除「{name}」的对话记忆")
-
-    def handle_clear_all_memory(self, chat, message):
-        """处理 /清除全部记忆 指令：清除所有对话记忆"""
-        if not self.memory_manager:
-            return chat.SendMsg("记忆功能未初始化")
-        count = self.memory_manager.clear_all_messages()
-        return chat.SendMsg(f"已清除所有对话记忆（共 {count} 个会话）")
 
     # ----------------------------------------------------------
     # 群组辅助功能
@@ -10647,9 +10018,12 @@ class WXBot:
             "memory_switch":         getattr(self.config, "memory_switch", True),
             "memory_context_switch": getattr(self.config, "memory_context_switch", True),
             "memory_context_count":  getattr(self.config, "memory_context_count", 50),
-            "text_reply_limit_switch": getattr(self.config, "text_reply_limit_switch", False),
-            "text_reply_limit_count": getattr(self.config, "text_reply_limit_count", 99),
-            "text_reply_limit_hours": getattr(self.config, "text_reply_limit_hours", 24),
+            "chat_text_reply_limit_switch": getattr(self.config, "chat_text_reply_limit_switch", False),
+            "chat_text_reply_limit_count": getattr(self.config, "chat_text_reply_limit_count", 99),
+            "chat_text_reply_limit_hours": getattr(self.config, "chat_text_reply_limit_hours", 24),
+            "group_text_reply_limit_switch": getattr(self.config, "group_text_reply_limit_switch", False),
+            "group_text_reply_limit_count": getattr(self.config, "group_text_reply_limit_count", 99),
+            "group_text_reply_limit_hours": getattr(self.config, "group_text_reply_limit_hours", 24),
             "pause_chat_reply":      self._pause_chat_reply or getattr(self.config, "chat_listen_only", False),
             "pause_group_reply":     self._pause_group_reply or getattr(self.config, "group_listen_only", False),
             **listening.listener_recovery_snapshot(self),
@@ -10795,7 +10169,7 @@ class WXBot:
                 # ---- 新好友检测模块（随机检查，间隔由配置决定）----
                 if self.is_stop_requested():
                     break
-                if self.config.new_frined_switch:
+                if self.config.new_friend_switch:
                     # 将秒数阈值除以循环周期得到循环次数（取整，最小1次）
                     check_new_friend_time_MIN = max(1, int(self.config.new_friend_check_min / wait_time))
                     check_new_friend_time_MAX = max(check_new_friend_time_MIN, int(self.config.new_friend_check_max / wait_time))
@@ -10853,20 +10227,6 @@ class WXBot:
                     self._process_ai_material_outreach_detection_scan()
                 except Exception as e:
                     log(level="ERROR", message=f"AI 自动素材转发判定扫描出错：{e}")
-
-                try:
-                    if self.is_stop_requested():
-                        break
-                    self._check_admin_moments_auto_preview()
-                except Exception as e:
-                    log(level="ERROR", message=f"管理员发圈自动预览出错：{e}")
-
-                try:
-                    if self.is_stop_requested():
-                        break
-                    self._check_admin_forward_timeout()
-                except Exception as e:
-                    log(level="ERROR", message=f"管理员转发流程超时检查出错：{e}")
 
                 try:
                     if self.is_stop_requested():

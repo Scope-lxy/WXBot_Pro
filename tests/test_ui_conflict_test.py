@@ -4,7 +4,6 @@ import unittest
 from tools.ui_conflict_test import (
     build_default_phases,
     build_material_outreach_task,
-    build_moments_task,
     build_scheduled_message_task,
 )
 
@@ -37,17 +36,6 @@ class UIConflictTestScriptTests(unittest.TestCase):
         self.assertEqual(task["preface_mode"], "none")
         self.assertEqual(task["target_selector"]["base"], "manual")
         self.assertGreaterEqual(datetime.fromisoformat(task["fire_at"]), datetime.now())
-
-    def test_build_moments_task_uses_original_copy_mode(self):
-        task = build_moments_task(
-            text="朋友圈测试",
-            delay_seconds=3,
-            phase_label="任务互测",
-        )
-        self.assertEqual(task["copy_mode"], "original")
-        self.assertEqual(task["status"], "pending")
-        self.assertEqual(task["images"], [])
-        self.assertIn("任务互测", task["raw_text"])
 
     def test_default_phases_include_task_only_and_contact_refresh(self):
         phases = build_default_phases(

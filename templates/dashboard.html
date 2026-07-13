@@ -116,15 +116,12 @@ html.icons-pref-local [class*=" bi-"]::before {
   <div class="nav-item"><a class="nav-link" data-tab="tab-friend"><i class="bi bi-person-plus"></i> 新好友</a></div>
   <div class="nav-divider"></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-keyword"><i class="bi bi-key"></i> 关键词回复</a></div>
-  <div class="nav-item"><a class="nav-link" data-tab="tab-forward"><i class="bi bi-share"></i> 自定义转发</a></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-scheduled-message"><i class="bi bi-chat-square-text"></i> 定时消息</a></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-schedule"><i class="bi bi-bullseye"></i> 素材转发</a></div>
-  <div class="nav-item"><a class="nav-link" data-tab="tab-moments"><i class="bi bi-image"></i> 发朋友圈</a></div>
   <div class="nav-divider"></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-other"><i class="bi bi-sliders"></i> 其他配置</a></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-account"><i class="bi bi-person-gear"></i> 账号密码</a></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-email"><i class="bi bi-envelope-at"></i> 报错邮箱</a></div>
-  <div class="nav-item"><a class="nav-link" data-tab="tab-webhook"><i class="bi bi-broadcast-pin"></i> WebHook</a></div>
   <div class="nav-divider"></div>
   <div class="nav-item"><a class="nav-link" data-tab="tab-backup"><i class="bi bi-shield-check"></i> 数据备份</a></div>
 </nav>
@@ -296,13 +293,14 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="status-section-title">功能状态</div>
       <div id="function-status-grid" class="function-status-grid">
         <div class="detail-row"><span class="detail-key">全局人设</span><span class="detail-val" id="sv-default-prompt">-</span></div>
-        <div class="detail-row"><span class="detail-key">回复清洗</span><span class="detail-val" id="sv-clean-reply">-</span></div>
-        <div class="detail-row"><span class="detail-key">识别图片内容</span><span class="detail-val" id="sv-image-recognition">-</span></div>
-        <div class="detail-row"><span class="detail-key">使用语音回复</span><span class="detail-val" id="sv-voice-reply">-</span></div>
+        <div class="detail-row"><span class="detail-key">识别图片消息</span><span class="detail-val" id="sv-image-recognition">-</span></div>
+        <div class="detail-row"><span class="detail-key">识别语音消息</span><span class="detail-val" id="sv-voice-recognition">-</span></div>
+        <div class="detail-row"><span class="detail-key">自动清洗回复</span><span class="detail-val" id="sv-clean-reply">-</span></div>
         <div class="detail-row"><span class="detail-key">自动拆分回复</span><span class="detail-val" id="sv-split-reply">-</span></div>
+        <div class="detail-row"><span class="detail-key">使用语音回复</span><span class="detail-val" id="sv-voice-reply">-</span></div>
+        <div class="detail-row"><span class="detail-key">自动通讯录维护</span><span class="detail-val" id="sv-contact-maintenance">-</span></div>
         <div class="detail-row"><span class="detail-key">自动通过新好友</span><span class="detail-val" id="sv-new-friend">-</span></div>
         <div class="detail-row"><span class="detail-key">自动添加旧好友</span><span class="detail-val" id="sv-friend-request">-</span></div>
-        <div class="detail-row"><span class="detail-key">自动维护通讯录</span><span class="detail-val" id="sv-contact-maintenance">-</span></div>
       </div>
     </div>
 
@@ -799,28 +797,6 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
 
-    <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-eye"></i><h5>Prompt 预览</h5><span class="desc">查看某个好友最终发送给模型的系统 Prompt</span></div>
-      <div class="row g-3 mb-3">
-        <div class="col-12 col-md-4">
-          <label class="cfg-label" for="prompt-preview-wx-id">微信号</label>
-          <select class="form-select" id="prompt-preview-wx-id"></select>
-          <div class="cfg-hint">用于选择要带入哪一个微信号下的会话记忆</div>
-        </div>
-        <div class="col-12 col-md-5">
-          <label class="cfg-label" for="prompt-preview-chat-name">好友昵称</label>
-          <input type="text" class="form-control" id="prompt-preview-chat-name" placeholder="输入好友昵称">
-          <div class="cfg-hint">会按私聊监听中的全局人设、例外好友和该会话记忆生成最终 Prompt</div>
-        </div>
-      </div>
-      <div id="prompt-preview-msg" class="cfg-feedback"></div>
-      <div class="cfg-action-row">
-        <button type="button" id="btn-prompt-preview" class="ui-btn ui-btn--primary ui-btn--l2">
-          <i class="bi bi-eye"></i> 预览最终 Prompt
-        </button>
-      </div>
-      <pre id="prompt-preview-output" style="display:none;margin-top:12px;white-space:pre-wrap;background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;font-size:12.5px;max-height:360px;overflow:auto;"></pre>
-    </div>
   </div>
 
   <!-- ===== Tab: Chat Memory ===== -->
@@ -837,35 +813,16 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
       </div>
       <div class="row g-3">
-        <div class="col-12 col-md-4">
+        <div class="col-12 col-md-6">
           <label class="cfg-label" for="chat_memory_interval_hours">最短整理间隔（小时）</label>
           <input type="number" class="form-control" id="chat_memory_interval_hours" min="1" max="72" value="{{ config.get('chat_memory_interval_hours', 12) }}">
           <div class="cfg-hint">避免频繁调用 AI 整理记忆，即使消息数达标，也会等间隔满足后再整理</div>
         </div>
-        <div class="col-12 col-md-4">
+        <div class="col-12 col-md-6">
           <label class="cfg-label" for="chat_memory_message_threshold">触发整理消息数</label>
           <input type="number" class="form-control" id="chat_memory_message_threshold" min="10" max="200" value="{{ config.get('chat_memory_message_threshold', 100) }}">
           <div class="cfg-hint">累计达到这个消息数后，才会开始整理会话记忆</div>
         </div>
-        <div class="col-12 col-md-4">
-          <label class="cfg-label" for="chat_memory_protected_recent_count">排除整理消息数</label>
-          <input type="number" class="form-control" id="chat_memory_protected_recent_count" min="0" max="200" value="{{ config.get('chat_memory_protected_recent_count', 20) }}">
-          <div class="cfg-hint">整理时会先跳过最近 N 条消息，避免把刚发生的对话过早写进会话记忆</div>
-        </div>
-      </div>
-    </div>
-    <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-person-dash"></i><h5>会话记忆黑名单</h5><div class="ui-head__actions"><button type="button" class="ui-btn ui-btn--add ui-btn--l1" id="btn-add-chat-memory-exclude"><i class="bi bi-plus-circle"></i> 添加黑名单</button></div></div>
-      <div class="mb-2">
-        <div class="cfg-hint">黑名单的好友将按人设设定正常回复，但不会自动创建、维护、读取会话记忆</div>
-      </div>
-      <div id="chat_memory_exclude_container">
-        {% for uname in config.get('chat_memory_exclude_list', []) %}
-        <div class="list-item chat-memory-exclude-item">
-          <input type="text" class="form-control chat-memory-exclude-user" value="{{ uname }}" placeholder="好友昵称">
-          <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
-        </div>
-        {% endfor %}
       </div>
     </div>
     <div class="cfg-card">
@@ -1023,17 +980,19 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
       </div>
       <div class="recognition-card-grid">
-        <div class="switch-row recognition-inline-row">
+        <div class="switch-row switch-row--inline-desc recognition-inline-row">
           <input class="form-check-input" type="checkbox" id="chat_image_recognition_switch"
                  name="chat_image_recognition_switch"
                  {% if config.chat_image_recognition_switch %}checked{% endif %}>
           <label for="chat_image_recognition_switch"><span class="switch-title">识别图片消息</span></label>
+          <span class="switch-desc">识别好友发来的图片，供 AI 理解并回复</span>
         </div>
         <div class="switch-row switch-row--inline-desc recognition-inline-row">
           <input class="form-check-input" type="checkbox" id="chat_voice_recognition_switch"
                  name="chat_voice_recognition_switch"
                  {% if config.get('chat_voice_recognition_switch', False) %}checked{% endif %}>
-          <label for="chat_voice_recognition_switch"><span class="switch-title">识别语音转文字的消息</span></label>
+          <label for="chat_voice_recognition_switch"><span class="switch-title">识别语音消息</span></label>
+          <span class="switch-desc">读取微信自带的语音转文字结果</span>
         </div>
       </div>
     </div>
@@ -1041,6 +1000,59 @@ html.icons-pref-local [class*=" bi-"]::before {
     <div class="cfg-card chat-ability-card chat-ability-card--reply">
       <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5></div>
       <div class="chat-ability-stack">
+        <div class="chat-ability-block chat-ability-block--text-limit">
+          <div class="ui-head ui-head--item">
+            <div class="ui-head__main">
+              <h5>回复次数限制</h5>
+              <span class="desc">按好友分别统计，每成功完成一轮回复计 1 次</span>
+            </div>
+            <div class="ui-head__actions">
+              <label class="ui-switch ui-switch--l3 ui-head-switch" for="chat_text_reply_limit_switch">
+                <input class="form-check-input" type="checkbox" id="chat_text_reply_limit_switch"
+                       {% if config.get('chat_text_reply_limit_switch', False) %}checked{% endif %}>
+                <span class="ui-switch-knob"></span>
+              </label>
+            </div>
+          </div>
+          <div id="chat_text_reply_limit_settings" class="chat-ability-settings">
+            <div class="row g-3">
+              <div class="col-12 col-lg-4 cfg-inline-combo-col">
+                <label class="cfg-label" for="chat_text_reply_limit_hours">回复限制</label>
+                <div class="cfg-inline-combo cfg-inline-combo--reply-limit">
+                  <div class="cfg-inline-combo__field">
+                    <span class="cfg-inline-combo__prefix">每</span>
+                    <input type="number" class="form-control cfg-inline-combo__input" id="chat_text_reply_limit_hours" min="0" max="720"
+                           value="{{ config.get('chat_text_reply_limit_hours', 24) }}" placeholder="24">
+                    <span class="cfg-inline-combo__suffix">小时</span>
+                  </div>
+                  <span class="cfg-inline-combo__separator">最多</span>
+                  <div class="cfg-inline-combo__field">
+                    <input type="number" class="form-control cfg-inline-combo__input" id="chat_text_reply_limit_count" min="0" max="99999"
+                           value="{{ config.get('chat_text_reply_limit_count', 99) }}" placeholder="99">
+                    <span class="cfg-inline-combo__suffix">次</span>
+                  </div>
+                </div>
+                <div class="cfg-hint">滚动窗口计算；任一输入为 0 时表示不限制。</div>
+              </div>
+              <div class="col-12 col-lg-8">
+                <label class="cfg-label" for="chat_text_reply_limit_reply">超限固定回复</label>
+                <div class="inline-check-field">
+                  <input type="text" class="form-control" id="chat_text_reply_limit_reply"
+                         value="{{ config.get('chat_text_reply_limit_reply', '') }}" placeholder="留空则不回复">
+                  <label class="inline-check-suffix" for="chat_text_reply_limit_ai_reply">
+                    <input class="form-check-input" type="checkbox" id="chat_text_reply_limit_ai_reply" {% if config.get('chat_text_reply_limit_ai_reply', True) %}checked{% endif %}>
+                    AI自动生成
+                  </label>
+                  <label class="inline-check-suffix" for="chat_text_reply_limit_reply_once">
+                    <input class="form-check-input" type="checkbox" id="chat_text_reply_limit_reply_once" {% if config.get('chat_text_reply_limit_reply_once', False) %}checked{% endif %}>
+                    只回复一次
+                  </label>
+                </div>
+                <div class="cfg-hint">留空时超限后静默；可由 AI 生成结束语，并可设置每个窗口只提示一次。</div>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="chat-ability-block chat-ability-block--voice-reply">
           <div class="ui-head ui-head--item">
             <div class="ui-head__main">
@@ -1060,7 +1072,7 @@ html.icons-pref-local [class*=" bi-"]::before {
               {% set chat_voice_trigger_modes = config.get('chat_voice_reply_trigger_modes', ['keyword']) %}
               {% set chat_voice_trigger_summary = [] %}
               {% if 'keyword' in chat_voice_trigger_modes %}{% set _ = chat_voice_trigger_summary.append('包含关键词时') %}{% endif %}
-              {% if 'incoming_voice' in chat_voice_trigger_modes %}{% set _ = chat_voice_trigger_summary.append('对方发语音时（需开启语音转文字）') %}{% endif %}
+              {% if 'incoming_voice' in chat_voice_trigger_modes %}{% set _ = chat_voice_trigger_summary.append('对方发语音时（会自动开启语音识别）') %}{% endif %}
               <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="chat_voice_reply_trigger_modes">触发方式</label>
                 <div class="compact-multiselect voice-trigger-multiselect" id="chat_voice_reply_trigger_modes_wrap" data-placeholder="请选择触发方式" data-summary-delimiter="；">
@@ -1075,8 +1087,8 @@ html.icons-pref-local [class*=" bi-"]::before {
                         <span class="compact-multiselect-option-text">包含关键词时</span>
                       </label>
                       <label class="compact-multiselect-option">
-                        <input type="checkbox" class="compact-multiselect-check ui-check" value="incoming_voice" data-summary-label="对方发语音时（需开启语音转文字）" {% if 'incoming_voice' in chat_voice_trigger_modes %}checked{% endif %}>
-                        <span class="compact-multiselect-option-text">对方发语音时（需开启语音转文字）</span>
+                        <input type="checkbox" class="compact-multiselect-check ui-check" value="incoming_voice" data-summary-label="对方发语音时（会自动开启语音识别）" {% if 'incoming_voice' in chat_voice_trigger_modes %}checked{% endif %}>
+                        <span class="compact-multiselect-option-text">对方发语音时（会自动开启语音识别）</span>
                       </label>
                     </div>
                     <div class="compact-multiselect-actions">
@@ -1086,28 +1098,18 @@ html.icons-pref-local [class*=" bi-"]::before {
                   </div>
                   <select class="form-select d-none" id="chat_voice_reply_trigger_modes" multiple>
                     <option value="keyword" {% if 'keyword' in chat_voice_trigger_modes %}selected{% endif %}>包含关键词时</option>
-                    <option value="incoming_voice" {% if 'incoming_voice' in chat_voice_trigger_modes %}selected{% endif %}>对方发语音时（需开启语音转文字）</option>
+                    <option value="incoming_voice" {% if 'incoming_voice' in chat_voice_trigger_modes %}selected{% endif %}>对方发语音时（会自动开启语音识别）</option>
                   </select>
                 </div>
-                <div class="cfg-hint">选择哪些情况会优先用语音回复；对方发语音时需要先开启语音转文字。</div>
-              </div>
-              <div class="col-12 col-lg-4">
-                <label class="cfg-label" for="chat_voice_session_minutes">临时语音模式时长（分钟）</label>
-                <input type="number" class="form-control" id="chat_voice_session_minutes" min="1" max="1440" value="{{ config.get('chat_voice_session_minutes', 10) }}">
-                <div class="cfg-hint">触发后在这段时间内延续语音回复，超时后自动结束</div>
-              </div>
-              <div class="col-12 col-lg-4">
-                <label class="cfg-label" for="chat_voice_session_turns">每次最多连续语音（条）</label>
-                <input type="number" class="form-control" id="chat_voice_session_turns" min="1" max="20" value="{{ config.get('chat_voice_session_turns', 5) }}">
-                <div class="cfg-hint">达到条数后结束本次语音模式，后续恢复文字回复</div>
+                <div class="cfg-hint">选择哪些情况会优先用语音回复；选择“对方发语音时”会自动开启语音识别。</div>
               </div>
               <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="chat_voice_reply_request_keywords">触发关键词</label>
                 <input type="text" class="form-control" id="chat_voice_reply_request_keywords" placeholder="声音；语音；别打字；说给我听" value="{{ config.get('chat_voice_reply_request_keywords', []) | join('；') }}">
-                <div class="cfg-hint">好友文字里包含任一关键词时，会进入临时语音模式；多个关键词用分号分隔。</div>
+                <div class="cfg-hint">好友本条文字包含任一关键词时，本次优先用语音回复；多个关键词用分号分隔。</div>
               </div>
               <div class="col-12 col-lg-4 cfg-inline-combo-col">
-                <label class="cfg-label" for="chat_voice_reply_limit_hours">语音回复循环规则</label>
+                <label class="cfg-label" for="chat_voice_reply_limit_hours">语音回复限制</label>
                 <div class="cfg-inline-combo cfg-inline-combo--reply-limit">
                   <div class="cfg-inline-combo__field">
                     <span class="cfg-inline-combo__prefix">每</span>
@@ -1121,11 +1123,6 @@ html.icons-pref-local [class*=" bi-"]::before {
                   </div>
                 </div>
                 <div class="cfg-hint">滚动窗口计算；任一输入为 0 时表示不限制。</div>
-              </div>
-              <div class="col-12 col-lg-4">
-                <label class="cfg-label" for="chat_voice_reply_cooldown_minutes">重新进入语音模式间隔（分钟）</label>
-                <input type="number" class="form-control" id="chat_voice_reply_cooldown_minutes" min="0" max="1440" value="{{ config.get('chat_voice_reply_cooldown_minutes', 10) }}">
-                <div class="cfg-hint">同一好友再次触发语音模式前需要等待的时间；0 为不限。</div>
               </div>
             </div>
           </div>
@@ -1287,23 +1284,78 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
       </div>
       <div class="recognition-card-grid">
-        <div class="switch-row recognition-inline-row">
+        <div class="switch-row switch-row--inline-desc recognition-inline-row">
           <input class="form-check-input" type="checkbox" id="group_image_recognition_switch"
                  name="group_image_recognition_switch"
                  {% if config.group_image_recognition_switch %}checked{% endif %}>
           <label for="group_image_recognition_switch"><span class="switch-title">识别图片消息</span></label>
+          <span class="switch-desc">识别群聊中的图片，供 AI 理解并回复</span>
         </div>
         <div class="switch-row switch-row--inline-desc recognition-inline-row">
           <input class="form-check-input" type="checkbox" id="group_voice_recognition_switch"
                  name="group_voice_recognition_switch"
                  {% if config.get('group_voice_recognition_switch', False) %}checked{% endif %}>
-          <label for="group_voice_recognition_switch"><span class="switch-title">识别语音转文字的消息</span></label>
+          <label for="group_voice_recognition_switch"><span class="switch-title">识别语音消息</span></label>
+          <span class="switch-desc">读取微信自带的语音转文字结果</span>
         </div>
       </div>
     </div>
     <div class="cfg-card chat-ability-card chat-ability-card--reply">
       <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5></div>
       <div class="chat-ability-stack">
+        <div class="chat-ability-block chat-ability-block--text-limit">
+          <div class="ui-head ui-head--item">
+            <div class="ui-head__main">
+              <h5>回复次数限制</h5>
+              <span class="desc">按群聊和发言成员分别统计，每成功完成一轮回复计 1 次</span>
+            </div>
+            <div class="ui-head__actions">
+              <label class="ui-switch ui-switch--l3 ui-head-switch" for="group_text_reply_limit_switch">
+                <input class="form-check-input" type="checkbox" id="group_text_reply_limit_switch"
+                       {% if config.get('group_text_reply_limit_switch', False) %}checked{% endif %}>
+                <span class="ui-switch-knob"></span>
+              </label>
+            </div>
+          </div>
+          <div id="group_text_reply_limit_settings" class="chat-ability-settings">
+            <div class="row g-3">
+              <div class="col-12 col-lg-4 cfg-inline-combo-col">
+                <label class="cfg-label" for="group_text_reply_limit_hours">回复限制</label>
+                <div class="cfg-inline-combo cfg-inline-combo--reply-limit">
+                  <div class="cfg-inline-combo__field">
+                    <span class="cfg-inline-combo__prefix">每</span>
+                    <input type="number" class="form-control cfg-inline-combo__input" id="group_text_reply_limit_hours" min="0" max="720"
+                           value="{{ config.get('group_text_reply_limit_hours', 24) }}" placeholder="24">
+                    <span class="cfg-inline-combo__suffix">小时</span>
+                  </div>
+                  <span class="cfg-inline-combo__separator">最多</span>
+                  <div class="cfg-inline-combo__field">
+                    <input type="number" class="form-control cfg-inline-combo__input" id="group_text_reply_limit_count" min="0" max="99999"
+                           value="{{ config.get('group_text_reply_limit_count', 99) }}" placeholder="99">
+                    <span class="cfg-inline-combo__suffix">次</span>
+                  </div>
+                </div>
+                <div class="cfg-hint">同一成员在不同群独立计算；任一输入为 0 时表示不限制。</div>
+              </div>
+              <div class="col-12 col-lg-8">
+                <label class="cfg-label" for="group_text_reply_limit_reply">超限固定回复</label>
+                <div class="inline-check-field">
+                  <input type="text" class="form-control" id="group_text_reply_limit_reply"
+                         value="{{ config.get('group_text_reply_limit_reply', '') }}" placeholder="留空则不回复">
+                  <label class="inline-check-suffix" for="group_text_reply_limit_ai_reply">
+                    <input class="form-check-input" type="checkbox" id="group_text_reply_limit_ai_reply" {% if config.get('group_text_reply_limit_ai_reply', True) %}checked{% endif %}>
+                    AI自动生成
+                  </label>
+                  <label class="inline-check-suffix" for="group_text_reply_limit_reply_once">
+                    <input class="form-check-input" type="checkbox" id="group_text_reply_limit_reply_once" {% if config.get('group_text_reply_limit_reply_once', False) %}checked{% endif %}>
+                    只回复一次
+                  </label>
+                </div>
+                <div class="cfg-hint">留空时超限后静默；可由 AI 生成结束语，并可设置每个窗口只提示一次。</div>
+              </div>
+            </div>
+          </div>
+        </div>
         <div class="chat-ability-block chat-ability-block--voice-reply">
           <div class="ui-head ui-head--item">
             <div class="ui-head__main">
@@ -1319,13 +1371,47 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
           <div class="chat-ability-settings">
             <div class="row g-3">
+              {% set group_voice_trigger_modes = config.get('group_voice_reply_trigger_modes', ['keyword']) %}
+              {% set group_voice_trigger_summary = [] %}
+              {% if 'keyword' in group_voice_trigger_modes %}{% set _ = group_voice_trigger_summary.append('包含关键词时') %}{% endif %}
+              {% if 'incoming_voice' in group_voice_trigger_modes %}{% set _ = group_voice_trigger_summary.append('群友发语音时（会自动开启语音识别）') %}{% endif %}
+              <div class="col-12 col-lg-4">
+                <label class="cfg-label" for="group_voice_reply_trigger_modes">触发方式</label>
+                <div class="compact-multiselect voice-trigger-multiselect" id="group_voice_reply_trigger_modes_wrap" data-placeholder="请选择触发方式" data-summary-delimiter="；">
+                  <button type="button" class="compact-multiselect-trigger">
+                    <span class="compact-multiselect-summary{% if not group_voice_trigger_summary %} is-placeholder{% endif %}">{{ group_voice_trigger_summary | join('；') if group_voice_trigger_summary else '请选择触发方式' }}</span>
+                    <i class="bi bi-chevron-down"></i>
+                  </button>
+                  <div class="compact-multiselect-panel">
+                    <div class="compact-multiselect-options">
+                      <label class="compact-multiselect-option">
+                        <input type="checkbox" class="compact-multiselect-check ui-check" value="keyword" data-summary-label="包含关键词时" {% if 'keyword' in group_voice_trigger_modes %}checked{% endif %}>
+                        <span class="compact-multiselect-option-text">包含关键词时</span>
+                      </label>
+                      <label class="compact-multiselect-option">
+                        <input type="checkbox" class="compact-multiselect-check ui-check" value="incoming_voice" data-summary-label="群友发语音时（会自动开启语音识别）" {% if 'incoming_voice' in group_voice_trigger_modes %}checked{% endif %}>
+                        <span class="compact-multiselect-option-text">群友发语音时（会自动开启语音识别）</span>
+                      </label>
+                    </div>
+                    <div class="compact-multiselect-actions">
+                      <button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-clear">清空</button>
+                      <button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-apply">确定</button>
+                    </div>
+                  </div>
+                  <select class="form-select d-none" id="group_voice_reply_trigger_modes" multiple>
+                    <option value="keyword" {% if 'keyword' in group_voice_trigger_modes %}selected{% endif %}>包含关键词时</option>
+                    <option value="incoming_voice" {% if 'incoming_voice' in group_voice_trigger_modes %}selected{% endif %}>群友发语音时（会自动开启语音识别）</option>
+                  </select>
+                </div>
+                <div class="cfg-hint">选择“群友发语音时”会自动开启语音识别；仅在“仅被@时回复”关闭时有效。</div>
+              </div>
               <div class="col-12 col-lg-4">
                 <label class="cfg-label" for="group_voice_reply_request_keywords">触发关键词</label>
                 <input type="text" class="form-control" id="group_voice_reply_request_keywords" placeholder="声音；语音；别打字；说给我听" value="{{ config.get('group_voice_reply_request_keywords', []) | join('；') }}">
-                <div class="cfg-hint">多个关键词用分号分隔</div>
+                <div class="cfg-hint">群友本条文字包含任一关键词时，本次优先用语音回复；多个关键词用分号分隔。</div>
               </div>
               <div class="col-12 col-lg-4 cfg-inline-combo-col">
-                <label class="cfg-label" for="group_voice_reply_limit_hours">语音回复循环规则</label>
+                <label class="cfg-label" for="group_voice_reply_limit_hours">语音回复限制</label>
                 <div class="cfg-inline-combo cfg-inline-combo--reply-limit">
                   <div class="cfg-inline-combo__field">
                     <span class="cfg-inline-combo__prefix">每</span>
@@ -1339,11 +1425,6 @@ html.icons-pref-local [class*=" bi-"]::before {
                   </div>
                 </div>
                 <div class="cfg-hint">滚动窗口计算；任一输入为 0 时表示不限制。</div>
-              </div>
-              <div class="col-12 col-lg-4">
-                <label class="cfg-label" for="group_voice_reply_cooldown_minutes">每次语音回复间隔（分钟）</label>
-                <input type="number" class="form-control" id="group_voice_reply_cooldown_minutes" min="0" max="1440" value="{{ config.get('group_voice_reply_cooldown_minutes', 0) }}">
-                <div class="cfg-hint">同一群两次语音回复之间的最短间隔；0 为不限。</div>
               </div>
             </div>
           </div>
@@ -1953,184 +2034,6 @@ html.icons-pref-local [class*=" bi-"]::before {
     </div>
   </div>
 
-  <!-- ===== Tab: Custom Forward ===== -->
-  <div class="config-panel" id="tab-forward">
-    <div class="cfg-card custom-forward-task-card">
-      {% set custom_forward_rule_count = config.custom_forward_list|length %}
-      {% set custom_forward_keyword_count = config.custom_forward_list|selectattr('type', 'equalto', 'keyword')|list|length %}
-      {% set custom_forward_all_count = config.custom_forward_list|selectattr('type', 'equalto', 'all')|list|length %}
-      {% set custom_forward_pause_count = config.custom_forward_list|selectattr('pause_ai_reply_on_match')|list|length %}
-      <div class="ui-head ui-head--page">
-        <i class="bi bi-share"></i>
-        <h5>自定义转发</h5>
-        <span class="desc">监听指定来源，按规则将消息转发给目标</span>
-        <div class="ui-head__actions">
-          <label class="ui-switch ui-switch--l1 ui-head-switch" for="custom_forward_switch">
-            <input class="form-check-input" type="checkbox" id="custom_forward_switch" name="custom_forward_switch" {% if config.custom_forward_switch %}checked{% endif %}>
-            <span class="ui-switch-knob"></span>
-          </label>
-        </div>
-      </div>
-      <div class="custom-forward-toolbar">
-        <div class="ai-moments-status-row">
-          <span class="ui-pill {% if config.custom_forward_switch %}is-success{% else %}is-danger{% endif %}" id="custom-forward-switch-pill">转发 {% if config.custom_forward_switch %}已开启{% else %}已关闭{% endif %}</span>
-          <span class="ui-pill is-success" id="custom-forward-rule-count">总规则 {{ custom_forward_rule_count }}</span>
-          <span class="ui-pill is-info" id="custom-forward-keyword-count">关键词 {{ custom_forward_keyword_count }}</span>
-          <span class="ui-pill is-warning" id="custom-forward-all-count">无差别 {{ custom_forward_all_count }}</span>
-          <span class="ui-pill is-danger" id="custom-forward-takeover-count">暂停AI回复 {{ custom_forward_pause_count }}</span>
-        </div>
-        <div class="summary-action-row">
-          <select class="form-select cfg-inline-control ui-head-select task-scope-wx-select" id="custom-forward-account-select" data-task-tab="tab-forward">
-            {% if task_scope_options.wx_ids %}
-              {% for wx_id in task_scope_options.wx_ids %}
-              <option value="{{ wx_id }}" {% if task_scope_options.wx_id == wx_id %}selected{% endif %}>微信号：{{ wx_id }}</option>
-              {% endfor %}
-            {% else %}
-              <option value="">微信号：暂无微信号</option>
-            {% endif %}
-          </select>
-        </div>
-      </div>
-      <div class="custom-forward-workbench ai-moments-workbench">
-        <section class="custom-forward-pane ai-moments-pane ui-workbench-pane ui-workbench-pane--list">
-          <div class="ai-moments-pane-head ui-head ui-head--section">
-            <div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">规则列表</h5><span class="desc">添加规则后在右侧设置参数</span></div>
-            <div class="custom-forward-add-actions ui-head__actions">
-              <button type="button" class="ui-btn ui-btn--add ui-btn--l2" id="btn-add-forward-keyword-rule"><i class="bi bi-plus-circle"></i> 关键词规则</button>
-              <button type="button" class="ui-btn ui-btn--add ui-btn--l2" id="btn-add-forward-all-rule"><i class="bi bi-plus-circle"></i> 无差别规则</button>
-            </div>
-          </div>
-          <div id="custom_forward_container" class="custom-forward-rule-list ui-workbench-scroll-body">
-            {% if config.custom_forward_list %}
-            {% for rule in config.custom_forward_list %}
-            {% set rule_type = rule.get('type', 'keyword') %}
-            {% set rule_type_label = '关键词转发' if rule_type == 'keyword' else '无差别转发' %}
-            {% set rule_type_pill_label = '关键词' if rule_type == 'keyword' else '无差别' %}
-            {% set rule_enabled = rule.get('enabled', True) %}
-            {% set source_summary = (rule.get('sources', [])|join(' / ')) or '全部来源' %}
-            {% set trigger_summary = (rule.get('keywords', [])|join('；')) if rule_type == 'keyword' else '全部消息' %}
-            {% set action_summary = (rule.get('targets', [])|join(' / ')) or '管理员' %}
-            {% set target_names = rule.get('targets', []) %}
-            {% if target_names %}
-              {% set target_pill_text = '转发到' ~ target_names[0] ~ ('等' ~ (target_names|length) ~ '个' if target_names|length > 1 else '') %}
-            {% else %}
-              {% set target_pill_text = '转发到管理员' %}
-            {% endif %}
-            <div class="ai-moments-task-preview custom-forward-rule-card{% if loop.first %} selected{% endif %}{% if not rule_enabled %} is-disabled{% endif %}" data-rule-id="{{ rule.id }}">
-              <div class="ai-moments-task-head custom-forward-rule-head">
-                <h6 class="ai-moments-task-title custom-forward-rule-title">
-                  <span class="ai-moments-title-status ui-pill--status ui-pill--l4 custom-forward-rule-type-pill {{ 'is-danger custom-forward-rule-type-pill--all' if rule_type == 'all' else 'is-warning custom-forward-rule-type-pill--keyword' }}">{{ rule_type_pill_label }}</span>
-                  <span class="ai-moments-task-title-text">{{ loop.index }}.{{ trigger_summary or rule_type_label }}</span>
-                </h6>
-                <div class="custom-forward-rule-actions">
-                  <button type="button" class="ui-switch ui-switch--l3 custom-forward-rule-switch{% if not rule_enabled %} off{% endif %}" aria-pressed="{% if rule_enabled %}true{% else %}false{% endif %}"><span>{% if rule_enabled %}已启用{% else %}已停用{% endif %}</span><span class="ui-switch-knob"></span></button>
-                </div>
-              </div>
-              <div class="ai-moments-task-meta custom-forward-rule-copy">来源：{{ source_summary }}</div>
-              <div class="custom-forward-rule-foot">
-                <div class="custom-forward-rule-tags">
-                  <span class="ui-pill--meta is-success">{{ target_pill_text }}</span>
-                  {% if rule.get('pause_ai_reply_on_match', False) %}<span class="ui-pill--meta is-danger">暂停AI回复</span>{% endif %}
-                  {% if rule_type == 'all' and rule.get('forward_group_friend_messages', False) %}<span class="ui-pill--meta is-warning">群内聊天</span>{% endif %}
-                  {% if rule.get('forward_with_source', False) %}<span class="ui-pill--meta is-info">附带来源信息</span>{% endif %}
-                </div>
-                <button type="button" class="ui-btn ui-btn--danger ui-btn--l2 custom-forward-rule-delete btn-remove-item">删除</button>
-              </div>
-            </div>
-            {% endfor %}
-            {% else %}
-            <div class="custom-forward-empty" id="custom-forward-list-empty">暂无转发规则，可用右上角按钮创建关键词或无差别规则。</div>
-            {% endif %}
-          </div>
-        </section>
-        <section class="custom-forward-pane ai-moments-pane ui-workbench-pane ui-workbench-pane--detail">
-          <div class="ai-moments-pane-head ui-head ui-head--section">
-            <div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">规则详情</h5><span class="desc">选中左侧规则后在这里调整内容和参数</span></div>
-          </div>
-          <div id="custom_forward_detail_container">
-            {% if config.custom_forward_list %}
-        {% for rule in config.custom_forward_list %}
-        {% set rule_type = rule.get('type', 'keyword') %}
-        {% set rule_type_label = '关键词转发' if rule_type == 'keyword' else '无差别转发' %}
-        <div class="custom-forward-editor custom-forward-item{% if loop.first %} active{% endif %}" data-rule-id="{{ rule.id }}">
-          <input type="hidden" class="fwd-rule-enabled-value" value="{% if rule.get('enabled', True) %}true{% else %}false{% endif %}">
-          <select class="form-select fwd-type-select" style="display:none;">
-            <option value="keyword" {% if rule_type == 'keyword' %}selected{% endif %}>关键词转发</option>
-            <option value="all" {% if rule_type == 'all' %}selected{% endif %}>无差别转发</option>
-          </select>
-          <div class="material-detail-section custom-forward-detail-section custom-forward-content-section">
-            <div class="fwd-conditional-block fwd-keyword-block"{% if rule_type == 'keyword' %} style="display:block;"{% endif %}>
-              <label class="cfg-label">关键词列表</label>
-              <div class="fwd-kw-list">
-                <div class="list-item">
-                  <input type="text" class="form-control" name="fwd_keyword" value="{{ rule.keywords|join('；') }}" placeholder="关键词A；关键词B；关键词C">
-                </div>
-              </div>
-            </div>
-            <div class="custom-forward-field-grid">
-              <div class="fwd-source-section">
-                <label class="cfg-label">转发来源 <span class="cfg-hint">不填写则是全部来源</span></label>
-                <div class="fwd-manual-sources">
-                  <div class="fwd-source-list">
-                    {% for src in rule.sources %}
-                    <div class="list-item">
-                      <input type="text" class="form-control" name="fwd_source" value="{{ src }}" placeholder="好友昵称或群名">
-                      <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
-                    </div>
-                    {% endfor %}
-                  </div>
-                  <button type="button" class="ui-btn ui-btn--add ui-btn--l3 ui-btn--spaced js-add-fwd-source"><i class="bi bi-plus-circle"></i> 添加来源</button>
-                </div>
-              </div>
-              <div class="fwd-target-config">
-                <label class="cfg-label">转发目标 <span class="cfg-hint">不填写则是管理员</span></label>
-                <div class="fwd-target-list">
-                  {% for tgt in rule.targets %}
-                  <div class="list-item">
-                    <input type="text" class="form-control" name="fwd_target" value="{{ tgt }}" placeholder="好友昵称或群名">
-                    <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
-                  </div>
-                  {% endfor %}
-                </div>
-                <button type="button" class="ui-btn ui-btn--add ui-btn--l3 ui-btn--spaced js-add-fwd-target"><i class="bi bi-plus-circle"></i> 添加转发目标</button>
-              </div>
-            </div>
-          </div>
-          <div class="material-detail-separator"></div>
-          <div class="material-detail-section custom-forward-detail-section custom-forward-param-section">
-            <div class="custom-forward-param-list">
-              {% if rule_type == 'keyword' %}
-              <div class="switch-row custom-forward-param-row fwd-takeover-row">
-                <input class="form-check-input fwd-pause-chat-reply" id="fwd_pause_chat_reply_{{ rule.id }}" type="checkbox" onchange="toggleFwdPauseChatReply(this)" {% if rule.get('pause_ai_reply_on_match', False) %}checked{% endif %}>
-                <label for="fwd_pause_chat_reply_{{ rule.id }}"><span class="switch-title">命中后暂停AI回复</span></label>
-              </div>
-              {% endif %}
-              {% if rule_type == 'all' %}
-              <div class="switch-row custom-forward-param-row fwd-group-friend-row">
-                <label class="ui-switch ui-switch--l3 custom-forward-param-switch" for="fwd_forward_group_friend_{{ rule.id }}">
-                  <input class="form-check-input fwd-forward-group-friend" id="fwd_forward_group_friend_{{ rule.id }}" type="checkbox" {% if rule.get('forward_group_friend_messages', False) %}checked{% endif %}>
-                  <span class="ui-switch-knob"></span>
-                </label>
-                <label for="fwd_forward_group_friend_{{ rule.id }}"><span class="switch-title">转发好友的群内聊天</span></label>
-              </div>
-              {% endif %}
-              <div class="switch-row custom-forward-param-row fwd-source-config">
-                <input class="form-check-input fwd-with-source" id="fwd_with_source_{{ rule.id }}" type="checkbox" {% if rule.forward_with_source %}checked{% endif %}>
-                <label for="fwd_with_source_{{ rule.id }}"><span class="switch-title">附带来源会话和发送人</span></label>
-              </div>
-            </div>
-          </div>
-        </div>
-        {% endfor %}
-            {% else %}
-            <div class="custom-forward-empty" id="custom-forward-detail-empty">选择或新增一条规则后，在这里设置触发内容和转发参数。</div>
-            {% endif %}
-          </div>
-        </section>
-      </div>
-    </div>
-  </div>
-
   <!-- ===== Tab: Scheduled Message ===== -->
   <div class="config-panel" id="tab-scheduled-message">
     <div class="cfg-card ai-moments-card scheduled-message-card" id="scheduled-message-card">
@@ -2513,7 +2416,7 @@ html.icons-pref-local [class*=" bi-"]::before {
               <div class="switch-row">
                 <input class="form-check-input" type="checkbox" id="material_source_silent" name="material_source_silent" {% if config.material_source_silent %}checked{% endif %}>
                 <label for="material_source_silent">素材来源静默</label>
-                <span class="cfg-hint">不回复，只响应管理员指令和素材入池</span>
+                <span class="cfg-hint">非素材消息不回复，只将有效素材加入素材池</span>
               </div>
               <div class="material-source-head">
                 <label class="cfg-label">素材来源</label>
@@ -2938,231 +2841,8 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
   </div>
-  <div class="config-panel" id="tab-moments">
-
-    <div class="cfg-card ai-moments-card" id="ai-moments-card">
-      <div class="ui-head ui-head--page">
-        <i class="bi bi-stars ui-head__icon"></i>
-        <h5 class="ui-head__title">发朋友圈</h5>
-        <span class="desc ui-head__desc">创建朋友圈任务，可选择 AI 文案或原始文案</span>
-        <div class="ui-head__actions">
-          <select class="form-select cfg-inline-control ui-head-select" id="moments_api_index">
-            {% for api in config.api_configs %}
-            <option value="{{ loop.index0 }}" {% if config.get('moments_api_index', 0) == loop.index0 %}selected{% endif %}>发圈接口：{{ api.model or ('接口 ' ~ loop.index) }}</option>
-            {% endfor %}
-            {% if not config.api_configs %}
-            <option value="0" selected>发圈接口：请先配置接口</option>
-            {% endif %}
-          </select>
-        </div>
-      </div>
-      <div class="ai-moments-toolbar">
-        <div class="ai-moments-status-row">
-          <span class="ai-moments-chip ui-pill is-success" id="moments-task-count">总任务 0</span>
-          <span class="ai-moments-chip ui-pill is-warning">待确认 0</span>
-          <span class="ai-moments-chip ui-pill is-info">等待发布 0</span>
-          <span class="ai-moments-chip ui-pill is-running">发布中 0</span>
-          <span class="ai-moments-chip ui-pill is-success">已执行 0</span>
-        </div>
-        <div class="summary-action-row">
-          <select class="form-select cfg-inline-control ui-head-select task-scope-wx-select" id="moments-account-select" data-task-tab="tab-moments">
-            {% if task_scope_options.wx_ids %}
-              {% for wx_id in task_scope_options.wx_ids %}
-              <option value="{{ wx_id }}" {% if task_scope_options.wx_id == wx_id %}selected{% endif %}>微信号：{{ wx_id }}</option>
-              {% endfor %}
-            {% else %}
-              <option value="">微信号：暂无微信号</option>
-            {% endif %}
-          </select>
-        </div>
-      </div>
-      <div class="ai-moments-workbench">
-        <section class="ai-moments-pane ui-workbench-pane ui-workbench-pane--list">
-          <div class="ai-moments-pane-head ui-head ui-head--section">
-            <div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">任务列表</h5><span class="desc">管理待发布的朋友圈任务</span></div>
-            <button type="button" class="ui-btn ui-btn--add ui-btn--l2" id="btn-add-moments-task"><i class="bi bi-plus-circle"></i> 添加任务</button>
-          </div>
-          <div id="moments_task_container" class="ui-workbench-scroll-body">
-            <div class="ai-moments-empty">暂无发朋友圈任务。</div>
-          </div>
-        </section>
-        <section class="ai-moments-pane ui-workbench-pane ui-workbench-pane--detail">
-          <div class="ai-moments-pane-head ui-head ui-head--section">
-            <div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">任务详情</h5><span class="desc">选中左侧任务后在这里设置文案、可见范围和发布时间</span></div>
-            <div class="ai-moments-mode-toggle ui-tab-command ai-moments-detail-mode" aria-label="文案处理方式">
-              <span class="ai-moments-mode-option ui-tab-command__option active">AI文案</span>
-              <span class="ai-moments-mode-option ui-tab-command__option">原始文案</span>
-            </div>
-          </div>
-          <div class="ai-moments-caption-list">
-            <div class="ai-moments-caption ai-moments-ai-candidate selected">
-              <strong>候选 1 · 当前选中</strong>
-              <span class="ai-moments-editable-copy">选择任务后展示 AI 生成的朋友圈文案。</span>
-              <button type="button" class="ai-moments-caption-edit ui-btn--icon ui-btn--l3" aria-label="编辑候选 1"><i class="bi bi-pencil"></i></button>
-            </div>
-            <div class="ai-moments-caption ai-moments-ai-candidate">
-              <strong>候选 2</strong>
-              <span class="ai-moments-editable-copy">如果文案处理方式选择“原始文案”，这里会切换为最终发布文案预览。</span>
-              <button type="button" class="ai-moments-caption-edit ui-btn--icon ui-btn--l3" aria-label="编辑候选 2"><i class="bi bi-pencil"></i></button>
-            </div>
-            <div class="ai-moments-caption ai-moments-ai-candidate">
-              <strong>候选 3</strong>
-              <span class="ai-moments-editable-copy">如果不满意，可以重新生成候选。</span>
-              <button type="button" class="ai-moments-caption-edit ui-btn--icon ui-btn--l3" aria-label="编辑候选 3"><i class="bi bi-pencil"></i></button>
-            </div>
-            <div class="ai-moments-caption ai-moments-original-preview">
-              <strong>原始文案预览</strong>
-              <span class="ai-moments-editable-copy">任务未确认时显示原始文案；没有文案时显示“无文案”。</span>
-              <button type="button" class="ai-moments-caption-edit ui-btn--icon ui-btn--l3" aria-label="编辑原始文案"><i class="bi bi-pencil"></i></button>
-            </div>
-          </div>
-          <div class="moments-material-image-row moments-task-detail-image-row"></div>
-          <div class="detail-config-separator"></div>
-          <div class="ai-moments-field-grid">
-            <div><label class="cfg-label">可见类型</label><select class="form-select ai-moments-control ai-moments-visibility-type" disabled><option value="all" selected>全部可见</option><option value="include">谁可以看</option><option value="exclude">不给谁看</option></select></div>
-            {% set moments_tag_placeholder = (contact_directory_options.wx_id ~ ' 的标签') if contact_directory_options.wx_id else '当前账号的标签' %}
-            <div><label class="cfg-label">选择标签</label><div class="ai-moments-tag-select-wrap">
-              <div class="compact-multiselect ai-moments-tag-multiselect disabled" data-placeholder="{{ moments_tag_placeholder }}">
-                <button type="button" class="compact-multiselect-trigger ai-moments-control" disabled>
-                  <span class="compact-multiselect-summary is-placeholder">{{ moments_tag_placeholder }}</span>
-                  <i class="bi bi-chevron-down"></i>
-                </button>
-                <div class="compact-multiselect-panel">
-                  <div class="compact-multiselect-search"><input type="text" class="form-control compact-multiselect-search-input" placeholder="搜索标签" disabled></div>
-                  <div class="compact-multiselect-options">
-                    {% for tag in contact_directory_options.tags %}
-                    <label class="compact-multiselect-option" data-search="{{ (tag.tag ~ ' ' ~ tag.count)|lower }}">
-                      <input type="checkbox" class="compact-multiselect-check ui-check" value="{{ tag.tag }}" disabled>
-                      <span class="compact-multiselect-option-text">{{ tag.tag }}</span>
-                      <span class="compact-multiselect-option-count">（{{ tag.count }}）</span>
-                    </label>
-                    {% endfor %}
-                    <div class="compact-multiselect-empty" style="display:none;">没有匹配标签</div>
-                  </div>
-                  <div class="compact-multiselect-actions">
-                    <button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-clear" disabled>清空</button>
-                    <button type="button" class="ui-btn ui-btn--secondary ui-btn--l2 compact-multiselect-apply" disabled>确定</button>
-                  </div>
-                </div>
-                <select class="form-select ai-moments-tags-select d-none" multiple disabled>
-                  {% for tag in contact_directory_options.tags %}
-                  <option value="{{ tag.tag }}">{{ tag.tag }}（{{ tag.count }}）</option>
-                  {% endfor %}
-                </select>
-              </div>
-            </div></div>
-            <div><label class="cfg-label">时间规则</label><select class="form-select ai-moments-control ai-moments-publish-rule"><option value="random">随机发布</option><option value="fixed">定时发布</option></select></div>
-            <div><label class="cfg-label ai-moments-time-label">选择时间段</label>
-              <input type="datetime-local" class="form-control ai-moments-control ai-moments-fixed-time-input" style="display:none;">
-              <div class="ai-moments-time-window">
-                <input type="time" class="form-control ai-moments-control ai-moments-window-start" value="12:00">
-                <span class="ai-moments-time-separator">-</span>
-                <input type="time" class="form-control ai-moments-control ai-moments-window-end" value="21:30">
-              </div>
-            </div>
-          </div>
-        </section>
-      </div>
-    </div>
-
-    <div class="cfg-card" id="moments-execution-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-list-check ui-head__icon"></i><h5 class="ui-head__title">任务队列与执行记录</h5><span class="desc ui-head__desc">确认发布后会进入等待发布；取消后任务会回到待确认</span></div>
-      <div class="moments-execution-grid">
-        <section class="ai-moments-runtime-block" data-task-runtime-module="moments" data-task-runtime-card="queue">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">等待发布</h5><span class="desc">查看已确认、等待发布的朋友圈任务</span></div><span class="ai-moments-chip ui-pill" data-task-runtime-count>0 条</span></div>
-          <div class="ai-moments-runtime-list" id="moments_pending_list" data-task-runtime-list><div class="ai-moments-empty task-runtime-empty-state">暂无等待发布的任务，点“发布”后会自动生成。</div></div>
-        </section>
-        <section class="ai-moments-runtime-block" data-task-runtime-module="moments" data-task-runtime-card="executions">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">发布记录</h5><span class="desc">查看已经结束的发圈结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="moments">清空</button></div>
-          <div class="ai-moments-runtime-list" id="moments_executed_list" data-task-runtime-list><div class="ai-moments-empty task-runtime-empty-state">暂无发布记录。</div></div>
-        </section>
-      </div>
-    </div>
-
-    <div id="moments-task-modal" class="moments-task-modal" aria-hidden="true">
-      <div class="moments-task-modal-box" role="dialog" aria-modal="true" aria-labelledby="moments-task-modal-title">
-        <div class="moments-task-modal-head">
-          <i class="bi bi-stars"></i>
-          <h5 id="moments-task-modal-title">新增发朋友圈任务</h5>
-          <span class="desc">可一次添加多组素材，每组素材会生成一条任务。</span>
-          <button type="button" class="ui-btn ui-btn--secondary ui-btn--l2" id="btn-close-moments-task-modal">关闭</button>
-        </div>
-        <div class="moments-task-modal-body">
-          <div id="moments-modal-materials" class="moments-modal-materials">
-            <div class="moments-material-row ai-moments-task-preview">
-              <div class="moments-material-row-head">
-                <span class="moments-material-row-title">素材 1</span>
-                <button type="button" class="ui-btn ui-btn--danger ui-btn--l3 btn-remove-moments-material" disabled>删除</button>
-              </div>
-              <textarea class="form-control moments-modal-text moments-material-text" rows="2" placeholder="输入一段朋友圈原始文案，可留空"></textarea>
-              <div class="moments-material-image-row">
-                <button type="button" class="moments-add-image-tile"><i class="bi bi-plus-lg"></i><span>添加图片</span></button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div class="moments-task-modal-foot">
-          <button type="button" class="ui-btn ui-btn--add ui-btn--l3" id="btn-add-moments-material-row"><i class="bi bi-plus-circle"></i> 添加素材</button>
-          <div class="moments-task-modal-actions">
-            <button type="button" class="ui-btn ui-btn--secondary ui-btn--l2" id="btn-cancel-moments-task-modal">取消</button>
-            <button type="button" class="ui-btn ui-btn--primary ui-btn--l2" id="btn-confirm-moments-task-modal">添加任务</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
   <!-- ===== Tab: Other ===== -->
   <div class="config-panel" id="tab-other">
-    <div class="cfg-card">
-      <div class="ui-head ui-head--page">
-        <i class="bi bi-chat-left-dots"></i><h5>回复次数限制</h5>
-        <label class="ui-switch ui-switch--l1 ui-head-switch" for="text_reply_limit_switch" title="启用回复次数限制">
-          <input class="form-check-input" type="checkbox" id="text_reply_limit_switch" {% if config.get('text_reply_limit_switch', False) %}checked{% endif %}>
-          <span class="ui-switch-knob"></span>
-        </label>
-      </div>
-      <div id="chat-max-round-settings" class="cfg-page-form" style="{% if not config.get('text_reply_limit_switch', False) %}display:none;{% endif %}">
-        <div class="row g-3">
-          <div class="col-12 col-lg-4 cfg-inline-combo-col">
-            <label class="cfg-label" for="text_reply_limit_hours">回复循环规则</label>
-            <div class="cfg-inline-combo cfg-inline-combo--reply-limit">
-              <div class="cfg-inline-combo__field">
-                <span class="cfg-inline-combo__prefix">每</span>
-                <input type="number" class="form-control cfg-inline-combo__input" id="text_reply_limit_hours" min="0" max="720"
-                  value="{{ config.get('text_reply_limit_hours', 24) }}" placeholder="24">
-                <span class="cfg-inline-combo__suffix">小时</span>
-              </div>
-              <span class="cfg-inline-combo__separator">最多</span>
-              <div class="cfg-inline-combo__field">
-                <input type="number" class="form-control cfg-inline-combo__input" id="text_reply_limit_count" min="0" max="99999"
-                  value="{{ config.get('text_reply_limit_count', 99) }}" placeholder="99">
-                <span class="cfg-inline-combo__suffix">次</span>
-              </div>
-            </div>
-            <div class="cfg-hint">滚动窗口计算；任一输入为 0 时表示不限制。此设置全局生效。</div>
-          </div>
-          <div class="col-12 col-lg-8">
-            <label class="cfg-label" for="text_reply_limit_reply">超出次数限制固定回复</label>
-            <div class="inline-check-field">
-              <input type="text" class="form-control" id="text_reply_limit_reply"
-                     value="{{ config.get('text_reply_limit_reply', '') }}"
-                     placeholder="留空则不回复">
-              <label class="inline-check-suffix" for="text_reply_limit_ai_reply">
-                <input class="form-check-input" type="checkbox" id="text_reply_limit_ai_reply" {% if config.get('text_reply_limit_ai_reply', True) %}checked{% endif %}>
-                AI自动生成
-              </label>
-              <label class="inline-check-suffix" for="text_reply_limit_reply_once">
-                <input class="form-check-input" type="checkbox" id="text_reply_limit_reply_once" {% if config.get('text_reply_limit_reply_once', False) %}checked{% endif %}>
-                只回复一次
-              </label>
-            </div>
-            <div class="cfg-hint">留空时超限后静默；可由 AI 生成，并可设置只提示一次</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <div class="cfg-card">
       <div class="ui-head ui-head--page"><i class="bi bi-exclamation-octagon"></i><h5>接口报错回复</h5></div>
       <div class="cfg-page-form">
@@ -3262,19 +2942,6 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
 
-    <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-shield-lock"></i><h5>管理员设置</h5></div>
-      <div class="mb-3">
-        <label class="cfg-label" for="admin">管理员微信备注名或昵称</label>
-        <input type="text" class="form-control" id="admin" name="admin" value="{{ config.admin }}">
-      </div>
-      <div class="cfg-note-block">
-        <div class="cfg-note-title"><i class="bi bi-info-circle"></i> 什么是管理员？</div>
-        管理员是机器人微信中的一个好友，通过向机器人账号发送指令消息来进行管理操作（如添加用户、切换模型、查看状态等）
-        <div class="cfg-note-title" style="margin-top:10px;"><i class="bi bi-lightbulb"></i> 没有第二个微信账号？</div>
-        可以将管理员设置为 <code>文件传输助手</code>。在手机上用当前微信账号向「文件传输助手」发送指令，消息会同步到机器人所在的 PC，机器人即可识别并执行
-      </div>
-    </div>
   </div>
 
   <!-- ===== Tab: Account ===== -->
@@ -3337,63 +3004,6 @@ html.icons-pref-local [class*=" bi-"]::before {
     </div>
   </div>
 
-  <!-- ===== Tab: Webhook ===== -->
-  <div class="config-panel" id="tab-webhook">
-    <div class="cfg-card">
-      <div class="ui-head ui-head--page">
-        <i class="bi bi-broadcast-pin"></i><h5>WebHook 通知配置</h5><span class="desc">机器人出错时通过 HTTP WebHook 发送告警</span>
-        <label class="ui-switch ui-switch--l1 ui-head-switch" for="webhook-enabled" title="启用 WebHook 通知">
-          <input class="form-check-input" type="checkbox" id="webhook-enabled">
-          <span class="ui-switch-knob"></span>
-        </label>
-      </div>
-      <div class="cfg-flow cfg-flow--page">
-        <div class="page-inline-notice page-inline-notice--success">
-          <i class="bi bi-info-circle-fill page-inline-notice__icon"></i>
-          <div class="page-inline-notice__content">
-            支持飞书、钉钉、企业微信、Discord 等通用 HTTP WebHook。请求头和请求体中可使用 <code>$title</code>、<code>$content</code> 占位符。
-          </div>
-        </div>
-      <div class="mb-3">
-        <label class="cfg-label" for="webhook-url">WebHook URL</label>
-        <input type="url" class="form-control" id="webhook-url" placeholder="https://example.com/webhook">
-      </div>
-      <div class="row">
-        <div class="col-4 mb-3">
-          <label class="cfg-label" for="webhook-method">Method</label>
-          <select class="form-control" id="webhook-method">
-            <option value="POST">POST</option>
-            <option value="PUT">PUT</option>
-            <option value="PATCH">PATCH</option>
-          </select>
-        </div>
-        <div class="col-5 mb-3">
-          <label class="cfg-label" for="webhook-content-type">Content-Type</label>
-          <input type="text" class="form-control" id="webhook-content-type" placeholder="application/json">
-        </div>
-        <div class="col-3 mb-3">
-          <label class="cfg-label" for="webhook-timeout">超时（秒）</label>
-          <input type="number" class="form-control" id="webhook-timeout" min="1" max="60" placeholder="5">
-        </div>
-      </div>
-      <div class="mb-3">
-        <label class="cfg-label" for="webhook-headers">Headers（JSON，可选）</label>
-        <textarea class="form-control" id="webhook-headers" rows="4" placeholder='{"Authorization":"Bearer token"}'></textarea>
-      </div>
-      <div class="mb-4">
-        <label class="cfg-label" for="webhook-body">Body</label>
-        <textarea class="form-control" id="webhook-body" rows="7" placeholder='{"title":"$title","content":"$content"}'></textarea>
-        <div class="cfg-hint">JSON 类型会按 JSON 发送；其他 Content-Type 会按原始文本发送</div>
-      </div>
-      <div id="webhook-msg" class="cfg-feedback"></div>
-      <div class="cfg-action-row">
-        <button type="button" id="btn-save-webhook" class="ui-btn ui-btn--primary ui-btn--l2"><i class="bi bi-save"></i> 保存配置</button>
-        <button type="button" id="btn-test-webhook" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2"><i class="bi bi-send"></i> 发送测试</button>
-      </div>
-      </div>
-    </div>
-  </div>
-
   <!-- ===== Tab: Chat Records ===== -->
   <div class="config-panel" id="tab-memory">
     <!-- 配置卡片 -->
@@ -3401,9 +3011,10 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page"><i class="bi bi-journal-text"></i><h5>聊天记录配置</h5><span class="desc">原始聊天流水与短期上下文来源</span></div>
       <div class="memory-config-grid">
         <div class="memory-config-section">
-          <div class="switch-row">
+          <div class="switch-row switch-row--inline-desc">
             <input class="form-check-input" type="checkbox" id="memory_switch" {% if config.get('memory_switch', True) %}checked{% endif %}>
             <label class="form-check-label" for="memory_switch">保存聊天记录</label>
+            <span class="switch-desc">记录完整对话，供聊天历史和会话记忆使用</span>
           </div>
           <label class="cfg-label" for="memory_max_count">最大保存条数（100 ~ 5000）</label>
           <input type="number" class="form-control" id="memory_max_count" min="100" max="5000"
@@ -3411,9 +3022,10 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="cfg-hint">每个会话最多保留的消息条数，超出后删除最旧的</div>
         </div>
         <div class="memory-config-section">
-          <div class="switch-row">
+          <div class="switch-row switch-row--inline-desc">
             <input class="form-check-input" type="checkbox" id="memory_context_switch" {% if config.get('memory_context_switch', config.get('memory_switch', True)) %}checked{% endif %}>
             <label class="form-check-label" for="memory_context_switch">带入最近聊天</label>
+            <span class="switch-desc">AI 回复时参考最近对话，保持上下文连贯</span>
           </div>
           <label class="cfg-label" for="memory_context_count">带入最近聊天记录</label>
           <div class="cfg-inline-combo cfg-inline-combo--memory-context">
@@ -3526,7 +3138,6 @@ html.icons-pref-local [class*=" bi-"]::before {
 
 <!-- ===== Scripts ===== -->
 <script src="{{ url_for('static', filename='jquery-3.6.0.min.js') }}"></script>
-<script src="https://s4.zstatic.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 window.__BASE_PATH__ = {{ (request.script_root or '') | tojson }};
 window.__FORCE_REMOTE_ADMIN_CHANGE__ = {{ force_admin_change_required | default(false) | tojson }};
@@ -4035,17 +3646,18 @@ $(function(){
     });
     updateCompactMultiSelectSummary($wrap);
   }
-  function syncChatVoiceReplyRecognitionDependency(){
-    var options = arguments[0] || {};
-    var $wrap = $('#chat_voice_reply_trigger_modes_wrap');
+  function syncVoiceReplyRecognitionDependency(scope, options){
+    options = options || {};
+    var $wrap = $('#' + scope + '_voice_reply_trigger_modes_wrap');
     if(!$wrap.length) return;
+    var $recognition = $('#' + scope + '_voice_recognition_switch');
     var values = selectedCompactMultiSelectValues($wrap);
     var wantsIncomingVoice = values.indexOf('incoming_voice') >= 0;
     if(options.forceRecognition && wantsIncomingVoice){
-      $('#chat_voice_recognition_switch').prop('checked', true);
+      $recognition.prop('checked', true);
       return;
     }
-    if(!$('#chat_voice_recognition_switch').is(':checked') && wantsIncomingVoice){
+    if(!$recognition.is(':checked') && wantsIncomingVoice){
       setCompactMultiSelectValues($wrap, values.filter(function(value){ return value !== 'incoming_voice'; }));
     }
   }
@@ -4089,10 +3701,16 @@ $(function(){
     updateCompactMultiSelectSummary($(this).closest('.compact-multiselect'));
   });
   $(document).on('change', '#chat_voice_reply_trigger_modes_wrap .compact-multiselect-check', function(){
-    syncChatVoiceReplyRecognitionDependency({ forceRecognition: true });
+    syncVoiceReplyRecognitionDependency('chat', { forceRecognition: true });
   });
   $(document).on('change', '#chat_voice_recognition_switch', function(){
-    syncChatVoiceReplyRecognitionDependency();
+    syncVoiceReplyRecognitionDependency('chat');
+  });
+  $(document).on('change', '#group_voice_reply_trigger_modes_wrap .compact-multiselect-check', function(){
+    syncVoiceReplyRecognitionDependency('group', { forceRecognition: true });
+  });
+  $(document).on('change', '#group_voice_recognition_switch', function(){
+    syncVoiceReplyRecognitionDependency('group');
   });
   $(document).on('input', '.voice-transcription-fallback-input', function(){
     var value = $(this).val();
@@ -4113,7 +3731,8 @@ $(function(){
   $(document).on('click', function(){
     $('.compact-multiselect.open').removeClass('open');
   });
-  syncChatVoiceReplyRecognitionDependency({ forceRecognition: true });
+  syncVoiceReplyRecognitionDependency('chat', { forceRecognition: true });
+  syncVoiceReplyRecognitionDependency('group', { forceRecognition: true });
   var _contactDirectoryBrowserState = {
     loaded: false,
     wxId: '',
@@ -4142,26 +3761,21 @@ $(function(){
   };
   var TASK_WORKBENCH_BASE_URLS = {
     scheduled_message: '/api/task-workbench/scheduled_message',
-    material_outreach: '/api/task-workbench/material_outreach',
-    moments: '/api/task-workbench/moments'
+    material_outreach: '/api/task-workbench/material_outreach'
   };
   var TASK_WORKBENCH_RUNTIME_URLS = {
     scheduled_message: '/api/task-workbench/scheduled_message/runtime',
-    material_outreach: '/api/task-workbench/material_outreach/runtime',
-    moments: '/api/task-workbench/moments/runtime'
+    material_outreach: '/api/task-workbench/material_outreach/runtime'
   };
   var TASK_WORKBENCH_EXECUTIONS_URLS = {
     scheduled_message: '/api/task-workbench/scheduled_message/executions',
-    material_outreach: '/api/task-workbench/material_outreach/executions',
-    moments: '/api/task-workbench/moments/executions'
+    material_outreach: '/api/task-workbench/material_outreach/executions'
   };
   var scheduledMessageWorkbenchState = createTaskWorkbenchState('scheduled_message');
   var materialOutreachWorkbenchState = createTaskWorkbenchState('material_outreach');
-  var momentsWorkbenchState = createTaskWorkbenchState('moments');
   var TASK_WORKBENCH_STATES = {
     scheduled_message: scheduledMessageWorkbenchState,
-    material_outreach: materialOutreachWorkbenchState,
-    moments: momentsWorkbenchState
+    material_outreach: materialOutreachWorkbenchState
   };
   function createTaskWorkbenchState(moduleName){
     return {
@@ -4200,7 +3814,6 @@ $(function(){
     if(status === 'running'){
       if(moduleName === 'scheduled_message') return '发送中';
       if(moduleName === 'material_outreach') return '转发中';
-      if(moduleName === 'moments') return '发布中';
       return '执行中';
     }
     if(status !== 'pending'){
@@ -4210,21 +3823,18 @@ $(function(){
     if(moduleName === 'material_outreach'){
       return String(item.source || '').trim() === 'preface' ? '文案准备中' : '等待转发';
     }
-    if(moduleName === 'moments') return '等待发布';
     return '待执行';
   }
   function taskWorkbenchQueueEmptyText(moduleName){
     moduleName = String(moduleName || '').trim();
     if(moduleName === 'scheduled_message') return '暂无等待发送的消息。';
     if(moduleName === 'material_outreach') return '暂无等待转发的素材。';
-    if(moduleName === 'moments') return '暂无等待发布的任务，点“发布”后会自动生成。';
     return '暂无待执行任务。';
   }
   function taskWorkbenchExecutionEmptyText(moduleName){
     moduleName = String(moduleName || '').trim();
     if(moduleName === 'scheduled_message') return '暂无发送记录。';
     if(moduleName === 'material_outreach') return '暂无转发记录。';
-    if(moduleName === 'moments') return '暂无发布记录。';
     return '暂无执行记录。';
   }
   function taskWorkbenchResultLabel(result){
@@ -4402,9 +4012,6 @@ $(function(){
     if(!targets){
       return '';
     }
-    if(String(item.module || '').trim() === 'moments'){
-      return targets;
-    }
     return '发给：' + targets;
   }
   function taskWorkbenchRuntimeMetaParts(item, kind){
@@ -4415,9 +4022,6 @@ $(function(){
     var mediaSummary = String(item.media_summary || '').trim();
     if(moduleName === 'scheduled_message'){
       return [mediaSummary || detail || '无附件'];
-    }
-    if(moduleName === 'moments'){
-      return [mediaSummary || detail || '无图片'];
     }
     if(moduleName === 'material_outreach'){
       return [contentSummary || detail || '无文案'];
@@ -4456,7 +4060,7 @@ $(function(){
     item = item || {};
     kind = kind === 'executions' ? 'executions' : 'queue';
     if(kind === 'queue'){
-      return normalizeTaskWorkbenchDisplayTime(item.scheduled_at) || (moduleName === 'moments' ? '点“发布”后会自动生成' : '等待系统安排');
+      return normalizeTaskWorkbenchDisplayTime(item.scheduled_at) || '等待系统安排';
     }
     return normalizeTaskWorkbenchDisplayTime(item.executed_at) || '暂无记录';
   }
@@ -5628,18 +5232,12 @@ $(function(){
     if(moduleName === 'scheduled_message'){
       return {message: '确定取消这条等待发送的定时消息？', title: '取消确认', confirm: '确定取消'};
     }
-    if(moduleName === 'moments'){
-      return {message: '确定取消这条等待发布的朋友圈？取消后任务会回到待确认。', title: '取消确认', confirm: '确定取消'};
-    }
     return {message: '确定取消这条等待转发的素材？', title: '取消确认', confirm: '确定取消'};
   }
   function taskWorkbenchClearDialog(moduleName){
     moduleName = String(moduleName || '').trim();
     if(moduleName === 'scheduled_message'){
       return {message: '确定清空所有定时消息发送记录？', title: '清空确认', confirm: '确定清空'};
-    }
-    if(moduleName === 'moments'){
-      return {message: '确定清空所有朋友圈发布记录？', title: '清空确认', confirm: '确定清空'};
     }
     return {message: '确定清空所有素材转发记录？', title: '清空确认', confirm: '确定清空'};
   }
@@ -5654,9 +5252,6 @@ $(function(){
         return $.Deferred().resolve({status:'skipped'}).promise();
       }
       return loadScheduledMessageStatus({silent:true, skipRuntime:!!options.runtime});
-    }
-    if(moduleName === 'moments'){
-      return loadMomentsTasks({silent:true, skipRuntime:!!options.runtime});
     }
     return loadMaterialOutreachStatus({silent:true, skipRuntime:!!options.runtime});
   }
@@ -6157,7 +5752,7 @@ $(function(){
     pathValue = pathValue == null ? '' : String(pathValue);
     return ''+
       '<div class="file-path-row scheduled-message-file-row">'+
-        '<input type="text" class="form-control scheduled-message-file-input" value="'+escapeMomentsHtml(pathValue)+'" placeholder="文件绝对路径">'+
+        '<input type="text" class="form-control scheduled-message-file-input" value="'+escapeHtml(pathValue)+'" placeholder="文件绝对路径">'+
         '<button type="button" class="file-path-pick btn-pick-scheduled-message-file" title="更换文件" aria-label="更换文件"><i class="bi bi-arrow-repeat"></i></button>'+
         '<button type="button" class="btn-rm file-path-remove btn-remove-scheduled-message-file" title="删除文件" aria-label="删除文件"><i class="bi bi-x-lg"></i></button>'+
       '</div>';
@@ -6210,7 +5805,7 @@ $(function(){
     pathValue = pathValue == null ? '' : String(pathValue);
     return ''+
       '<div class="file-path-row scheduled-message-file-row new-friend-message-file-row">'+
-        '<input type="text" class="form-control new-friend-message-file-input" value="'+escapeMomentsHtml(pathValue)+'" placeholder="文件绝对路径">'+
+        '<input type="text" class="form-control new-friend-message-file-input" value="'+escapeHtml(pathValue)+'" placeholder="文件绝对路径">'+
         '<button type="button" class="file-path-pick btn-pick-new-friend-message-file" title="更换文件" aria-label="更换文件"><i class="bi bi-arrow-repeat"></i></button>'+
         '<button type="button" class="btn-rm file-path-remove btn-remove-new-friend-message-file" title="删除文件" aria-label="删除文件"><i class="bi bi-x-lg"></i></button>'+
       '</div>';
@@ -6247,7 +5842,7 @@ $(function(){
     var files = Array.isArray(message.files) ? message.files.slice(0, KEYWORD_MAX_FILES) : [];
     return ''+
       '<div class="scheduled-message-text-block">'+
-        '<textarea class="form-control ai-moments-control scheduled-message-text-input new-friend-message-text-input" rows="1" placeholder="输入欢迎内容，可留空">'+escapeMomentsHtml(textValue)+'</textarea>'+
+        '<textarea class="form-control ai-moments-control scheduled-message-text-input new-friend-message-text-input" rows="1" placeholder="输入欢迎内容，可留空">'+escapeHtml(textValue)+'</textarea>'+
       '</div>'+
       '<div class="scheduled-message-file-block new-friend-message-file-wrap"'+(files.length ? '' : ' style="display:none"')+'>'+
         '<div class="file-path-list scheduled-message-file-list new-friend-message-file-list">'+files.map(function(pathValue){ return buildNewFriendMessageFileRow(pathValue); }).join('')+'</div>'+
@@ -6527,20 +6122,20 @@ $(function(){
     var manualTargetNames = Array.isArray(task.manual_target_names) ? task.manual_target_names : [];
     var repeatValues = Array.isArray(task.repeat_values) ? task.repeat_values.join(',') : '';
     return ''+
-      '<div class="scheduled-message-editor active" data-task-id="'+escapeMomentsHtml(task.id || nextScheduledMessageTaskId())+'">'+
+      '<div class="scheduled-message-editor active" data-task-id="'+escapeHtml(task.id || nextScheduledMessageTaskId())+'">'+
         '<input type="hidden" class="scheduled-task-enabled" value="'+((task.enabled === false) ? 'false' : 'true')+'">'+
-        '<input type="hidden" class="scheduled-task-status" value="'+escapeMomentsHtml(task.status || 'pending_confirm')+'">'+
-        '<input type="hidden" class="scheduled-last-result-summary" value="'+escapeMomentsHtml((task.last_result||{}).summary || '')+'">'+
-        '<input type="hidden" class="scheduled-last-result-type" value="'+escapeMomentsHtml((task.last_result||{}).result_type || '')+'">'+
-        '<input type="hidden" class="scheduled-return-reason" value="'+escapeMomentsHtml(task.return_reason || '')+'">'+
-        '<input type="hidden" class="scheduled-next-run-at" value="'+escapeMomentsHtml(task.next_run_at || '')+'">'+
-        '<input type="hidden" class="scheduled-repeat-mode" value="'+escapeMomentsHtml(task.repeat_mode || 'once')+'">'+
-        '<input type="hidden" class="scheduled-repeat-rule" value="'+escapeMomentsHtml(task.repeat_rule || 'custom_dates')+'">'+
-        '<input type="hidden" class="scheduled-repeat-values" value="'+escapeMomentsHtml(repeatValues)+'">'+
+        '<input type="hidden" class="scheduled-task-status" value="'+escapeHtml(task.status || 'pending_confirm')+'">'+
+        '<input type="hidden" class="scheduled-last-result-summary" value="'+escapeHtml((task.last_result||{}).summary || '')+'">'+
+        '<input type="hidden" class="scheduled-last-result-type" value="'+escapeHtml((task.last_result||{}).result_type || '')+'">'+
+        '<input type="hidden" class="scheduled-return-reason" value="'+escapeHtml(task.return_reason || '')+'">'+
+        '<input type="hidden" class="scheduled-next-run-at" value="'+escapeHtml(task.next_run_at || '')+'">'+
+        '<input type="hidden" class="scheduled-repeat-mode" value="'+escapeHtml(task.repeat_mode || 'once')+'">'+
+        '<input type="hidden" class="scheduled-repeat-rule" value="'+escapeHtml(task.repeat_rule || 'custom_dates')+'">'+
+        '<input type="hidden" class="scheduled-repeat-values" value="'+escapeHtml(repeatValues)+'">'+
         '<div class="scheduled-message-section">'+
           '<div class="scheduled-message-content-stack">'+
             '<div class="scheduled-message-text-block">'+
-              '<textarea class="form-control ai-moments-control scheduled-message-text-input" rows="1" placeholder="输入要发送的消息，可留空">'+escapeMomentsHtml(contentModel.text)+'</textarea>'+
+              '<textarea class="form-control ai-moments-control scheduled-message-text-input" rows="1" placeholder="输入要发送的消息，可留空">'+escapeHtml(contentModel.text)+'</textarea>'+
             '</div>'+
             '<div class="scheduled-message-file-block"'+(fileRows ? '' : ' style="display:none"')+'>'+
               '<div class="file-path-list scheduled-message-file-list">'+fileRows+'</div>'+
@@ -6552,10 +6147,10 @@ $(function(){
           '<div class="scheduled-message-field-grid">'+
             '<div class="scheduled-message-field"><label class="cfg-label">发送目标</label><select class="form-select ai-moments-control scheduled-target-mode"><option value="all"'+(targetMode === 'all' ? ' selected' : '')+'>全部</option><option value="include"'+(targetMode === 'include' ? ' selected' : '')+'>发给谁</option><option value="exclude"'+(targetMode === 'exclude' ? ' selected' : '')+'>不发给谁</option></select></div>'+
             '<div class="scheduled-message-field"><label class="cfg-label">选择标签</label>'+renderScheduledMessageTagMultiSelect(targetTags, targetMode === 'all')+'</div>'+
-            '<div class="scheduled-message-field scheduled-manual-target-field"><label class="cfg-label">昵称或备注</label><textarea class="form-control ai-moments-control scheduled-manual-target-names" rows="2" placeholder="每行一个，可设置多个">'+escapeMomentsHtml(manualTargetNames.join('\n'))+'</textarea></div>'+
+            '<div class="scheduled-message-field scheduled-manual-target-field"><label class="cfg-label">昵称或备注</label><textarea class="form-control ai-moments-control scheduled-manual-target-names" rows="2" placeholder="每行一个，可设置多个">'+escapeHtml(manualTargetNames.join('\n'))+'</textarea></div>'+
             '<div class="scheduled-message-field scheduled-manual-target-spacer" aria-hidden="true"></div>'+
             '<div class="scheduled-message-field"><label class="cfg-label">时间规则</label><select class="form-select ai-moments-control scheduled-trigger-kind"><option value="fixed"'+(triggerKind !== 'random' ? ' selected' : '')+'>固定时间</option><option value="random"'+(triggerKind === 'random' ? ' selected' : '')+'>随机时间</option></select></div>'+
-            '<div class="scheduled-message-field"><label class="cfg-label scheduled-message-time-label">'+(triggerKind === 'random' ? '选择时间段' : '选择时间')+'</label><div class="scheduled-message-fixed-datetime-wrap"'+(triggerKind === 'random' ? ' hidden' : '')+'><input type="datetime-local" class="form-control ai-moments-control scheduled-datetime" value="'+escapeMomentsHtml(fixedValue)+'"></div><div class="scheduled-message-random-window-wrap"'+(triggerKind !== 'random' ? ' hidden' : '')+'><div class="ai-moments-time-window"><input type="time" class="form-control ai-moments-control scheduled-window-start" value="'+escapeMomentsHtml(windowParts.start)+'"><span class="ai-moments-time-separator">-</span><input type="time" class="form-control ai-moments-control scheduled-window-end" value="'+escapeMomentsHtml(windowParts.end)+'"></div></div></div>'+
+            '<div class="scheduled-message-field"><label class="cfg-label scheduled-message-time-label">'+(triggerKind === 'random' ? '选择时间段' : '选择时间')+'</label><div class="scheduled-message-fixed-datetime-wrap"'+(triggerKind === 'random' ? ' hidden' : '')+'><input type="datetime-local" class="form-control ai-moments-control scheduled-datetime" value="'+escapeHtml(fixedValue)+'"></div><div class="scheduled-message-random-window-wrap"'+(triggerKind !== 'random' ? ' hidden' : '')+'><div class="ai-moments-time-window"><input type="time" class="form-control ai-moments-control scheduled-window-start" value="'+escapeHtml(windowParts.start)+'"><span class="ai-moments-time-separator">-</span><input type="time" class="form-control ai-moments-control scheduled-window-end" value="'+escapeHtml(windowParts.end)+'"></div></div></div>'+
           '</div>'+
         '</div>'+
       '</div>';
@@ -6650,13 +6245,13 @@ $(function(){
         var timeText = scheduledMessageCardTimeText(task);
         var badge = scheduledMessageInstanceBadge(task);
         $list.append(
-          '<div class="ai-moments-task-preview scheduled-message-task-preview'+(task.id === activeScheduledMessageTaskId ? ' selected' : '')+'" data-task-id="'+escapeMomentsHtml(task.id)+'">'+
+          '<div class="ai-moments-task-preview scheduled-message-task-preview'+(task.id === activeScheduledMessageTaskId ? ' selected' : '')+'" data-task-id="'+escapeHtml(task.id)+'">'+
             '<div class="ai-moments-task-head">'+
-              '<h6 class="ai-moments-task-title"><span class="ai-moments-title-status ui-pill--status ui-pill--l4 '+badge.cls+'">'+badge.text+'</span><span class="ai-moments-task-title-text">'+escapeMomentsHtml(scheduledMessageSummaryName(task))+'</span></h6>'+
+              '<h6 class="ai-moments-task-title"><span class="ai-moments-title-status ui-pill--status ui-pill--l4 '+badge.cls+'">'+badge.text+'</span><span class="ai-moments-task-title-text">'+escapeHtml(scheduledMessageSummaryName(task))+'</span></h6>'+
               '<button type="button" class="ui-switch ui-switch--l3 scheduled-task-switch '+(task.enabled ? '' : 'off')+'" aria-pressed="'+(task.enabled ? 'true' : 'false')+'"><span>'+(task.enabled ? '已启用' : '已停用')+'</span><span class="ui-switch-knob"></span></button>'+
             '</div>'+
-            (metaText ? '<div class="ai-moments-task-meta">'+escapeMomentsHtml(metaText)+'</div>' : '')+
-            '<div class="ai-moments-task-time">'+escapeMomentsHtml(timeText)+'</div>'+
+            (metaText ? '<div class="ai-moments-task-meta">'+escapeHtml(metaText)+'</div>' : '')+
+            '<div class="ai-moments-task-time">'+escapeHtml(timeText)+'</div>'+
             '<div class="cfg-action-row scheduled-message-card-footer-actions">'+
               '<div class="scheduled-message-card-primary-actions">'+
                 '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l3 btn-view-scheduled-message-task">查看详情</button>'+
@@ -7473,14 +7068,11 @@ $(function(){
     }
   });
 
-  // ===== 回复轮数限制开关联动 =====
-  $('#text_reply_limit_switch').on('change', function(){
-    $('#chat-max-round-settings').toggle(this.checked);
-  });
-
-  function syncChatMaxRoundReplyMode(){
-    var aiOn = $('#text_reply_limit_ai_reply').is(':checked');
-    var $input = $('#text_reply_limit_reply');
+  // ===== 私聊 / 群聊回复次数限制联动 =====
+  function syncTextReplyLimitControls(scope){
+    var prefix = '#' + scope + '_text_reply_limit_';
+    var aiOn = $(prefix + 'ai_reply').is(':checked');
+    var $input = $(prefix + 'reply');
     if(aiOn){
       $input.val('');
       $input.prop('disabled', true);
@@ -7490,8 +7082,12 @@ $(function(){
       $input.attr('placeholder', '留空则不回复');
     }
   }
-  $('#text_reply_limit_ai_reply').on('change', syncChatMaxRoundReplyMode);
-  syncChatMaxRoundReplyMode();
+  ['chat', 'group'].forEach(function(scope){
+    $('#' + scope + '_text_reply_limit_ai_reply').on('change', function(){
+      syncTextReplyLimitControls(scope);
+    });
+    syncTextReplyLimitControls(scope);
+  });
 
   // ===== Remove List Item =====
   $(document).on('click','.btn-remove-item',function(){
@@ -7502,19 +7098,14 @@ $(function(){
       ensureMaterialSourceFallback($container);
       return;
     }
-    var $item = $(this).closest('.list-item, .keyword-item, .scheduled-msg-item, .scheduled-moments-item, .random-moments-item, .random-msg-item, .custom-forward-item, .material-outreach-item');
+    var $item = $(this).closest('.list-item, .keyword-item, .scheduled-msg-item, .random-msg-item, .material-outreach-item');
     var refreshListen = $item.is('.listen-item, .listen-blacklist-item, .global-prompt-exception-item');
     var refreshGroup = $item.is('.group-rule-row');
     var refreshKeyword = $item.is('.keyword-item');
-    var $customForwardEditor = $item.closest('.custom-forward-editor');
     $item.remove();
     if(refreshListen) refreshListenRuleSummary();
     if(refreshGroup) refreshGroupSummary();
     if(refreshKeyword){ ensureKeywordEmptyState(); syncKeywordSummaryPills(); }
-    if($customForwardEditor.length){
-      syncCustomForwardRuleCard($customForwardEditor);
-      syncCustomForwardSummaryPills();
-    }
   });
 
   // ===== 选择本地图片（调后端弹系统文件选择框）=====
@@ -8023,24 +7614,6 @@ $(function(){
   syncGroupListenOnlyControls();
   refreshGroupSummary();
 
-  $('#btn-add-chat-memory-exclude').click(function(){
-    insertListItemAtTop($('#chat_memory_exclude_container'),
-      '<div class="list-item chat-memory-exclude-item">'+
-      '<input type="text" class="form-control chat-memory-exclude-user" placeholder="好友昵称">'+
-      '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
-      '</div>'
-    );
-  });
-
-  function collectChatMemoryExcludeFromUI(){
-    var users = [];
-    $('.chat-memory-exclude-item').each(function(){
-      var uname = $(this).find('.chat-memory-exclude-user').val().trim();
-      if (uname) users.push(uname);
-    });
-    return users;
-  }
-
   function collectSelectedValues($select){
     var value = $select.val() || [];
     if(!Array.isArray(value)) value = [value];
@@ -8080,10 +7653,6 @@ $(function(){
 
   function getChatMemoryChatName(){
     return (_chatMemoryChatName || '').trim();
-  }
-
-  function getPromptPreviewWxId(){
-    return ($('#prompt-preview-wx-id').val() || '').trim();
   }
 
   function renderWxIdSelect($select, wxIds, emptyText, selectedWxId, prefixLabel){
@@ -8137,12 +7706,6 @@ $(function(){
     if(typeof scheduledMessageHasLocalDraft === 'function' && scheduledMessageHasLocalDraft()){
       return true;
     }
-    if($('#moments-task-modal').is(':visible')){
-      return true;
-    }
-    if($('#ai-moments-card .ai-moments-caption.editing').length){
-      return true;
-    }
     if(typeof currentMaterialManagementEditor === 'function' && typeof materialManagementEditorDirty === 'function'){
       if(materialManagementEditorDirty(currentMaterialManagementEditor())){
         return true;
@@ -8176,20 +7739,6 @@ $(function(){
       nextUrl.searchParams.delete('active_tab');
     }
     window.location.href = nextUrl.toString();
-  }
-
-  function loadPromptPreviewWxIds(selectWxId){
-    $.getJSON('/chat_memory/wx_ids').done(function(res){
-      if(res.status !== 'success'){
-        renderWxIdSelect($('#prompt-preview-wx-id'), [], '暂无微信号', '');
-        return;
-      }
-      var wxIds = Array.isArray(res.wx_ids) ? res.wx_ids : [];
-      var selected = selectWxId && wxIds.indexOf(selectWxId) !== -1
-        ? selectWxId
-        : (String(res.wx_id || '').trim() || wxIds[0] || '');
-      renderWxIdSelect($('#prompt-preview-wx-id'), wxIds, '暂无微信号', selected);
-    });
   }
 
   function blankChatMemoryState(chatName, wxId){
@@ -8266,7 +7815,6 @@ $(function(){
     _chatMemoryEditorState = normalized;
     _chatMemoryOriginalState = cloneChatMemoryState(normalized);
     renderChatMemoryEditor(options.meta || '结构化编辑');
-    $('#prompt-preview-output').hide().text('');
   }
 
   function showChatMemoryMissingState(chatName, hasChatRecord){
@@ -8576,9 +8124,6 @@ $(function(){
     loadIdentityCalibration(wxId, {silent:true});
     loadRelationshipScanStatus(wxId, {silent:true});
     loadFriendRequestStatus(wxId, {silent:true});
-  });
-  $(document).on('click', '[data-tab="tab-prompt"]', function(){
-    loadPromptPreviewWxIds(getPromptPreviewWxId() || getChatMemoryWxId());
   });
   $('#chat-memory-wx-select').on('change', function(){
     var $select = $(this);
@@ -8959,38 +8504,6 @@ $(function(){
     });
   });
 
-  $('#btn-prompt-preview').click(function(){
-    var chatName = $('#prompt-preview-chat-name').val().trim();
-    if(!chatName){ showMsg('prompt-preview-msg', '请先输入好友昵称', false); return; }
-    $.ajax({
-      url:'/prompt/preview',
-      type:'POST',
-      contentType:'application/json',
-      data:JSON.stringify({
-        chat_name:chatName,
-        wx_id:getPromptPreviewWxId(),
-        config_overrides:{
-          default_prompt:$('#default_prompt_select').val()||'默认',
-          chat_prompt_map:collectChatPromptBindingsFromUI(),
-          listen_list:collectListenNamesFromUI(),
-          AllListen_switch:$('#AllListen_switch').is(':checked'),
-          chat_memory_switch:$('#chat_memory_switch').is(':checked'),
-          chat_memory_message_threshold:parseInt($('#chat_memory_message_threshold').val())||100,
-          chat_memory_interval_hours:parseInt($('#chat_memory_interval_hours').val())||12,
-          chat_memory_protected_recent_count:Math.max(0, Math.min(200, parseInt($('#chat_memory_protected_recent_count').val())||20)),
-          chat_memory_exclude_list:collectChatMemoryExcludeFromUI()
-        }
-      }),
-      success:function(res){
-        if(res.status==='success'){
-          showMsg('prompt-preview-msg', 'Prompt 预览已生成', true);
-          $('#prompt-preview-output').show().text('使用 Prompt：' + (res.prompt_name || '') + '\n\n' + (res.prompt || ''));
-        }
-        else { showMsg('prompt-preview-msg', res.message || '预览失败', false); }
-      }
-    });
-  });
-
   $(document).on('click', '.btn-open-chat-memory', function(){
     var uname = $(this).closest('.listen-item').find('input[name="listen_list"]').val().trim();
     activateTab('tab-chat-memory');
@@ -9147,228 +8660,6 @@ $(function(){
       }
     });
   });
-
-  // ===== Custom Forward: 工具函数 =====
-  function _fwdListItem(nameAttr, placeholder){
-    return '<div class="list-item">'+
-      '<input type="text" class="form-control" name="'+nameAttr+'" placeholder="'+placeholder+'">'+
-      '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
-      '</div>';
-  }
-  function fwdEsc(text){
-    return String(text == null ? '' : text)
-      .replace(/&/g,'&amp;')
-      .replace(/</g,'&lt;')
-      .replace(/>/g,'&gt;')
-      .replace(/"/g,'&quot;')
-      .replace(/'/g,'&#39;');
-  }
-  function fwdTypeLabel(type){
-    if(type === 'all') return '无差别';
-    return '关键词';
-  }
-  function fwdCollectInputs($wrap, name){
-    var values = [];
-    $wrap.find('input[name="'+name+'"]').each(function(){
-      var value = $.trim($(this).val() || '');
-      if(value) values.push(value);
-    });
-    return values;
-  }
-  function splitInlineTextList(value){
-    return String(value || '')
-      .split(/[；;\r\n]+/)
-      .map(function(s){ return s.trim(); })
-      .filter(Boolean);
-  }
-  function forwardRuleCardFor($editor){
-    return $('.custom-forward-rule-card[data-rule-id="'+$editor.data('rule-id')+'"]');
-  }
-  function forwardRuleEnabledFor($editor){
-    return $editor.find('.fwd-rule-enabled-value').val() !== 'false';
-  }
-  function syncCustomForwardSummaryPills(){
-    var total = 0;
-    var keywordCount = 0;
-    var allCount = 0;
-    var pauseCount = 0;
-    $('#custom_forward_detail_container .custom-forward-editor.custom-forward-item').each(function(){
-      var $editor = $(this);
-      var type = $editor.find('.fwd-type-select').val() || 'keyword';
-      total += 1;
-      if(type === 'all') allCount += 1;
-      else keywordCount += 1;
-      if(type === 'keyword' && $editor.find('.fwd-pause-chat-reply').is(':checked')) pauseCount += 1;
-    });
-    setSummaryPill($('#custom-forward-rule-count'), total > 0 ? 'is-success' : 'is-warning', '总规则', String(total));
-    setSummaryPill($('#custom-forward-keyword-count'), 'is-info', '关键词', String(keywordCount));
-    setSummaryPill($('#custom-forward-all-count'), 'is-warning', '无差别', String(allCount));
-    setSummaryPill($('#custom-forward-takeover-count'), pauseCount > 0 ? 'is-danger' : 'is-info', '暂停AI回复', String(pauseCount));
-  }
-  function syncCustomForwardRuleCard($editor){
-    if(!$editor || !$editor.length) return;
-    var $card = forwardRuleCardFor($editor);
-    if(!$card.length){
-      syncCustomForwardSummaryPills();
-      return;
-    }
-    var type = $editor.find('.fwd-type-select').val() || 'keyword';
-    var typeLabel = fwdTypeLabel(type);
-    var sources = fwdCollectInputs($editor, 'fwd_source');
-    var keywords = splitInlineTextList($editor.find('input[name="fwd_keyword"]').val());
-    var targets = fwdCollectInputs($editor, 'fwd_target');
-    var pauseAi = $editor.find('.fwd-pause-chat-reply').is(':checked') && type === 'keyword';
-    var withSource = $editor.find('.fwd-with-source').is(':checked');
-    var forwardGroupFriend = $editor.find('.fwd-forward-group-friend').is(':checked') && type === 'all';
-    var trigger = type === 'keyword' ? (keywords.join('；') || '未设置关键词') : '全部消息';
-    var sourceText = sources.join(' / ') || '全部来源';
-    var actionText = targets.join(' / ') || '管理员';
-    var targetPillText = targets.length
-      ? ('转发到' + targets[0] + (targets.length > 1 ? ('等' + targets.length + '个') : ''))
-      : '转发到管理员';
-    $card.find('.custom-forward-rule-type-pill')
-      .text(typeLabel)
-      .toggleClass('is-warning', type !== 'all')
-      .toggleClass('is-danger', type === 'all')
-      .toggleClass('custom-forward-rule-type-pill--keyword', type !== 'all')
-      .toggleClass('custom-forward-rule-type-pill--all', type === 'all');
-    $card.find('.ai-moments-task-title-text').text(trigger);
-    $card.find('.custom-forward-rule-copy').text('来源：' + sourceText);
-    var tags = [];
-    tags.push('<span class="ui-pill--meta is-success">' + escapeHtml(targetPillText) + '</span>');
-    if(pauseAi) tags.push('<span class="ui-pill--meta is-danger">暂停AI回复</span>');
-    if(forwardGroupFriend) tags.push('<span class="ui-pill--meta is-warning">群内聊天</span>');
-    if(withSource) tags.push('<span class="ui-pill--meta is-info">附带来源信息</span>');
-    $card.find('.custom-forward-rule-tags').html(tags.join(''));
-    syncCustomForwardSummaryPills();
-  }
-  window.syncCustomForwardRuleCard = syncCustomForwardRuleCard;
-  function selectCustomForwardRule(ruleId){
-    $('.custom-forward-rule-card').removeClass('selected');
-    $('.custom-forward-editor').removeClass('active');
-    $('.custom-forward-rule-card[data-rule-id="'+ruleId+'"]').addClass('selected');
-    $('.custom-forward-editor[data-rule-id="'+ruleId+'"]').addClass('active');
-  }
-  function _fwdSyncType($item){
-    var t = $item.find('.fwd-type-select').val();
-    $item.find('.fwd-keyword-block').toggle(t === 'keyword');
-    $item.find('.fwd-all-block').toggle(t === 'all');
-    $item.find('.fwd-takeover-row').toggle(t === 'keyword');
-    $item.find('.fwd-group-friend-row').toggle(t === 'all');
-    if(t !== 'keyword'){
-      $item.find('.fwd-pause-chat-reply').prop('checked', false);
-      toggleFwdPauseChatReply($item.find('.fwd-pause-chat-reply')[0]);
-    }
-    syncCustomForwardRuleCard($item);
-  }
-
-  // 页面加载时初始化已有规则的条件显示
-  $('.custom-forward-item').each(function(){ _fwdSyncType($(this)); });
-
-  // 类型切换事件
-  $(document).on('change', '.fwd-type-select', function(){
-    _fwdSyncType($(this).closest('.custom-forward-item'));
-  });
-  $(document).on('input change', '.custom-forward-editor input, .custom-forward-editor select', function(){
-    syncCustomForwardRuleCard($(this).closest('.custom-forward-editor'));
-  });
-  $(document).on('click', '.custom-forward-rule-card', function(e){
-    if($(e.target).closest('.custom-forward-rule-switch, .custom-forward-rule-delete').length) return;
-    selectCustomForwardRule($(this).data('rule-id'));
-  });
-  $(document).on('click', '.custom-forward-rule-switch', function(e){
-    e.preventDefault();
-    e.stopPropagation();
-    var $btn = $(this);
-    var $card = $btn.closest('.custom-forward-rule-card');
-    var ruleId = $card.data('rule-id');
-    var enabled = $btn.attr('aria-pressed') !== 'true';
-    $btn.attr('aria-pressed', enabled ? 'true' : 'false').toggleClass('off', !enabled).find('span:first').text(enabled ? '已启用' : '已停用');
-    $card.toggleClass('is-disabled', !enabled);
-    $('.custom-forward-editor[data-rule-id="'+ruleId+'"]').find('.fwd-rule-enabled-value').val(enabled ? 'true' : 'false');
-  });
-  $(document).on('click', '.custom-forward-rule-delete', function(e){
-    e.preventDefault();
-    e.stopPropagation();
-    var $card = $(this).closest('.custom-forward-rule-card');
-    var ruleId = $card.data('rule-id');
-    var wasSelected = $card.hasClass('selected');
-    $('.custom-forward-editor[data-rule-id="'+ruleId+'"]').remove();
-    $card.remove();
-    if(!$('.custom-forward-rule-card').length){
-      $('#custom_forward_container').html('<div class="custom-forward-empty" id="custom-forward-list-empty">暂无转发规则，可用右上角按钮创建关键词或无差别规则。</div>');
-      $('#custom_forward_detail_container').html('<div class="custom-forward-empty" id="custom-forward-detail-empty">选择或新增一条规则后，在这里设置触发内容和转发参数。</div>');
-    } else if(wasSelected) {
-      selectCustomForwardRule($('.custom-forward-rule-card').first().data('rule-id'));
-    }
-    syncCustomForwardSummaryPills();
-  });
-
-  // 添加来源
-  $(document).on('click', '.js-add-fwd-source', function(){
-    insertListItemAtTop($(this).prev('.fwd-source-list'), _fwdListItem('fwd_source', '好友昵称或群名'));
-    syncCustomForwardRuleCard($(this).closest('.custom-forward-editor'));
-  });
-  // 添加转发目标
-  $(document).on('click', '.js-add-fwd-target', function(){
-    insertListItemAtTop($(this).prev('.fwd-target-list'), _fwdListItem('fwd_target', '好友昵称或群名'));
-    syncCustomForwardRuleCard($(this).closest('.custom-forward-editor'));
-  });
-
-  // 添加新转发规则
-  function buildCustomForwardRuleCard(ruleId, type){
-    var typeLabel = fwdTypeLabel(type);
-    var trigger = type === 'all' ? '全部消息' : '未设置关键词';
-    return '<div class="ai-moments-task-preview custom-forward-rule-card selected" data-rule-id="'+ruleId+'">'+
-      '<div class="ai-moments-task-head custom-forward-rule-head">'+
-        '<h6 class="ai-moments-task-title custom-forward-rule-title">'+
-          '<span class="ai-moments-title-status ui-pill--status ui-pill--l4 custom-forward-rule-type-pill '+(type === 'all' ? 'is-danger custom-forward-rule-type-pill--all' : 'is-warning custom-forward-rule-type-pill--keyword')+'">'+typeLabel+'</span>'+
-          '<span class="ai-moments-task-title-text">'+trigger+'</span>'+
-        '</h6>'+
-        '<div class="custom-forward-rule-actions">'+
-          '<button type="button" class="ui-switch ui-switch--l3 custom-forward-rule-switch" aria-pressed="true"><span>已启用</span><span class="ui-switch-knob"></span></button>'+
-        '</div>'+
-      '</div>'+
-      '<div class="ai-moments-task-meta custom-forward-rule-copy">来源：全部来源</div>'+
-      '<div class="custom-forward-rule-foot"><div class="custom-forward-rule-tags"></div><button type="button" class="ui-btn ui-btn--danger ui-btn--l2 custom-forward-rule-delete btn-remove-item">删除</button></div>'+
-      '</div>';
-  }
-  function buildCustomForwardRuleEditor(ruleId, type){
-    return '<div class="custom-forward-editor custom-forward-item active" data-rule-id="'+ruleId+'">'+
-      '<input type="hidden" class="fwd-rule-enabled-value" value="true">'+
-      '<select class="form-select fwd-type-select" style="display:none;"><option value="keyword" '+(type==='keyword'?'selected':'')+'>关键词转发</option><option value="all" '+(type==='all'?'selected':'')+'>无差别转发</option></select>'+
-      '<div class="material-detail-section custom-forward-detail-section custom-forward-content-section">'+
-        '<div class="fwd-conditional-block fwd-keyword-block" '+(type==='keyword'?'style="display:block;"':'')+'><label class="cfg-label">关键词列表</label><div class="fwd-kw-list"><div class="list-item"><input type="text" class="form-control" name="fwd_keyword" value="" placeholder="关键词A；关键词B；关键词C"></div></div></div>'+
-        '<div class="custom-forward-field-grid">'+
-          '<div class="fwd-source-section"><label class="cfg-label">转发来源 <span class="cfg-hint">不填写则是全部来源</span></label><div class="fwd-manual-sources"><div class="fwd-source-list"></div><button type="button" class="ui-btn ui-btn--add ui-btn--l3 ui-btn--spaced js-add-fwd-source"><i class="bi bi-plus-circle"></i> 添加来源</button></div></div>'+
-          '<div class="fwd-target-config"><label class="cfg-label">转发目标 <span class="cfg-hint">不填写则是管理员</span></label><div class="fwd-target-list"></div><button type="button" class="ui-btn ui-btn--add ui-btn--l3 ui-btn--spaced js-add-fwd-target"><i class="bi bi-plus-circle"></i> 添加转发目标</button></div>'+
-        '</div>'+
-      '</div>'+
-      '<div class="material-detail-separator"></div>'+
-      '<div class="material-detail-section custom-forward-detail-section custom-forward-param-section">'+
-      '<div class="custom-forward-param-list">'+
-      (type==='keyword' ? '<div class="switch-row custom-forward-param-row fwd-takeover-row"><input class="form-check-input fwd-pause-chat-reply" id="fwd_pause_chat_reply_'+ruleId+'" type="checkbox" onchange="toggleFwdPauseChatReply(this)"><label for="fwd_pause_chat_reply_'+ruleId+'"><span class="switch-title">命中后暂停AI回复</span></label></div>' : '')+
-      (type==='all' ? '<div class="switch-row custom-forward-param-row fwd-group-friend-row"><label class="ui-switch ui-switch--l3 custom-forward-param-switch" for="fwd_forward_group_friend_'+ruleId+'"><input class="form-check-input fwd-forward-group-friend" id="fwd_forward_group_friend_'+ruleId+'" type="checkbox"><span class="ui-switch-knob"></span></label><label for="fwd_forward_group_friend_'+ruleId+'"><span class="switch-title">转发好友的群内聊天</span></label></div>' : '')+
-      '<div class="switch-row custom-forward-param-row fwd-source-config"><input class="form-check-input fwd-with-source" id="fwd_with_source_'+ruleId+'" type="checkbox"><label for="fwd_with_source_'+ruleId+'"><span class="switch-title">附带来源会话和发送人</span></label></div>'+
-      '</div>'+
-      '</div>'+
-      '</div>';
-  }
-  function addCustomForwardRule(type){
-    var newId = Math.random().toString(36).substr(2,8);
-    $('#custom-forward-list-empty, #custom-forward-detail-empty').remove();
-    $('.custom-forward-rule-card').removeClass('selected');
-    $('.custom-forward-editor').removeClass('active');
-    $('#custom_forward_container').prepend(buildCustomForwardRuleCard(newId, type));
-    $('#custom_forward_detail_container').prepend(buildCustomForwardRuleEditor(newId, type));
-    selectCustomForwardRule(newId);
-    syncCustomForwardRuleCard($('.custom-forward-editor[data-rule-id="'+newId+'"]'));
-    syncCustomForwardSummaryPills();
-    scrollListContainerToTop($('#custom_forward_container'));
-    scrollListContainerToTop($('#custom_forward_detail_container'));
-  }
-  $('#btn-add-forward-keyword-rule').click(function(){ addCustomForwardRule('keyword'); });
-  $('#btn-add-forward-all-rule').click(function(){ addCustomForwardRule('all'); });
 
   // ===== Add New Friend Welcome Content =====
   normalizeNewFriendMessageRows();
@@ -9536,1047 +8827,10 @@ $(function(){
     return;
   });
 
-  // ===== Moments: 可见范围切换（显示/隐藏标签区域）=====
-  $(document).on('change','.moments-privacy',function(){
-    var wrap=$(this).closest('.scheduled-moments-item').find('.moments-tags-wrap');
-    if($(this).val()==='public'){ wrap.hide(); } else { wrap.show(); }
-  });
-
-  // ===== Moments: 重复类型切换 =====
-  $(document).on('change','.moments-repeat-type',function(){
-    return;
-  });
-
-  // ===== Moments: 添加图片路径 =====
-  $(document).on('click','.js-add-moments-image',function(){
-    var list=$(this).prev('.moments-images-list');
-    var count=list.find('input[name="moments_image"]').length;
-    if(count>=9){ svModal.alert('最多只能添加 9 张图片'); return; }
-    list.append(
-      '<div class="list-item">'+
-        '<input type="text" class="form-control" name="moments_image" placeholder="图片完整路径，如 D:\\Images\\1.png">'+
-        '<button type="button" class="btn-pick-img" title="点击选择本地图片，自动填入路径"><i class="bi bi-folder2-open"></i></button>'+
-        '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
-      '</div>'
-    );
-  });
-
-  // ===== Moments: 添加标签 =====
-  $(document).on('click','.js-add-moments-tag',function(){
-    $(this).prev('.moments-tags-list').append(
-      '<div class="list-item">'+
-        '<input type="text" class="form-control" name="moments_tag" placeholder="标签名称">'+
-        '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
-      '</div>'
-    );
-  });
-
-  // ===== Moments: 添加统一朋友圈任务 =====
-  var momentsTasks=[];
-  var activeMomentsTaskId=null;
-  var momentsGenerationTicker=null;
-  var momentsGenerationTick=0;
-  var momentsGenerationRequests={};
-  function escapeMomentsHtml(text){
-    return String(text == null ? '' : text)
-      .replace(/&/g,'&amp;')
-      .replace(/</g,'&lt;')
-      .replace(/>/g,'&gt;')
-      .replace(/"/g,'&quot;')
-      .replace(/'/g,'&#39;');
-  }
-  function updateMomentsMaterialRows(){
-    $('#moments-modal-materials .moments-material-row').each(function(index){
-      $(this).find('.moments-material-row-title').text('素材 '+(index+1));
-    });
-    $('#moments-modal-materials .btn-remove-moments-material')
-      .prop('disabled',$('#moments-modal-materials .moments-material-row').length<=1);
-  }
-  function buildMomentsMaterialRow(){
-    return ''+
-      '<div class="moments-material-row ai-moments-task-preview">'+
-        '<div class="moments-material-row-head">'+
-          '<span class="moments-material-row-title">素材</span>'+
-          '<button type="button" class="ui-btn ui-btn--danger ui-btn--l3 btn-remove-moments-material">删除</button>'+
-        '</div>'+
-        '<textarea class="form-control moments-modal-text moments-material-text" rows="2" placeholder="输入一段朋友圈原始文案，可留空"></textarea>'+
-        '<div class="moments-material-image-row">'+
-          '<button type="button" class="moments-add-image-tile"><i class="bi bi-plus-lg"></i><span>添加图片</span></button>'+
-        '</div>'+
-      '</div>';
-  }
-  function showMomentsTaskModal(){
-    updateMomentsMaterialRows();
-    $('#moments-task-modal').css('display','flex').attr('aria-hidden','false');
-    resizeMomentsTextareas($('#moments-modal-materials'));
-  }
-  function hideMomentsTaskModal(){
-    $('#moments-task-modal').hide().attr('aria-hidden','true');
-  }
-  function resetMomentsTaskModal(){
-    $('#moments-modal-materials').html(buildMomentsMaterialRow());
-    updateMomentsMaterialRows();
-    resizeMomentsTextareas($('#moments-modal-materials'));
-  }
-  function collectMomentsModalRows(){
-    var rows=[];
-    $('#moments-modal-materials .moments-material-row').each(function(){
-      var text=$.trim($(this).find('.moments-modal-text').val()||'');
-      var images=($(this).data('momentsImagePaths')||[]).slice(0,9);
-      if(text || images.length){
-        rows.push({raw_text:text, images:images});
-      }
-    });
-    return rows;
-  }
-  function appendMomentsModalImagePaths($row,pathValues){
-    var files=($row.data('momentsImagePaths')||[]).slice(0,9);
-    (Array.isArray(pathValues) ? pathValues : []).forEach(function(pathValue){
-      var normalized=$.trim(pathValue || '');
-      if(normalized && files.length<9){
-        files.push(normalized);
-      }
-    });
-    $row.data('momentsImagePaths',files);
-    renderMomentsModalThumbs($row);
-  }
-  function removeMomentsModalImage($row,index){
-    var files=($row.data('momentsImagePaths')||[]).slice(0,9);
-    if(index>=0 && index<files.length){
-      files.splice(index,1);
-    }
-    $row.data('momentsImagePaths',files);
-    renderMomentsModalThumbs($row);
-  }
-  function normalizePickedMomentsImagePaths(res){
-    var paths=[];
-    if(Array.isArray(res)){
-      paths=res;
-    }else if(res && Array.isArray(res.paths)){
-      paths=res.paths;
-    }else if(res && res.path){
-      paths=[res.path];
-    }
-    return paths.map(function(pathValue){
-      return $.trim(String(pathValue || ''));
-    }).filter(Boolean);
-  }
-  function pickMomentsImageFiles(onPicked){
-    $.get('/pick_image_files', function(res){
-      if(typeof onPicked === 'function'){
-        onPicked(normalizePickedMomentsImagePaths(res));
-      }
-    }).fail(function(){
-      svModal.alert('打开图片选择框失败');
-    });
-  }
-  function renderMomentsModalThumbs($row){
-    var $imageRow=$row.find('.moments-material-image-row');
-    var files=($row.data('momentsImagePaths')||[]).slice(0,9);
-    $imageRow.find('.moments-modal-thumb').remove();
-    files.forEach(function(imagePath,index){
-      var $thumb=$('<div class="ai-moments-thumb moments-modal-thumb" data-image-index="'+index+'" title="'+escapeMomentsHtml(imagePath)+'"></div>');
-      $('<img alt="图片 '+(index+1)+'">').attr('src',scheduledMessageImagePreviewUrl(imagePath)).appendTo($thumb);
-      $('<button type="button" class="moments-remove-image-thumb ui-btn--icon ui-btn--l3 is-danger" title="删除图片" aria-label="删除图片"><i class="bi bi-x-lg"></i></button>').appendTo($thumb);
-      $thumb.insertBefore($imageRow.find('.moments-add-image-tile'));
-    });
-    $imageRow.find('.moments-add-image-tile').toggle(files.length<9);
-  }
-  function renderMomentsDetailThumbs(task, options){
-    options = options || {};
-    var $imageRow=$('#ai-moments-card').find('.moments-task-detail-image-row');
-    if(!$imageRow.length) return;
-    var files=(task && Array.isArray(task.images) ? task.images : []).slice(0,9);
-    var editable=!!options.editable;
-    $imageRow.empty();
-    if(!files.length && !editable){
-      $imageRow.hide();
-      return;
-    }
-    files.forEach(function(imagePath,index){
-      var $thumb=$('<div class="ai-moments-thumb moments-detail-thumb"></div>').attr('title',String(imagePath || ''));
-      $('<img alt="图片 '+(index+1)+'">').attr('src',scheduledMessageImagePreviewUrl(imagePath)).appendTo($thumb);
-      if(editable){
-        $('<button type="button" class="moments-remove-image-thumb moments-detail-remove-image-thumb ui-btn--icon ui-btn--l3 is-danger" title="删除图片" aria-label="删除图片"><i class="bi bi-x-lg"></i></button>')
-          .attr('data-image-index', index)
-          .appendTo($thumb);
-      }
-      $imageRow.append($thumb);
-    });
-    if(editable && files.length < 9){
-      $imageRow.append('<button type="button" class="moments-detail-add-tile" title="添加图片" aria-label="添加图片"><i class="bi bi-plus-lg"></i></button>');
-    }
-    $imageRow.css('display','grid');
-  }
-  function momentsStatusLabel(status){
-    if(status==='pending') return '等待发布';
-    if(status==='running') return '发布中';
-    if(status==='executed') return '已执行';
-    return '待确认';
-  }
-  function momentsStatusClass(status){
-    if(status==='executed') return 'is-success';
-    if(status==='running') return 'is-running';
-    if(status==='pending') return 'is-info';
-    return 'is-warning';
-  }
-  function momentsPublishRuleLabel(task){
-    return task && task.publish_rule==='fixed' ? '定时发布' : '随机发布';
-  }
-  function formatMomentsDisplayTime(value){
-    return normalizeTaskWorkbenchDisplayTime(value);
-  }
-  function momentsScheduleSummary(task){
-    if(!task) return '';
-    if(task.status==='pending' && task.queued_mode==='immediate'){
-      return formatMomentsDisplayTime(task.execute_after || '待定');
-    }
-    if(task.publish_rule==='fixed'){
-      return formatMomentsDisplayTime(task.publish_time || '待设置');
-    }
-    return task.publish_window || '12:00 - 21:30';
-  }
-  function momentsVisibilityLabel(task){
-    task = task || {};
-    var type = String(task.visibility_type || 'all');
-    var tags = selectedList(task.tags || []);
-    if(type === 'include'){
-      return {text:tags.length ? ('可见：' + tags.join('、')) : '可见：未选标签', cls:'is-info'};
-    }
-    if(type === 'exclude'){
-      return {text:tags.length ? ('不给看：' + tags.join('、')) : '不给看：未选标签', cls:'is-warning'};
-    }
-    return {text:'全部可见', cls:'is-success'};
-  }
-  function momentsTaskPublishText(task){
-    if(!task) return '无文案';
-    if(task.copy_mode==='original'){
-      return task.raw_text || '无文案';
-    }
-    return selectedMomentsCaptionValue(task,task.candidates||[]) || task.raw_text || '无文案';
-  }
-  function momentsImageDisplayName(path){
-    var parts = String(path || '').split(/[\\/]/);
-    return $.trim(parts[parts.length - 1] || path || '');
-  }
-  function momentsImageSummary(task){
-    var images = (task && Array.isArray(task.images)) ? task.images : [];
-    if(!images.length) return '无图片';
-    var firstName = momentsImageDisplayName(images[0]);
-    if(images.length === 1) return firstName || '图片 1 张';
-    return (firstName || '图片') + ' 等 ' + images.length + ' 张';
-  }
-  function momentsExecutionResultLabel(result){
-    var normalized=String(result||'').trim().toLowerCase();
-    if(normalized==='success') return {text:'成功', cls:'is-success'};
-    if(normalized==='failed' || normalized==='error') return {text:'失败', cls:'is-danger'};
-    return {text:'已执行', cls:'is-info'};
-  }
-  function momentsTaskCardMetaText(task){
-    return momentsImageSummary(task);
-  }
-  function momentsTaskCardTimeText(task){
-    var parts = [];
-    var timeText = momentsScheduleSummary(task);
-    var visibility = momentsVisibilityLabel(task);
-    var failureReason = momentsTaskFailureReason(task);
-    if(timeText) parts.push(timeText);
-    if(visibility.text) parts.push(visibility.text);
-    if(failureReason) parts.push(failureReason);
-    return parts.join(' · ');
-  }
-  function selectedMomentsCandidateIndex(task,candidates){
-    var selected=String((task && task.selected_caption) || '').trim();
-    for(var i=0;i<(candidates||[]).length;i++){
-      if(String(candidates[i]||'').trim()===selected){
-        return i;
-      }
-    }
-    return 0;
-  }
-  function selectedMomentsCaptionValue(task,candidates){
-    var selected=String((task && task.selected_caption) || '').trim();
-    candidates=candidates||[];
-    if(selected && candidates.indexOf(selected)>=0){
-      return selected;
-    }
-    return candidates.length ? candidates[0] : selected;
-  }
-  function updateMomentsCounts(counts,tasks){
-    counts=counts||{};
-    var $chips=$('#ai-moments-card .ai-moments-toolbar .ai-moments-status-row .ai-moments-chip');
-    $chips.eq(1).text('待确认 '+(counts.pending_confirm||0));
-    $chips.eq(2).text('等待发布 '+(counts.pending||0));
-    $chips.eq(3).text('发布中 '+(counts.running||0));
-    $chips.eq(4).text('已执行 '+(counts.executed||0));
-    var editableCount=(tasks||[]).filter(function(task){ return task.status!=='executed'; }).length;
-    $('#moments-task-count').text('总任务 ' + editableCount);
-  }
-  function currentMomentsTask(){
-    return momentsTasks.find(function(item){ return item.id===activeMomentsTaskId; }) || null;
-  }
-  function momentsTaskIsQueued(task){
-    return !!(task && (task.status==='pending' || task.status==='running'));
-  }
-  function momentsTaskIsRunning(task){
-    return !!(task && task.status==='running');
-  }
-  function momentsTaskIsGenerating(task){
-    return !!(task && task.copy_mode!=='original' && task.ai_generation_status==='pending');
-  }
-  function momentsTaskNeedsAiCandidates(task){
-    return !!(task && task.copy_mode!=='original' && !(task.candidates||[]).length);
-  }
-  function momentsTaskFailureReason(task){
-    if(!task) return '';
-    if(String(task.ai_generation_status || '').trim() !== 'failed') return '';
-    var reason=$.trim(task.ai_generation_error || '');
-    if(!reason) return '生成失败：请检查接口状态';
-    return reason.indexOf('生成失败')===0 ? reason : ('生成失败：' + reason);
-  }
-  function momentsTaskDisabledReason(task){
-    if(!task) return '请先选择一条朋友圈任务';
-    if(momentsTaskIsRunning(task)) return '这条任务正在执行，请稍后';
-    if(momentsTaskIsQueued(task)) return '这条任务正在等待发布，取消后才能继续编辑';
-    if(momentsTaskIsGenerating(task)) return '正在生成 AI 候选，请稍后';
-    var failureReason=momentsTaskFailureReason(task);
-    if(failureReason) return failureReason;
-    if(momentsTaskNeedsAiCandidates(task)) return 'AI文案模式需要先生成候选，或切换为原始文案';
-    return '';
-  }
-  function momentsGenerationPlaceholderText(){
-    return '正在生成文案' + '.'.repeat((momentsGenerationTick % 3) + 1);
-  }
-  function stopMomentsGenerationTicker(){
-    if(momentsGenerationTicker){
-      clearInterval(momentsGenerationTicker);
-      momentsGenerationTicker=null;
-    }
-  }
-  function syncMomentsGeneratingPlaceholder(){
-    var task=currentMomentsTask();
-    if(!task || !momentsTaskIsGenerating(task)) return;
-    var placeholder=momentsGenerationPlaceholderText();
-    var $card=$('#ai-moments-card');
-    $card.find('.ai-moments-ai-candidate').each(function(index){
-      $(this).find('strong').text('候选 '+(index+1)+' · 生成中');
-      $(this).find('.ai-moments-editable-copy').text(placeholder);
-      $(this).removeClass('selected');
-    });
-  }
-  function startMomentsGenerationTicker(){
-    if(momentsGenerationTicker) return;
-    momentsGenerationTicker=window.setInterval(function(){
-      momentsGenerationTick=(momentsGenerationTick+1)%3;
-      syncMomentsGeneratingPlaceholder();
-    }, 500);
-  }
-  function syncMomentsGenerationTicker(){
-    if((momentsTasks||[]).some(momentsTaskIsGenerating)){
-      startMomentsGenerationTicker();
-      syncMomentsGeneratingPlaceholder();
-    }else{
-      stopMomentsGenerationTicker();
-    }
-  }
-  function defaultMomentsFixedTime(){
-    var date=new Date(Date.now()+10*60*1000);
-    var pad=function(n){ return String(n).padStart(2,'0'); };
-    return date.getFullYear()+'-'+pad(date.getMonth()+1)+'-'+pad(date.getDate())+'T'+pad(date.getHours())+':'+pad(date.getMinutes());
-  }
-  function latestMomentsRandomWindow(){
-    for(var i=momentsTasks.length-1;i>=0;i--){
-      var task=momentsTasks[i]||{};
-      if(task.publish_rule==='random' && task.publish_window){
-        return task.publish_window;
-      }
-    }
-    return '12:00 - 21:30';
-  }
-  function splitMomentsPublishWindow(value){
-    var text=String(value||'12:00 - 21:30');
-    var match=text.match(/(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/);
-    return match ? [match[1], match[2]] : ['12:00','21:30'];
-  }
-  function writeMomentsPublishWindow(value){
-    var pair=splitMomentsPublishWindow(value);
-    var $card=$('#ai-moments-card');
-    $card.find('.ai-moments-window-start').val(pair[0]);
-    $card.find('.ai-moments-window-end').val(pair[1]);
-  }
-  function readMomentsPublishWindow(){
-    var $card=$('#ai-moments-card');
-    var start=$.trim($card.find('.ai-moments-window-start').val()||'12:00');
-    var end=$.trim($card.find('.ai-moments-window-end').val()||'21:30');
-    return start+' - '+end;
-  }
-  function syncMomentsTimeFields(task){
-    var $card=$('#ai-moments-card');
-    var isFixed=task && task.publish_rule==='fixed';
-    $card.find('.ai-moments-time-label').text(isFixed?'选择时间':'选择时间段');
-    $card.find('.ai-moments-fixed-time-input')
-      .val(task && task.publish_time ? task.publish_time : defaultMomentsFixedTime())
-      .toggle(!!isFixed)
-      .prop('disabled',!task || !isFixed);
-    $card.find('.ai-moments-time-window')
-      .toggle(!isFixed)
-      .find('input')
-      .prop('disabled',!task || !!isFixed);
-    writeMomentsPublishWindow(task && task.publish_window ? task.publish_window : latestMomentsRandomWindow());
-  }
-  function setMomentsTagSelectorDisabled(disabled){
-    var $tagSelect=$('#ai-moments-card').find('.ai-moments-tag-multiselect');
-    $tagSelect.toggleClass('disabled',!!disabled).removeClass(disabled?'open':'');
-    $tagSelect.find('.compact-multiselect-trigger,.compact-multiselect-search-input,.compact-multiselect-check,.compact-multiselect-clear,.compact-multiselect-apply,.ai-moments-tags-select').prop('disabled',!!disabled);
-  }
-  function resizeMomentsTextareas($scope){
-    ($scope && $scope.length ? $scope : $(document)).find('.moments-material-text').each(function(){
-      this.style.height='auto';
-      this.style.height=Math.max(68,this.scrollHeight)+'px';
-    });
-  }
-  function momentsTaskTitle(task){
-    task = task || {};
-    return String(task.display_title || '').trim() || momentsTaskPublishText(task);
-  }
-  function renderMomentsRuntimeLists(tasks){
-    renderTaskWorkbenchRuntimeCards('moments', momentsWorkbenchState.runtime);
-  }
-  function buildMomentsSummaryTags(task){
-    var visibility=momentsVisibilityLabel(task);
-    var html='<div class="ai-moments-summary-tags">';
-    html+='<span class="ui-pill--meta is-info">'+(task.copy_mode==='original'?'原始文案':'AI文案')+'</span>';
-    html+='<span class="ui-pill--meta is-info">'+momentsPublishRuleLabel(task)+'</span>';
-    html+='<span class="ui-pill--meta is-info">'+escapeMomentsHtml(momentsScheduleSummary(task))+'</span>';
-    html+='<span class="ui-pill--meta '+visibility.cls+'">'+escapeMomentsHtml(visibility.text)+'</span>';
-    return html+'</div>';
-  }
-  function renderMomentsTaskList(tasks){
-    momentsTasks=(tasks||[]).map(function(task){ return $.extend(true, {}, task); });
-    syncMomentsGenerationTicker();
-    var editableTasks=momentsTasks.filter(function(task){ return task.status!=='executed'; });
-    var $container=$('#moments_task_container').empty();
-    if(!editableTasks.length){
-      $container.append('<div class="ai-moments-empty">暂无发朋友圈任务。</div>');
-      renderMomentsTaskDetail(null);
-      renderMomentsRuntimeLists(momentsTasks);
-      return;
-    }
-    editableTasks.forEach(function(task){
-      var statusCls=momentsStatusClass(task.status);
-      var isQueued=momentsTaskIsQueued(task);
-      var isRunning=momentsTaskIsRunning(task);
-      var lockedTitle=isQueued ? '这条任务正在等待发布，取消后才能继续编辑' : '';
-      var queueDisabledReason=lockedTitle || momentsTaskDisabledReason(task);
-      var failureReason=momentsTaskFailureReason(task);
-      var generateLabel = (task.copy_mode==='original' || (task.candidates||[]).length) ? '重新生成' : '生成候选';
-      var metaText = momentsTaskCardMetaText(task);
-      var timeText = momentsTaskCardTimeText(task);
-      var confirmButtonHtml = isRunning
-        ? '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l3" disabled>执行中</button>'
-        : (isQueued
-          ? '<button type="button" class="ui-btn ui-btn--danger ui-btn--l3 btn-cancel-moments-task">取消</button>'
-          : '<button type="button" class="ui-btn ui-btn--primary ui-btn--l3 btn-queue-moments-task" '+(queueDisabledReason?'disabled title="'+queueDisabledReason+'"':'')+'>发布</button>');
-      var html=
-        '<div class="ai-moments-task-preview" data-moments-task-id="'+escapeMomentsHtml(task.id)+'">'+
-          '<div class="ai-moments-task-head">'+
-            '<h6 class="ai-moments-task-title"><span class="ai-moments-title-status ui-pill--status ui-pill--l4 '+statusCls+'">'+momentsStatusLabel(task.status)+'</span><span class="ai-moments-task-title-text">'+escapeMomentsHtml(momentsTaskTitle(task))+'</span></h6>'+
-          '</div>'+
-          (metaText ? '<div class="ai-moments-task-meta">'+escapeMomentsHtml(metaText)+'</div>' : '')+
-          '<div class="ai-moments-task-time">'+escapeMomentsHtml(timeText)+'</div>'+
-          '<div class="cfg-action-row ai-moments-card-footer-actions">'+
-            '<div class="ai-moments-card-primary-actions">'+
-              '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l3 btn-view-moments-task">查看详情</button>'+
-              '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l3 btn-generate-moments-task" '+(isQueued?'disabled title="'+lockedTitle+'"':'')+'>'+generateLabel+'</button>'+
-              confirmButtonHtml+
-            '</div>'+
-            '<button type="button" class="ui-btn ui-btn--danger ui-btn--l3 btn-delete-moments-task">删除</button>'+
-          '</div>'+
-        '</div>';
-      $container.append(html);
-    });
-    var activeTask=editableTasks.find(function(task){ return task.id===activeMomentsTaskId; }) || editableTasks[0];
-    renderMomentsTaskDetail(activeTask);
-    renderMomentsRuntimeLists(momentsTasks);
-  }
-  function renderMomentsTaskDetail(task){
-    activeMomentsTaskId=task ? task.id : null;
-    $('#moments_task_container .ai-moments-task-preview').removeClass('selected');
-    if(task){
-      $('#moments_task_container .ai-moments-task-preview[data-moments-task-id="'+task.id+'"]').addClass('selected');
-    }
-    var hasAiCandidates=!!(task && task.candidates && task.candidates.length);
-    var candidates=hasAiCandidates ? task.candidates.slice(0,3) : [];
-    var failureReason=momentsTaskFailureReason(task);
-    if(task && momentsTaskIsGenerating(task)){
-      candidates=[
-        momentsGenerationPlaceholderText(),
-        momentsGenerationPlaceholderText(),
-        momentsGenerationPlaceholderText()
-      ];
-    }else if(task && failureReason){
-      candidates=[
-        failureReason,
-        '修正后可重新点击“生成候选”。',
-        '也可以切换为原始文案后直接确认。'
-      ];
-    }else if(task && !hasAiCandidates){
-      candidates=[
-        '暂无 AI 候选，请先点击任务卡片里的“生成候选”。',
-        '生成后这里会显示候选 2。',
-        '生成后这里会显示候选 3。'
-      ];
-    }
-    while(candidates.length<3){
-      candidates.push(task ? '生成后这里会显示候选。' : '选择任务后展示 AI 生成的朋友圈文案。');
-    }
-    var selectedIndex=task ? selectedMomentsCandidateIndex(task,candidates) : 0;
-    var isQueued=momentsTaskIsQueued(task);
-    var disabledReason=momentsTaskDisabledReason(task);
-    var $card=$('#ai-moments-card');
-    $card.find('.ai-moments-ai-candidate').each(function(index){
-      var titleText='候选 '+(index+1);
-      if(task && momentsTaskIsGenerating(task)){
-        titleText+=' · 生成中';
-      }else if(index===selectedIndex){
-        titleText+=' · 当前选中';
-      }
-      $(this).find('strong').text(titleText);
-      $(this).find('.ai-moments-editable-copy').text(candidates[index] || '无文案');
-      $(this).toggleClass('selected',!!task && !momentsTaskIsGenerating(task) && index===selectedIndex);
-    });
-    $card.find('.ai-moments-caption-list').attr('title',(!task || isQueued || momentsTaskIsGenerating(task)) ? disabledReason : '');
-    $card.find('.ai-moments-ai-candidate .ai-moments-caption-edit')
-      .prop('disabled',isQueued || !hasAiCandidates || momentsTaskIsGenerating(task))
-      .attr('title',isQueued ? disabledReason : (momentsTaskIsGenerating(task) ? '正在生成 AI 候选' : (!hasAiCandidates ? '请先生成 AI 候选' : '编辑文案')));
-    $card.find('.ai-moments-original-preview .ai-moments-caption-edit')
-      .prop('disabled',!task || isQueued)
-      .attr('title',(!task || isQueued) ? disabledReason : '编辑原始文案');
-    $card.find('.ai-moments-original-preview .ai-moments-editable-copy').text(task ? (task.raw_text || '无文案') : '任务未确认时显示原始文案；没有文案时显示“无文案”。');
-    var useOriginal=task && task.copy_mode==='original';
-    $card.find('.ai-moments-detail-mode')
-      .toggleClass('disabled',!task || isQueued)
-      .attr('title',(!task || isQueued) ? disabledReason : '切换文案处理方式');
-    $card.find('.ai-moments-detail-mode .ai-moments-mode-option').removeClass('active').eq(useOriginal?1:0).addClass('active');
-    $card.find('.ai-moments-ai-candidate').toggle(!useOriginal);
-    $card.find('.ai-moments-original-preview').toggle(!!useOriginal);
-    renderMomentsDetailThumbs(task,{editable: !!task && !isQueued && !momentsTaskIsGenerating(task)});
-    var $fields=$card.find('.ai-moments-field-grid');
-    var hasTask=!!task;
-    var fieldsDisabled=!hasTask || isQueued;
-    var $selectedCard=$('#moments_task_container .ai-moments-task-preview.selected');
-    $selectedCard.find('.btn-queue-moments-task')
-      .prop('disabled',!!disabledReason)
-      .attr('title',disabledReason || '');
-    $fields.attr('title',isQueued ? disabledReason : '');
-    var visibilityType=task && ['all','include','exclude'].indexOf(String(task.visibility_type||'all'))>=0 ? String(task.visibility_type||'all') : 'all';
-    $fields.find('.ai-moments-visibility-type').val(visibilityType).prop('disabled',fieldsDisabled);
-    var $tagSelect=$fields.find('.ai-moments-tag-multiselect');
-    setCompactMultiSelectValues($tagSelect, task && visibilityType!=='all' ? (task.tags||[]) : []);
-    setMomentsTagSelectorDisabled(fieldsDisabled || visibilityType==='all');
-    $fields.find('.ai-moments-publish-rule').val(task ? task.publish_rule : 'random').prop('disabled',fieldsDisabled);
-    syncMomentsTimeFields(task);
-    if(isQueued){
-      $card.find('.ai-moments-fixed-time-input,.ai-moments-window-start,.ai-moments-window-end').prop('disabled',true);
-    }
-    syncMomentsGenerationTicker();
-  }
-  function applyMomentsTaskUpdate(res){
-    if(!res || res.status!=='success') return;
-    momentsTasks=res.tasks||momentsTasks;
-    updateMomentsCounts(res.counts,momentsTasks);
-    renderMomentsTaskList(momentsTasks);
-    renderMomentsRuntimeLists(momentsTasks);
-    if(res.task){
-      renderMomentsTaskDetail(res.task);
-    }
-  }
-  function saveMomentsTaskPatch(taskId,payload,options){
-    options=options||{};
-    if(!taskId) return $.Deferred().reject().promise();
-    return $.ajax({
-      url:'/api/moments/tasks/'+encodeURIComponent(taskId),
-      method:'PATCH',
-      contentType:'application/json',
-      data:JSON.stringify(buildTaskScopePayload(payload||{})),
-      success:function(res){
-        applyMomentsTaskUpdate(res);
-      },
-      error:function(xhr){
-        var res=xhr.responseJSON||{};
-        svModal.alert(res.message || (options.message || '保存朋友圈任务失败'));
-        loadMomentsTasks();
-      }
-    });
-  }
-  function updateMomentsTaskImages(taskId,nextImages){
-    nextImages = (Array.isArray(nextImages) ? nextImages : []).map(function(pathValue){
-      return $.trim(String(pathValue || ''));
-    }).filter(Boolean).slice(0,9);
-    return saveMomentsTaskPatch(taskId,{images:nextImages},{message:'更新朋友圈任务图片失败'});
-  }
-  function loadMomentsTasks(options){
-    options = options || {};
-    return $.getJSON('/api/moments/tasks', buildTaskScopeQuery(), function(res){
-      if(!res || res.status!=='success') return;
-      updateMomentsCounts(res.counts,res.tasks);
-      renderMomentsTaskList(res.tasks||[]);
-      renderMomentsRuntimeLists(res.tasks||[]);
-      if(!options.skipRuntime){
-        loadTaskWorkbenchRuntime('moments', {silent: !!options.silent});
-      }
-    }).fail(function(){
-      updateMomentsCounts({pending_confirm:0,pending:0,running:0,executed:0},[]);
-      clearTaskWorkbenchRuntimeState('moments');
-      renderMomentsTaskList([]);
-    });
-  }
-  function updateMomentsTaskLocalState(taskId,patch){
-    if(!taskId) return;
-    momentsTasks=momentsTasks.map(function(task){
-      if(!task || task.id!==taskId) return task;
-      var nextTask = $.extend(true, {}, task, patch || {});
-      nextTask.display_title = momentsTaskPublishText(nextTask);
-      return nextTask;
-    });
-    renderMomentsTaskList(momentsTasks);
-    var task=currentMomentsTask() || momentsTasks.find(function(item){ return item.id===taskId; }) || null;
-    if(task){
-      renderMomentsTaskDetail(task);
-    }
-  }
-  function queueMomentsCandidateGeneration(tasks){
-    (tasks||[]).forEach(function(task){
-      if(!task || !task.id || !momentsTaskIsGenerating(task) || momentsGenerationRequests[task.id]) return;
-      generateMomentsCandidates(task.id, null, {silentOnError:true});
-    });
-  }
-  function submitMomentsTaskModal(){
-    var rows=collectMomentsModalRows();
-    if(!rows.length){
-      return;
-    }
-    var items=rows.map(function(row){
-      return {
-        raw_text:row.raw_text,
-        images:(row.images||[]).slice(0,9),
-        source:'web_panel',
-        file_storage_mode:'direct'
-      };
-    });
-    var taskScopeWxId = getTaskScopeWxId();
-    var $btn=$('#btn-confirm-moments-task-modal');
-    $btn.prop('disabled',true).text('添加中...');
-    $.ajax({
-      url:'/api/moments/tasks' + (taskScopeWxId ? ('?wx_id=' + encodeURIComponent(taskScopeWxId)) : ''),
-      method:'POST',
-      contentType:'application/json',
-      data:JSON.stringify({items:items}),
-      success:function(res){
-        if(!res || res.status!=='success'){
-          svModal.alert((res && res.message) || '保存朋友圈任务失败');
-          return;
-        }
-        hideMomentsTaskModal();
-        resetMomentsTaskModal();
-        updateMomentsCounts(res.counts,res.tasks);
-        activeMomentsTaskId=(res.created&&res.created[0]&&res.created[0].id)||activeMomentsTaskId;
-        renderMomentsTaskList(res.tasks||[]);
-        scrollListContainerToTop($('#moments_task_container'));
-        queueMomentsCandidateGeneration(res.created||[]);
-      },
-      error:function(xhr){
-        var res=xhr.responseJSON||{};
-        svModal.alert(res.message || '保存朋友圈任务失败');
-      },
-      complete:function(){
-        $btn.prop('disabled',false).text('添加任务');
-      }
-    });
-  }
-  function startMomentsCaptionEdit($caption){
-    if($caption.hasClass('editing')) return;
-    $('#ai-moments-card').find('.ai-moments-caption.editing').not($caption).each(function(){
-      finishMomentsCaptionEdit($(this),false);
-    });
-    var $text=$caption.find('.ai-moments-editable-copy').first();
-    var value=$text.text();
-    var saveButton='<button type="button" class="ai-moments-caption-save" title="保存"><i class="bi bi-check-lg"></i></button>';
-    $caption.addClass('editing').append(saveButton);
-    $text
-      .data('momentsOriginalText',value)
-      .addClass('editing')
-      .attr('contenteditable','true')
-      .attr('role','textbox')
-      .attr('aria-label','编辑朋友圈文案')
-      .focus();
-    if(window.getSelection && document.createRange){
-      var range=document.createRange();
-      range.selectNodeContents($text[0]);
-      range.collapse(false);
-      var selection=window.getSelection();
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-  }
-  function finishMomentsCaptionEdit($caption,save){
-    if(!$caption.hasClass('editing')) return;
-    var $text=$caption.find('.ai-moments-editable-copy').first();
-    if(!save){
-      $text.text($text.data('momentsOriginalText') || $text.text());
-    }
-    if(save){
-      var task=momentsTasks.find(function(item){ return item.id===activeMomentsTaskId; });
-      if(task){
-        var value=$text.text();
-        if($caption.hasClass('ai-moments-original-preview')){
-          saveMomentsTaskPatch(task.id,{raw_text:value});
-        }else{
-          var candidates=(task.candidates||[]).slice(0,3);
-          while(candidates.length<3){
-            candidates.push(task.raw_text || task.selected_caption || '无文案');
-          }
-          var index=$caption.closest('#ai-moments-card').find('.ai-moments-ai-candidate').index($caption);
-          if(index>=0){
-            candidates[index]=value;
-            var selectedIndex=selectedMomentsCandidateIndex(task,candidates);
-            saveMomentsTaskPatch(task.id,{candidates:candidates, selected_caption:candidates[selectedIndex] || candidates[0]});
-          }
-        }
-    }
-    }
-    $caption.find('.ai-moments-caption-save').remove();
-    $caption.removeClass('editing');
-    $text
-      .removeClass('editing')
-      .removeAttr('contenteditable')
-      .removeAttr('role')
-      .removeAttr('aria-label')
-      .removeData('momentsOriginalText');
-  }
-  function saveActiveMomentsSettings(){
-    var task=currentMomentsTask();
-    if(!task) return $.Deferred().reject().promise();
-    if(momentsTaskIsQueued(task)) return $.Deferred().reject().promise();
-    var $fields=$('#ai-moments-card .ai-moments-field-grid');
-    var publishRule=$fields.find('.ai-moments-publish-rule').val() || 'random';
-    var visibilityType=$fields.find('.ai-moments-visibility-type').val() || 'all';
-    if(['all','include','exclude'].indexOf(visibilityType)<0){
-      visibilityType='all';
-    }
-    var payload={
-      visibility_type:visibilityType,
-      tags:visibilityType==='all' ? [] : selectedCompactMultiSelectValues($fields.find('.ai-moments-tag-multiselect')),
-      publish_rule:publishRule
-    };
-    if(publishRule==='fixed'){
-      payload.publish_time=$.trim($fields.find('.ai-moments-fixed-time-input').val()||'');
-    }else{
-      payload.publish_window=readMomentsPublishWindow();
-    }
-    return saveMomentsTaskPatch(task.id,payload);
-  }
-  function queueMomentsTask(taskId){
-    var resolvedTaskId=taskId || activeMomentsTaskId;
-    var task=momentsTasks.find(function(item){ return item.id===resolvedTaskId; }) || currentMomentsTask();
-    if(!task) return;
-    var reason=momentsTaskDisabledReason(task);
-    if(reason){
-      svModal.alert(reason);
-      return;
-    }
-    var saveRequest=(task.id===activeMomentsTaskId) ? saveActiveMomentsSettings() : $.Deferred().resolve().promise();
-    saveRequest.done(function(){
-      $.ajax({
-        url:'/api/task-workbench/moments/tasks/' + encodeURIComponent(task.id) + '/queue',
-        method:'POST',
-        contentType:'application/json',
-        data:JSON.stringify(buildTaskScopePayload({mode:'queue'})),
-        success:function(res){
-          if(res.runtime){
-            loadTaskWorkbenchRuntime('moments', {silent:true, runtime:res.runtime});
-            loadMomentsTasks({silent:true, skipRuntime:true});
-          } else {
-            loadMomentsTasks({silent:true});
-          }
-        },
-        error:function(xhr){
-          var res=xhr.responseJSON||{};
-          svModal.alert(res.message || '提交朋友圈任务失败');
-        }
-      });
-    });
-  }
-  function generateMomentsCandidates(taskId,$button,options){
-    if(!taskId) return;
-    options=options||{};
-    var oldText=$button ? $button.text() : '';
-    momentsGenerationRequests[taskId]=true;
-    updateMomentsTaskLocalState(taskId,{
-      copy_mode:'ai',
-      candidates:[],
-      selected_caption:(momentsTasks.find(function(item){ return item.id===taskId; })||{}).raw_text || '无文案',
-      ai_generation_status:'pending',
-      ai_generation_error:''
-    });
-    if($button) $button.prop('disabled',true).text('生成中...');
-    $.ajax({
-      url:'/api/moments/tasks/'+encodeURIComponent(taskId)+'/generate',
-      method:'POST',
-      contentType:'application/json',
-      data:JSON.stringify(buildTaskScopePayload({})),
-      success:function(res){
-        applyMomentsTaskUpdate(res);
-      },
-      error:function(xhr){
-        var res=xhr.responseJSON||{};
-        if(res.tasks){
-          momentsTasks=res.tasks;
-          updateMomentsCounts(res.counts,momentsTasks);
-          renderMomentsTaskList(momentsTasks);
-          if(res.task){
-            renderMomentsTaskDetail(res.task);
-          }
-        }
-        if(!options.silentOnError){
-          svModal.alert(res.message || '朋友圈文案生成失败');
-        }
-      },
-      complete:function(){
-        delete momentsGenerationRequests[taskId];
-        if($button) $button.prop('disabled',false).text(oldText || '重新生成');
-      }
-    });
-  }
-  $('#btn-add-moments-task').click(function(){
-    showMomentsTaskModal();
-  });
-  $('#btn-close-moments-task-modal,#btn-cancel-moments-task-modal').click(function(){
-    resetMomentsTaskModal();
-    hideMomentsTaskModal();
-  });
-  $('#btn-add-moments-material-row').click(function(){
-    $('#moments-modal-materials').append(buildMomentsMaterialRow());
-    updateMomentsMaterialRows();
-    resizeMomentsTextareas($('#moments-modal-materials'));
-  });
-  $(document).on('click','.btn-remove-moments-material',function(){
-    if($('#moments-modal-materials .moments-material-row').length<=1) return;
-    var $row=$(this).closest('.moments-material-row');
-    $row.remove();
-    updateMomentsMaterialRows();
-  });
-  $(document).on('click','.moments-add-image-tile',function(){
-    var $row=$(this).closest('.moments-material-row');
-    if(($row.data('momentsImagePaths')||[]).length>=9){
-      svModal.alert('最多只能添加 9 张图片');
-      return;
-    }
-    pickMomentsImageFiles(function(paths){
-      appendMomentsModalImagePaths($row,paths);
-    });
-  });
-  $(document).on('click','.moments-modal-thumb .moments-remove-image-thumb',function(e){
-    e.preventDefault();
-    e.stopPropagation();
-    var $thumb=$(this).closest('.moments-modal-thumb');
-    var index=parseInt($thumb.attr('data-image-index'),10);
-    removeMomentsModalImage($thumb.closest('.moments-material-row'),isNaN(index)?-1:index);
-  });
-  $(document).on('click','#ai-moments-card .moments-detail-add-tile',function(e){
-    e.preventDefault();
-    var task=currentMomentsTask();
-    if(!task || momentsTaskIsQueued(task) || momentsTaskIsGenerating(task)) return;
-    var files=(Array.isArray(task.images) ? task.images.slice(0,9) : []);
-    if(files.length>=9){
-      svModal.alert('最多只能添加 9 张图片');
-      return;
-    }
-    pickMomentsImageFiles(function(paths){
-      if(!paths.length) return;
-      var nextImages=files.concat(paths).slice(0,9);
-      updateMomentsTaskImages(task.id,nextImages);
-    });
-  });
-  $(document).on('click','#ai-moments-card .moments-detail-remove-image-thumb',function(e){
-    e.preventDefault();
-    e.stopPropagation();
-    var task=currentMomentsTask();
-    if(!task || momentsTaskIsQueued(task) || momentsTaskIsGenerating(task)) return;
-    var index=parseInt($(this).attr('data-image-index'),10);
-    var nextImages=(Array.isArray(task.images) ? task.images.slice(0,9) : []);
-    if(isNaN(index) || index < 0 || index >= nextImages.length) return;
-    nextImages.splice(index,1);
-    updateMomentsTaskImages(task.id,nextImages);
-  });
-  $(document).on('click','#ai-moments-card .ai-moments-caption-edit',function(e){
-    e.stopPropagation();
-    if($(this).prop('disabled')) return;
-    startMomentsCaptionEdit($(this).closest('.ai-moments-caption'));
-  });
-  $(document).on('click','#ai-moments-card .ai-moments-caption-save',function(e){
-    e.stopPropagation();
-    finishMomentsCaptionEdit($(this).closest('.ai-moments-caption'),true);
-  });
-  $(document).on('click','#ai-moments-card .ai-moments-ai-candidate',function(e){
-    if($(e.target).closest('.ai-moments-caption-edit,.ai-moments-caption-save,.ai-moments-editable-copy.editing').length) return;
-    var task=currentMomentsTask();
-    if(!task || momentsTaskIsQueued(task)) return;
-    if(!(task.candidates||[]).length) return;
-    var value=$(this).find('.ai-moments-editable-copy').first().text();
-    saveMomentsTaskPatch(task.id,{selected_caption:value});
-  });
-  $(document).on('mousedown',function(e){
-    $('#ai-moments-card').find('.ai-moments-caption.editing').each(function(){
-      if(!$.contains(this,e.target) && this!==e.target){
-        finishMomentsCaptionEdit($(this),false);
-      }
-    });
-  });
-  $(document).on('click','#ai-moments-card .ai-moments-detail-mode .ai-moments-mode-option',function(){
-    var task=currentMomentsTask();
-    if(!task || momentsTaskIsQueued(task)) return;
-    var $card=$('#ai-moments-card');
-    var $option=$(this);
-    $option.addClass('active').siblings().removeClass('active');
-    var useOriginal=$.trim($option.text())==='原始文案';
-    $card.find('.ai-moments-ai-candidate').toggle(!useOriginal);
-    $card.find('.ai-moments-original-preview').toggle(useOriginal);
-    saveMomentsTaskPatch(activeMomentsTaskId,{copy_mode:useOriginal?'original':'ai'});
-  });
-  $(document).on('change','#ai-moments-card .ai-moments-visibility-type',function(){
-    var visibilityType=$(this).val() || 'all';
-    var $fields=$('#ai-moments-card .ai-moments-field-grid');
-    var $tagSelect=$fields.find('.ai-moments-tag-multiselect');
-    if(visibilityType==='all'){
-      setCompactMultiSelectValues($tagSelect, []);
-    }
-    setMomentsTagSelectorDisabled(visibilityType==='all');
-    saveActiveMomentsSettings();
-  });
-  $(document).on('change','#ai-moments-card .ai-moments-tag-multiselect .compact-multiselect-check',function(){
-    if($(this).prop('disabled')) return;
-    saveActiveMomentsSettings();
-  });
-  $(document).on('click','#ai-moments-card .ai-moments-tag-multiselect .compact-multiselect-clear,#ai-moments-card .ai-moments-tag-multiselect .compact-multiselect-apply',function(){
-    if($(this).prop('disabled')) return;
-    saveActiveMomentsSettings();
-  });
-  $(document).on('change','#ai-moments-card .ai-moments-publish-rule',function(){
-    var isFixed=$(this).val()==='fixed';
-    var task=currentMomentsTask() || {};
-    task={...task,publish_rule:isFixed?'fixed':'random'};
-    if(isFixed && !task.publish_time) task.publish_time=defaultMomentsFixedTime();
-    if(!isFixed && !task.publish_window) task.publish_window=latestMomentsRandomWindow();
-    syncMomentsTimeFields(task);
-    saveActiveMomentsSettings();
-  });
-  $(document).on('change','#ai-moments-card .ai-moments-fixed-time-input,#ai-moments-card .ai-moments-window-start,#ai-moments-card .ai-moments-window-end',function(){
-    saveActiveMomentsSettings();
-  });
-  $(document).on('input','.moments-material-text',function(){
-    resizeMomentsTextareas($(this).closest('.moments-material-row'));
-  });
-  $(document).on('click','#moments_task_container .ai-moments-task-preview',function(e){
-    if($(e.target).closest('button,label,input,select,textarea,.compact-multiselect,.ai-moments-caption').length) return;
-    var taskId=$(this).data('moments-task-id');
-    var task=momentsTasks.find(function(item){ return item.id===taskId; });
-    if(!task) return;
-    renderMomentsTaskDetail(task);
-  });
-  $(document).on('click','.btn-queue-moments-task',function(){
-    var taskId=$(this).closest('.ai-moments-task-preview').data('moments-task-id');
-    queueMomentsTask(taskId);
-  });
-  $(document).on('click','.btn-cancel-moments-task',function(){
-    var taskId=$(this).closest('.ai-moments-task-preview').data('moments-task-id');
-    if(!taskId) return;
-    $.ajax({
-      url:'/api/task-workbench/moments/queue/manual:' + encodeURIComponent(taskId),
-      method:'DELETE',
-      contentType:'application/json',
-      data:JSON.stringify(buildTaskScopePayload({})),
-      success:function(res){
-        if(res.runtime){
-          loadTaskWorkbenchRuntime('moments', {silent:true, runtime:res.runtime});
-          loadMomentsTasks({silent:true, skipRuntime:true});
-        } else {
-          loadMomentsTasks({silent:true});
-        }
-      },
-      error:function(xhr){
-        var res=xhr.responseJSON||{};
-        svModal.alert(res.message || '取消发圈任务失败');
-      }
-    });
-  });
-  $('#moments_api_index').on('change',function(){
-    $.ajax({
-      url:'/api/moments/settings',
-      method:'PATCH',
-      contentType:'application/json',
-      data:JSON.stringify(buildTaskScopePayload({moments_api_index:parseInt($(this).val(),10)})),
-      success:function(res){
-        var nextIndex = parseInt(res && res.resolved_api_index, 10);
-        if(isNaN(nextIndex)){
-          nextIndex = parseInt(res && res.moments_api_index, 10);
-        }
-        if(!isNaN(nextIndex)){
-          $('#moments_api_index').val(String(nextIndex));
-        }
-        svModal.success('全局发圈接口已更新');
-      },
-      error:function(xhr){
-        var res=xhr.responseJSON||{};
-        svModal.alert(res.message || '保存朋友圈接口失败');
-      }
-    });
-  });
-  $(document).on('click','.btn-generate-moments-task',function(){
-    if($(this).prop('disabled')) return;
-    var $btn=$(this);
-    var taskId=$btn.closest('.ai-moments-task-preview').data('moments-task-id');
-    generateMomentsCandidates(taskId,$btn);
-  });
-  $(document).on('click','.btn-view-moments-task',function(){
-    var taskId=$(this).closest('.ai-moments-task-preview').data('moments-task-id');
-    var task=momentsTasks.find(function(item){ return item.id===taskId; });
-    renderMomentsTaskDetail(task||null);
-  });
-  $(document).on('click','.btn-delete-moments-task',function(){
-    var taskId=$(this).closest('.ai-moments-task-preview').data('moments-task-id');
-    if(!taskId) return;
-    svModal.confirm('确定删除这条发朋友圈任务？',function(){
-      $.ajax({
-        url:'/api/moments/tasks/'+encodeURIComponent(taskId),
-        method:'DELETE',
-        data:JSON.stringify(buildTaskScopePayload({})),
-        contentType:'application/json',
-        success:function(res){
-          if(!res || res.status!=='success'){
-            svModal.alert((res && res.message) || '删除朋友圈任务失败');
-            return;
-          }
-          updateMomentsCounts(res.counts,res.tasks);
-          renderMomentsTaskList(res.tasks||[]);
-        },
-        error:function(xhr){
-          var res=xhr.responseJSON||{};
-          svModal.alert(res.message || '删除朋友圈任务失败');
-        }
-      });
-    });
-  });
   function syncChatMemorySwitchLabel(){
   }
   $('#chat_memory_switch').on('change',syncChatMemorySwitchLabel);
   syncChatMemorySwitchLabel();
-  $('#btn-confirm-moments-task-modal').click(function(){
-    submitMomentsTaskModal();
-  });
-  initializeCompactMultiSelects($('#ai-moments-card'));
-  resizeMomentsTextareas($('#moments-task-modal'));
-  loadMomentsTasks();
   $('#scheduled_message_detail_container > .scheduled-message-editor').each(function(){
     syncScheduledMessageEditorMode($(this));
     normalizeScheduledMessageMsgRows($(this));
@@ -11104,15 +9358,6 @@ $(function(){
       $switch.find('span').not('.ui-switch-knob').first().text(enabled ? enabledText : disabledText);
     }
   }
-  function syncCustomForwardSwitchState(){
-    syncMaterialSwitchLabel('#custom_forward_switch', null, null);
-    var enabled = $('#custom_forward_switch').is(':checked');
-    $('#custom-forward-switch-pill')
-      .toggleClass('is-success', enabled)
-      .toggleClass('is-danger', !enabled)
-      .text('转发 ' + (enabled ? '已开启' : '已关闭'));
-    syncCustomForwardSummaryPills();
-  }
   function syncAiMaterialCardSummary(){
     var $card = $('.material-ai-card');
     if(!$card.length) return;
@@ -11287,12 +9532,10 @@ $(function(){
     }
     syncMaterialManagementSaveButton();
   });
-  syncCustomForwardSwitchState();
   syncMaterialSwitchLabel('#ai_material_outreach_switch', '已启用', '已停用');
   initializeCompactMultiSelects($('#ai-material-outreach-card'));
   syncAiMaterialOutreachPrefaceFields();
   syncAiMaterialCardSummary();
-  $(document).on('change', '#custom_forward_switch', syncCustomForwardSwitchState);
   $(document).on('change', '#ai_material_outreach_switch', function(){
     syncMaterialSwitchLabel('#ai_material_outreach_switch', '已启用', '已停用');
   });
@@ -11522,13 +9765,14 @@ $(function(){
   syncAllMaterialTaskPreviewTitles();
   updateMaterialTaskSummaryCounts();
   ensureMaterialSourceFallback($('#material_source_container'));
-  $('.scheduled-msg-item .scheduled-datetime, .scheduled-moments-item .moments-datetime').each(function(){
+  $('.scheduled-msg-item .scheduled-datetime').each(function(){
     fillDefaultDateTimeInput($(this));
   });
 
   // ===== Save Config =====
   function buildConfigSaveContext(){
-    syncChatVoiceReplyRecognitionDependency({ forceRecognition: true });
+    syncVoiceReplyRecognitionDependency('chat', { forceRecognition: true });
+    syncVoiceReplyRecognitionDependency('group', { forceRecognition: true });
     function splitTextareaLines(selector){
       return String($(selector).val() || '')
         .split(/\r?\n/)
@@ -11614,7 +9858,6 @@ $(function(){
       chat_keyword_switch:$('#chat_keyword_switch').is(':checked'),
       group_keyword_switch:$('#group_keyword_switch').is(':checked'),
       group_keyword_at_only:$('#group_keyword_at_only').is(':checked'),
-      admin:$('#admin').val(),
       group_welcome_msg:$('#group_welcome_msg').val(),
       default_prompt:$('#default_prompt_select').val()||'默认',
       listen_list:[], global_blacklist:[], group:[], group_api_map:{}, group_prompt_map:{}, new_friend_msg:{text:'', files:[]},
@@ -11622,8 +9865,6 @@ $(function(){
       chat_memory_switch:$('#chat_memory_switch').is(':checked'),
       chat_memory_message_threshold:parseInt($('#chat_memory_message_threshold').val())||100,
       chat_memory_interval_hours:parseInt($('#chat_memory_interval_hours').val())||12,
-      chat_memory_protected_recent_count:Math.max(0, Math.min(200, parseInt($('#chat_memory_protected_recent_count').val())||20)),
-      chat_memory_exclude_list:[],
       keyword_dict:{},
       scheduled_message_task_list:[],
       contact_directory_auto_maintenance_switch:$('#contact_directory_auto_maintenance_switch').is(':checked'),
@@ -11659,17 +9900,14 @@ $(function(){
       chat_voice_reply_switch:$('#chat_voice_reply_switch').is(':checked'),
       chat_voice_reply_trigger_modes:selectedCompactMultiSelectValues($('#chat_voice_reply_trigger_modes_wrap')),
       chat_voice_reply_request_keywords:splitInlineList('#chat_voice_reply_request_keywords'),
-      chat_voice_reply_cooldown_minutes:Math.max(0,parseInt($('#chat_voice_reply_cooldown_minutes').val())||0),
       chat_voice_reply_limit_count:Math.max(0,parseInt($('#chat_voice_reply_limit_count').val())||0),
       chat_voice_reply_limit_hours:Math.max(0,parseInt($('#chat_voice_reply_limit_hours').val())||0),
-      chat_voice_session_minutes:Math.max(1,parseInt($('#chat_voice_session_minutes').val())||10),
-      chat_voice_session_turns:Math.max(1,parseInt($('#chat_voice_session_turns').val())||5),
       chat_message_merge_delay:Math.max(1,Math.min(60,parseInt($('#chat_message_merge_delay').val())||20)),
       chat_image_recognition_api:parseInt($('#chat_image_recognition_api').val())||0,
       group_voice_recognition_switch:$('#group_voice_recognition_switch').is(':checked'),
       group_voice_reply_switch:$('#group_voice_reply_switch').is(':checked'),
+      group_voice_reply_trigger_modes:selectedCompactMultiSelectValues($('#group_voice_reply_trigger_modes_wrap')),
       group_voice_reply_request_keywords:splitInlineList('#group_voice_reply_request_keywords'),
-      group_voice_reply_cooldown_minutes:Math.max(0,parseInt($('#group_voice_reply_cooldown_minutes').val())||0),
       group_voice_reply_limit_count:Math.max(0,parseInt($('#group_voice_reply_limit_count').val())||0),
       group_voice_reply_limit_hours:Math.max(0,parseInt($('#group_voice_reply_limit_hours').val())||0),
       group_image_recognition_switch:$('#group_image_recognition_switch').is(':checked'),
@@ -11680,12 +9918,18 @@ $(function(){
       reply_preprocess_fallback_reply:$('#reply_preprocess_fallback_reply').val().trim(),
       reply_preprocess_fallback_once:$('#reply_preprocess_fallback_once').is(':checked'),
       reply_preprocess_max_chars:Math.max(1,Math.min(10000,parseInt($('#reply_preprocess_max_chars').val())||100)),
-      text_reply_limit_switch:$('#text_reply_limit_switch').is(':checked'),
-      text_reply_limit_count:Math.max(0,Math.min(99999,parseInt($('#text_reply_limit_count').val())||0)),
-      text_reply_limit_hours:Math.max(0,Math.min(720,parseInt($('#text_reply_limit_hours').val())||0)),
-      text_reply_limit_ai_reply:$('#text_reply_limit_ai_reply').is(':checked'),
-      text_reply_limit_reply:$('#text_reply_limit_reply').val().trim(),
-      text_reply_limit_reply_once:$('#text_reply_limit_reply_once').is(':checked'),
+      chat_text_reply_limit_switch:$('#chat_text_reply_limit_switch').is(':checked'),
+      chat_text_reply_limit_count:Math.max(0,Math.min(99999,parseInt($('#chat_text_reply_limit_count').val())||0)),
+      chat_text_reply_limit_hours:Math.max(0,Math.min(720,parseInt($('#chat_text_reply_limit_hours').val())||0)),
+      chat_text_reply_limit_ai_reply:$('#chat_text_reply_limit_ai_reply').is(':checked'),
+      chat_text_reply_limit_reply:$('#chat_text_reply_limit_reply').val().trim(),
+      chat_text_reply_limit_reply_once:$('#chat_text_reply_limit_reply_once').is(':checked'),
+      group_text_reply_limit_switch:$('#group_text_reply_limit_switch').is(':checked'),
+      group_text_reply_limit_count:Math.max(0,Math.min(99999,parseInt($('#group_text_reply_limit_count').val())||0)),
+      group_text_reply_limit_hours:Math.max(0,Math.min(720,parseInt($('#group_text_reply_limit_hours').val())||0)),
+      group_text_reply_limit_ai_reply:$('#group_text_reply_limit_ai_reply').is(':checked'),
+      group_text_reply_limit_reply:$('#group_text_reply_limit_reply').val().trim(),
+      group_text_reply_limit_reply_once:$('#group_text_reply_limit_reply_once').is(':checked'),
       chat_split_reply_switch:$('#chat_split_reply_switch').is(':checked'),
       chat_split_reply_delay_switch:$('#chat_split_reply_delay_switch').val() !== 'false',
       chat_split_max_chars:Math.max(1,parseInt($('#chat_split_max_chars').val())||100),
@@ -11697,8 +9941,6 @@ $(function(){
       siver_panel_enabled:$('#siver_panel_enabled').is(':checked'),
       siver_panel_activation_code:$('#siver_panel_activation_code').val().trim(),
       siver_panel_slug:normalizeSiverPanelSlug($('#siver_panel_slug').val()),
-      custom_forward_switch:$('#custom_forward_switch').is(':checked'),
-      custom_forward_list:[]
     };
     syncCurrentListenState();
     configData.listen_list = collectListenNamesFromUI();
@@ -11714,10 +9956,6 @@ $(function(){
       if (!isNaN(tv) && tv >= 0) configData.chat_tts_map[uname] = tv;
     });
     configData.chat_prompt_map = collectChatPromptBindingsFromUI();
-    $('.chat-memory-exclude-item').each(function(){
-      var uname = $(this).find('.chat-memory-exclude-user').val().trim();
-      if (uname) configData.chat_memory_exclude_list.push(uname);
-    });
     // 群组：收集名称列表 + 专属接口映射 + 专属 prompt 映射
     $('#group_container .list-item').each(function(){
       var name=$(this).find('input[name="group"]').val().trim();
@@ -11808,26 +10046,6 @@ $(function(){
           include_contact_keys:[],
           exclude_contact_keys:[]
         }
-      });
-    });
-    // 收集自定义转发规则列表
-    $('.custom-forward-editor.custom-forward-item').each(function(){
-      var $r=$(this), sources=[], targets=[];
-      var ruleType = $r.find('.fwd-type-select').val();
-      if(ruleType !== 'all') ruleType = 'keyword';
-      var pauseAiReplyOnMatch = ruleType === 'keyword' && $r.find('.fwd-pause-chat-reply').is(':checked');
-      $r.find('input[name="fwd_source"]').each(function(){ if($(this).val().trim()) sources.push($(this).val().trim()); });
-      $r.find('input[name="fwd_target"]').each(function(){ if($(this).val().trim()) targets.push($(this).val().trim()); });
-      configData.custom_forward_list.push({
-        id: $r.data('rule-id'),
-        enabled: forwardRuleEnabledFor($r),
-        sources: sources,
-        type: ruleType,
-        keywords: splitInlineTextList($r.find('input[name="fwd_keyword"]').val()),
-        targets: targets,
-        forward_with_source: $r.find('.fwd-with-source').is(':checked'),
-        pause_ai_reply_on_match: pauseAiReplyOnMatch,
-        forward_group_friend_messages: ruleType === 'all' && $r.find('.fwd-forward-group-friend').is(':checked')
       });
     });
     return {
@@ -12401,7 +10619,7 @@ $(function(){
     return enabled ? '已开启' : '已关闭';
   }
   function statusScopeText(chatEnabled, groupEnabled){
-    if(chatEnabled && groupEnabled) return '已开启';
+    if(chatEnabled && groupEnabled) return '全部开启';
     if(chatEnabled) return '仅私聊';
     if(groupEnabled) return '仅群聊';
     return '已关闭';
@@ -12770,6 +10988,7 @@ $(function(){
       $('#sv-clean-reply').text(statusEnabledText(!!d.clean_ai_reply_switch));
       $('#sv-voice-reply').text(statusScopeText(!!d.chat_voice_reply_switch, !!d.group_voice_reply_switch));
       $('#sv-image-recognition').text(statusScopeText(!!d.chat_image_recognition_switch, !!d.group_image_recognition_switch));
+      $('#sv-voice-recognition').text(statusScopeText(!!d.chat_voice_recognition_switch, !!d.group_voice_recognition_switch));
       $('#sv-split-reply').text(statusScopeText(!!d.chat_split_reply_switch, !!d.group_split_reply_switch));
       $('#sv-new-friend').text(statusEnabledText(!!d.new_friend_switch));
       $('#sv-friend-request').text(statusEnabledText(!!d.friend_request_enabled));
@@ -13274,62 +11493,6 @@ $(function(){
     });
   });
 
-  // ===== Webhook Panel =====
-  function collectWebhookConfig(){
-    var headers = {};
-    var headerText = $('#webhook-headers').val().trim();
-    if(headerText){
-      try { headers = JSON.parse(headerText); }
-      catch(e){ showMsg('webhook-msg','Headers 不是合法 JSON: '+e.message,false); return null; }
-    }
-    return {
-      enabled: $('#webhook-enabled').is(':checked'),
-      url: $('#webhook-url').val().trim(),
-      method: $('#webhook-method').val(),
-      content_type: $('#webhook-content-type').val().trim() || 'application/json',
-      headers: headers,
-      body: $('#webhook-body').val(),
-      timeout: parseInt($('#webhook-timeout').val() || '5', 10)
-    };
-  }
-  function loadWebhookConfig(){
-    $.getJSON('/get_webhook_config', function(res){
-      if(res.status === 'success'){
-        $('#webhook-enabled').prop('checked', !!res.enabled);
-        $('#webhook-url').val(res.url || '');
-        $('#webhook-method').val(res.method || 'POST');
-        $('#webhook-content-type').val(res.content_type || 'application/json');
-        $('#webhook-timeout').val(res.timeout || 5);
-        $('#webhook-headers').val(JSON.stringify(res.headers || {}, null, 2));
-        $('#webhook-body').val(res.body || '{"title":"$title","content":"$content"}');
-      } else {
-        showMsg('webhook-msg', res.message || '加载 WebHook 配置失败', false);
-      }
-    });
-  }
-  $(document).on('click', '[data-tab="tab-webhook"]', loadWebhookConfig);
-  $('#btn-save-webhook').click(function(){
-    var d = collectWebhookConfig();
-    if(!d) return;
-    if(d.enabled && !d.url){ showMsg('webhook-msg','启用 WebHook 时 URL 不能为空',false); return; }
-    $.ajax({ url:'/save_webhook_config', type:'POST', contentType:'application/json',
-      data: JSON.stringify(d),
-      success: function(res){ showMsg('webhook-msg', res.message, res.status==='success'); },
-      error: function(xhr){ showMsg('webhook-msg','请求失败: '+xhr.responseText, false); }
-    });
-  });
-  $('#btn-test-webhook').click(function(){
-    var d = collectWebhookConfig();
-    if(!d) return;
-    d.enabled = true;
-    if(!d.url){ showMsg('webhook-msg','测试 WebHook 时 URL 不能为空',false); return; }
-    $.ajax({ url:'/test_webhook', type:'POST', contentType:'application/json',
-      data: JSON.stringify(d),
-      success: function(res){ showMsg('webhook-msg', res.message, res.status==='success'); },
-      error: function(xhr){ showMsg('webhook-msg','请求失败: '+xhr.responseText, false); }
-    });
-  });
-
   // ===== Memory Panel =====
   var _memWxId = null, _memChatName = null;
   var _memoryChats = [];
@@ -13671,25 +11834,6 @@ $(function(){
   });
   checkActivate(false);
 
-});
-</script>
-
-<script>
-// 自定义转发：全部来源开关
-function toggleFwdAllSources(cb) {
-  var $item = $(cb).closest('.custom-forward-item');
-  $(cb).closest('.fwd-source-section').find('.fwd-manual-sources').toggle(!cb.checked);
-  if(window.syncCustomForwardRuleCard) window.syncCustomForwardRuleCard($item);
-}
-function toggleFwdPauseChatReply(cb) {
-  if(!cb) return;
-  var $item = $(cb).closest('.custom-forward-item');
-  if(window.syncCustomForwardRuleCard) window.syncCustomForwardRuleCard($item);
-}
-$(function(){
-  $('.fwd-pause-chat-reply').each(function(){
-    toggleFwdPauseChatReply(this);
-  });
 });
 </script>
 

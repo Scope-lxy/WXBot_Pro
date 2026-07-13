@@ -172,8 +172,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .ai-moments-runtime-block,
 .prompt-list-panel.framed-list-panel { background: var(--surface-l2); border-color: var(--layer-border); }
 .ui-l2-pane,
-.ai-moments-pane,
-.custom-forward-pane { min-width: 0; background: var(--surface-l2); border: 1px solid var(--layer-border); border-radius: var(--radius); padding: var(--ui-l2-card-padding); }
+.ai-moments-pane { min-width: 0; background: var(--surface-l2); border: 1px solid var(--layer-border); border-radius: var(--radius); padding: var(--ui-l2-card-padding); }
 .keyword-rule-card,
 .keyword-trigger-card,
 .listen-rule-card,
@@ -182,8 +181,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .group-strategy-card,
 .new-friend-block,
 .ui-l2-pane,
-.ai-moments-pane,
-.custom-forward-pane { padding: var(--ui-l2-card-padding); }
+.ai-moments-pane { padding: var(--ui-l2-card-padding); }
 .ai-moments-task-preview,
 .scheduled-message-item-card,
 .scheduled-message-placeholder-row,
@@ -193,20 +191,13 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .listen-rule-empty,
 .ai-moments-empty,
 .scheduled-message-empty,
-.scheduled-message-empty-content,
-.custom-forward-empty,
-.custom-forward-static-note { background: var(--surface-l4); border-color: var(--layer-border-subtle); }
-.new-friend-block,
-.custom-forward-pane { background: var(--surface-l2); border-color: var(--layer-border); }
-.new-friend-l3-group,
-.custom-forward-detail-top,
-.custom-forward-rule-card { background: var(--surface-l3); border: 1px solid var(--layer-border-subtle); border-radius: 6px; padding: 12px; }
+.scheduled-message-empty-content { background: var(--surface-l4); border-color: var(--layer-border-subtle); }
+.new-friend-block { background: var(--surface-l2); border-color: var(--layer-border); }
+.new-friend-l3-group { background: var(--surface-l3); border: 1px solid var(--layer-border-subtle); border-radius: 6px; padding: 12px; }
 .chat-ability-block,
 .moments-task-card,
 .ai-moments-runtime-block,
-.custom-forward-rule-card,
-.new-friend-l3-group,
-.custom-forward-detail-top { padding: var(--ui-l3-card-padding); }
+.new-friend-l3-group { padding: var(--ui-l3-card-padding); }
 .new-friend-l3-group + .new-friend-l3-group { margin-top: 12px; }
 .new-friend-l3-group .cfg-hint:last-child { margin-bottom: 0; }
 .ui-head { --ui-head-row-height: var(--ui-l1-head-row-height); --ui-head-control-height: var(--ui-l1-control-height); --ui-head-divider-gap: var(--ui-l1-head-divider-gap); --ui-head-body-gap: var(--ui-l1-body-gap); display: flex; align-items: center; gap: var(--cfg-inline-gap); height: calc(var(--ui-head-row-height) + var(--ui-head-divider-gap)); min-height: 0; margin-bottom: var(--ui-head-body-gap); padding-bottom: var(--ui-head-divider-gap); border-bottom: 1px solid var(--border); flex-wrap: nowrap; overflow: hidden; min-width: 0; }
@@ -476,10 +467,10 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 
 /* ===== Keyword Items ===== */
 .keyword-reply-card > .ui-head.ui-head--page,
-.custom-forward-task-card > .ui-head.ui-head--page,
 .scheduled-message-card > .ui-head.ui-head--page,
 .material-taskized-card > .ui-head.ui-head--page,
 .ai-moments-card > .ui-head.ui-head--page,
+.friend-request-card > .ui-head.ui-head--page,
 .contact-maintenance-card > .ui-head.ui-head--page,
 .relationship-scan-card > .ui-head.ui-head--page,
 .listen-page-head,
@@ -512,8 +503,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .listen-rule-empty,
 .ai-moments-empty,
 .scheduled-message-empty,
-.scheduled-message-empty-content,
-.custom-forward-empty { display: flex; align-items: center; min-height: var(--ui-empty-state-min-height); padding: var(--ui-empty-state-padding); border: 1px dashed var(--layer-border-subtle); border-radius: var(--radius); background: var(--surface-l4); color: var(--muted); font-size: 13px; line-height: 1.45; text-align: left; }
+.scheduled-message-empty-content { display: flex; align-items: center; min-height: var(--ui-empty-state-min-height); padding: var(--ui-empty-state-padding); border: 1px dashed var(--layer-border-subtle); border-radius: var(--radius); background: var(--surface-l4); color: var(--muted); font-size: 13px; line-height: 1.45; text-align: left; }
 .keyword-item { display: grid; gap: 14px; margin-bottom: 0; padding: 14px; border: 1px solid var(--layer-border-subtle); border-radius: 10px; background: #fff; }
 .keyword-rule-editor { display: grid; gap: 12px; }
 .keyword-item__header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start; }
@@ -539,48 +529,15 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .switch-row--inline-desc .switch-desc { flex: 1 1 100%; text-align: left; margin-left: 0; white-space: normal; }
 }
 
-/* ===== Custom Forward Items ===== */
-.custom-forward-item, .material-outreach-item { background: var(--muted-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+/* ===== Task Workbenches ===== */
+.material-outreach-item { background: var(--muted-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
 .material-outreach-item.material-detail-editor { background: transparent; border: 0; padding: 0; margin-bottom: 0; }
-.fwd-conditional-block { display: none; margin-top: 8px; }
-.custom-forward-toolbar,
 .ai-moments-toolbar,
 .material-status-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: var(--ui-summary-strip-padding-y) 0; margin: 0 0 var(--ui-summary-strip-body-gap); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
 .ui-l2-workbench,
-.custom-forward-workbench,
 .ai-moments-workbench { display: grid; gap: 16px; align-items: start; padding-top: 0; border-top: 0; grid-template-columns: var(--ui-split-main-columns); }
-.custom-forward-workbench { --ui-split-side-min: 380px; }
-.custom-forward-pane { min-width: 0; }
-.custom-forward-pane .ai-moments-pane-head { margin-bottom: 12px; }
-.custom-forward-add-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
-.custom-forward-rule-list { display: grid; gap: 10px; }
-.custom-forward-rule-list .ai-moments-task-preview { margin-top: 0; }
-.custom-forward-rule-card { display: flex; flex-direction: column; gap: 0; padding: var(--ui-l3-card-padding); cursor: pointer; }
-.custom-forward-rule-card.selected { border-color: #86EFAC; background: #F0FDF4; }
-.custom-forward-rule-card.is-disabled { opacity: .72; }
-.custom-forward-rule-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; margin-bottom: var(--ui-l3-body-gap); }
-.custom-forward-rule-title-wrap,
 .ai-moments-task-title { display: flex; align-items: center; gap: var(--ui-card-title-gap); min-width: 0; }
-.custom-forward-rule-title { margin: 0; }
-.custom-forward-rule-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
-.custom-forward-rule-card .custom-forward-rule-switch { flex: 0 0 auto; }
-.custom-forward-rule-copy { margin: 0; }
-.custom-forward-rule-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; margin-top: var(--ui-l3-body-gap); }
-.custom-forward-rule-tags { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
-.custom-forward-rule-delete { margin-left: auto; align-self: center; }
-.custom-forward-editor { display: none; padding: 0; margin: 0; border: 0; background: transparent; }
-.custom-forward-editor.active { display: block; }
-.custom-forward-detail-top { display: grid; gap: var(--ui-panel-gap); }
-.custom-forward-detail-section { display: grid; gap: var(--ui-panel-gap); }
-.custom-forward-field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-.custom-forward-field-grid .fwd-conditional-block { margin-top: 0; }
-.custom-forward-param-list { display: grid; gap: var(--ui-panel-gap); }
-.custom-forward-param-list .switch-row.custom-forward-param-row { width: 100%; min-height: 44px; margin: 0; padding: 10px 14px; background: #fff; border: 1px solid var(--layer-border-subtle); border-radius: 6px; flex-wrap: nowrap; }
-.keyword-trigger-toggle,
-.custom-forward-param-switch { flex: 0 0 auto; }
-.custom-forward-static-note { border: 1px dashed var(--layer-border-subtle); border-radius: var(--radius); background: var(--surface-l4); padding: 12px 14px; color: var(--muted); font-size: 12.5px; line-height: 1.7; }
-.custom-forward-editor .list-item { margin-bottom: 6px; }
-.custom-forward-editor .list-item:last-child { margin-bottom: 0; }
+.keyword-trigger-toggle { flex: 0 0 auto; }
 
 /* ===== Prompt Editor ===== */
 .prompt-two-col { display:flex; gap:0; min-height:320px; }
@@ -620,8 +577,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .switch-row.is-disabled .switch-desc { cursor: not-allowed; }
 
 /* ===== AI Moments Workbench ===== */
-#tab-moments.config-panel.active { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-#tab-moments.config-panel.active > .cfg-card { margin-bottom: 0 !important; }
 #scheduled-moments-card { order: 1; }
 #random-moments-card { order: 2; }
 #ai-moments-card { order: 3; grid-column: 1 / -1; }
@@ -667,7 +622,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 #moments-like-card .ui-head.ui-head--page .ui-switch { min-height: var(--ui-l1-control-height); }
 .ai-moments-status-row, .ai-moments-action-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .summary-status-row,
-.custom-forward-toolbar .ai-moments-status-row,
 .ai-moments-toolbar .ai-moments-status-row,
 .material-status-toolbar .ai-moments-status-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; flex: 1 1 auto; }
 .summary-action-row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex: 0 0 auto; margin-left: auto; flex-wrap: wrap; min-width: 0; }
@@ -853,12 +807,10 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .ai-moments-task-title-text { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ai-moments-card-footer-actions { margin-top: 10px; justify-content: space-between; }
 .ai-moments-card-primary-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.custom-forward-rule-delete,
 .material-management-card-action,
 .scheduled-message-card-footer-actions .ui-btn,
 .ai-moments-card-footer-actions .ui-btn,
 .ai-moments-runtime-row .ui-btn,
-.moments-material-row-head .ui-btn { min-height: var(--ui-card-action-height); padding: 0 var(--ui-card-action-padding-x); font-size: 12.5px; width: auto; min-width: 0; flex: 0 0 auto; }
 .scheduled-task-switch, .ai-moments-task-switch { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-height: 32px; font-size: 12.5px; }
 .ui-switch--l1 { min-height: var(--ui-l1-control-height); }
 .ui-switch--l2 { min-height: var(--ui-l2-control-height); }
@@ -890,15 +842,12 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .ai-moments-caption-edit,
 .scheduled-message-icon-btn,
 .scheduled-message-delete-badge,
-.moments-remove-image-thumb { width: 26px; height: 26px; min-width: 26px; min-height: 26px; padding: 0; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; line-height: 1; transition: opacity .15s ease, color .15s ease, border-color .15s ease, background .15s ease; }
 .ui-btn--icon { border: 1px solid #D5DCE7; background: #fff; color: #64748B; }
 .ui-btn--icon:hover { color: var(--primary); border-color: #BBF7D0; background: #ECFDF5; }
 .ui-btn--icon.is-danger,
 .scheduled-message-delete-badge,
-.moments-remove-image-thumb { border: 1px solid #FECACA; background: rgba(255,255,255,.96); color: var(--danger); }
 .ui-btn--icon.is-danger:hover,
 .scheduled-message-delete-badge:hover,
-.moments-remove-image-thumb:hover { color: var(--danger); border-color: var(--danger); background: #FFF0F0; }
 .ui-btn--icon.ui-btn--l3 { width: var(--ui-l3-icon-size); height: var(--ui-l3-icon-size); min-width: var(--ui-l3-icon-size); min-height: var(--ui-l3-icon-size); flex: 0 0 var(--ui-l3-icon-size); }
 .ai-moments-caption-edit { position: absolute; top: 10px; right: 10px; opacity: 1; pointer-events: auto; }
 .ai-moments-caption-edit:disabled { opacity: 1; }
@@ -964,7 +913,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .scheduled-message-item-title span { color: var(--muted); font-size: 12px; font-weight: 700; }
 .scheduled-message-item-actions { position: absolute; top: 10px; right: 10px; display: flex; align-items: center; gap: 8px; }
 .scheduled-message-item-actions .ui-btn { min-width: 0; min-height: 0; padding: 0; }
-.scheduled-message-icon-btn i, .scheduled-message-delete-badge i, .moments-remove-image-thumb i { display: inline-flex; }
+.scheduled-message-icon-btn i, .scheduled-message-delete-badge i { display: inline-flex; }
 .scheduled-message-icon-btn { opacity: 1; pointer-events: auto; }
 .scheduled-message-delete-badge { position: absolute; top: -8px; right: -8px; box-shadow: 0 4px 10px rgba(15,23,42,.08); }
 .scheduled-message-text-item .scheduled-message-delete-badge { position: static; top: auto; right: auto; width: 26px; height: 26px; min-width: 26px; min-height: 26px; box-shadow: none; flex: 0 0 26px; }
@@ -1005,34 +954,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .scheduled-message-tag-multiselect.disabled .compact-multiselect-trigger { background: var(--disabled-bg); color: var(--disabled-fg); cursor: not-allowed; box-shadow: none; border-color: var(--disabled-border); }
 .scheduled-message-tag-multiselect.disabled .compact-multiselect-summary { color: var(--disabled-fg); }
 .scheduled-message-tag-multiselect.disabled .compact-multiselect-trigger i { opacity: .55; }
-.moments-task-modal { display: none; position: fixed; inset: 0; z-index: 10020; align-items: center; justify-content: center; padding: 22px; background: rgba(0,0,0,.46); }
-.moments-task-modal-box { width: min(920px, 96vw); max-height: min(760px, 92vh); display: flex; flex-direction: column; background: var(--card); border-radius: 14px; box-shadow: 0 18px 56px rgba(0,0,0,.26); overflow: hidden; }
-.moments-task-modal-head { display: flex; align-items: center; gap: 10px; padding: 20px 22px 16px; border-bottom: 1px solid var(--border); }
-.moments-task-modal-head i { color: var(--primary); font-size: 20px; }
-.moments-task-modal-head h5 { margin: 0; font-size: 16px; font-weight: 800; }
-.moments-task-modal-head .desc { flex: 1; min-width: 0; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
-.moments-task-modal-body { overflow: auto; padding: 18px 22px; }
-.moments-modal-materials { display: grid; gap: 12px; }
-.moments-modal-materials .ai-moments-task-preview { margin-top: 0; }
-.moments-material-row { background: #fff; }
-.moments-material-row .moments-material-row-head { margin-bottom: 10px; }
-.moments-material-row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.moments-material-row-title { font-size: 13.5px; font-weight: 800; color: var(--card-fg); }
-.moments-material-text { min-height: 68px; height: 68px; overflow: hidden; resize: none; margin-bottom: 12px; }
-.moments-material-image-row { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
-.moments-material-image-row.moments-task-detail-image-row { display: none; margin-top: 0; }
-.moments-add-image-tile { aspect-ratio: 1 / 1; border-radius: 8px; border: 1px dashed var(--primary); background: #F0FBF5; color: var(--primary); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; font-size: 11px; font-weight: 800; cursor: pointer; }
-.moments-add-image-tile i { font-size: 18px; line-height: 1; }
-.moments-add-image-tile:hover { background: #E0F7EC; }
-.moments-modal-thumb { position: relative; overflow: hidden; padding: 0; align-items: stretch; }
-.moments-modal-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.moments-modal-thumb span { position: absolute; left: 5px; bottom: 5px; padding: 2px 5px; border-radius: 999px; background: rgba(255,255,255,.86); color: #334155; font-size: 10px; font-weight: 800; }
-.moments-remove-image-thumb { position: absolute; top: 5px; right: 5px; width: 24px; height: 24px; min-width: 24px; opacity: 0; pointer-events: none; transition: opacity .15s ease, background .15s ease, border-color .15s ease; }
-.moments-modal-thumb:hover .moments-remove-image-thumb,
-.moments-modal-thumb:focus-within .moments-remove-image-thumb { opacity: 1; pointer-events: auto; }
-.moments-file-picker { display: none; }
-.moments-task-modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 22px 20px; border-top: 1px solid var(--border); flex-wrap: wrap; }
-.moments-task-modal-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .ui-switch { display: inline-flex; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 12.5px; font-weight: 700; }
 .ui-switch .form-check-input { position: absolute; opacity: 0; pointer-events: none; }
 .ui-switch:disabled { opacity: 1; }
@@ -1072,8 +993,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .manual-identity-candidate.selected .manual-identity-candidate__meta { color: var(--primary); opacity: .82; }
 @keyframes svModalIn { from { opacity:0; transform:scale(.94) translateY(8px); } to { opacity:1; transform:scale(1) translateY(0); } }
 @media (max-width: 1100px) {
-  #tab-moments.config-panel.active { grid-template-columns: 1fr; }
-  .custom-forward-workbench, .ai-moments-workbench, .ai-moments-runtime-grid { grid-template-columns: 1fr; }
+  .ai-moments-workbench, .ai-moments-runtime-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 700px) {
   .ui-head--page, .ui-head--section { height: auto; overflow: visible; }
@@ -1090,11 +1010,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .cfg-inline-combo--detection .cfg-inline-combo__field,
   .cfg-inline-combo--time-window .cfg-inline-combo__field { flex: 1 1 0; max-width: none; }
   .moments-like-options-grid { grid-template-columns: 1fr; }
-  .moments-material-image-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .moments-task-detail-image-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .scheduled-message-thumb-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .moments-task-modal-foot { align-items: stretch; }
-  .moments-task-modal-actions, .moments-task-modal-foot .ui-btn--add { width: 100%; }
 }
 @media (max-width: 560px) {
   .ui-head--page { flex-wrap: wrap; }
@@ -1468,11 +1384,8 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .new-friend-message-file-list { display: grid; gap: 8px; }
 .new-friend-block { background: var(--surface-l2); border-color: var(--layer-border); }
 .new-friend-l3-group { background: var(--surface-l3); border-color: var(--layer-border-subtle); }
-.new-friend-l3-group .switch-row,
-.custom-forward-detail-section .switch-row:not(.custom-forward-param-row) { background: transparent; padding: 0; border-radius: 0; }
+.new-friend-l3-group .switch-row { background: transparent; padding: 0; border-radius: 0; }
 .new-friend-tag-group .new-friend-tag-head { margin-top: 0; }
-.custom-forward-rule-card,
-.custom-forward-detail-top { background: var(--surface-l3); border-color: var(--layer-border-subtle); }
 @media (max-width: 900px) {
   .keyword-reply-body { grid-template-columns: 1fr; }
   .summary-action-row { width: 100%; margin-left: 0; justify-content: flex-start; }
@@ -1480,9 +1393,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .switch-row--inline-desc { flex-wrap: wrap; align-items: flex-start; }
   .switch-row--inline-desc .switch-desc { flex: 1 1 100%; text-align: left; margin-left: 0; white-space: normal; }
   .switch-row > .cfg-hint { flex: 1 1 100%; margin-left: 0; text-align: left; white-space: normal; }
-  .custom-forward-workbench { grid-template-columns: 1fr; }
-  .custom-forward-field-grid { grid-template-columns: 1fr; }
-  .custom-forward-add-actions { justify-content: flex-start; }
   .new-friend-config-shell { grid-template-columns: 1fr; }
   .new-friend-field-grid { grid-template-columns: 1fr; }
   .new-friend-interval-grid { grid-template-columns: 1fr; }
@@ -1564,6 +1474,10 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .chat-ability-grid { grid-template-columns: 1fr; }
   .recognition-card-grid { grid-template-columns: 1fr; }
   .recognition-api-select { max-width: none; width: 100%; }
+}
+@media (max-width: 700px) {
+  .chat-ability-block--text-limit .ui-head.ui-head--item { align-items: flex-start; }
+  .chat-ability-block--text-limit .ui-head.ui-head--item .ui-head__main { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ===== Memory Panel ===== */
@@ -1782,14 +1696,11 @@ body.mobile-nav-open { overflow: hidden; }
 .ai-moments-empty,
 .scheduled-message-empty,
 .scheduled-message-empty-content,
-.custom-forward-empty,
-.custom-forward-static-note,
 .chat-memory-entry-empty,
 .contact-directory-list-empty,
 .material-outreach-list-empty { background: var(--surface-l4); border-color: var(--layer-border-subtle); }
 .api-config-item.is-active,
 .ai-moments-task-preview.selected,
-.custom-forward-rule-card.selected,
 .ai-moments-caption.selected { border-color: #86EFAC; background: #F0FDF4; }
 
 /* ===== Responsive ===== */

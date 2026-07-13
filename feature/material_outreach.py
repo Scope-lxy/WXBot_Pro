@@ -1723,9 +1723,9 @@ def is_material_source(sources, chat_who):
     return bool(chat_who and chat_who in set(sources or []))
 
 
-def iter_material_outreach_listen_sources(sources, *, listen_list, groups, group_switch, command_chat):
+def iter_material_outreach_listen_sources(sources, *, listen_list, groups, group_switch):
     listened_groups = set(groups or []) if group_switch else set()
-    already_listened = set(listen_list or []) | listened_groups | {command_chat}
+    already_listened = set(listen_list or []) | listened_groups
     seen = set()
     for source in sources or []:
         if not source or source in seen or source in already_listened:

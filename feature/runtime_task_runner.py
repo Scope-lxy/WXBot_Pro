@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 
 from core import runtime_chat_state, wechat_ui_actions
@@ -19,17 +18,6 @@ from feature.material_outreach import (
     material_random_time_window,
     plan_random_material_outreach_fire_time,
     prepare_random_material_outreach_day,
-)
-from feature.moments_tasks import (
-    STATUS_EXECUTED,
-    STATUS_PENDING,
-    STATUS_PENDING_CONFIRM,
-    STATUS_RUNNING,
-    moments_task_has_ai_candidates,
-    mark_moments_task_running,
-    moments_task_publish_text,
-    recover_interrupted_moments_task,
-    split_moments_task_storage,
 )
 from feature.scheduled_message_tasks import (
     apply_scheduled_message_run_result,
@@ -106,40 +94,6 @@ def _log_material_outreach_run_result(task, success):
         level="SUCCESS" if success else "WARNING",
         message=f"素材转发任务 {_task_log_name(task, '未命名素材转发')} {'执行成功' if success else '执行失败'}",
     )
-
-
-def _moments_tag_summary(tags):
-    tags = [str(tag or "").strip() for tag in (tags or []) if str(tag or "").strip()]
-    if not tags:
-        return ""
-    if len(tags) == 1:
-        return tags[0]
-    if len(tags) == 2:
-        return "、".join(tags)
-    return f"{tags[0]}、{tags[1]} 等 {len(tags)} 个标签"
-
-
-def _moments_visibility_summary(task):
-    task = task if isinstance(task, dict) else {}
-    visibility_type = str(task.get("visibility_type") or "all").strip()
-    tags_summary = _moments_tag_summary(task.get("tags"))
-    if visibility_type == "include":
-        return f"仅 {tags_summary} 可见" if tags_summary else "部分好友可见"
-    if visibility_type == "exclude":
-        return f"不给 {tags_summary} 看" if tags_summary else "排除部分好友"
-    return "全部好友可见"
-
-
-def _moments_batch_summary(text, images):
-    has_text = bool(str(text or "").strip())
-    image_count = len(images or [])
-    if has_text and image_count:
-        return f"文案 1 条，图片 {image_count} 张"
-    if has_text:
-        return "纯文字朋友圈"
-    if image_count:
-        return f"图片 {image_count} 张"
-    return "空内容"
 
 
 def _scheduled_message_runtime_parts(messages):
@@ -447,123 +401,10 @@ def run_due_random_material_outreach(bot, now=None):
         bot._save_material_outreach_task_definitions_only(next_tasks)
 
 
-def run_due_moments_task_list(bot, now=None):
-    now = now or datetime.now()
-    tasks = getattr(bot.config, "moments_task_list", []) or []
-    changed = False
-    definitions_dirty = False
-    for task in tasks:
-        if not isinstance(task, dict):
-            continue
-        if task.get("status") == STATUS_RUNNING:
-            before_definition, _runtime, _history = split_moments_task_storage(task)
-            recovered = recover_interrupted_moments_task(task, now=now)
-            task.clear()
-            task.update(recovered)
-            after_definition, _runtime, _history = split_moments_task_storage(task)
-            if after_definition != before_definition:
-                definitions_dirty = True
-            bot._save_moments_runtime_history_records(task)
-            changed = True
-            continue
-        if not task.get("enabled", True) or task.get("status") != STATUS_PENDING:
-            continue
-        execute_after = str(task.get("execute_after") or "").strip()
-        if execute_after:
-            try:
-                if now < datetime.fromisoformat(execute_after):
-                    continue
-            except ValueError:
-                pass
-        text = moments_task_publish_text(task)
-        resolved_images = bot._resolve_panel_moments_images(task.get("images", []))
-        run_id = str(uuid.uuid4())
-        base_snapshot = runtime_snapshot(
-            raw_targets=[
-                {
-                    "visibility_type": str(task.get("visibility_type") or "all").strip(),
-                    "tags": list(task.get("tags") or []),
-                }
-            ],
-            raw_messages=[text] if text else [],
-            raw_media=[{"path": image, "type": "image", "name": image.replace("\\", "/").rsplit("/", 1)[-1]} for image in resolved_images],
-            targets_summary=_moments_visibility_summary(task),
-            batch_summary=_moments_batch_summary(text, resolved_images),
-            batch_id=run_id,
-            run_id=run_id,
-        )
-        if not moments_task_has_ai_candidates(task):
-            before_definition, _runtime, _history = split_moments_task_storage(task)
-            task["status"] = STATUS_PENDING_CONFIRM
-            task["enabled"] = True
-            task["execute_after"] = ""
-            task["queued_at"] = ""
-            task["queued_mode"] = ""
-            task["executed_at"] = now.replace(microsecond=0).isoformat()
-            task["execution_result"] = "failed"
-            task["execution_message"] = "AI文案模式缺少候选，任务已回到待确认"
-            task["execution_snapshot"] = {
-                **base_snapshot,
-                "result_summary": task["execution_message"],
-            }
-            after_definition, _runtime, _history = split_moments_task_storage(task)
-            if after_definition != before_definition:
-                definitions_dirty = True
-            bot._save_moments_runtime_history_records(task)
-            changed = True
-            continue
-        before_definition, _runtime, _history = split_moments_task_storage(task)
-        guard_task = getattr(bot, "_moments_ui_guard", None)
-        task_key, task_version = guard_task(task) if callable(guard_task) else ("", 0)
-        running_task = mark_moments_task_running(task, now=now)
-        running_task["execution_snapshot"] = base_snapshot
-        task.clear()
-        task.update(running_task)
-        after_definition, _runtime, _history = split_moments_task_storage(task)
-        if after_definition != before_definition:
-            definitions_dirty = True
-        bot._save_moments_runtime_record(task)
-        changed = True
-        published = bot._execute_moments_publish_task(
-            {
-                "id": str(task.get("id") or "").strip(),
-                "text": text,
-                "images": resolved_images,
-                "privacy": bot._panel_moments_privacy(task.get("visibility_type")),
-                "tags": list(task.get("tags") or []),
-                "_ui_task_key": task_key,
-                "_ui_task_version": task_version,
-            }
-        )
-        before_definition, _runtime, _history = split_moments_task_storage(task)
-        task["status"] = STATUS_EXECUTED if published else STATUS_PENDING_CONFIRM
-        task["enabled"] = False if published else True
-        task["execute_after"] = ""
-        task["queued_at"] = ""
-        task["queued_mode"] = ""
-        task["executed_at"] = now.replace(microsecond=0).isoformat()
-        task["execution_result"] = "success" if published else "failed"
-        task["execution_message"] = "朋友圈已执行" if published else "朋友圈发布失败，任务已回到待确认"
-        task["execution_snapshot"] = {
-            **base_snapshot,
-            "result_summary": task["execution_message"],
-        }
-        after_definition, _runtime, _history = split_moments_task_storage(task)
-        if after_definition != before_definition:
-            definitions_dirty = True
-        bot._save_moments_runtime_history_records(task)
-        changed = True
-    if changed:
-        bot._set_runtime_task_list("moments_task_list", tasks)
-        if definitions_dirty:
-            bot._save_moments_task_definitions_only(tasks)
-
-
 def process_unified_runtime_tasks(bot, now=None):
     now = now or datetime.now()
     bot._run_due_scheduled_message_tasks(now=now)
     bot._run_due_fixed_material_outreach(now=now)
-    bot._run_due_moments_task_list(now=now)
     bot._run_due_random_material_outreach(now=now)
 
 

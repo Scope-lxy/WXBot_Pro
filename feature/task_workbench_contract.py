@@ -5,7 +5,6 @@ from copy import deepcopy
 MODULES = {
     "scheduled_message",
     "material_outreach",
-    "moments",
 }
 
 QUEUE_SOURCES = {

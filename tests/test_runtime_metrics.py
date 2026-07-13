@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from core.runtime_metrics import RuntimeMetricsStore
-from feature.admin_status import build_status_message
 from wxbot_core import WXBot
 
 
@@ -224,49 +223,6 @@ class RuntimeMetricsBotTests(unittest.TestCase):
         self.assertEqual(status["chat_api_requests"], 5)
         self.assertEqual(status["other_api_requests"], 7)
 
-    def test_admin_status_message_uses_runtime_metrics_today(self):
-        bot = SimpleNamespace(
-            start_time=__import__("datetime").datetime.now(),
-            _pause_chat_reply_users=set(),
-            _ai_outreach_available_material_count=5,
-        )
-        bot.config = SimpleNamespace(
-            get_run_time=lambda _start_time: "0天0时30分23秒",
-            default_prompt="瑞东-知己-暧昧型",
-            scheduled_message_task_list=[],
-            material_outreach_list=[],
-        )
-        bot.runtime_metrics_today = lambda: {
-            "received_messages": 1258,
-            "reply_count": 1215,
-            "api_calls": 1567,
-            "chat_api_calls": 1500,
-            "scheduled_fixed_success_targets": 7,
-            "scheduled_random_success_targets": 2,
-            "material_success_count": 0,
-            "ai_material_success_count": 0,
-        }
-        bot._get_current_chat_api_display_name = lambda: "接口 4（mimo-v2.5）"
-
-        message = build_status_message(bot)
-
-        self.assertEqual(message, "\n".join([
-            "机器人状态",
-            "",
-            "运行时间：0天0时30分23秒",
-            "当前接口：接口 4（mimo-v2.5）",
-            "当前人设：瑞东-知己-暧昧型",
-            "---",
-            "API请求：1567 次",
-            "已收消息：1258 条",
-            "已回复消息：1215 次",
-            "人工接管对话：0 个（无）",
-            "---",
-            "定时消息：9 次（任务规则：0）",
-            "素材转发：0 次（任务规则：0）",
-            "自动转发：0 次（可用素材：5）",
-        ]))
-
     def test_closing_reply_uses_chat_request_counter(self):
         bot = WXBot.__new__(WXBot)
         calls = []
@@ -274,7 +230,7 @@ class RuntimeMetricsBotTests(unittest.TestCase):
         bot._resolve_chat_api_selection = lambda _user_name: (0, True)
         bot._get_api_instance_by_index = lambda _idx: SimpleNamespace(chat=lambda *_args, **_kwargs: "先这样啦")
         bot._wrap_chat_api_for_failover = lambda api, **_kwargs: bot._wrap_api_request_counter(api, "chat")
-        bot._build_text_reply_limit_ai_prompt = lambda _chat_name: "closing prompt"
+        bot._build_text_reply_limit_ai_prompt = lambda _chat_name, **_kwargs: "closing prompt"
         bot._text_reply_limit_history = lambda _chat_name: []
 
         reply = bot._generate_text_reply_limit_reply(
@@ -284,6 +240,25 @@ class RuntimeMetricsBotTests(unittest.TestCase):
 
         self.assertEqual(reply, "先这样啦")
         self.assertEqual(calls, [("api_calls", 1), ("chat_api_calls", 1)])
+
+    def test_group_closing_reply_uses_group_api_and_sender_context(self):
+        bot = WXBot.__new__(WXBot)
+        bot._build_text_reply_limit_ai_prompt = lambda _chat_name, **_kwargs: "closing prompt"
+        bot._text_reply_limit_history = lambda _chat_name: []
+        calls = []
+        bot._get_group_api = lambda group_name: SimpleNamespace(
+            chat=lambda content, **_kwargs: calls.append((group_name, content)) or "群里先聊到这里"
+        )
+        bot._get_chat_api = lambda _chat_name: self.fail("群聊结束语不应调用私聊接口")
+
+        reply = bot._generate_text_reply_limit_reply(
+            SimpleNamespace(who="测试群"),
+            SimpleNamespace(sender="张三", content="继续聊"),
+            chat_type="group",
+        )
+
+        self.assertEqual(reply, "群里先聊到这里")
+        self.assertEqual(calls, [("测试群", "张三: 继续聊")])
 
 
 if __name__ == "__main__":

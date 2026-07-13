@@ -302,12 +302,12 @@ class ContactIdentityTests(unittest.TestCase):
     def test_sync_contact_task_names_replaces_exact_values_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            task_dir = base / "accounts" / "wxid_test" / "tasks" / "custom_forward"
+            task_dir = base / "accounts" / "wxid_test" / "tasks" / "scheduled_message"
             task_dir.mkdir(parents=True)
-            path = task_dir / "rules.json"
+            path = task_dir / "tasks.json"
             path.write_text(json.dumps([{
-                "sources": ["旧"],
-                "targets": ["新", "旧"],
+                "manual_target_names": ["新", "旧"],
+                "targets": ["旧"],
                 "note": "旧同学",
             }], ensure_ascii=False), encoding="utf-8")
 
@@ -315,8 +315,8 @@ class ContactIdentityTests(unittest.TestCase):
 
             self.assertTrue(result["changed"])
             data = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(data[0]["sources"], ["新"])
-            self.assertEqual(data[0]["targets"], ["新", "新"])
+            self.assertEqual(data[0]["manual_target_names"], ["新", "新"])
+            self.assertEqual(data[0]["targets"], ["新"])
             self.assertEqual(data[0]["note"], "旧同学")
 
     def test_v2_dismiss_keeps_actions_and_does_not_restore_identity_table(self):

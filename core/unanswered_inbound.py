@@ -6,10 +6,17 @@ import json
 import os
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from core.account_storage import account_area_file
+from core.atomic_storage import replace_with_retry
 from core.contact_profiles import directory_lock
+
+
+RESOLVED_HISTORY_LIMIT = 100
+VOICE_PENDING_MAX_AGE = timedelta(hours=24)
+VOICE_PENDING_MAX_STARTUP_RECOVERIES = 2
+VOICE_HISTORY_UNAVAILABLE_STATUS = "voice_history_unavailable"
 
 
 class UnansweredInboundStore:
@@ -36,12 +43,17 @@ class UnansweredInboundStore:
         return [dict(item) for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
     def _save_unlocked(self, records):
-        resolved = [item for item in records if str(item.get("status") or "") == "resolved"][-500:]
-        retained_ids = {id(item) for item in resolved}
+        terminal_history = [
+            item
+            for item in records
+            if str(item.get("status") or "") in {"resolved", VOICE_HISTORY_UNAVAILABLE_STATUS}
+        ][-RESOLVED_HISTORY_LIMIT:]
+        retained_ids = {id(item) for item in terminal_history}
         retained = [
             item
             for item in records
-            if str(item.get("status") or "") != "resolved" or id(item) in retained_ids
+            if str(item.get("status") or "") not in {"resolved", VOICE_HISTORY_UNAVAILABLE_STATUS}
+            or id(item) in retained_ids
         ]
         payload = json.dumps(retained, ensure_ascii=False, indent=2)
         fd, temp_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=str(self.path.parent))
@@ -50,7 +62,7 @@ class UnansweredInboundStore:
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp_name, self.path)
+            replace_with_retry(temp_name, self.path)
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
@@ -87,14 +99,18 @@ class UnansweredInboundStore:
         return record_id
 
     def set_status(self, record_id, status):
+        wanted_status = str(status or "")
         with directory_lock(self.path):
             records = self._load_unlocked()
             for item in reversed(records):
                 if str(item.get("record_id") or "") == str(record_id or ""):
-                    item["status"] = str(status or "")
+                    if str(item.get("status") or "") == wanted_status:
+                        return False
+                    item["status"] = wanted_status
                     item["updated_at"] = self._now()
-                    break
-            self._save_unlocked(records)
+                    self._save_unlocked(records)
+                    return True
+            return False
 
     def resolve(self, record_id):
         self.set_status(record_id, "resolved")
@@ -126,3 +142,63 @@ class UnansweredInboundStore:
             return []
         with directory_lock(self.path):
             return [dict(item) for item in self._load_unlocked() if str(item.get("status") or "") == wanted]
+
+    @staticmethod
+    def _parse_timestamp(value):
+        try:
+            return datetime.fromisoformat(str(value or ""))
+        except (TypeError, ValueError):
+            return None
+
+    def prepare_voice_pending_recovery(
+        self,
+        *,
+        now=None,
+        max_age=VOICE_PENDING_MAX_AGE,
+        max_startup_recoveries=VOICE_PENDING_MAX_STARTUP_RECOVERIES,
+    ):
+        """Return bounded history-only voice recovery work and terminalize stale records."""
+        current = now if isinstance(now, datetime) else datetime.now()
+        max_attempts = max(0, int(max_startup_recoveries or 0))
+        recovered = []
+        changed = False
+        with directory_lock(self.path):
+            records = self._load_unlocked()
+            for item in records:
+                if str(item.get("status") or "") != "voice_pending":
+                    continue
+                created_at = self._parse_timestamp(item.get("created_at"))
+                try:
+                    attempts = max(0, int(item.get("voice_recovery_attempts", 0) or 0))
+                except (TypeError, ValueError):
+                    attempts = 0
+                too_old = created_at is None or current - created_at >= max_age
+                if too_old or attempts >= max_attempts:
+                    item["status"] = VOICE_HISTORY_UNAVAILABLE_STATUS
+                    item["updated_at"] = self._now()
+                    item["terminal_reason"] = "expired" if too_old else "startup_recovery_limit"
+                    changed = True
+                    continue
+                attempts += 1
+                item["voice_recovery_attempts"] = attempts
+                item["updated_at"] = self._now()
+                recovered.append(dict(item))
+                changed = True
+            if changed:
+                self._save_unlocked(records)
+        return recovered
+
+    def mark_voice_history_unavailable(self, record_id, *, reason="runtime_recovery_limit"):
+        with directory_lock(self.path):
+            records = self._load_unlocked()
+            for item in reversed(records):
+                if str(item.get("record_id") or "") != str(record_id or ""):
+                    continue
+                if str(item.get("status") or "") == VOICE_HISTORY_UNAVAILABLE_STATUS:
+                    return False
+                item["status"] = VOICE_HISTORY_UNAVAILABLE_STATUS
+                item["updated_at"] = self._now()
+                item["terminal_reason"] = str(reason or "runtime_recovery_limit")
+                self._save_unlocked(records)
+                return True
+            return False

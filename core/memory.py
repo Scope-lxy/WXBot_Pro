@@ -9,6 +9,7 @@ import threading
 from datetime import datetime
 
 from core.account_storage import account_area_dir
+from core.atomic_storage import replace_with_retry
 from core.message_pipeline import split_quoted_image_message
 from core.memory_context_repair import build_repair_plan, unique_message_key
 
@@ -30,7 +31,7 @@ def _atomic_write_json(path, value, *, indent=2):
             json.dump(value, file, ensure_ascii=False, indent=indent)
             file.flush()
             os.fsync(file.fileno())
-        os.replace(temp_path, path)
+        replace_with_retry(temp_path, path)
     finally:
         if os.path.exists(temp_path):
             os.unlink(temp_path)

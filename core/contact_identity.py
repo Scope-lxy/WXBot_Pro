@@ -271,7 +271,6 @@ def merge_chat_memory_files(base_dir: str | Path, wx_id: str, old_chat_name: str
 CONFIG_LIST_FIELDS = (
     "listen_list",
     "global_blacklist",
-    "chat_memory_exclude_list",
     "material_source_list",
     "ai_material_outreach_allowed_sources",
 )
@@ -288,10 +287,6 @@ TASK_NAME_FILES = (
     ("tasks", "material_outreach", "tasks.json"),
     ("tasks", "material_outreach", "runtime.json"),
     ("tasks", "material_outreach", "history.json"),
-    ("tasks", "moments", "tasks.json"),
-    ("tasks", "moments", "runtime.json"),
-    ("tasks", "moments", "history.json"),
-    ("tasks", "custom_forward", "rules.json"),
 )
 RELATIONSHIP_SCAN_AREA = "relationship_scan"
 RELATIONSHIP_SCAN_FILENAME = "relationships.json"

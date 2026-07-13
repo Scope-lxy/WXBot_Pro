@@ -54,17 +54,6 @@ def scheduled_message_task_title(task):
     return first_text_message(task.get("msgs")) or first_file_name(task.get("msgs")) or "无文案"
 
 
-def moments_task_title(task):
-    task = task if isinstance(task, dict) else {}
-    copy_mode = _clean(task.get("copy_mode")) or "ai"
-    if copy_mode == "original":
-        return _clean(task.get("raw_text")) or "无文案"
-    selected = _clean(task.get("selected_caption"))
-    if selected and selected != "无文案":
-        return selected
-    return _clean(task.get("raw_text")) or "无文案"
-
-
 def material_type_title(material_types):
     values = material_types
     if isinstance(values, str):

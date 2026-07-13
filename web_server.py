@@ -128,24 +128,6 @@ from feature.contacts import (
     stop_maintenance_hint,
 )
 from feature import friend_request, relationship_scan
-from feature.moments_tasks import (
-    MOMENTS_TASK_STATUS_VALUES,
-    cancel_queued_moments_task,
-    clean_moments_string_list,
-    deserialize_moments_task_collection,
-    default_moments_publish_time,
-    latest_moments_random_window,
-    moments_task_has_ai_candidates,
-    moments_task_counts,
-    new_moments_task_id,
-    normalize_moments_task,
-    parse_moments_candidates,
-    queue_moments_task,
-    delete_managed_moments_uploads,
-    resolve_moments_execute_after,
-    serialize_moments_task_collection,
-)
-
 from feature.scheduled_message_tasks import (
     STATUS_RUNNING,
     STATUS_PENDING_CONFIRM,
@@ -169,7 +151,6 @@ from feature.task_workbench_service import (
 from feature.task_display_titles import (
     material_outreach_record_title,
     material_outreach_task_title,
-    moments_task_title,
     scheduled_message_task_title,
 )
 
@@ -179,7 +160,6 @@ import webbrowser
 import time
 import socket
 from extension import email as email_send
-from extension import webhook as webhook_send
 import ctypes
 import atexit
 import importlib.metadata
@@ -221,7 +201,6 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, 'config.json')
 CONTACT_PROFILES_DIR = DATA_DIR
 ADMIN_FILE  = os.path.join(CONFIG_DIR, 'admin.json')
 EMAIL_FILE  = os.path.join(CONFIG_DIR, 'email.json')
-WEBHOOK_FILE = os.path.join(CONFIG_DIR, 'webhook.json')
 PROMPT_DIR  = os.path.join(DATA_DIR, 'prompt')
 MEMORY_BASE = DATA_DIR
 CHAT_MEMORY_BASE = DATA_DIR
@@ -347,17 +326,28 @@ def normalize_voice_reply_config(config):
     config['chat_voice_reply_request_keywords'] = _split_inline_keyword_list(
         config.get('chat_voice_reply_request_keywords', DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
     ) or list(DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
-    config.setdefault('chat_voice_reply_cooldown_minutes', 10)
     config.setdefault('chat_voice_reply_limit_count', 50)
     config.setdefault('chat_voice_reply_limit_hours', 24)
-    config.setdefault('chat_voice_session_minutes', 10)
-    config.setdefault('chat_voice_session_turns', 5)
+    config.pop('chat_voice_session_minutes', None)
+    config.pop('chat_voice_session_turns', None)
     config.setdefault('group_voice_reply_switch', False)
     config.setdefault('group_voice_recognition_switch', False)
+    group_trigger_mode_source = config.get('group_voice_reply_trigger_modes')
+    group_trigger_modes_missing = group_trigger_mode_source is None
+    if group_trigger_modes_missing:
+        group_trigger_mode_source = ['keyword']
+    group_trigger_modes = [
+        mode for mode in _clean_unique_string_list(group_trigger_mode_source)
+        if mode in {'incoming_voice', 'keyword'}
+    ]
+    if group_trigger_modes_missing and not group_trigger_modes:
+        group_trigger_modes = ['keyword']
+    config['group_voice_reply_trigger_modes'] = group_trigger_modes
+    if 'incoming_voice' in group_trigger_modes:
+        config['group_voice_recognition_switch'] = True
     config['group_voice_reply_request_keywords'] = _split_inline_keyword_list(
         config.get('group_voice_reply_request_keywords', DEFAULT_GROUP_VOICE_REPLY_KEYWORDS)
     ) or list(DEFAULT_GROUP_VOICE_REPLY_KEYWORDS)
-    config.setdefault('group_voice_reply_cooldown_minutes', 0)
     config.setdefault('group_voice_reply_limit_count', 99)
     config.setdefault('group_voice_reply_limit_hours', 24)
     return config
@@ -387,8 +377,6 @@ def _account_contact_profiles_dir(wx_id, *, create=False):
     return _account_area_dir(wx_id, 'contact_profiles', create=create, base_dir=CONTACT_PROFILES_DIR)
 
 
-def _account_moments_drafts_dir(wx_id, *, create=False):
-    return _account_area_dir(wx_id, 'moments_drafts', create=create)
 
 
 def _running_wx_id():
@@ -820,13 +808,6 @@ def _apply_scheduled_message_display_titles(tasks):
     return titled_tasks
 
 
-def _apply_moments_display_titles(tasks):
-    titled_tasks = []
-    for task in tasks or []:
-        task_copy = dict(task) if isinstance(task, dict) else {}
-        task_copy["display_title"] = moments_task_title(task_copy)
-        titled_tasks.append(task_copy)
-    return titled_tasks
 
 
 def _material_outreach_task_label(task, index, task_id):
@@ -1824,32 +1805,10 @@ def _save_account_scoped_keyword_rules(rules, wx_id=''):
     return config.get('keyword_dict', {})
 
 
-def _custom_forward_rules_file(wx_id, *, create_parent=False):
-    wx_id = str(wx_id or '').strip()
-    if not wx_id:
-        raise ValueError('wx_id is required')
-    return str(account_module_file(DATA_DIR, wx_id, 'custom_forward', 'rules.json', create_parent=create_parent))
 
 
-def _load_account_scoped_custom_forward_rules(wx_id=''):
-    wx_id = str(wx_id or '').strip() or _preferred_account_wx_id()
-    if not wx_id:
-        return []
-    rules = load_json_list(_custom_forward_rules_file(wx_id))
-    config = {'custom_forward_list': rules}
-    _normalize_custom_forward_rules(config)
-    return [rule for rule in config.get('custom_forward_list', []) if isinstance(rule, dict)]
 
 
-def _save_account_scoped_custom_forward_rules(rules, wx_id=''):
-    wx_id = str(wx_id or '').strip() or _preferred_account_wx_id()
-    if not wx_id:
-        raise ValueError('wx_id is required')
-    config = {'custom_forward_list': rules}
-    _normalize_custom_forward_rules(config)
-    normalized = [rule for rule in config.get('custom_forward_list', []) if isinstance(rule, dict)]
-    save_json_list(_custom_forward_rules_file(wx_id, create_parent=True), normalized)
-    return normalized
 
 
 def _inject_account_scoped_task_config(config, *, wx_id=''):
@@ -1857,10 +1816,8 @@ def _inject_account_scoped_task_config(config, *, wx_id=''):
         return config
     merged = dict(config)
     merged['keyword_dict'] = _load_account_scoped_keyword_rules(wx_id)
-    merged['custom_forward_list'] = _load_account_scoped_custom_forward_rules(wx_id)
     merged['scheduled_message_task_list'] = _load_account_scoped_scheduled_message_tasks(wx_id)
     merged['material_outreach_list'] = _load_account_scoped_material_outreach_tasks(wx_id)
-    merged['moments_task_list'] = _load_moments_tasks(wx_id)
     return merged
 
 def _parse_hhmm_config(value, field_name):
@@ -2178,8 +2135,6 @@ def dashboard():
     config.setdefault('ai_material_outreach_detection_message_threshold', 30)
     config.update(normalize_ai_material_outreach_config(config))
     _drop_legacy_ai_material_outreach_fields(config)
-    config.setdefault('moments_task_list', [])               # 统一发朋友圈任务列表
-    config.setdefault('moments_api_index', 0)                # 发朋友圈专用接口，必须手动选择，默认第一个接口
     config.setdefault('everyday_start_stop_bot_switch', False)
     config.setdefault('everyday_start_bot_time', "08:00")
     config.setdefault('everyday_stop_bot_time', "23:00")
@@ -2207,8 +2162,10 @@ def dashboard():
     config.setdefault('group_image_recognition_switch', False)  # 群组图片识别开关
     config.setdefault('group_voice_recognition_switch', False)  # 群组语音转文字开关
     config.setdefault('group_image_recognition_api',   0)        # 群组识别接口索引
-    config.setdefault('custom_forward_switch', False)            # 自定义转发总开关
-    config.setdefault('custom_forward_list', [])                 # 自定义转发规则列表
+    config.pop('custom_forward_switch', None)
+    config.pop('custom_forward_list', None)
+    config.pop('moments_api_index', None)
+    config.pop('moments_task_list', None)
 
     config.setdefault('siver_panel_enabled', False)
     config.setdefault('siver_panel_activation_code', '')
@@ -2238,21 +2195,21 @@ def dashboard():
     config.setdefault('chat_tts_map', {})
     config.setdefault('group_prompt_map', {})
     config.setdefault('chat_memory_switch', True)
-    config.setdefault('chat_memory_exclude_list', [])
+    config.pop('chat_memory_exclude_list', None)
     config.setdefault('chat_memory_message_threshold', 100)
     config.setdefault('chat_memory_interval_hours', 12)
-    config.setdefault('chat_memory_protected_recent_count', 20)
     config.setdefault('api_error_reply', '')               # 接口调用失败时的固定回复，留空=静默
     config.setdefault('api_error_reply_once', False)       # 接口失败固定回复是否同一用户只发一次
     config.setdefault('reply_preprocess_fallback_reply', '')     # 预处理异常兜底回复，留空=静默
     config.setdefault('reply_preprocess_fallback_once', False)   # 预处理异常兜底是否同一用户只发一次
     config.setdefault('reply_preprocess_max_chars', 100)         # AI 回复发送前最长字数
-    config.setdefault('text_reply_limit_switch', False)      # 单用户文本回复次数限制开关
-    config.setdefault('text_reply_limit_count', 99)          # 默认最多回复次数
-    config.setdefault('text_reply_limit_hours', 24)          # 滚动小时窗口，0=关闭限制
-    config.setdefault('text_reply_limit_reply', '')          # 超限后固定话术
-    config.setdefault('text_reply_limit_ai_reply', True)     # 超限后AI自动生成结束语
-    config.setdefault('text_reply_limit_reply_once', False)  # 超限话术是否同一用户只发一次
+    for scope in ('chat', 'group'):
+        config.setdefault(f'{scope}_text_reply_limit_switch', False)
+        config.setdefault(f'{scope}_text_reply_limit_count', 99)
+        config.setdefault(f'{scope}_text_reply_limit_hours', 24)
+        config.setdefault(f'{scope}_text_reply_limit_reply', '')
+        config.setdefault(f'{scope}_text_reply_limit_ai_reply', True)
+        config.setdefault(f'{scope}_text_reply_limit_reply_once', False)
     config.setdefault('chat_split_reply_switch', False)   # 私聊拆分多条回复开关
     config.setdefault('chat_split_reply_delay_switch', True)
     config.setdefault('chat_split_max_chars', 100)        # 私聊单条最大字数
@@ -2466,13 +2423,18 @@ def _dashboard_config_status_snapshot(cfg):
         'group_voice_reply_switch': bool(cfg.get('group_voice_reply_switch', False)),
         'chat_image_recognition_switch': bool(cfg.get('chat_image_recognition_switch', False)),
         'group_image_recognition_switch': bool(cfg.get('group_image_recognition_switch', False)),
+        'chat_voice_recognition_switch': bool(cfg.get('chat_voice_recognition_switch', False)),
+        'group_voice_recognition_switch': bool(cfg.get('group_voice_recognition_switch', False)),
         'chat_split_reply_switch': bool(cfg.get('chat_split_reply_switch', False)),
         'chat_split_reply_delay_switch': bool(cfg.get('chat_split_reply_delay_switch', True)),
         'group_split_reply_switch': bool(cfg.get('group_split_reply_switch', False)),
         'group_split_reply_delay_switch': bool(cfg.get('group_split_reply_delay_switch', True)),
-        'text_reply_limit_switch': bool(cfg.get('text_reply_limit_switch', False)),
-        'text_reply_limit_count': cfg.get('text_reply_limit_count', 99),
-        'text_reply_limit_hours': cfg.get('text_reply_limit_hours', 24),
+        'chat_text_reply_limit_switch': bool(cfg.get('chat_text_reply_limit_switch', False)),
+        'chat_text_reply_limit_count': cfg.get('chat_text_reply_limit_count', 99),
+        'chat_text_reply_limit_hours': cfg.get('chat_text_reply_limit_hours', 24),
+        'group_text_reply_limit_switch': bool(cfg.get('group_text_reply_limit_switch', False)),
+        'group_text_reply_limit_count': cfg.get('group_text_reply_limit_count', 99),
+        'group_text_reply_limit_hours': cfg.get('group_text_reply_limit_hours', 24),
         'new_friend_switch': bool(cfg.get('new_friend_switch', False)),
         'friend_request_enabled': bool(friend_request_settings.get('enabled', False)),
         'contact_directory_auto_maintenance_switch': bool(cfg.get('contact_directory_auto_maintenance_switch', False)),
@@ -2481,162 +2443,42 @@ def _dashboard_config_status_snapshot(cfg):
     }
 
 
-def _new_moments_task_id():
-    return new_moments_task_id()
 
 
-def _normalize_moments_task_images(value):
-    return clean_moments_string_list(value, limit=9)
 
 
-def _normalize_moments_task(task):
-    return normalize_moments_task(task)
 
 
-def _moments_tasks_wx_id_from_request():
-    if request.method == 'GET':
-        candidate = request.args.get('wx_id', '')
-    elif request.is_json:
-        payload = request.get_json(silent=True) or {}
-        candidate = payload.get('wx_id', '')
-    else:
-        candidate = request.form.get('wx_id', '')
-    wx_id = str(candidate or '').strip()
-    if wx_id:
-        return _validate_known_account_wx_id(wx_id)
-    return _preferred_account_wx_id()
 
 
-def _moments_tasks_file(wx_id, *, create_parent=False):
-    if not wx_id:
-        raise ValueError('wx_id is required')
-    return str(account_module_file(DATA_DIR, wx_id, 'moments', 'tasks.json', create_parent=create_parent))
 
 
-def _moments_runtime_file(wx_id, *, create_parent=False):
-    if not wx_id:
-        raise ValueError('wx_id is required')
-    return str(account_module_file(DATA_DIR, wx_id, 'moments', 'runtime.json', create_parent=create_parent))
 
 
-def _moments_history_file(wx_id, *, create_parent=False):
-    if not wx_id:
-        raise ValueError('wx_id is required')
-    return str(account_module_file(DATA_DIR, wx_id, 'moments', 'history.json', create_parent=create_parent))
 
 
-def _load_moments_tasks(wx_id=None):
-    wx_id = str(wx_id or '').strip() or _preferred_account_wx_id()
-    if not wx_id:
-        return []
-    definitions = load_json_list(_moments_tasks_file(wx_id))
-    runtime_map = _load_json_object(_moments_runtime_file(wx_id))
-    history_map = _load_json_object(_moments_history_file(wx_id))
-    return deserialize_moments_task_collection(definitions, runtime_map, history_map)
 
 
-def _save_moments_tasks(tasks, wx_id=None):
-    wx_id = str(wx_id or '').strip() or _preferred_account_wx_id()
-    if not wx_id:
-        return False
-    normalized = [_normalize_moments_task(task) for task in (tasks or []) if isinstance(task, dict)]
-    definitions, runtime_map, history_map = serialize_moments_task_collection(normalized)
-    save_json_list(_moments_tasks_file(wx_id, create_parent=True), definitions)
-    _save_json_object(_moments_runtime_file(wx_id, create_parent=True), runtime_map)
-    _save_json_object(_moments_history_file(wx_id, create_parent=True), history_map)
-    return True
 
 
-def _delete_managed_moments_task_uploads(task, wx_id=None):
-    task = task if isinstance(task, dict) else {}
-    if str(task.get('file_storage_mode') or '').strip() != 'managed':
-        return 0
-    wx_id = str(wx_id or '').strip() or _preferred_account_wx_id()
-    if not wx_id:
-        return 0
-    return delete_managed_moments_uploads(
-        task.get('images') or [],
-        data_dir=DATA_DIR,
-        wx_id=wx_id,
-    )
 
 
-def _moments_task_counts(tasks):
-    return moments_task_counts(tasks)
 
 
-def _parse_moments_task_items_from_request():
-    if not request.is_json:
-        return []
-    payload = request.get_json(silent=True) or {}
-    items = payload.get('items') or []
-    return items if isinstance(items, list) else []
 
 
-def _moments_tasks_payload(tasks):
-    titled_tasks = _apply_moments_display_titles(tasks)
-    return {
-        'status': 'success',
-        'tasks': titled_tasks,
-        'counts': _moments_task_counts(titled_tasks),
-    }
 
 
-def _request_moments_runtime_reload():
-    runtime_bot = globals().get('bot')
-    if runtime_bot and hasattr(runtime_bot, 'request_runtime_task_reload'):
-        try:
-            runtime_bot.request_runtime_task_reload()
-        except Exception as exc:
-            log('WARNING', f'运行中朋友圈任务同步失败，将在下次刷新后生效：{exc}')
 
 
-def _parse_moments_datetime(value):
-    text = str(value or '').strip()
-    if not text:
-        return None
-    if len(text) == 16 and 'T' in text:
-        text = f'{text}:00'
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
 
 
-def _parse_moments_hhmm(value, default):
-    text = str(value or default).strip() or default
-    match = re.search(r'(\d{1,2}):(\d{1,2})', text)
-    if not match:
-        text = default
-        match = re.search(r'(\d{1,2}):(\d{1,2})', text)
-    hour = max(0, min(23, int(match.group(1))))
-    minute = max(0, min(59, int(match.group(2))))
-    return hour, minute
 
 
-def _resolve_moments_execute_after(task, *, mode='queue', now=None):
-    return resolve_moments_execute_after(task, mode=mode, now=now)
 
 
-def _find_moments_task(tasks, task_id):
-    for task in tasks or []:
-        if task.get('id') == task_id:
-            return task
-    return None
 
 
-def _resolve_moments_api_index(cfg):
-    cfg = cfg if isinstance(cfg, dict) else {}
-    api_configs = cfg.get('api_configs') if isinstance(cfg.get('api_configs'), list) else []
-    if not api_configs:
-        return -1
-    try:
-        configured = int(cfg.get('moments_api_index', 0))
-    except (TypeError, ValueError):
-        configured = 0
-    if 0 <= configured < len(api_configs):
-        return configured
-    return 0
 
 
 def _api_config_supports_vision(cfg, index):
@@ -2644,89 +2486,16 @@ def _api_config_supports_vision(cfg, index):
     return api_supports_capability(cfg.get('api_capability_map'), index, 'vision')
 
 
-def _extract_moments_response_text(data):
-    if not isinstance(data, dict):
-        return ""
-    output_text = data.get('output_text')
-    if isinstance(output_text, str) and output_text.strip():
-        return output_text.strip()
-    result_parts = []
-    for item in data.get('output', []) if isinstance(data.get('output'), list) else []:
-        if not isinstance(item, dict):
-            continue
-        for block in item.get('content', []) if isinstance(item.get('content'), list) else []:
-            if not isinstance(block, dict):
-                continue
-            if block.get('type') in ('output_text', 'text') and block.get('text'):
-                result_parts.append(str(block.get('text')))
-    return ''.join(result_parts).strip()
 
 
-def _parse_moments_candidates(raw_reply):
-    return parse_moments_candidates(raw_reply, cleaner=sanitize_ai_output_text)
 
 
-def _generate_moments_candidates_for_task(task, cfg=None, wx_id=""):
-    task = task if isinstance(task, dict) else {}
-    cfg = cfg if isinstance(cfg, dict) else (read_config() or {})
-    if not task.get('raw_text') and not task.get('images'):
-        raise ValueError('请先添加文案或图片')
-    api_configs = cfg.get('api_configs') if isinstance(cfg.get('api_configs'), list) else []
-    api_index = _resolve_moments_api_index(cfg)
-    if api_index < 0 or api_index >= len(api_configs):
-        raise ValueError('请先配置朋友圈 AI 接口')
-    api_config = api_configs[api_index]
-    image_paths = []
-    for image in task.get('images') or []:
-        image_path = str(image or '').strip()
-        if os.path.isfile(image_path):
-            image_paths.append(image_path)
-    if image_paths and not _api_config_supports_vision(cfg, api_index):
-        raise ValueError('当前朋友圈接口未启用图片识别，请先测试接口并确认该接口支持识图')
-    api = _build_test_api_client(_build_panel_generation_api_config(api_config))
-    prompt = _build_moments_generation_prompt(task, cfg=cfg, wx_id=wx_id)
-    raw_text = str(task.get('raw_text') or '').strip()
-    message_text = '请基于这次素材生成 3 条可直接发布的朋友圈文案候选。'
-    if raw_text:
-        message_text = f'{message_text}\n\n原始短文案：\n{raw_text}'
-    raw_reply = _call_moments_multi_image_api(
-        api=api,
-        prompt=prompt,
-        message_text=message_text,
-        image_paths=image_paths,
-    )
-    return _parse_moments_candidates(raw_reply)
 
 
-def _build_moments_generation_prompt(task, cfg=None, wx_id=""):
-    cfg = cfg if isinstance(cfg, dict) else (read_config() or {})
-    raw_text = str((task or {}).get('raw_text') or '').strip() or '（未提供）'
-    wx_id = str(wx_id or '').strip() or _preferred_account_wx_id(CHAT_MEMORY_BASE)
-    state_dir = _account_chat_memory_dir(wx_id, create=True)
-    system = PromptSystem(cfg, state_dir=state_dir, prompt_dir=PROMPT_DIR)
-    prompt_source_name = str(cfg.get('cmd') or cfg.get('default_prompt') or '').strip()
-    return system.render_moments_caption_prompt(prompt_source_name, raw_text, chat_type='private')
 
 
-def _call_moments_multi_image_api(*, api, prompt, message_text, image_paths):
-    kwargs = {
-        'prompt': prompt,
-        'history': [],
-        'stream': False,
-    }
-    if len(image_paths) > 1:
-        kwargs['image_paths'] = image_paths
-    elif image_paths:
-        kwargs['image_path'] = image_paths[0]
-    return api.chat(message_text, **kwargs)
 
 
-@app.route('/api/moments/tasks', methods=['GET'])
-@login_required
-def api_moments_tasks_list():
-    wx_id = _moments_tasks_wx_id_from_request()
-    tasks = _load_moments_tasks(wx_id)
-    return jsonify(_moments_tasks_payload(tasks))
 
 
 @app.route('/api/local-image-preview', methods=['GET'])
@@ -2744,136 +2513,16 @@ def api_local_image_preview():
     return send_file(image_path)
 
 
-@app.route('/api/moments/tasks', methods=['POST'])
-@login_required
-def api_moments_tasks_create():
-    items = _parse_moments_task_items_from_request()
-    if not items:
-        return jsonify({'status': 'error', 'message': '请至少添加一组朋友圈素材'}), 400
-    wx_id = _moments_tasks_wx_id_from_request()
-    if not wx_id:
-        return jsonify({'status': 'error', 'message': '请先选择微信号后再创建朋友圈任务'}), 400
-
-    existing_tasks = _load_moments_tasks(wx_id)
-    created_tasks = []
-    warnings = []
-    for index, item in enumerate(items):
-        if not isinstance(item, dict):
-            continue
-        task_id = _new_moments_task_id()
-        image_files = _normalize_moments_task_images(item.get('images'))
-        file_storage_mode = str(item.get('file_storage_mode') or '').strip()
-        if file_storage_mode not in ('direct', 'managed'):
-            file_storage_mode = 'direct'
-        raw_task = {
-            **item,
-            'id': task_id,
-            'source': item.get('source') or 'web_panel',
-            'file_storage_mode': file_storage_mode,
-            'raw_text': str(item.get('raw_text') or '').strip(),
-            'images': image_files[:9],
-            'status': 'pending_confirm',
-            'copy_mode': item.get('copy_mode') or 'ai',
-            'publish_rule': item.get('publish_rule') or 'random',
-            'publish_time': item.get('publish_time') or default_moments_publish_time(),
-            'publish_window': item.get('publish_window') or latest_moments_random_window(existing_tasks + created_tasks),
-        }
-        task = _normalize_moments_task(raw_task)
-        if not task['raw_text'] and not task['images']:
-            continue
-        task = _normalize_moments_task({
-            **task,
-            'copy_mode': 'ai',
-            'candidates': [],
-            'selected_caption': task.get('raw_text') or '无文案',
-            'ai_generation_status': 'pending',
-            'ai_generation_error': '',
-        })
-        created_tasks.append(task)
-
-    if not created_tasks:
-        return jsonify({'status': 'error', 'message': '请至少填写一段文案，或添加一张图片'}), 400
-
-    tasks = created_tasks + existing_tasks
-    if not _save_moments_tasks(tasks, wx_id):
-        return jsonify({'status': 'error', 'message': '保存朋友圈任务失败'}), 500
-    _request_moments_runtime_reload()
-    return jsonify({
-        **_moments_tasks_payload(tasks),
-        'created': created_tasks,
-        'warnings': warnings,
-    })
 
 
-@app.route('/api/moments/tasks/<task_id>', methods=['DELETE'])
-@login_required
-def api_moments_tasks_delete(task_id):
-    task_id = str(task_id or '').strip()
-    wx_id = _moments_tasks_wx_id_from_request()
-    tasks = _load_moments_tasks(wx_id)
-    removed_tasks = [task for task in tasks if task.get('id') == task_id]
-    next_tasks = [task for task in tasks if task.get('id') != task_id]
-    if len(next_tasks) == len(tasks):
-        return jsonify({'status': 'error', 'message': '朋友圈任务不存在'}), 404
-    if not _save_moments_tasks(next_tasks, wx_id):
-        return jsonify({'status': 'error', 'message': '删除朋友圈任务失败'}), 500
-    for task in removed_tasks:
-        _delete_managed_moments_task_uploads(task, wx_id)
-    _request_moments_runtime_reload()
-    return jsonify(_moments_tasks_payload(next_tasks))
 
 
-@app.route('/api/moments/tasks/<task_id>', methods=['PATCH'])
-@login_required
-def api_moments_tasks_update(task_id):
-    task_id = str(task_id or '').strip()
-    payload = request.get_json(silent=True) or {}
-    wx_id = _moments_tasks_wx_id_from_request()
-    tasks = _load_moments_tasks(wx_id)
-    updated_task = None
-    next_tasks = []
-    for task in tasks:
-        if task.get('id') != task_id:
-            next_tasks.append(task)
-            continue
-        if task.get('status') == 'pending':
-            return jsonify({'status': 'error', 'message': '这条朋友圈任务正在等待发布，请先取消后再编辑'}), 400
-        allowed_updates = {}
-        for key in (
-            'enabled',
-            'copy_mode',
-            'raw_text',
-            'images',
-            'candidates',
-            'selected_caption',
-            'publish_rule',
-            'publish_time',
-            'publish_window',
-            'visibility_type',
-            'tags',
-        ):
-            if key in payload:
-                allowed_updates[key] = payload[key]
-        allowed_updates['updated_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        updated_task = _normalize_moments_task({**task, **allowed_updates})
-        next_tasks.append(updated_task)
-    if updated_task is None:
-        return jsonify({'status': 'error', 'message': '朋友圈任务不存在'}), 404
-    if not _save_moments_tasks(next_tasks, wx_id):
-        return jsonify({'status': 'error', 'message': '保存朋友圈任务失败'}), 500
-    _request_moments_runtime_reload()
-    return jsonify({
-        **_moments_tasks_payload(next_tasks),
-        'task': updated_task,
-    })
 
 
 def _task_workbench_wx_id_from_request(module):
     module = str(module or '').strip()
     if module == 'scheduled_message':
         return _scheduled_message_wx_id_from_request()
-    if module == 'moments':
-        return _moments_tasks_wx_id_from_request()
     if module == 'material_outreach':
         return _current_material_outreach_wx_id()
     return ''
@@ -2904,8 +2553,6 @@ def _task_workbench_hooks(module, wx_id):
     hooks = {}
     if module == 'scheduled_message':
         hooks['reload_runtime'] = _request_scheduled_message_runtime_reload
-    elif module == 'moments':
-        hooks['reload_runtime'] = _request_moments_runtime_reload
     elif module == 'material_outreach':
         hooks['reload_runtime'] = _request_material_runtime_reload
     return hooks
@@ -3028,137 +2675,8 @@ def api_task_workbench_clear_executions(module):
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-@app.route('/api/moments/settings', methods=['PATCH'])
-@login_required
-def api_moments_settings_update():
-    payload = request.get_json(silent=True) or {}
-    cfg = read_config() or {}
-    api_configs = cfg.get('api_configs') if isinstance(cfg.get('api_configs'), list) else []
-    try:
-        api_index = int(payload.get('moments_api_index', cfg.get('moments_api_index', 0)))
-    except (TypeError, ValueError):
-        api_index = 0
-    if api_index < 0 or api_index >= len(api_configs):
-        return jsonify({'status': 'error', 'message': '朋友圈接口不存在'}), 400
-    if not save_config({'moments_api_index': api_index}):
-        return jsonify({'status': 'error', 'message': '保存朋友圈接口失败'}), 500
-    _request_moments_runtime_reload()
-    merged = read_config() or {}
-    return jsonify({
-        'status': 'success',
-        'moments_api_index': int(merged.get('moments_api_index', 0) or 0),
-        'resolved_api_index': _resolve_moments_api_index(merged),
-    })
 
 
-@app.route('/api/moments/tasks/<task_id>/generate', methods=['POST'])
-@login_required
-def api_moments_tasks_generate(task_id):
-    task_id = str(task_id or '').strip()
-    cfg = read_config() or {}
-    wx_id = _moments_tasks_wx_id_from_request()
-    tasks = _load_moments_tasks(wx_id)
-    task = _find_moments_task(tasks, task_id)
-    if task is None:
-        return jsonify({'status': 'error', 'message': '朋友圈任务不存在'}), 404
-    if task.get('status') == 'pending':
-        return jsonify({'status': 'error', 'message': '这条朋友圈任务正在等待发布，请先取消后再重新生成'}), 400
-    pending_task = _normalize_moments_task({
-        **task,
-        'enabled': True,
-        'status': 'pending_confirm',
-        'copy_mode': 'ai',
-        'candidates': [],
-        'selected_caption': task.get('raw_text') or '无文案',
-        'execute_after': '',
-        'queued_at': '',
-        'queued_mode': '',
-        'executed_at': '',
-        'execution_result': '',
-        'execution_message': '',
-        'ai_generation_status': 'pending',
-        'ai_generation_error': '',
-        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-    })
-    pending_tasks = [pending_task if item.get('id') == task_id else item for item in tasks]
-    if not _save_moments_tasks(pending_tasks, wx_id):
-        return jsonify({'status': 'error', 'message': '保存朋友圈任务失败'}), 500
-    _request_moments_runtime_reload()
-
-    def _generation_failed_payload(message, *, status_code):
-        failed_task = _normalize_moments_task({
-            **pending_task,
-            'status': 'pending_confirm',
-            'ai_generation_status': 'failed',
-            'ai_generation_error': message,
-            'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        })
-        latest_tasks = _load_moments_tasks(wx_id)
-        latest_task = _find_moments_task(latest_tasks, task_id) or pending_task
-        if latest_task:
-            latest_task = _normalize_moments_task({
-                **latest_task,
-                'status': 'pending_confirm',
-                'ai_generation_status': 'failed',
-                'ai_generation_error': message,
-                'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            })
-            latest_tasks = [latest_task if item.get('id') == task_id else item for item in latest_tasks]
-        else:
-            latest_tasks = [failed_task if item.get('id') == task_id else item for item in pending_tasks]
-        _save_moments_tasks(latest_tasks, wx_id)
-        reloaded_tasks = _load_moments_tasks(wx_id)
-        latest_task = _find_moments_task(reloaded_tasks, task_id) or failed_task
-        return jsonify({
-            'status': 'error',
-            'message': message,
-            **_moments_tasks_payload(reloaded_tasks or latest_tasks),
-            'task': latest_task,
-        }), status_code
-
-    try:
-        candidates = _generate_moments_candidates_for_task(pending_task, cfg=cfg, wx_id=wx_id)
-    except ValueError as exc:
-        return _generation_failed_payload(str(exc), status_code=400)
-    except Exception as exc:
-        log('ERROR', f'朋友圈文案生成失败：{exc}')
-        error_message = str(exc).strip()
-        if not error_message:
-            error_message = '请检查接口状态'
-        return _generation_failed_payload(f'生成失败：{error_message}', status_code=500)
-
-    latest_tasks = _load_moments_tasks(wx_id)
-    latest_task = _find_moments_task(latest_tasks, task_id)
-    if latest_task is None:
-        return jsonify({
-            'status': 'error',
-            'message': '朋友圈任务不存在',
-            **_moments_tasks_payload(latest_tasks),
-        }), 404
-    updated_task = _normalize_moments_task({
-        **latest_task,
-        'enabled': True,
-        'status': 'pending_confirm',
-        'candidates': candidates,
-        'selected_caption': candidates[0],
-        'execute_after': '',
-        'queued_at': '',
-        'queued_mode': '',
-        'executed_at': '',
-        'execution_result': '',
-        'execution_message': '',
-        'ai_generation_status': 'done',
-        'ai_generation_error': '',
-        'updated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-    })
-    next_tasks = [updated_task if item.get('id') == task_id else item for item in latest_tasks]
-    if not _save_moments_tasks(next_tasks, wx_id):
-        return jsonify({'status': 'error', 'message': '保存朋友圈候选失败'}), 500
-    _request_moments_runtime_reload()
-    return jsonify({
-        **_moments_tasks_payload(next_tasks),
-        'task': updated_task,
-    })
 
 
 def _runtime_metrics_today(payload):
@@ -3238,6 +2756,8 @@ def _enrich_dashboard_status_snapshot(status, *, cfg=None, wx_id='', runtime_mat
         status['contact_directory_auto_maintenance_switch'] = bool(cfg.get('contact_directory_auto_maintenance_switch', False))
     status['chat_image_recognition_switch'] = bool(status.get('chat_image_recognition_switch', cfg.get('chat_image_recognition_switch', False)))
     status['group_image_recognition_switch'] = bool(status.get('group_image_recognition_switch', cfg.get('group_image_recognition_switch', False)))
+    status['chat_voice_recognition_switch'] = bool(status.get('chat_voice_recognition_switch', cfg.get('chat_voice_recognition_switch', False)))
+    status['group_voice_recognition_switch'] = bool(status.get('group_voice_recognition_switch', cfg.get('group_voice_recognition_switch', False)))
     try:
         friend_request_state = friend_request.load_state(DATA_DIR, str(wx_id or cfg.get('wx_id') or 'default'))
         friend_request_settings = friend_request.normalize_settings(friend_request_state.get('settings'))
@@ -3285,7 +2805,6 @@ def _coerce_bool_fields(merged_config):
         'chat_image_recognition_switch',    # 私聊图片识别开关
         'group_image_recognition_switch',   # 群组图片识别开关
         'group_voice_recognition_switch',   # 群组语音转文字开关
-        'custom_forward_switch',            # 自定义转发总开关
         'chat_split_reply_switch',          # 私聊拆分多条回复开关
         'chat_split_reply_delay_switch',    # 私聊拆分气泡间隔
         'group_split_reply_switch',         # 群聊拆分多条回复开关
@@ -3295,9 +2814,12 @@ def _coerce_bool_fields(merged_config):
         'siver_panel_enabled',
         'api_error_reply_once',             # API错误只回复一次
         'reply_preprocess_fallback_once',   # 预处理异常兜底只回复一次
-        'text_reply_limit_switch',          # 单用户文本回复次数限制开关
-        'text_reply_limit_ai_reply',        # 超限后AI自动生成结束语
-        'text_reply_limit_reply_once',      # 超限后只回复一次
+        'chat_text_reply_limit_switch',
+        'chat_text_reply_limit_ai_reply',
+        'chat_text_reply_limit_reply_once',
+        'group_text_reply_limit_switch',
+        'group_text_reply_limit_ai_reply',
+        'group_text_reply_limit_reply_once',
         'chat_memory_switch',
         'ai_material_outreach_preface_enabled',
     ]
@@ -3310,7 +2832,7 @@ def _coerce_bool_fields(merged_config):
                 merged_config[field] = bool(v)
 
 def _coerce_list_fields(merged_config):
-    list_fields = ['listen_list', 'global_blacklist', 'group', 'new_friend_tags', 'scheduled_message_task_list', 'material_source_list', 'material_outreach_list', 'moments_task_list', 'custom_forward_list', 'chat_memory_exclude_list', 'chat_voice_reply_request_keywords', 'group_voice_reply_request_keywords', 'chat_voice_reply_trigger_modes', 'ai_material_outreach_allowed_sources']
+    list_fields = ['listen_list', 'global_blacklist', 'group', 'new_friend_tags', 'scheduled_message_task_list', 'material_source_list', 'material_outreach_list', 'chat_voice_reply_request_keywords', 'group_voice_reply_request_keywords', 'chat_voice_reply_trigger_modes', 'group_voice_reply_trigger_modes', 'ai_material_outreach_allowed_sources']
     for field in list_fields:
         if field in merged_config and not isinstance(merged_config[field], list):
             if isinstance(merged_config[field], str):
@@ -3374,20 +2896,17 @@ def _coerce_int_range_fields(merged_config):
         'new_friend_check_max': (60, 3600, 300),
         'memory_max_count': (100, 5000, 5000),
         'memory_context_count': (1, 200, 50),
-        'text_reply_limit_count': (0, 99999, 99),
-        'text_reply_limit_hours': (0, 720, 24),
+        'chat_text_reply_limit_count': (0, 99999, 99),
+        'chat_text_reply_limit_hours': (0, 720, 24),
+        'group_text_reply_limit_count': (0, 99999, 99),
+        'group_text_reply_limit_hours': (0, 720, 24),
         'chat_memory_message_threshold': (10, 200, 100),
         'chat_memory_interval_hours': (1, 72, 12),
-        'chat_memory_protected_recent_count': (0, 200, 20),
         'chat_message_merge_delay': (1, 60, 20),
         'contact_directory_auto_maintenance_interval_minutes': (5, 1440, 20),
         'backup_chat_api_failover_threshold': (1, 10, 3),
-        'chat_voice_reply_cooldown_minutes': (0, 1440, 10),
         'chat_voice_reply_limit_count': (0, 99, 50),
         'chat_voice_reply_limit_hours': (0, 720, 24),
-        'chat_voice_session_minutes': (1, 1440, 10),
-        'chat_voice_session_turns': (1, 20, 5),
-        'group_voice_reply_cooldown_minutes': (0, 1440, 0),
         'group_voice_reply_limit_count': (0, 99, 99),
         'group_voice_reply_limit_hours': (0, 720, 24),
         'reply_preprocess_max_chars': (1, 10000, 100),
@@ -3641,45 +3160,6 @@ def _coerce_dict_fields(merged_config):
             merged_config['group_prompt_map'] = {}
 
 
-def _normalize_custom_forward_rules(merged_config):
-    rules = merged_config.get('custom_forward_list')
-    if not isinstance(rules, list):
-        return
-    normalized = []
-    for rule in rules:
-        if not isinstance(rule, dict):
-            continue
-        rule_type = str(rule.get('type') or 'keyword').strip()
-        if rule_type not in {'keyword', 'all'}:
-            rule_type = 'keyword'
-        item = {
-            'id': rule.get('id'),
-            'enabled': bool(rule.get('enabled', True)),
-            'type': rule_type,
-            'sources': [
-                str(source).strip()
-                for source in (rule.get('sources') or [])
-                if str(source or '').strip()
-            ],
-            'keywords': normalize_keyword_terms(
-                '；'.join(str(keyword or '') for keyword in (rule.get('keywords') or []))
-                if isinstance(rule.get('keywords'), list)
-                else rule.get('keywords')
-            ),
-            'targets': [
-                str(target).strip()
-                for target in (rule.get('targets') or [])
-                if str(target or '').strip()
-            ],
-            'forward_with_source': bool(rule.get('forward_with_source', False)),
-            'pause_ai_reply_on_match': bool(rule.get('pause_ai_reply_on_match', False)) if rule_type == 'keyword' else False,
-            'forward_group_friend_messages': bool(rule.get('forward_group_friend_messages', False)) if rule_type == 'all' else False,
-        }
-        if not item['id']:
-            item.pop('id', None)
-        item['enabled'] = bool(item.get('enabled', True))
-        normalized.append(item)
-    merged_config['custom_forward_list'] = normalized
 
 
 # 保存配置文件
@@ -3702,15 +3182,16 @@ def save_config(config_data):
         merged_config['new_friend_reply_switch'] = new_friend_welcome_message_has_content(merged_config.get('new_friend_msg'))
         if 'keyword_dict' in (config_data or {}):
             _validate_keyword_rules_have_content(merged_config.get('keyword_dict', {}))
-        _normalize_custom_forward_rules(merged_config)
         merged_config.update(normalize_ai_material_outreach_config(merged_config))
         _drop_legacy_ai_material_outreach_fields(merged_config)
         _validate_ai_material_outreach_config(merged_config)
         _normalize_schedule_task_lists(merged_config)
         if 'scheduled_message_task_list' in (config_data or {}):
             _validate_scheduled_message_tasks_have_content(merged_config.get('scheduled_message_task_list', []))
-        if merged_config.get('text_reply_limit_ai_reply'):
-            merged_config['text_reply_limit_reply'] = ''
+        if merged_config.get('chat_text_reply_limit_ai_reply'):
+            merged_config['chat_text_reply_limit_reply'] = ''
+        if merged_config.get('group_text_reply_limit_ai_reply'):
+            merged_config['group_text_reply_limit_reply'] = ''
         explicit_task_scope_wx_id = str((config_data or {}).get('task_scope_wx_id', '') or '').strip()
         account_wx_id = _validated_task_scope_wx_id(explicit_task_scope_wx_id)
         if 'keyword_dict' in merged_config:
@@ -3719,15 +3200,6 @@ def save_config(config_data):
             if account_wx_id:
                 _save_account_scoped_keyword_rules(merged_config.get('keyword_dict', {}), account_wx_id)
             merged_config.pop('keyword_dict', None)
-        if 'custom_forward_list' in merged_config:
-            if 'custom_forward_list' in (config_data or {}) and not account_wx_id:
-                raise ValueError('保存自定义转发规则前，必须先确定当前微信号')
-            if account_wx_id:
-                _save_account_scoped_custom_forward_rules(
-                    merged_config.get('custom_forward_list', []),
-                    account_wx_id,
-                )
-            merged_config.pop('custom_forward_list', None)
         if 'scheduled_message_task_list' in merged_config:
             if 'scheduled_message_task_list' in (config_data or {}) and not account_wx_id:
                 raise ValueError('保存定时消息任务前，必须先确定当前微信号')
@@ -3754,15 +3226,17 @@ def save_config(config_data):
                     account_wx_id,
                 )
             merged_config.pop('material_outreach_list', None)
-        if 'moments_task_list' in merged_config:
-            if 'moments_task_list' in (config_data or {}) and not account_wx_id:
-                raise ValueError('保存朋友圈任务前，必须先确定当前微信号')
-            if account_wx_id:
-                _save_moments_tasks(
-                    merged_config.get('moments_task_list', []),
-                    account_wx_id,
-                )
-            merged_config.pop('moments_task_list', None)
+        for removed_field in (
+            'admin',
+            'custom_forward_switch',
+            'custom_forward_list',
+            'moments_api_index',
+            'moments_task_list',
+            'chat_memory_exclude_list',
+            'chat_voice_session_minutes',
+            'chat_voice_session_turns',
+        ):
+            merged_config.pop(removed_field, None)
         merged_config.pop('task_scope_wx_id', None)
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(merged_config, f, ensure_ascii=False, indent=4)
@@ -3794,15 +3268,16 @@ def save_config_route():
         _coerce_dict_fields(merged_config)
         if 'keyword_dict' in (config_data or {}):
             _validate_keyword_rules_have_content(merged_config.get('keyword_dict', {}))
-        _normalize_custom_forward_rules(merged_config)
         merged_config.update(normalize_ai_material_outreach_config(merged_config))
         _drop_legacy_ai_material_outreach_fields(merged_config)
         _validate_ai_material_outreach_config(merged_config)
         _normalize_schedule_task_lists(merged_config)
         if 'scheduled_message_task_list' in (config_data or {}):
             _validate_scheduled_message_tasks_have_content(merged_config.get('scheduled_message_task_list', []))
-        if merged_config.get('text_reply_limit_ai_reply'):
-            merged_config['text_reply_limit_reply'] = ''
+        if merged_config.get('chat_text_reply_limit_ai_reply'):
+            merged_config['chat_text_reply_limit_reply'] = ''
+        if merged_config.get('group_text_reply_limit_ai_reply'):
+            merged_config['group_text_reply_limit_reply'] = ''
         if save_config(merged_config):
             global update_config_status
             update_config_status = True # 执行了保存配置
@@ -3855,7 +3330,7 @@ def _build_panel_generation_api_config(cfg, *, prompt=""):
 
 
 def _build_memory_extraction_api_config(cfg, *, prompt=""):
-    """用于会话记忆提取的接口快照，JSON 输出比发圈候选给得更宽。"""
+    """用于会话记忆提取的接口快照。"""
     return build_api_config_snapshot(
         cfg,
         prompt=prompt,
@@ -5234,38 +4709,6 @@ def save_email_config():
         log('ERROR', f'保存邮件配置失败: {e}')
         return jsonify({'status': 'error', 'message': str(e)})
 
-@app.route('/get_webhook_config')
-@login_required
-def get_webhook_config():
-    try:
-        config = webhook_send.load_config(WEBHOOK_FILE)
-        return jsonify({'status': 'success', **config})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
-
-@app.route('/save_webhook_config', methods=['POST'])
-@login_required
-def save_webhook_config():
-    try:
-        data = request.get_json() or {}
-        config = webhook_send.save_config(data, WEBHOOK_FILE)
-        log('INFO', f"WebHook 配置已更新，启用状态: {config.get('enabled')}")
-        return jsonify({'status': 'success', 'message': 'WebHook 配置已保存', 'config': config})
-    except Exception as e:
-        log('ERROR', f'保存 WebHook 配置失败: {e}')
-        return jsonify({'status': 'error', 'message': str(e)})
-
-@app.route('/test_webhook', methods=['POST'])
-@login_required
-def test_webhook():
-    try:
-        data = request.get_json() or {}
-        ok, message = webhook_send.send_webhook('WXBot Pro 测试通知', '这是一条 WebHook 测试消息。', data)
-        return jsonify({'status': 'success' if ok else 'error', 'message': message})
-    except Exception as e:
-        log('ERROR', f'测试 WebHook 失败: {e}')
-        return jsonify({'status': 'error', 'message': str(e)})
-
 import threading
 
 _tk_lock = threading.Lock()  # 确保同一时刻只弹一个文件选择框
@@ -5485,18 +4928,6 @@ def _memory_chat_dir_has_messages(chat_path):
 
 def _chat_memory_wx_ids():
     return _available_account_wx_ids(CHAT_MEMORY_BASE)
-
-
-def _explicit_or_single_chat_memory_wx_id(explicit_wx_id=''):
-    wx_id = str(explicit_wx_id or '').strip()
-    if wx_id:
-        return _validate_known_account_wx_id(wx_id, base_dir=CHAT_MEMORY_BASE), ''
-    wx_ids = _chat_memory_wx_ids()
-    if len(wx_ids) == 1:
-        return wx_ids[0], ''
-    if len(wx_ids) > 1:
-        return '', '检测到多个微信号，请先选择微信号后再预览 Prompt。'
-    return _preferred_account_wx_id(CHAT_MEMORY_BASE), ''
 
 
 def _contact_profiles_wx_ids():
@@ -6807,7 +6238,15 @@ def chat_memory_extract_now(chat_name):
         config = read_config() or {}
         store = _chat_memory_store(wx_id)
         prompt_name = _current_prompt_name(config, chat_name)
-        extractor = ChatMemoryExtractor(message_threshold=1, interval_hours=1)
+        try:
+            protected_recent_count = int(config.get('memory_context_count', 50) or 50)
+        except (TypeError, ValueError):
+            protected_recent_count = 50
+        extractor = ChatMemoryExtractor(
+            message_threshold=1,
+            interval_hours=1,
+            protected_recent_count=max(1, min(200, protected_recent_count)),
+        )
 
         def _summary_payload(before_state, after_state, proposal, processed_count):
             before_memories = len((before_state.get('memories') or []) if isinstance(before_state, dict) else [])
@@ -6827,7 +6266,7 @@ def chat_memory_extract_now(chat_name):
             if not messages:
                 raise ValueError('没有可提取的聊天记录')
             state = store.load_state(chat_name, prompt_name, wx_id=wx_id, strict=True)
-            selected_messages = extractor.select_new_messages(state, messages, protected_count=0)
+            selected_messages = extractor.select_new_messages(state, messages)
             if not selected_messages:
                 raise ValueError('没有新的可提取聊天记录')
             api_config = _get_chat_api_config(config, chat_name)
@@ -6930,44 +6369,6 @@ def chat_memory_extract_now(chat_name):
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e), 'reply': getattr(e, 'bad_output', '')})
 
-
-@app.route('/prompt/preview', methods=['POST'])
-@login_required
-def prompt_preview():
-    """预览指定用户最终会发送给 AI 的系统 Prompt。"""
-    try:
-        data = request.get_json() or {}
-        chat_name = str(data.get('chat_name', '') or '').strip()
-        if not chat_name:
-            return jsonify({'status': 'error', 'message': 'chat_name 不能为空'})
-        wx_id, wx_error = _explicit_or_single_chat_memory_wx_id(data.get('wx_id', ''))
-        if wx_error:
-            return jsonify({'status': 'error', 'message': wx_error})
-        config = read_config() or {}
-        overrides = data.get('config_overrides')
-        if isinstance(overrides, dict):
-            for key in (
-                'default_prompt',
-                'chat_prompt_map',
-                'listen_list',
-                'AllListen_switch',
-                'chat_memory_switch',
-                'chat_memory_exclude_list',
-            ):
-                if key in overrides:
-                    config[key] = overrides[key]
-        prompt_name = _current_prompt_name(config, chat_name)
-        base_prompt = ''
-        path = os.path.join(PROMPT_DIR, f'{prompt_name}.md')
-        if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                base_prompt = f.read()
-        state_dir = _account_chat_memory_dir(wx_id, create=True)
-        system = PromptSystem(config, state_dir=state_dir, prompt_dir=PROMPT_DIR)
-        prompt = system.build_prompt(chat_name, base_prompt=base_prompt)
-        return jsonify({'status': 'success', 'prompt': prompt, 'prompt_name': prompt_name, 'wx_id': wx_id})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
 
 @app.route('/api/backup_now', methods=['POST'])
 @login_required
@@ -7347,15 +6748,12 @@ def main():
                 "group_image_recognition_switch": False,
                 "group_voice_recognition_switch": False,
                 "group_image_recognition_api": 0,
-                "custom_forward_switch": False,
-                "custom_forward_list": [],
                 "default_prompt": "默认",
                 "chat_prompt_map": {},
                 "chat_api_map": {},
                 "chat_tts_map": {},
                 "group_prompt_map": {},
                 "chat_memory_switch": True,
-                "chat_memory_exclude_list": [],
                 "chat_memory_message_threshold": 100,
                 "chat_memory_interval_hours": 12,
                 "api_error_reply": "",
@@ -7363,12 +6761,18 @@ def main():
                 "reply_preprocess_fallback_reply": "",
                 "reply_preprocess_fallback_once": False,
                 "reply_preprocess_max_chars": 100,
-                "text_reply_limit_switch": False,
-                "text_reply_limit_count": 99,
-                "text_reply_limit_hours": 24,
-                "text_reply_limit_ai_reply": True,
-                "text_reply_limit_reply": "",
-                "text_reply_limit_reply_once": False,
+                "chat_text_reply_limit_switch": False,
+                "chat_text_reply_limit_count": 99,
+                "chat_text_reply_limit_hours": 24,
+                "chat_text_reply_limit_ai_reply": True,
+                "chat_text_reply_limit_reply": "",
+                "chat_text_reply_limit_reply_once": False,
+                "group_text_reply_limit_switch": False,
+                "group_text_reply_limit_count": 99,
+                "group_text_reply_limit_hours": 24,
+                "group_text_reply_limit_ai_reply": True,
+                "group_text_reply_limit_reply": "",
+                "group_text_reply_limit_reply_once": False,
                 "chat_split_reply_switch": False,
                 "chat_split_reply_delay_switch": True,
                 "chat_split_max_chars": 100,

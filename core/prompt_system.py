@@ -15,7 +15,6 @@ INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 MD_FENCE_RE = re.compile(r"```(?:markdown|md)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 UNKNOWN_PLACEHOLDER_RE = re.compile(r"{{\s*[a-zA-Z_][a-zA-Z0-9_]*\s*}}")
 CHAT_MEMORY_ANALYSIS_LIMIT = 200
-CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT = 20
 CHAT_MEMORY_SCHEMA_VERSION = 1
 CHAT_MEMORY_MAX_PROFILE_ITEMS = 5
 CHAT_MEMORY_MAX_MEMORIES = 50
@@ -1332,9 +1331,9 @@ class PromptSystem:
                 self._get("chat_memory_interval_hours", 12), 12, 1, 72
             ),
             protected_recent_count=self._coerce_config_int(
-                self._get("chat_memory_protected_recent_count", CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT),
-                CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
-                0,
+                self._get("memory_context_count", 50),
+                50,
+                1,
                 200,
             ),
         )
@@ -1440,28 +1439,6 @@ class PromptSystem:
             required_placeholders=tuple(dict.fromkeys(required)),
         ).strip()
 
-    def render_moments_caption_prompt(self, chat_name, raw_text, *, chat_type="private", now=None, base_prompt=None):
-        text = str(raw_text or "").strip() or "（未提供）"
-        context_values = self.context_values_for(
-            chat_name,
-            chat_type=chat_type,
-            now=now,
-            base_prompt=base_prompt,
-        )
-        return self.prompt_builder.prompt_store.render(
-            "moments_caption.md",
-            {
-                "base_prompt": str(context_values.get("base_prompt") or "").strip() or "（未提供）",
-                "persona_status_block": str(context_values.get("persona_status_block") or "").strip() or "（未提供）",
-                "raw_text_block": text,
-            },
-            required_placeholders=(
-                "{{base_prompt}}",
-                "{{persona_status_block}}",
-                "{{raw_text_block}}",
-            ),
-        )
-
     def enabled_for(self, chat_name, chat_type="private"):
         if chat_type == "group":
             return False
@@ -1472,8 +1449,7 @@ class PromptSystem:
             return False
         if not bool(self._get("chat_memory_switch", True)):
             return False
-        excluded = self._get("chat_memory_exclude_list", []) or []
-        return str(chat_name) not in {str(item) for item in excluded}
+        return True
 
     def build_prompt(
         self,

@@ -17,7 +17,8 @@ from core.prompting import build_current_turn_user_message, build_image_user_mes
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.reply_count_store import ReplyCountStore
 from core.vision_bridge import VisionNote
-from feature import message_routing
+from feature import listening, message_routing
+from feature.voice_reply import group_voice_candidate
 from feature.scheduled_messages import execute_scheduled_message_task
 from wxbot_core import LONG_REPLY_SEGMENT_CHARS, WXAUTO_SAVE_DIR_NAME, WXBot, WxParam
 
@@ -208,6 +209,23 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertEqual(calls, [(error, "wxautox监听线程")])
+        self.assertFalse(bot.callback_is_die)
+
+    def test_listener_find_control_timeout_arms_recovery_instead_of_stopping_bot(self):
+        bot = WXBot.__new__(WXBot)
+        bot.is_stop_requested = lambda: False
+        bot.callback_is_die = False
+        bot._arm_listener_auto_recovery = lambda exc, source="": listening.arm_listener_auto_recovery(
+            bot, exc, source=source
+        )
+
+        handled = bot._handle_background_thread_exception(SimpleNamespace(
+            thread=SimpleNamespace(name="Thread-1 (_listener_listen)"),
+            exc_value=LookupError("Find Control Timeout: ListItemControl"),
+        ))
+
+        self.assertTrue(handled)
+        self.assertTrue(bot._listener_auto_recovery_active)
         self.assertFalse(bot.callback_is_die)
 
     def test_reply_count_store_loads_utf8_bom_file(self):
@@ -1293,12 +1311,12 @@ class MessageBehaviorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
-                text_reply_limit_switch=True,
-                text_reply_limit_count=1,
-                text_reply_limit_hours=24,
-                text_reply_limit_reply_once=True,
-                text_reply_limit_ai_reply=False,
-                text_reply_limit_reply="先休息一下",
+                chat_text_reply_limit_switch=True,
+                chat_text_reply_limit_count=1,
+                chat_text_reply_limit_hours=24,
+                chat_text_reply_limit_reply_once=True,
+                chat_text_reply_limit_ai_reply=False,
+                chat_text_reply_limit_reply="先休息一下",
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
             bot.reply_count_store.increment_ai_count("张三", limit_hours=24)
@@ -1320,12 +1338,12 @@ class MessageBehaviorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
-                text_reply_limit_switch=True,
-                text_reply_limit_count=1,
-                text_reply_limit_hours=24,
-                text_reply_limit_reply_once=False,
-                text_reply_limit_ai_reply=False,
-                text_reply_limit_reply="先休息一下",
+                chat_text_reply_limit_switch=True,
+                chat_text_reply_limit_count=1,
+                chat_text_reply_limit_hours=24,
+                chat_text_reply_limit_reply_once=False,
+                chat_text_reply_limit_ai_reply=False,
+                chat_text_reply_limit_reply="先休息一下",
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
             bot.reply_count_store.increment_ai_count("张三", limit_hours=24)
@@ -1349,12 +1367,12 @@ class MessageBehaviorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
-                text_reply_limit_switch=True,
-                text_reply_limit_count=1,
-                text_reply_limit_hours=24,
-                text_reply_limit_reply_once=False,
-                text_reply_limit_ai_reply=False,
-                text_reply_limit_reply="先休息一下",
+                chat_text_reply_limit_switch=True,
+                chat_text_reply_limit_count=1,
+                chat_text_reply_limit_hours=24,
+                chat_text_reply_limit_reply_once=False,
+                chat_text_reply_limit_ai_reply=False,
+                chat_text_reply_limit_reply="先休息一下",
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
             bot.reply_count_store.increment_ai_count("张三", limit_hours=24)
@@ -1376,6 +1394,90 @@ class MessageBehaviorTests(unittest.TestCase):
             warning_logs = [message for level, message in logs if level == "WARNING" and "触发回复上限" in message]
             self.assertEqual(len(warning_logs), 2)
 
+    def test_group_text_reply_limit_isolated_by_group_and_sender(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                AtMe="",
+                cmd="文件传输助手",
+                AllListen_switch=False,
+                listen_list=[],
+                global_blacklist=[],
+                group=["测试群", "另一个群"],
+                group_switch=True,
+                group_keyword_switch=False,
+                group_keyword_at_only=False,
+                keyword_dict={},
+                group_reply_at=False,
+                group_listen_only=False,
+                group_image_recognition_switch=False,
+                group_split_reply_switch=False,
+                group_split_max_count=4,
+                group_split_max_chars=100,
+                group_reply_at_msg=False,
+                group_reply_quote=False,
+                memory_switch=False,
+                memory_context_switch=False,
+                clean_ai_reply_switch=False,
+                reply_preprocess_fallback_reply="",
+                reply_preprocess_fallback_once=False,
+                group_voice_reply_switch=False,
+                group_text_reply_limit_switch=True,
+                group_text_reply_limit_count=1,
+                group_text_reply_limit_hours=24,
+                group_text_reply_limit_reply_once=False,
+                group_text_reply_limit_ai_reply=False,
+                group_text_reply_limit_reply="本轮先聊到这里",
+                split_long_text=lambda text: [text],
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot.memory_manager = None
+            bot._pause_group_reply = False
+            bot.is_stop_requested = lambda: False
+            bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+            bot._get_chat_send_lock = lambda _name: threading.Lock()
+            bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
+            bot._record_replied_message_success = lambda: None
+            api_calls = []
+            bot._get_group_api = lambda group: SimpleNamespace(
+                chat=lambda *_args, **_kwargs: api_calls.append(group) or "正常群回复"
+            )
+
+            sent = []
+            def make_chat(group_name):
+                return SimpleNamespace(
+                    who=group_name,
+                    chat_type="group",
+                    SendMsg=lambda msg, at=None: sent.append((group_name, msg, at)) or True,
+                )
+
+            def make_message(sender):
+                return SimpleNamespace(
+                    type="text",
+                    attr="group",
+                    sender=sender,
+                    content="继续聊",
+                    quote=lambda text, at=None: sent.append(("quote", text, at)) or True,
+                )
+
+            bot.reply_count_store.increment_ai_count("group:测试群:张三", limit_hours=24)
+
+            self.assertTrue(bot.process_message(make_chat("测试群"), make_message("张三")))
+            self.assertTrue(bot.process_message(make_chat("测试群"), make_message("李四")))
+            self.assertTrue(bot.process_message(make_chat("另一个群"), make_message("张三")))
+
+            self.assertEqual(
+                sent,
+                [
+                    ("测试群", "本轮先聊到这里", None),
+                    ("测试群", "正常群回复", None),
+                    ("另一个群", "正常群回复", None),
+                ],
+            )
+            self.assertEqual(api_calls, ["测试群", "另一个群"])
+            self.assertEqual(bot.reply_count_store.get_user("group:测试群:李四")["count"], 1)
+            self.assertEqual(bot.reply_count_store.get_user("group:另一个群:张三")["count"], 1)
+
     def test_voice_reply_limit_logs_warning_and_falls_back_to_text(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
@@ -1390,7 +1492,7 @@ class MessageBehaviorTests(unittest.TestCase):
         }
         from feature.voice_reply import VoiceReplyState
 
-        bot._voice_reply_state = VoiceReplyState(limits=state["limits"], private_sessions={})
+        bot._voice_reply_state = VoiceReplyState(limits=state["limits"])
         bot._private_reply_can_continue = lambda *_args, **_kwargs: True
         logs = []
         chat = SimpleNamespace(who="张三")
@@ -1400,7 +1502,6 @@ class MessageBehaviorTests(unittest.TestCase):
                 chat,
                 "你好",
                 state_key="private:张三",
-                cooldown_minutes=0,
                 limit_count=1,
                 limit_hours=24,
             )
@@ -1422,7 +1523,7 @@ class MessageBehaviorTests(unittest.TestCase):
         }
         from feature.voice_reply import VoiceReplyState
 
-        bot._voice_reply_state = VoiceReplyState(limits=state["limits"], private_sessions={})
+        bot._voice_reply_state = VoiceReplyState(limits=state["limits"])
         bot._private_reply_can_continue = lambda *_args, **_kwargs: True
         logs = []
         chat = SimpleNamespace(who="张三")
@@ -1433,7 +1534,6 @@ class MessageBehaviorTests(unittest.TestCase):
                     chat,
                     "你好",
                     state_key="private:张三",
-                    cooldown_minutes=0,
                     limit_count=1,
                     limit_hours=24,
                 )
@@ -1456,7 +1556,7 @@ class MessageBehaviorTests(unittest.TestCase):
         }
         from feature.voice_reply import VoiceReplyState
 
-        bot._voice_reply_state = VoiceReplyState(limits=state["limits"], private_sessions={})
+        bot._voice_reply_state = VoiceReplyState(limits=state["limits"])
         bot._private_reply_can_continue = lambda *_args, **_kwargs: True
         logs = []
         chat = SimpleNamespace(who="张三")
@@ -1466,7 +1566,6 @@ class MessageBehaviorTests(unittest.TestCase):
                 chat,
                 "你好",
                 state_key="private:张三",
-                cooldown_minutes=0,
                 limit_count=1,
                 limit_hours=24,
             )
@@ -1476,7 +1575,6 @@ class MessageBehaviorTests(unittest.TestCase):
                 chat,
                 "你好",
                 state_key="private:张三",
-                cooldown_minutes=0,
                 limit_count=1,
                 limit_hours=24,
             )
@@ -1518,7 +1616,6 @@ class MessageBehaviorTests(unittest.TestCase):
                 chat,
                 "你好",
                 state_key="private:张三",
-                cooldown_minutes=0,
                 limit_count=99,
                 limit_hours=24,
             )
@@ -1575,7 +1672,6 @@ class MessageBehaviorTests(unittest.TestCase):
                 chat,
                 "你好",
                 state_key="private:张三",
-                cooldown_minutes=0,
                 limit_count=99,
                 limit_hours=24,
             )
@@ -1622,41 +1718,12 @@ class MessageBehaviorTests(unittest.TestCase):
                     chat,
                     "你好",
                     state_key="private:张三",
-                    cooldown_minutes=0,
                     limit_count=99,
                     limit_hours=24,
                     unanswered_record_id="record-1",
                 )
 
         self.assertEqual(statuses, [("record-1", "send_started"), ("record-1", "uncertain")])
-
-    def test_admin_command_reply_does_not_reacquire_removed_legacy_lock(self):
-        class RecordingLock:
-            locked = False
-
-            def __enter__(self):
-                self.locked = True
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self.locked = False
-                return False
-
-        lock = RecordingLock()
-        bot = WXBot.__new__(WXBot)
-        bot._get_wechat_action_lock = lambda: lock
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
-        sent = []
-        chat = SimpleNamespace(
-            who="文件传输助手",
-            SendMsg=lambda text: sent.append((text, lock.locked)) or True,
-        )
-        message = SimpleNamespace(content="/帮助", attr="self")
-
-        self.assertTrue(bot.process_command(chat, message))
-
-        self.assertEqual(len(sent), 1)
-        self.assertFalse(sent[0][1])
 
     def test_keyword_private_reply_registers_outbound_echoes(self):
         bot = WXBot.__new__(WXBot)
@@ -2851,8 +2918,8 @@ class MessageBehaviorTests(unittest.TestCase):
             reply_preprocess_fallback_reply="",
             reply_preprocess_fallback_once=False,
             api_error_reply_once=False,
-            text_reply_limit_switch=False,
-            text_reply_limit_hours=24,
+            chat_text_reply_limit_switch=False,
+            chat_text_reply_limit_hours=24,
             chat_voice_reply_switch=False,
             cmd="文件传输助手",
             split_long_text=lambda text: [text],
@@ -2903,8 +2970,8 @@ class MessageBehaviorTests(unittest.TestCase):
                 reply_preprocess_fallback_reply="换个说法吧",
                 reply_preprocess_fallback_once=True,
                 api_error_reply_once=False,
-                text_reply_limit_switch=False,
-                text_reply_limit_hours=24,
+                chat_text_reply_limit_switch=False,
+                chat_text_reply_limit_hours=24,
                 chat_voice_reply_switch=False,
                 cmd="文件传输助手",
                 split_long_text=lambda text: [text],
@@ -2956,8 +3023,8 @@ class MessageBehaviorTests(unittest.TestCase):
             reply_preprocess_fallback_once=False,
             api_error_reply="接口忙，稍后再聊",
             api_error_reply_once=False,
-            text_reply_limit_switch=False,
-            text_reply_limit_hours=24,
+            chat_text_reply_limit_switch=False,
+            chat_text_reply_limit_hours=24,
             chat_voice_reply_switch=False,
             cmd="文件传输助手",
             split_long_text=lambda text: [text],
@@ -3017,7 +3084,7 @@ class MessageBehaviorTests(unittest.TestCase):
                 clean_ai_reply_switch=True,
                 reply_preprocess_fallback_reply="换个说法吧",
                 reply_preprocess_fallback_once=True,
-                text_reply_limit_hours=24,
+                group_text_reply_limit_hours=24,
                 split_long_text=lambda text: [text],
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
@@ -3082,7 +3149,7 @@ class MessageBehaviorTests(unittest.TestCase):
                 clean_ai_reply_switch=True,
                 reply_preprocess_fallback_reply="换个说法吧",
                 reply_preprocess_fallback_once=True,
-                text_reply_limit_hours=24,
+                group_text_reply_limit_hours=24,
                 split_long_text=lambda text: [text],
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
@@ -3141,7 +3208,7 @@ class MessageBehaviorTests(unittest.TestCase):
             clean_ai_reply_switch=False,
             reply_preprocess_fallback_reply="",
             reply_preprocess_fallback_once=False,
-            text_reply_limit_hours=24,
+            group_text_reply_limit_hours=24,
             group_voice_reply_switch=False,
             split_long_text=lambda text: [text],
         )
@@ -3217,7 +3284,7 @@ class MessageBehaviorTests(unittest.TestCase):
             clean_ai_reply_switch=False,
             reply_preprocess_fallback_reply="",
             reply_preprocess_fallback_once=False,
-            text_reply_limit_hours=24,
+            group_text_reply_limit_hours=24,
             group_voice_reply_switch=False,
             split_long_text=lambda text: [text],
         )
@@ -3279,7 +3346,7 @@ class MessageBehaviorTests(unittest.TestCase):
             reply_preprocess_fallback_once=False,
             api_error_reply="接口忙",
             api_error_reply_once=False,
-            text_reply_limit_hours=24,
+            group_text_reply_limit_hours=24,
             group_voice_reply_switch=True,
             group_voice_reply_request_keywords=["语音"],
             split_long_text=lambda text: [text],
@@ -3342,7 +3409,7 @@ class MessageBehaviorTests(unittest.TestCase):
                 reply_preprocess_fallback_once=False,
                 api_error_reply="接口忙",
                 api_error_reply_once=True,
-                text_reply_limit_hours=24,
+                group_text_reply_limit_hours=24,
                 split_long_text=lambda text: [text],
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
@@ -3402,6 +3469,59 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(getattr(message, "_voice_transcription_failed", False))
         self.assertTrue(getattr(message, "_skip_ai_reply", False))
         self.assertTrue(getattr(message, "_skip_memory", False))
+
+    def test_group_voice_candidate_supports_selected_trigger_modes(self):
+        keyword_config = SimpleNamespace(
+            group_voice_reply_switch=True,
+            group_voice_reply_trigger_modes=["keyword"],
+            group_voice_reply_request_keywords=["语音"],
+        )
+        incoming_voice_config = SimpleNamespace(
+            group_voice_reply_switch=True,
+            group_voice_reply_trigger_modes=["incoming_voice"],
+            group_voice_reply_request_keywords=["语音"],
+        )
+
+        self.assertTrue(group_voice_candidate(
+            keyword_config,
+            SimpleNamespace(type="text", content="请用语音回复"),
+        ))
+        self.assertFalse(group_voice_candidate(
+            keyword_config,
+            SimpleNamespace(type="voice", content="普通转写内容"),
+        ))
+        self.assertTrue(group_voice_candidate(
+            incoming_voice_config,
+            SimpleNamespace(type="voice", content="普通转写内容"),
+        ))
+        incoming_voice_config.group_voice_reply_trigger_modes = []
+        self.assertFalse(group_voice_candidate(
+            incoming_voice_config,
+            SimpleNamespace(type="voice", content="普通转写内容"),
+        ))
+
+    def test_group_incoming_voice_obeys_group_at_only_route(self):
+        config = SimpleNamespace(
+            AtMe="@机器人",
+            AllListen_switch=False,
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=False,
+            group_listen_only=False,
+            group_image_recognition_switch=False,
+        )
+        bot = SimpleNamespace(config=config, _pause_group_reply=False)
+        chat = SimpleNamespace(who="测试群", chat_type="group")
+        message = SimpleNamespace(type="voice", sender="张三", content="普通转写内容")
+
+        self.assertEqual(message_routing.route_process_message(bot, chat, message)["action"], "group_ai")
+
+        config.group_reply_at = True
+        self.assertEqual(message_routing.route_process_message(bot, chat, message)["action"], "skip")
 
     def test_pending_visual_context_reference_intent_is_bilingual(self):
         positives = [

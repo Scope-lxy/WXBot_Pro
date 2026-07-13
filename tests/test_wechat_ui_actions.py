@@ -17,30 +17,23 @@ class WechatUiActionsTests(unittest.TestCase):
             root = Path(temp_dir)
             config_file = root / "config.json"
             keyword_file = root / "keyword.json"
-            forward_file = root / "forward.json"
             config_file.write_text(json.dumps({
                 "chat_keyword_switch": True,
                 "group_keyword_switch": True,
                 "group_keyword_at_only": False,
-                "custom_forward_switch": True,
             }), encoding="utf-8")
             keyword_file.write_text(json.dumps({"旧词": {"text": "旧回复"}}, ensure_ascii=False), encoding="utf-8")
-            forward_file.write_text(json.dumps([{"rule_id": "r1", "content": "旧转发"}], ensure_ascii=False), encoding="utf-8")
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
                 CONFIG_FILE=str(config_file),
                 config={},
                 _keyword_rules_file=lambda: keyword_file,
-                _custom_forward_rules_file=lambda: forward_file,
             )
 
             keyword_key, keyword_version = bot._config_ui_task_guard("keyword")
-            forward_key, forward_version = bot._config_ui_task_guard("custom_forward")
             keyword_file.write_text(json.dumps({"新词": {"text": "新回复"}}, ensure_ascii=False), encoding="utf-8")
-            forward_file.write_text(json.dumps([{"rule_id": "r1", "content": "新转发"}], ensure_ascii=False), encoding="utf-8")
 
             self.assertNotEqual(bot._current_ui_task_version(keyword_key), keyword_version)
-            self.assertNotEqual(bot._current_ui_task_version(forward_key), forward_version)
 
     def test_ui_intent_rejects_non_data_objects(self):
         with self.assertRaises(TypeError):

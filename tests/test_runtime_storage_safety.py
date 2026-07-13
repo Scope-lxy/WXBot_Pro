@@ -215,7 +215,7 @@ os._exit(91)
             store._save_unlocked(records)
             stored = store.records()
 
-            self.assertEqual(len(stored), 501)
+            self.assertEqual(len(stored), 101)
             self.assertEqual(stored[0]["record_id"], "critical")
             self.assertNotIn("resolved-0", {item["record_id"] for item in stored})
 
@@ -239,6 +239,46 @@ os._exit(91)
 
             self.assertEqual(store.recover_for_replay(), [])
             self.assertEqual([item["record_id"] for item in store.pending("voice_pending")], [record_id])
+
+    def test_voice_pending_recovery_has_a_bounded_startup_lifetime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = UnansweredInboundStore(tmp, "wxid_test")
+            message = type("Message", (), {
+                "content": '语音8"秒',
+                "original_content": '语音8"秒',
+                "type": "voice",
+                "sender": "张三",
+                "attr": "friend",
+                "id": "voice-1",
+                "hash": "voice-hash-1",
+                "hash_text": "",
+                "time": "10:00",
+                "_wxbot_received_at": 100.0,
+            })()
+            record_id = store.begin("张三", message, status="voice_pending")
+
+            first = store.prepare_voice_pending_recovery()
+            second = store.prepare_voice_pending_recovery()
+            third = store.prepare_voice_pending_recovery()
+
+            self.assertEqual(first[0]["voice_recovery_attempts"], 1)
+            self.assertEqual(second[0]["voice_recovery_attempts"], 2)
+            self.assertEqual(third, [])
+            record = next(item for item in store.records() if item["record_id"] == record_id)
+            self.assertEqual(record["status"], "voice_history_unavailable")
+            self.assertEqual(record["terminal_reason"], "startup_recovery_limit")
+
+    def test_set_status_skips_unchanged_or_missing_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = UnansweredInboundStore(tmp, "wxid_test")
+            message = type("Message", (), {"content": "你好", "type": "text", "attr": "friend"})()
+            record_id = store.begin("张三", message, status="routing")
+
+            with patch.object(store, "_save_unlocked") as save:
+                self.assertFalse(store.set_status(record_id, "routing"))
+                self.assertFalse(store.set_status("missing", "resolved"))
+
+            save.assert_not_called()
 
     def test_unanswered_group_record_preserves_type_and_datetime(self):
         with tempfile.TemporaryDirectory() as tmp:

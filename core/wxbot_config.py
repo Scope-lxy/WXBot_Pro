@@ -13,7 +13,6 @@ from core.account_storage import DEFAULT_ACCOUNT_ID, account_module_file, ensure
 from core.api import APIConfigSnapshot, build_api_config_snapshot, default_tts_config, normalize_tts_settings
 from core.config import coerce_float_range, coerce_int_range
 from core.logger import log
-from core.prompt_system import CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT
 from feature.ai_material_outreach import normalize_ai_material_outreach_config
 from feature.contacts import (
     coerce_auto_maintenance_full_scan_interval_days,
@@ -30,10 +29,6 @@ from feature.material_outreach import (
 )
 from feature.material_outreach_preface import normalize_preface_pending_queue
 from feature.material_outreach_storage import MaterialOutreachStorage
-from feature.moments_tasks import (
-    deserialize_moments_task_collection,
-    serialize_moments_task_collection,
-)
 from feature.scheduled_message_tasks import (
     deserialize_scheduled_message_task_collection,
     normalize_scheduled_message_task_payload,
@@ -63,10 +58,9 @@ class WXBotConfig:
         self.AllListen_switch = False   # True=黑名单模式，False=白名单模式
         self.chat_listen_only = False    # 私聊只监听不 AI 回复
 
-        # ---------- 用户与权限 ----------
+        # ---------- 监听用户 ----------
         self.listen_list = []           # 白名单模式监听用户列表
         self.global_blacklist = []      # 全局监听模式黑名单用户列表
-        self.cmd = ""                   # 管理员账号（命令接收者）
 
         # ---------- AI 接口配置 ----------
         self.api_configs = []           # 接口配置列表，每项含 sdk/key/url/model
@@ -87,10 +81,10 @@ class WXBotConfig:
         self.group_welcome_msg = "欢迎新朋友！请先查看群公告！本消息由wxautox发送!"
 
         # ---------- 新好友配置 ----------
-        self.new_frined_switch = False        # 自动通过新好友开关
+        self.new_friend_switch = False        # 自动通过新好友开关
         self.new_friend_archive_switch = True # 通过好友后自动修改备注和标签
-        self.new_frien_reply_switch = False   # 新好友自动回复开关
-        self.new_frien_msg = []               # 通过后自动发送的打招呼消息列表
+        self.new_friend_reply_switch = False  # 新好友自动回复开关
+        self.new_friend_msg = {"text": "", "files": []}
         self.new_friend_remark_prefix_timestamp = False
         self.new_friend_remark_suffix_timestamp = False
 
@@ -99,10 +93,6 @@ class WXBotConfig:
         self.group_keyword_switch = False   # 群聊关键词回复开关
         self.group_keyword_at_only = False  # 群聊关键词仅被@时触发
         self.keyword_dict = {}              # 关键词 -> 回复内容 字典
-
-        # ---------- 自定义转发配置 ----------
-        self.custom_forward_switch = False  # 自定义转发总开关
-        self.custom_forward_list   = []     # 自定义转发规则列表
 
         # ---------- 多 Prompt 配置 ----------
         self.default_prompt   = "默认"      # 全局/fallback prompt 文件名（不含 .md）
@@ -113,10 +103,8 @@ class WXBotConfig:
 
         # ---------- 会话记忆配置 ----------
         self.chat_memory_switch = True
-        self.chat_memory_exclude_list = []
         self.chat_memory_message_threshold = 100
         self.chat_memory_interval_hours = 12
-        self.chat_memory_protected_recent_count = CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT
 
         # ---------- 定时消息配置 ----------
         self.scheduled_message_task_list = []  # 统一定时消息任务列表
@@ -140,10 +128,6 @@ class WXBotConfig:
         self.ai_material_outreach_preface_enabled = True
         self.ai_material_outreach_preface_goal = DEFAULT_AI_PREFACE_GOAL
         self.ai_material_outreach_preface_intensity = ""
-
-        # ---------- 朋友圈配置 ----------
-        self.moments_api_index = 0                 # 发朋友圈专用接口
-        self.moments_task_list = []             # 统一发朋友圈任务列表
 
         # ---------- 对话记忆配置 ----------
         self.memory_switch        = True      # 记忆开关（默认开启）
@@ -179,10 +163,8 @@ class WXBotConfig:
                 self.config = json.load(file)
                 self._normalize_scheduled_config_lists()
                 self._load_account_scoped_keyword_rules()
-                self._load_account_scoped_custom_forward_rules()
                 self._load_account_scoped_scheduled_message_tasks()
                 self._load_account_scoped_material_outreach_tasks()
-                self._load_account_scoped_moments_tasks()
                 log(level="DEBUG", message="配置文件加载成功")
         except Exception as e:
             log(level="ERROR", message="打开配置文件失败，请检查配置文件！" + str(e))
@@ -221,7 +203,6 @@ class WXBotConfig:
                     ],
                     "api_index": 0,
                     "api_capability_map": {},
-                    "admin": "文件传输助手",
                     "AllListen_switch": False,
                     "AllListen_filter_mute": True,
                     "chat_listen_only": False,
@@ -251,18 +232,14 @@ class WXBotConfig:
                     "group_keyword_switch": False,
                     "group_keyword_at_only": False,
                     "keyword_dict": {},
-                    "custom_forward_switch": False,
-                    "custom_forward_list": [],
                     "default_prompt": "默认",
                     "chat_prompt_map": {},
                     "chat_api_map": {},
                     "chat_tts_map": {},
                     "group_prompt_map": {},
                     "chat_memory_switch": True,
-                    "chat_memory_exclude_list": [],
                     "chat_memory_message_threshold": 100,
                     "chat_memory_interval_hours": 12,
-                    "chat_memory_protected_recent_count": CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
                     "scheduled_message_task_list": [],
                     "contact_directory_auto_maintenance_switch": False,
                     "contact_directory_auto_maintenance_interval_minutes": 10,
@@ -272,8 +249,6 @@ class WXBotConfig:
                     "material_source_silent": True,
                     "material_source_pool_limit_map": {},
                     "material_outreach_list": [],
-                    "moments_api_index": 0,
-                    "moments_task_list": [],
                     "everyday_start_stop_bot_switch": False,
                     "everyday_start_bot_time": "08:00",
                     "everyday_stop_bot_time": "23:00",
@@ -295,12 +270,18 @@ class WXBotConfig:
                     "reply_preprocess_fallback_reply": "",
                     "reply_preprocess_fallback_once": False,
                     "reply_preprocess_max_chars": 100,
-                    "text_reply_limit_switch": False,
-                    "text_reply_limit_count": 99,
-                    "text_reply_limit_hours": 24,
-                    "text_reply_limit_ai_reply": True,
-                    "text_reply_limit_reply": "",
-                    "text_reply_limit_reply_once": False,
+                    "chat_text_reply_limit_switch": False,
+                    "chat_text_reply_limit_count": 99,
+                    "chat_text_reply_limit_hours": 24,
+                    "chat_text_reply_limit_ai_reply": True,
+                    "chat_text_reply_limit_reply": "",
+                    "chat_text_reply_limit_reply_once": False,
+                    "group_text_reply_limit_switch": False,
+                    "group_text_reply_limit_count": 99,
+                    "group_text_reply_limit_hours": 24,
+                    "group_text_reply_limit_ai_reply": True,
+                    "group_text_reply_limit_reply": "",
+                    "group_text_reply_limit_reply_once": False,
                     "chat_split_reply_switch": False,
                     "chat_split_reply_delay_switch": True,
                     "chat_split_max_chars": 100,
@@ -314,14 +295,11 @@ class WXBotConfig:
                     "chat_voice_reply_switch": False,
                     "chat_voice_reply_trigger_modes": ["keyword"],
                     "chat_voice_reply_request_keywords": list(DEFAULT_CHAT_VOICE_REPLY_KEYWORDS),
-                    "chat_voice_reply_cooldown_minutes": 10,
                     "chat_voice_reply_limit_count": 50,
                     "chat_voice_reply_limit_hours": 24,
-                    "chat_voice_session_minutes": 10,
-                    "chat_voice_session_turns": 5,
                     "group_voice_reply_switch": False,
+                    "group_voice_reply_trigger_modes": ["keyword"],
                     "group_voice_reply_request_keywords": list(DEFAULT_GROUP_VOICE_REPLY_KEYWORDS),
-                    "group_voice_reply_cooldown_minutes": 0,
                     "group_voice_reply_limit_count": 99,
                     "group_voice_reply_limit_hours": 24,
                     "siver_panel_enabled": False,
@@ -356,16 +334,12 @@ class WXBotConfig:
         try:
             self._normalize_scheduled_config_lists()
             self._save_account_scoped_keyword_rules()
-            self._save_account_scoped_custom_forward_rules()
             self._save_account_scoped_scheduled_message_tasks()
             self._save_account_scoped_material_outreach_tasks()
-            self._save_account_scoped_moments_tasks()
             persisted = dict(self.config)
             persisted.pop('keyword_dict', None)
-            persisted.pop('custom_forward_list', None)
             persisted.pop('scheduled_message_task_list', None)
             persisted.pop('material_outreach_list', None)
-            persisted.pop('moments_task_list', None)
             persisted.pop('prompt', None)
             with open(self.CONFIG_FILE, 'w', encoding='utf-8') as file:
                 json.dump(persisted, file, ensure_ascii=False, indent=4)
@@ -382,10 +356,8 @@ class WXBotConfig:
         if self.current_account_wx_id == DEFAULT_ACCOUNT_ID:
             ensure_default_account(self.DATA_DIR)
         self._load_account_scoped_keyword_rules()
-        self._load_account_scoped_custom_forward_rules()
         self._load_account_scoped_scheduled_message_tasks()
         self._load_account_scoped_material_outreach_tasks()
-        self._load_account_scoped_moments_tasks()
         self.update_global_config()
 
     def _keyword_rules_file(self, *, wx_id=None, create_parent=False):
@@ -424,37 +396,6 @@ class WXBotConfig:
             rules = {}
         with open(rules_file, 'w', encoding='utf-8') as file:
             json.dump(rules, file, ensure_ascii=False, indent=4)
-
-    def _custom_forward_rules_file(self, *, wx_id=None, create_parent=False):
-        account_wx_id = resolve_account_id(wx_id or self.current_account_wx_id, fallback_default=True)
-        if not account_wx_id:
-            return None
-        return account_module_file(
-            self.DATA_DIR,
-            account_wx_id,
-            "custom_forward",
-            "rules.json",
-            create_parent=create_parent,
-        )
-
-    def _load_account_scoped_custom_forward_rules(self):
-        rules = []
-        rules_file = self._custom_forward_rules_file()
-        if rules_file:
-            rules = load_json_list(rules_file)
-        if not isinstance(self.config, dict):
-            self.config = {}
-        self.config["custom_forward_list"] = [rule for rule in rules if isinstance(rule, dict)]
-        return self.config["custom_forward_list"]
-
-    def _save_account_scoped_custom_forward_rules(self):
-        rules_file = self._custom_forward_rules_file(create_parent=True)
-        if not rules_file:
-            return
-        save_json_list(
-            rules_file,
-            [rule for rule in self.config.get("custom_forward_list", []) if isinstance(rule, dict)],
-        )
 
     def _scheduled_message_tasks_file(self, *, wx_id=None, create_parent=False):
         account_wx_id = resolve_account_id(wx_id or self.current_account_wx_id, fallback_default=True)
@@ -674,72 +615,6 @@ class WXBotConfig:
         self._save_material_outreach_runtime(runtime)
         return runtime["preface_pending_queue"]
 
-    def _moments_tasks_file(self, *, wx_id=None, create_parent=False):
-        account_wx_id = resolve_account_id(wx_id or self.current_account_wx_id, fallback_default=True)
-        if not account_wx_id:
-            return None
-        return account_module_file(
-            self.DATA_DIR,
-            account_wx_id,
-            "moments",
-            "tasks.json",
-            create_parent=create_parent,
-        )
-
-    def _moments_runtime_file(self, *, wx_id=None, create_parent=False):
-        account_wx_id = resolve_account_id(wx_id or self.current_account_wx_id, fallback_default=True)
-        if not account_wx_id:
-            return None
-        return account_module_file(
-            self.DATA_DIR,
-            account_wx_id,
-            "moments",
-            "runtime.json",
-            create_parent=create_parent,
-        )
-
-    def _moments_history_file(self, *, wx_id=None, create_parent=False):
-        account_wx_id = resolve_account_id(wx_id or self.current_account_wx_id, fallback_default=True)
-        if not account_wx_id:
-            return None
-        return account_module_file(
-            self.DATA_DIR,
-            account_wx_id,
-            "moments",
-            "history.json",
-            create_parent=create_parent,
-        )
-
-    def _moments_task_storage(self, *, wx_id=None):
-        data_dir = self._task_storage_data_dir()
-        if not data_dir:
-            return None
-        return TaskWorkbenchStorage(data_dir, self._task_storage_wx_id(wx_id), "moments")
-
-    def _load_account_scoped_moments_tasks(self):
-        definitions = []
-        tasks_file = self._moments_tasks_file()
-        if tasks_file:
-            definitions = load_json_list(tasks_file)
-        runtime_map = self._load_json_object_file(self._moments_runtime_file())
-        history_map = self._load_json_object_file(self._moments_history_file())
-        if not isinstance(self.config, dict):
-            self.config = {}
-        self.config["moments_task_list"] = deserialize_moments_task_collection(
-            definitions,
-            runtime_map,
-            history_map,
-        )
-        return self.config["moments_task_list"]
-
-    def _save_account_scoped_moments_tasks(self):
-        storage = self._moments_task_storage()
-        if storage is None:
-            return
-        normalized = [task for task in self.config.get("moments_task_list", []) if isinstance(task, dict)]
-        definitions, _runtime_map, _history_map = serialize_moments_task_collection(normalized)
-        storage.save_tasks(definitions)
-
     def init_prompt_dir(self):
         """确保 prompt 目录存在；空目录时写入默认 prompt"""
         os.makedirs(self.prompt_dir, exist_ok=True)
@@ -819,7 +694,7 @@ class WXBotConfig:
         )
 
         # 微信基础配置
-        self.cmd            = self.config.get('admin', "")
+        self.config.pop('admin', None)
         self.config.setdefault('listen_list', [])
         self.config.setdefault('global_blacklist', [])
         self.listen_list          = self.config.get('listen_list', [])
@@ -846,12 +721,12 @@ class WXBotConfig:
         self.group_welcome_msg    = self.config.get('group_welcome_msg', '')
 
         # 新好友配置
-        self.new_frined_switch       = self.config.get('new_friend_switch')
-        self.new_frien_msg           = self.config.get('new_friend_msg', {"text": "", "files": []})
+        self.new_friend_switch       = bool(self.config.get('new_friend_switch', False))
+        self.new_friend_msg          = self.config.get('new_friend_msg', {"text": "", "files": []})
         self.new_friend_archive_switch = bool(self.config.get('new_friend_archive_switch', True))
-        self.new_frien_reply_switch  = bool(
-            str((self.new_frien_msg or {}).get('text', '')).strip()
-            or ((self.new_frien_msg or {}).get('files') or [])
+        self.new_friend_reply_switch = bool(
+            str((self.new_friend_msg or {}).get('text', '')).strip()
+            or ((self.new_friend_msg or {}).get('files') or [])
         )
         self.new_friend_check_min    = max(60, int(self.config.get('new_friend_check_min', 60)))
         self.new_friend_check_max    = min(3600, max(self.new_friend_check_min, int(self.config.get('new_friend_check_max', 300))))
@@ -918,22 +793,8 @@ class WXBotConfig:
         self.ai_material_outreach_preface_goal = ai_outreach_config["ai_material_outreach_preface_goal"]
         self.ai_material_outreach_preface_intensity = ai_outreach_config["ai_material_outreach_preface_intensity"]
 
-        # 朋友圈配置
-        try:
-            self.moments_api_index = int(self.config.get('moments_api_index', 0))
-        except (TypeError, ValueError):
-            self.moments_api_index = 0
-        if self.api_configs:
-            self.moments_api_index = max(0, min(len(self.api_configs) - 1, self.moments_api_index))
-        else:
-            self.moments_api_index = 0
-        self.config['moments_api_index'] = self.moments_api_index
-        self.moments_task_list = self.config.get('moments_task_list', [])
-        if not isinstance(self.moments_task_list, list):
-            self.moments_task_list = []
-            self.config['moments_task_list'] = []
-
-
+        self.config.pop('moments_api_index', None)
+        self.config.pop('moments_task_list', None)
         # 对话记忆配置
         self.memory_switch        = self.config.get('memory_switch', True)
         self.memory_context_switch = bool(self.config.get('memory_context_switch', self.memory_switch))
@@ -964,9 +825,8 @@ class WXBotConfig:
         self.group_voice_recognition_switch = bool(self.config.get('group_voice_recognition_switch', False))
         self.group_image_recognition_api    = int(self.config.get('group_image_recognition_api', 0))
 
-        # 自定义转发配置
-        self.custom_forward_switch = bool(self.config.get('custom_forward_switch', False))
-        self.custom_forward_list   = self.config.get('custom_forward_list', [])
+        self.config.pop('custom_forward_switch', None)
+        self.config.pop('custom_forward_list', None)
 
         # 多 Prompt 配置
         self.default_prompt   = self.config.get('default_prompt', '默认')
@@ -981,10 +841,8 @@ class WXBotConfig:
         # 会话记忆配置
         _chat_memory_defaults = {
             'chat_memory_switch': True,
-            'chat_memory_exclude_list': [],
             'chat_memory_message_threshold': 100,
             'chat_memory_interval_hours': 12,
-            'chat_memory_protected_recent_count': CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
         }
         _chat_memory_needs_save = any(k not in self.config for k in _chat_memory_defaults)
         for k, v in _chat_memory_defaults.items():
@@ -993,20 +851,12 @@ class WXBotConfig:
             self.save_config()
             log(message="已自动补充会话记忆配置默认值并写回配置文件")
         self.chat_memory_switch = bool(self.config.get('chat_memory_switch', True))
-        self.chat_memory_exclude_list = self.config.get('chat_memory_exclude_list', [])
-        if not isinstance(self.chat_memory_exclude_list, list):
-            self.chat_memory_exclude_list = []
+        self.config.pop('chat_memory_exclude_list', None)
         self.chat_memory_message_threshold = self._coerce_int_range(
             self.config.get('chat_memory_message_threshold', 100), 100, 10, 200
         )
         self.chat_memory_interval_hours = self._coerce_int_range(
             self.config.get('chat_memory_interval_hours', 12), 12, 1, 72
-        )
-        self.chat_memory_protected_recent_count = self._coerce_int_range(
-            self.config.get('chat_memory_protected_recent_count', CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT),
-            CHAT_MEMORY_DEFAULT_PROTECTED_RECENT_COUNT,
-            0,
-            200,
         )
 
         # 接口调用失败时的固定回复
@@ -1018,13 +868,19 @@ class WXBotConfig:
             self.config.get('reply_preprocess_max_chars', 100), 100, 1, 10000
         )
 
-        # 单用户最大回复轮数限制配置
-        self.text_reply_limit_switch = bool(self.config.get('text_reply_limit_switch', False))
-        self.text_reply_limit_count = self._coerce_int_range(self.config.get('text_reply_limit_count', 99), 99, 0, 99999)
-        self.text_reply_limit_hours = self._coerce_int_range(self.config.get('text_reply_limit_hours', 24), 24, 0, 720)
-        self.text_reply_limit_reply = self.config.get('text_reply_limit_reply', '')
-        self.text_reply_limit_reply_once = bool(self.config.get('text_reply_limit_reply_once', False))
-        self.text_reply_limit_ai_reply = bool(self.config.get('text_reply_limit_ai_reply', True))
+        # 私聊与群聊回复次数限制配置
+        self.chat_text_reply_limit_switch = bool(self.config.get('chat_text_reply_limit_switch', False))
+        self.chat_text_reply_limit_count = self._coerce_int_range(self.config.get('chat_text_reply_limit_count', 99), 99, 0, 99999)
+        self.chat_text_reply_limit_hours = self._coerce_int_range(self.config.get('chat_text_reply_limit_hours', 24), 24, 0, 720)
+        self.chat_text_reply_limit_reply = self.config.get('chat_text_reply_limit_reply', '')
+        self.chat_text_reply_limit_reply_once = bool(self.config.get('chat_text_reply_limit_reply_once', False))
+        self.chat_text_reply_limit_ai_reply = bool(self.config.get('chat_text_reply_limit_ai_reply', True))
+        self.group_text_reply_limit_switch = bool(self.config.get('group_text_reply_limit_switch', False))
+        self.group_text_reply_limit_count = self._coerce_int_range(self.config.get('group_text_reply_limit_count', 99), 99, 0, 99999)
+        self.group_text_reply_limit_hours = self._coerce_int_range(self.config.get('group_text_reply_limit_hours', 24), 24, 0, 720)
+        self.group_text_reply_limit_reply = self.config.get('group_text_reply_limit_reply', '')
+        self.group_text_reply_limit_reply_once = bool(self.config.get('group_text_reply_limit_reply_once', False))
+        self.group_text_reply_limit_ai_reply = bool(self.config.get('group_text_reply_limit_ai_reply', True))
 
         # 拆分多条回复配置
         self.chat_split_reply_switch  = bool(self.config.get('chat_split_reply_switch', False))
@@ -1045,26 +901,21 @@ class WXBotConfig:
             if mode in {'incoming_voice', 'keyword'}
         ]
         self.chat_voice_reply_request_keywords = self.config.get('chat_voice_reply_request_keywords', [])
-        self.chat_voice_reply_cooldown_minutes = self._coerce_int_range(
-            self.config.get('chat_voice_reply_cooldown_minutes', 10), 10, 0, 1440
-        )
         self.chat_voice_reply_limit_count = self._coerce_int_range(
             self.config.get('chat_voice_reply_limit_count', 50), 50, 0, 99
         )
         self.chat_voice_reply_limit_hours = self._coerce_int_range(
             self.config.get('chat_voice_reply_limit_hours', 24), 24, 0, 720
         )
-        self.chat_voice_session_minutes = self._coerce_int_range(
-            self.config.get('chat_voice_session_minutes', 10), 10, 1, 1440
-        )
-        self.chat_voice_session_turns = self._coerce_int_range(
-            self.config.get('chat_voice_session_turns', 5), 5, 1, 20
-        )
+        self.config.pop('chat_voice_session_minutes', None)
+        self.config.pop('chat_voice_session_turns', None)
         self.group_voice_reply_switch = bool(self.config.get('group_voice_reply_switch', False))
+        group_trigger_mode_source = self.config.get('group_voice_reply_trigger_modes', None)
+        self.group_voice_reply_trigger_modes = [
+            mode for mode in (str(item or '').strip() for item in (group_trigger_mode_source if group_trigger_mode_source is not None else ['keyword']))
+            if mode in {'incoming_voice', 'keyword'}
+        ]
         self.group_voice_reply_request_keywords = self.config.get('group_voice_reply_request_keywords', [])
-        self.group_voice_reply_cooldown_minutes = self._coerce_int_range(
-            self.config.get('group_voice_reply_cooldown_minutes', 0), 0, 0, 1440
-        )
         self.group_voice_reply_limit_count = self._coerce_int_range(
             self.config.get('group_voice_reply_limit_count', 99), 99, 0, 99
         )

@@ -890,40 +890,6 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         self.assertEqual(events, ["roll", ("forward", ["阿英2"])])
 
-    def test_moments_owner_preserves_legacy_ui_settle_delays(self):
-        sleeps = []
-
-        class FakeMoments:
-            def Publish(self, _text, _images, _privacy):
-                return True
-
-            def Refresh(self):
-                return True
-
-            def GetMoments(self, force_wait=1):
-                return [SimpleNamespace(content="今天不错")]
-
-            def Close(self):
-                return True
-
-        client = FakeClient()
-        client.Moments = lambda: FakeMoments()
-        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
-        runtime.bootstrap({"listeners": []})
-
-        with (
-            patch("core.wechat_ui_runtime.random.uniform", side_effect=[2.0, 9.0, 2.0]) as delay,
-            patch("core.wechat_ui_runtime.time.sleep", side_effect=lambda seconds: sleeps.append(seconds)),
-        ):
-            result = runtime.publish_moments({
-                "task": {"text": "今天不错", "images": [], "privacy": "public", "tags": []},
-                "nickname": "测试微信",
-            })
-
-        self.assertTrue(result)
-        self.assertEqual([call.args for call in delay.call_args_list], [(2, 5), (9, 12), (2, 5)])
-        self.assertEqual(sleeps, [2.0, 9.0, 2.0])
-
     def test_message_locator_rejects_ambiguous_duplicates_without_known_order(self):
         client = FakeClient()
         chat = FakeChat("张三")

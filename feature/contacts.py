@@ -30,7 +30,6 @@ from core.wechat_observability import warn_slow_wechat_ui_action
 from core import wechat_ui_actions
 from core.logger import log
 from feature import listening
-from feature import takeover_runtime
 from feature.material_outreach import append_bounded_record
 
 
@@ -1316,8 +1315,7 @@ def has_pending_private_outbound_echoes(bot) -> bool:
 
 
 def is_contact_directory_auto_maintenance_idle(bot):
-    mode, _target = takeover_runtime.get_workspace_mode(bot)
-    return mode == takeover_runtime.IDLE_MODE
+    return True
 
 
 def has_active_contact_maintenance_conflict(bot, *, now_ts: float | None = None) -> bool:

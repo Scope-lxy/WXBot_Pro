@@ -383,9 +383,12 @@ class RemoveListenChatTests(unittest.TestCase):
         ):
             listening.alllisten_mode(bot, last_time=1.0, timeout=10)
 
-        self.assertEqual(removed, ["张三"])
-        self.assertEqual(bot.all_Mode_listen_list, [["管理员", 1.0], ["阿英2", 1.0]])
-        self.assertEqual(logs, ["全局监听 张三：对话超时，已停止监听"])
+        self.assertEqual(removed, ["管理员", "张三"])
+        self.assertEqual(bot.all_Mode_listen_list, [["阿英2", 1.0]])
+        self.assertEqual(logs, [
+            "全局监听 管理员：对话超时，已停止监听",
+            "全局监听 张三：对话超时，已停止监听",
+        ])
 
     def test_alllisten_dispatches_first_batch_to_real_subwindow_once(self):
         processed = []
@@ -1260,7 +1263,7 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(any(level == "INFO" and "第 2 次未恢复" in message for level, message in logs))
         self.assertFalse(any(level == "WARNING" and "两次恢复失败" in message for level, message in logs))
 
-    def test_lightweight_delayed_listen_after_ten_minutes_keeps_waiting_without_writing_memory(self):
+    def test_lightweight_delayed_listen_after_ten_minutes_enters_stable_degraded_state(self):
         calls = []
         saves = []
         msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好", time="2026/07/04 10:00:00")
@@ -1304,8 +1307,8 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertTrue(flushed)
         self.assertEqual(saves, [])
-        self.assertIn("张三", bot._lightweight_delayed_listen_tasks)
-        self.assertEqual(bot._lightweight_delayed_listen_tasks["张三"]["due_at"], 760.0)
+        self.assertNotIn("张三", bot._lightweight_delayed_listen_tasks)
+        self.assertEqual(bot._degraded_dynamic_listeners["张三"]["reason"], "pending_window_exhausted")
 
     def test_lightweight_delayed_listen_keeps_task_when_lock_busy(self):
         releases = []
@@ -1344,7 +1347,7 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertIn("张三", bot._lightweight_delayed_listen_tasks)
         self.assertEqual(releases, [])
 
-    def test_lightweight_delayed_listen_keeps_old_task_for_low_frequency_retry(self):
+    def test_lightweight_delayed_listen_stops_old_task_after_pending_window(self):
         processed = []
         msg = SimpleNamespace(id="1", attr="friend", type="text", sender="张三", content="你好")
         bot = SimpleNamespace(
@@ -1380,8 +1383,8 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertTrue(flushed)
         self.assertEqual(processed, [])
-        self.assertIn("张三", bot._lightweight_delayed_listen_tasks)
-        self.assertEqual(bot._lightweight_delayed_listen_tasks["张三"]["due_at"], 161.0)
+        self.assertNotIn("张三", bot._lightweight_delayed_listen_tasks)
+        self.assertIn("张三", bot._degraded_dynamic_listeners)
 
     def test_lightweight_delayed_listen_drops_when_message_sequence_changed(self):
         processed = []

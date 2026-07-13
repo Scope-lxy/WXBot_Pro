@@ -250,7 +250,6 @@ class WeChatUIRuntime:
             UIIntentKind.QUOTE: self.quote_message,
             UIIntentKind.MATERIAL_READ: self.read_material_messages,
             UIIntentKind.NEW_FRIEND: self.process_new_friends,
-            UIIntentKind.MOMENTS: self.publish_moments,
             UIIntentKind.CONTACT_EDIT: self.edit_contact,
             UIIntentKind.RELATIONSHIP_SCAN: self.scan_relationship_sessions,
             UIIntentKind.FRIEND_REQUEST: self.send_friend_request,
@@ -851,7 +850,12 @@ class WeChatUIRuntime:
                 accept_kwargs["tags"] = tags
             candidate.accept(**accept_kwargs)
             send_name = remark or name
-            accepted.append({"name": name, "send_name": send_name})
+            accepted.append({
+                "name": name,
+                "send_name": send_name,
+                "remark": remark,
+                "tags": tags,
+            })
             break
         switch = getattr(self._client, "SwitchToChat", None)
         if callable(switch):
@@ -1004,22 +1008,6 @@ class WeChatUIRuntime:
                 permission=str(payload.get("permission") or "不设置"),
                 max_attempts=max(1, int(payload.get("max_attempts") or 2)),
             )
-
-    def publish_moments(self, payload):
-        from core.logger import log
-        from feature.moments_publisher import execute_moments_publish_task
-
-        return execute_moments_publish_task(
-            task=dict(payload.get("task") or {}),
-            open_moments=self._client.Moments,
-            sleep=time.sleep,
-            random_delay=random.uniform,
-            notify_error=lambda title, detail="": log(level="ERROR", message=f"{title}：{detail}"),
-            nickname=str(payload.get("nickname") or ""),
-            log_info=lambda message: log(message=message),
-            log_success=lambda message: log(level="SUCCESS", message=message),
-            log_error=lambda message: log(level="ERROR", message=message),
-        )
 
     def start_contact_batch(self, payload):
         from feature.contacts import start_contact_auto_maintenance_collector

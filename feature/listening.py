@@ -9,6 +9,7 @@ import uuid
 
 from core import runtime_chat_state, wechat_ui_actions
 from core.account_storage import account_area_dir, migrate_default_account
+from core.contact_profiles import directory_lock, merge_directory as merge_contact_directory
 from core.logger import log
 from core.memory import MemoryManager
 from core.wechat_window import (
@@ -18,8 +19,6 @@ from core.wechat_window import (
 )
 from core.wechat_ui_runtime import OwnedChat
 from core.wechat_observability import warn_slow_wechat_ui_action
-from feature.custom_forward import iter_custom_forward_listen_sources
-from feature.custom_forward_runtime import handle_custom_forward, handle_custom_forward_takeover
 from feature.material_outreach import iter_material_outreach_listen_sources
 from feature.message_routing import prepare_message_media, record_runtime_inbound_event
 from feature.new_friends import build_new_friend_remark, iter_new_friend_welcome_actions
@@ -46,6 +45,7 @@ LISTENER_RECOVERY_ERROR_PATTERNS = (
     "远程过程调用失败",
     "元素不可用",
     "对象不再连接到服务器",
+    "Find Control Timeout",
 )
 
 
@@ -354,6 +354,8 @@ def ensure_lightweight_delayed_listen_state(bot):
         bot._lightweight_delayed_listen_last_rebuild_at = {}
     if not hasattr(bot, "_lightweight_delayed_listen_flushing"):
         bot._lightweight_delayed_listen_flushing = False
+    if not hasattr(bot, "_degraded_dynamic_listeners") or bot._degraded_dynamic_listeners is None:
+        bot._degraded_dynamic_listeners = {}
 
 
 def _has_due_lightweight_delayed_listen_task(bot, now_ts=None):
@@ -552,14 +554,30 @@ def _reschedule_lightweight_delayed_listen(bot, name, task, now_ts):
     attempt_index = int(task.get("attempt_index") or 0)
     next_index = attempt_index + 1
     created_at = float(task.get("created_at") or now_ts)
+    if now_ts - created_at >= LIGHTWEIGHT_DELAYED_LISTEN_ESCALATION_SECONDS:
+        for record_id in (task.get("record_ids") or {}).values():
+            _set_delayed_record_status(bot, record_id, "listen_degraded")
+        ensure_lightweight_delayed_listen_state(bot)
+        bot._degraded_dynamic_listeners[name] = {
+            "since": now_ts,
+            "reason": "pending_window_exhausted",
+            "pending_messages": len(task.get("messages") or []),
+        }
+        _bot_log(
+            bot,
+            level="ERROR",
+            message=(
+                f"全局监听 {name}：临时接管在 {LIGHTWEIGHT_DELAYED_LISTEN_ESCALATION_SECONDS}s 内始终未恢复，"
+                "已停止自动重试并标记为降级；不会重绑微信客户端"
+            ),
+        )
+        return False
     if next_index < len(LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS):
         next_delay = LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS[next_index]
         next_due = created_at + next_delay
     else:
         next_delay = LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS
         next_due = now_ts + next_delay
-    if now_ts - created_at >= LIGHTWEIGHT_DELAYED_LISTEN_ESCALATION_SECONDS:
-        next_due = now_ts + LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS
     task["attempt_index"] = next_index
     task["due_at"] = next_due
     bot._lightweight_delayed_listen_tasks[name] = task
@@ -744,21 +762,11 @@ def add_and_verify_subwindow(bot, nickname, retry_count=3):
 
 
 def expected_listener_names(bot):
-    expected = [str(getattr(bot.config, "cmd", "") or "").strip()]
+    expected = []
     if not getattr(bot.config, "AllListen_switch", False):
         expected.extend(str(item or "").strip() for item in (getattr(bot.config, "listen_list", []) or []))
     if getattr(bot.config, "group_switch", False):
         expected.extend(str(item or "").strip() for item in (getattr(bot.config, "group", []) or []))
-    if getattr(bot.config, "custom_forward_switch", False):
-        expected.extend(
-            iter_custom_forward_listen_sources(
-                getattr(bot.config, "custom_forward_list", []),
-                listen_list=getattr(bot.config, "listen_list", []),
-                groups=getattr(bot.config, "group", []),
-                group_switch=getattr(bot.config, "group_switch", False),
-                command_chat=getattr(bot.config, "cmd", ""),
-            )
-        )
     material_source_runtime_enabled = getattr(bot, "_material_source_runtime_enabled", None)
     if callable(material_source_runtime_enabled) and material_source_runtime_enabled():
         expected.extend(
@@ -767,7 +775,6 @@ def expected_listener_names(bot):
                 listen_list=getattr(bot.config, "listen_list", []),
                 groups=getattr(bot.config, "group", []),
                 group_switch=getattr(bot.config, "group_switch", False),
-                command_chat=getattr(bot.config, "cmd", ""),
             )
         )
 
@@ -782,7 +789,7 @@ def expected_listener_names(bot):
 
 
 def listener_registration_specs(bot):
-    specs = [("管理员", str(getattr(bot.config, "cmd", "") or "").strip(), False)]
+    specs = []
     if not getattr(bot.config, "AllListen_switch", False):
         specs.extend(
             ("用户", str(item or "").strip(), False)
@@ -793,17 +800,6 @@ def listener_registration_specs(bot):
             ("群组", str(item or "").strip(), False)
             for item in (getattr(bot.config, "group", []) or [])
         )
-    if getattr(bot.config, "custom_forward_switch", False):
-        specs.extend(
-            ("自定义转发监听源", str(source or "").strip(), False)
-            for source in iter_custom_forward_listen_sources(
-                getattr(bot.config, "custom_forward_list", []),
-                listen_list=getattr(bot.config, "listen_list", []),
-                groups=getattr(bot.config, "group", []),
-                group_switch=getattr(bot.config, "group_switch", False),
-                command_chat=getattr(bot.config, "cmd", ""),
-            )
-        )
     material_source_runtime_enabled = getattr(bot, "_material_source_runtime_enabled", None)
     if callable(material_source_runtime_enabled) and material_source_runtime_enabled():
         specs.extend(
@@ -813,7 +809,6 @@ def listener_registration_specs(bot):
                 listen_list=getattr(bot.config, "listen_list", []),
                 groups=getattr(bot.config, "group", []),
                 group_switch=getattr(bot.config, "group_switch", False),
-                command_chat=getattr(bot.config, "cmd", ""),
             )
         )
     for item in getattr(bot, "all_Mode_listen_list", []) or []:
@@ -880,8 +875,7 @@ def rebuild_listener_runtime(
     verify_initial_listeners(bot, expected_listeners, retry_count=verify_retry_count)
     bot._listener_reconcile_last_at = time.time()
     _bot_log(bot, level="INFO", message=finish_message)
-    admin_name = str(getattr(bot.config, "cmd", "") or "").strip()
-    return bool(admin_name and runtime_chat_state.get_listen_chat(bot, admin_name))
+    return all(runtime_chat_state.get_listen_chat(bot, name) for name in expected_listeners)
 
 
 def process_listener_auto_recovery(bot):
@@ -947,9 +941,9 @@ def process_listener_auto_recovery(bot):
         _bot_log(bot, level="SUCCESS", message="监听器已自动恢复")
         return "recovered"
 
-    bot._listener_auto_recovery_last_error = "监听器自动恢复后管理员窗口仍不可用"
+    bot._listener_auto_recovery_last_error = "监听器自动恢复后固定监听窗口仍不可用"
     clear_listener_auto_recovery(bot)
-    _bot_log(bot, level="ERROR", message="监听器自动恢复失败，管理员监听未恢复")
+    _bot_log(bot, level="ERROR", message="监听器自动恢复失败，固定监听未恢复")
     return "failed"
 
 
@@ -1115,8 +1109,6 @@ def init_wx_listeners(bot):
             bot.config.bind_account_wx_id(wx_id)
         bot._voice_reply_state = load_voice_reply_state(bot._voice_reply_state_path())
         bot._set_material_outreach_namespace(wx_id)
-        bot._set_admin_moments_draft_namespace(wx_id)
-        bot._set_admin_forward_draft_namespace(wx_id)
         _base = os.path.dirname(sys.executable) if hasattr(sys, "_MEIPASS") else os.path.abspath(".")
         bot.memory_manager = MemoryManager(wx_id, os.path.join(_base, "data"))
         bot._init_prompt_system(str(account_area_dir(os.path.join(_base, "data"), wx_id, "chat_memory", create=True)))
@@ -1131,7 +1123,7 @@ def init_wx_listeners(bot):
             drain_recovery()
         bot._register_runtime_task_schedules()
         _bot_log(bot, level="DEBUG", message="监听器初始化完成")
-        return runtime_chat_state.get_listen_chat(bot, bot.config.cmd)
+        return True
 
     if not getattr(bot, "wx", None):
         _bot_log(bot, message="本次未获取客户端，正在初始化微信客户端...")
@@ -1163,8 +1155,6 @@ def init_wx_listeners(bot):
         bot.config.bind_account_wx_id(wx_id)
     bot._voice_reply_state = load_voice_reply_state(bot._voice_reply_state_path())
     bot._set_material_outreach_namespace(wx_id)
-    bot._set_admin_moments_draft_namespace(wx_id)
-    bot._set_admin_forward_draft_namespace(wx_id)
     _base = os.path.dirname(sys.executable) if hasattr(sys, "_MEIPASS") else os.path.abspath(".")
     memory_base = os.path.join(_base, "data")
     bot.memory_manager = MemoryManager(
@@ -1178,7 +1168,7 @@ def init_wx_listeners(bot):
         enqueue_memory_checks()
     rebuild_listener_runtime(bot, verify_retry_count=3, clear_runtime_cache=True, finish_message="监听器初始化完成")
     bot._register_runtime_task_schedules()
-    return runtime_chat_state.get_listen_chat(bot, bot.config.cmd)
+    return True
 
 
 def find_new_group_friend(msg, flag):
@@ -1233,6 +1223,36 @@ def send_group_welcome_msg(bot, chat, message):
     return result
 
 
+def archive_accepted_friend(bot, accepted):
+    load_directory = getattr(bot, "_load_contact_profiles_directory", None)
+    save_directory = getattr(bot, "_save_contact_profiles_directory", None)
+    if not callable(load_directory) or not callable(save_directory):
+        return False
+    name = str((accepted or {}).get("name") or "").strip()
+    send_name = str((accepted or {}).get("send_name") or name).strip()
+    remark = str((accepted or {}).get("remark") or "").strip()
+    if not name:
+        return False
+    raw_detail = {
+        "昵称": name,
+        "备注": remark if remark and remark != name else "",
+        "标签": list((accepted or {}).get("tags") or []),
+        "来源": "新好友自动通过",
+    }
+    directory, directory_file, wx_id = load_directory()
+    with directory_lock(directory_file):
+        directory, _directory_file, wx_id = load_directory()
+        updated = merge_contact_directory(
+            directory,
+            [raw_detail],
+            wx_id=wx_id,
+            mark_missing=False,
+        )
+        save_directory(updated)
+    _bot_log(bot, level="INFO", message=f"新好友 {send_name} 已加入通讯录档案")
+    return True
+
+
 def pass_new_friends(bot):
     owner = getattr(bot, "_ui_owner", None)
     if owner is not None:
@@ -1273,6 +1293,10 @@ def pass_new_friends(bot):
             if callable(record_metric):
                 record_metric("new_friend_accepted_count")
             _bot_log(bot, level="INFO", message="已通过" + str(item.get("send_name") or item.get("name") or "") + "的好友请求")
+            try:
+                archive_accepted_friend(bot, item)
+            except Exception as exc:
+                _bot_log(bot, level="WARNING", message=f"新好友已通过，但即时写入通讯录档案失败：{exc}")
             if welcome_actions:
                 _bot_sleep(bot, 5)
                 send_name = str(item.get("send_name") or item.get("name") or "")
@@ -1532,18 +1556,7 @@ def alllisten_mode(bot, last_time, timeout=10):
                     if bot._handle_material_source_message(_types.SimpleNamespace(who=chat), msg):
                         continue
 
-                    takeover_handled = False
-                    if bot.config.custom_forward_switch:
-                        try:
-                            chat_ref = _types.SimpleNamespace(who=chat)
-                            takeover_handled = handle_custom_forward_takeover(bot, chat_ref, msg)
-                            if not takeover_handled:
-                                handle_custom_forward(bot, chat_ref, msg)
-                        except Exception as exc:
-                            _bot_log(bot, level="ERROR", message=f"自定义转发处理出错: {exc}")
-
-                    if not takeover_handled:
-                        processed_msgs.append(msg)
+                    processed_msgs.append(msg)
             if processed_msgs:
                 ensure_lightweight_delayed_listen_state(bot)
                 if chat in getattr(bot, "_lightweight_delayed_listen_tasks", {}):

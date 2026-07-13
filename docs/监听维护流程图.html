@@ -111,7 +111,7 @@
         <div class="flow-row">
           <article class="node blue"><h3>启动 UI owner</h3><p>owner 线程创建 <code>WeChat</code>、读取当前账号、初始化监听器。wxautox 对象不能跨线程保存或使用。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="node blue"><h3>注册固定对象</h3><p>管理员、白名单好友、监听群、自定义转发来源和素材来源注册为固定监听。</p></article>
+          <article class="node blue"><h3>注册固定对象</h3><p>白名单好友、监听群和素材来源注册为固定监听。</p></article>
           <div class="arrow">-&gt;</div>
           <article class="node green"><h3>验证后进入运行态</h3><p>验证固定子窗口是否真实存在；缺失时轻量补一次。之后仅低频巡检，不恢复主循环高频扫描。</p></article>
         </div>
@@ -140,14 +140,14 @@
           <div class="lane-label">业务线程产出<br>纯数据意图</div>
           <div class="lane-content">
             <div class="mini">回复、关键词、文件、语音和 quote：每项独立、可在开始前取消。</div>
-            <div class="mini">好友申请、素材转发和发圈：一旦提交结果未知，持久化为 <code>uncertain</code>。</div>
+            <div class="mini">好友申请和素材转发：一旦提交结果未知，持久化为 <code>uncertain</code>。</div>
             <div class="mini">备注、标签同步和单人资料编辑：进入 owner 后保留窗口置前、搜索和鼠标焦点步骤。</div>
             <div class="mini">图片、引用等媒体动作也等待 owner；不建立绕过队列的“高优先级下载”通道。</div>
           </div>
         </div>
         <div class="arrow down">v</div>
         <div class="flow-row">
-          <article class="node blue"><h3>owner FIFO 执行</h3><p>真实发送、窗口切换、资料页、素材读取和朋友圈动作都在 owner 中完成，并把明确结果回写给调用方。</p></article>
+          <article class="node blue"><h3>owner FIFO 执行</h3><p>真实发送、窗口切换、资料页、素材读取都在 owner 中完成，并把明确结果回写给调用方。</p></article>
           <div class="arrow">-&gt;</div>
           <article class="node amber"><h3>目标窗口不能确认</h3><p>尝试补窗；仍失败时进入轻量延后队列。宁可暂缓，也不基于错误窗口发送。</p></article>
           <div class="arrow">-&gt;</div>

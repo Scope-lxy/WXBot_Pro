@@ -137,10 +137,9 @@
 
       <section class="stage">
         <div class="stage-title"><span class="stage-number">02</span><h2>路由和消费决策</h2></div>
-        <div class="decision"><div><strong>这条入站应由哪种业务消费？</strong><span>管理员、素材、人工接管、关键词、AI 或跳过</span></div></div>
+        <div class="decision"><div><strong>这条入站应由哪种业务消费？</strong><span>素材投喂、关键词、AI 或跳过</span></div></div>
         <div class="branch-grid">
-          <div class="branch"><p class="branch-label">管理员 / 系统输入</p><article class="node blue"><h3>控制台或发圈输入</h3><p>执行管理员命令、发圈输入或转发引导。本条消费完即结束。</p></article></div>
-          <div class="branch"><p class="branch-label">素材 / 人工优先</p><article class="node amber"><h3>素材投喂或人工接管</h3><p>素材来源进入素材池；命中“转给管理员”时镜像给管理员并暂停该好友 AI。</p></article></div>
+                    <div class="branch"><p class="branch-label">素材优先</p><article class="node amber"><h3>素材投喂</h3><p>素材来源中的有效消息进入素材池，本条消费完即结束。</p></article></div>
           <div class="branch"><p class="branch-label">规则优先</p><article class="node green"><h3>关键词回复</h3><p>私聊和群聊规则优先于普通 AI。文字、文件等依次作为可取消的独立意图提交。</p></article></div>
           <div class="branch"><p class="branch-label">范围不满足</p><article class="node amber"><h3>只监听 / 黑名单 / 条件不符</h3><p>记录必要运行信息后不调用模型。群聊还会判断是否需要 @ 机器人、是否允许 AI。</p></article></div>
         </div>

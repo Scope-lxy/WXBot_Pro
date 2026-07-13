@@ -7,7 +7,6 @@ from pathlib import Path
 
 from feature import friend_request
 from feature.material_outreach_storage import MaterialOutreachStorage
-from feature.moments_tasks import merge_moments_task_storage, recover_interrupted_moments_task
 from feature.scheduled_message_tasks import (
     merge_scheduled_message_task_storage,
     recover_interrupted_scheduled_message_task,
@@ -96,59 +95,6 @@ os._exit(91)
                 if delivery_status:
                     records = task["last_result"]["delivery_records"]
                     self.assertEqual(records[0]["status"], delivery_status)
-
-    def test_moments_process_exit_matrix(self):
-        script = """
-import os
-from datetime import datetime
-from feature.moments_tasks import (
-    mark_moments_task_running,
-    normalize_moments_task,
-    queue_moments_task,
-    split_moments_task_storage,
-)
-from feature.task_workbench_storage import TaskWorkbenchStorage
-
-phase = os.environ['WXBOT_FAULT_PHASE']
-now = datetime(2026, 7, 11, 11, 0, 0)
-task = queue_moments_task({'id': 'moment-1', 'enabled': True, 'raw_text': 'fault-test'}, mode='immediate', now=now)
-if phase != 'before_call':
-    task = mark_moments_task_running(task, now=now)
-    task['execution_snapshot'] = {'run_id': 'run-1', 'content_summary': 'fault-test'}
-if phase == 'after_done':
-    task = normalize_moments_task({
-        **task,
-        'status': 'executed',
-        'enabled': False,
-        'execute_after': '',
-        'executed_at': '2026-07-11T11:01:00',
-        'execution_result': 'success',
-        'execution_message': '朋友圈已执行',
-    }, now=now)
-definition, runtime, history = split_moments_task_storage(task, now=now)
-storage = TaskWorkbenchStorage('.', 'wxid_test', 'moments')
-storage.save_tasks([definition])
-storage.save_runtime({'moment-1': runtime})
-storage.save_history({'moment-1': history})
-os._exit(91)
-"""
-        expected = {
-            "before_call": ("pending", ""),
-            "inside_call": ("pending_confirm", "uncertain"),
-            "after_done": ("executed", "success"),
-        }
-        for phase, (status, result_type) in expected.items():
-            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
-                self._crash(script, tmp, phase)
-                storage = TaskWorkbenchStorage(tmp, "wxid_test", "moments")
-                task = merge_moments_task_storage(
-                    storage.load_tasks()[0],
-                    storage.load_runtime().get("moment-1"),
-                    storage.load_history().get("moment-1"),
-                )
-                task = recover_interrupted_moments_task(task)
-                self.assertEqual(task["status"], status)
-                self.assertEqual(task["execution_result"], result_type)
 
     def test_material_outreach_process_exit_matrix(self):
         script = """

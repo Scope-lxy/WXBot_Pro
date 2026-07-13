@@ -45,7 +45,6 @@ class UIIntentKind(str, Enum):
     CONTACT_START = "contact_start"
     CONTACT_RECOVER = "contact_recover"
     MAIN_WINDOW = "main_window"
-    MOMENTS = "moments"
     CONTACT_EDIT = "contact_edit"
     RELATIONSHIP_SCAN = "relationship_scan"
     FRIEND_REQUEST = "friend_request"

@@ -34,7 +34,6 @@ DEFAULT_CONFIG = {
     "scheduled_targets": 3,
     "material_targets": 3,
     "scheduled_message_text": "【WXBot 冲突测试】定时消息，请忽略。",
-    "moments_text": "【WXBot 冲突测试】朋友圈测试，请忽略。",
     "contact_refresh_mode": "test",
     "contact_refresh_start_name": "",
     "task_timeout_seconds": 240,
@@ -164,56 +163,23 @@ def build_material_outreach_task(
     }
 
 
-def build_moments_task(*, text: str, delay_seconds: int, phase_label: str) -> dict[str, Any]:
-    run_at, _run_day = _future_time_parts(delay_seconds)
-    content = f"{text} [{phase_label}]"
-    return {
-        "id": _unique_task_id("moments"),
-        "source": "ui_conflict_test",
-        "file_storage_mode": "direct",
-        "enabled": True,
-        "status": "pending",
-        "raw_text": content,
-        "images": [],
-        "copy_mode": "original",
-        "publish_rule": "fixed",
-        "publish_time": run_at.strftime("%Y-%m-%dT%H:%M"),
-        "publish_window": "00:00 - 23:59",
-        "visibility_type": "all",
-        "tags": [],
-        "candidates": [],
-        "selected_caption": content,
-        "ai_generation_status": "idle",
-        "ai_generation_error": "",
-        "execute_after": _iso_seconds(run_at),
-        "queued_at": datetime.now().replace(microsecond=0).isoformat(),
-        "queued_mode": "queue",
-        "executed_at": "",
-        "execution_result": "",
-        "execution_message": "",
-        "execution_snapshot": {},
-        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-
 @dataclass(frozen=True)
-class TestPhase:
+class ConflictTestPhase:
     key: str
     label: str
     delay_seconds: int
     include_contact_refresh: bool = False
 
 
-def build_default_phases(config: dict[str, Any]) -> list[TestPhase]:
+def build_default_phases(config: dict[str, Any]) -> list[ConflictTestPhase]:
     return [
-        TestPhase(
+        ConflictTestPhase(
             key="tasks_only",
             label="任务互测",
             delay_seconds=int(config.get("task_only_delay_seconds", 6) or 6),
             include_contact_refresh=False,
         ),
-        TestPhase(
+        ConflictTestPhase(
             key="with_contact_refresh",
             label="任务+通讯录维护",
             delay_seconds=int(config.get("maintenance_overlap_delay_seconds", 4) or 4),
@@ -289,13 +255,11 @@ class PanelClient:
         wx_id: str,
         scheduled_tasks: list[dict[str, Any]],
         material_tasks: list[dict[str, Any]],
-        moments_tasks: list[dict[str, Any]],
     ) -> dict[str, Any]:
         payload = {
             "task_scope_wx_id": wx_id,
             "scheduled_message_task_list": scheduled_tasks,
             "material_outreach_list": material_tasks,
-            "moments_task_list": moments_tasks,
         }
         return self.post_json("/save_config", payload)
 
@@ -314,7 +278,7 @@ def _task_scope_wx_id(client: PanelClient) -> str:
 
 def _load_task_backups(client: PanelClient, wx_id: str) -> dict[str, list[dict[str, Any]]]:
     backups: dict[str, list[dict[str, Any]]] = {}
-    for module in ("scheduled_message", "material_outreach", "moments"):
+    for module in ("scheduled_message", "material_outreach"):
         payload = client.get_task_payload(module, wx_id=wx_id)
         tasks = payload.get("tasks") if isinstance(payload.get("tasks"), list) else []
         backups[module] = tasks
@@ -333,7 +297,6 @@ def _restore_backups(client: PanelClient, wx_id: str, backup: dict[str, Any]) ->
         wx_id=wx_id,
         scheduled_tasks=list(backup.get("scheduled_message") or []),
         material_tasks=list(backup.get("material_outreach") or []),
-        moments_tasks=list(backup.get("moments") or []),
     )
 
 
@@ -379,7 +342,6 @@ def _phase_done(client: PanelClient, wx_id: str, task_ids: dict[str, str]) -> tu
     module_runtime = {
         "scheduled_message": client.get_task_runtime("scheduled_message", wx_id=wx_id),
         "material_outreach": client.get_task_runtime("material_outreach", wx_id=wx_id),
-        "moments": client.get_task_runtime("moments", wx_id=wx_id),
     }
     executions: dict[str, Any] = {}
     for module, task_id in task_ids.items():
@@ -414,7 +376,6 @@ def _interesting_logs(logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "通讯录维护",
         "定时消息",
         "素材转发",
-        "朋友圈",
         "Find Control Timeout",
         "失败",
         "WARNING",
@@ -433,7 +394,7 @@ def run_phase(
     *,
     wx_id: str,
     config: dict[str, Any],
-    phase: TestPhase,
+    phase: ConflictTestPhase,
 ) -> dict[str, Any]:
     scheduled_task = build_scheduled_message_task(
         contacts=list(config.get("contacts") or []),
@@ -448,23 +409,16 @@ def run_phase(
         target_count=int(config.get("material_targets", 3) or 3),
         phase_label=phase.label,
     )
-    moments_task = build_moments_task(
-        text=_clean_text(config.get("moments_text")) or DEFAULT_CONFIG["moments_text"],
-        delay_seconds=phase.delay_seconds,
-        phase_label=phase.label,
-    )
     client.save_task_lists(
         wx_id=wx_id,
         scheduled_tasks=[scheduled_task],
         material_tasks=[material_task],
-        moments_tasks=[moments_task],
     )
 
     log_after_id = _latest_log_id(client)
     task_ids = {
         "scheduled_message": _clean_text(scheduled_task.get("id")),
         "material_outreach": _clean_text(material_task.get("id")),
-        "moments": _clean_text(moments_task.get("id")),
     }
     refresh_thread = None
     refresh_result: dict[str, Any] = {}

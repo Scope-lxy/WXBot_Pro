@@ -11,10 +11,7 @@ from core.logger import log
 
 
 class ReplyCountStore:
-    """
-    私聊回复计数器管理类。
-    负责持久化每个用户的 AI 回复次数、超限通知状态和 API 错误通知状态。
-    """
+    """持久化私聊好友及群聊成员的回复次数与一次性通知状态。"""
 
     DEFAULT_DATA = {"users": {}}
 

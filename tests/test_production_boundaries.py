@@ -101,10 +101,8 @@ class ProductionBoundaryTests(unittest.TestCase):
         self.assertNotIn("class _WechatActionLockedChat", text)
         self.assertNotIn("_chat_send_locks", text)
 
-    def test_moments_and_contact_edit_have_no_business_thread_ui_fallback(self):
-        core_text = (ROOT / "wxbot_core.py").read_text(encoding="utf-8")
+    def test_contact_edit_has_no_business_thread_ui_fallback(self):
         contacts_text = (ROOT / "feature" / "contacts.py").read_text(encoding="utf-8")
-        self.assertNotIn("self.wx.Moments(", core_text)
         self.assertNotIn("bot.wx.EditFriendInfo(", contacts_text)
         self.assertNotIn('getattr(bot.wx, "ChatWith"', contacts_text)
 

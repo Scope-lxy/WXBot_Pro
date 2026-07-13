@@ -4,9 +4,20 @@ import tempfile
 import unittest
 
 from core.wxbot_config import WXBotConfig
+from core.prompt_system import PromptSystem
 
 
 class WXBotConfigLegacyPromptTests(unittest.TestCase):
+    def test_chat_memory_protects_the_same_count_as_recent_history(self):
+        system = PromptSystem(
+            {
+                "memory_context_count": 37,
+            },
+            state_dir="unused",
+        )
+
+        self.assertEqual(system.memory_extractor.protected_recent_count, 37)
+
     def test_memory_context_count_allows_up_to_200(self):
         original_cwd = os.getcwd()
         with tempfile.TemporaryDirectory() as temp_dir:
