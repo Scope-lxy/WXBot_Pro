@@ -1,17 +1,20 @@
-"""Chat memory persistence helpers."""
+"""Compatibility facade for account-scoped SQLite chat history."""
 
-import json
+from __future__ import annotations
+
 import hashlib
+import json
 import os
 import re
-import tempfile
-import threading
+import time
+import uuid
 from datetime import datetime
+from pathlib import Path
 
 from core.account_storage import account_area_dir
-from core.atomic_storage import replace_with_retry
-from core.message_pipeline import split_quoted_image_message
 from core.memory_context_repair import build_repair_plan, unique_message_key
+from core.message_pipeline import split_quoted_image_message
+from core.message_store import MessageStore
 
 
 WINDOWS_RESERVED_NAMES = {
@@ -20,21 +23,7 @@ WINDOWS_RESERVED_NAMES = {
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 }
 INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-
-
-def _atomic_write_json(path, value, *, indent=2):
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as file:
-            json.dump(value, file, ensure_ascii=False, indent=indent)
-            file.flush()
-            os.fsync(file.fileno())
-        replace_with_retry(temp_path, path)
-    finally:
-        if os.path.exists(temp_path):
-            os.unlink(temp_path)
+LEGACY_MEMORY_MIGRATION_KEY = "legacy-memory-json-v1"
 
 
 def normalize_memory_chat_name(chat_name):
@@ -86,20 +75,17 @@ def find_memory_chat_dir(base_path, wx_id, chat_name):
 
 
 class MemoryManager:
-    """
-    Store chat messages per window and provide recent context for AI requests.
-    Storage path: {base_path}/accounts/{wx_id}/memory/{storage_name}/{storage_name}_memory.json
-    """
+    """Keep the legacy memory API while SQLite owns all message facts."""
 
-    def __init__(self, wx_id, base_path, chat_name_resolver=None):
+    def __init__(self, wx_id, base_path, chat_name_resolver=None, message_store=None):
         self.wx_id = wx_id
         self.base_path = base_path
         self.chat_name_resolver = chat_name_resolver
-        self._locks = {}
-        self._locks_guard = threading.Lock()
+        self.message_store = message_store or MessageStore(base_path, wx_id)
+        self._migrate_legacy_json_once()
 
     def resolve_chat_name(self, chat_name):
-        resolver = getattr(self, "chat_name_resolver", None)
+        resolver = self.chat_name_resolver
         if callable(resolver):
             try:
                 resolved = normalize_memory_chat_name(resolver(chat_name))
@@ -109,55 +95,15 @@ class MemoryManager:
                 pass
         return normalize_memory_chat_name(chat_name)
 
-    def _get_lock(self, chat_name):
-        key = self.resolve_chat_name(chat_name)
-        with self._locks_guard:
-            lock = self._locks.get(key)
-            if lock is None:
-                lock = threading.Lock()
-                self._locks[key] = lock
-            return lock
-
-    def _write_original_name(self, dir_path, chat_name):
-        name_path = os.path.join(dir_path, "name.json")
-        raw_name = normalize_memory_chat_name(chat_name)
-        try:
-            current = read_memory_original_name(dir_path, "")
-            if current == raw_name:
-                return
-            _atomic_write_json(name_path, {"name": raw_name})
-        except Exception:
-            pass
-
-    def _get_memory_path(self, chat_name, create=True):
-        chat_name = self.resolve_chat_name(chat_name)
-        storage_name = resolve_memory_storage_name(chat_name)
-        dir_path = os.path.join(account_area_dir(self.base_path, self.wx_id, "memory", create=create), storage_name)
-        if not create:
-            found_storage_name, found_dir_path = find_memory_chat_dir(self.base_path, self.wx_id, chat_name)
-            return os.path.join(found_dir_path, f"{found_storage_name}_memory.json")
-        os.makedirs(dir_path, exist_ok=True)
-        self._write_original_name(dir_path, chat_name)
-        return os.path.join(dir_path, f"{storage_name}_memory.json")
-
-    def _find_existing_memory_file(self, chat_name):
-        chat_name = self.resolve_chat_name(chat_name)
-        storage_name, dir_path = find_memory_chat_dir(self.base_path, self.wx_id, chat_name)
-        preferred = os.path.join(dir_path, f"{storage_name}_memory.json")
-        if os.path.exists(preferred):
-            return preferred
-        try:
-            for filename in os.listdir(dir_path):
-                if filename.endswith("_memory.json"):
-                    return os.path.join(dir_path, filename)
-        except OSError:
-            pass
-        return preferred
-
     @staticmethod
     def _normalize_message_time(message_time=None):
         if isinstance(message_time, datetime):
             return message_time.strftime("%Y/%m/%d %H:%M:%S")
+        if isinstance(message_time, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(message_time)).strftime("%Y/%m/%d %H:%M:%S")
+            except (OSError, OverflowError, ValueError):
+                pass
         if isinstance(message_time, str):
             message_time = message_time.strip()
             if message_time:
@@ -180,33 +126,156 @@ class MemoryManager:
                 pass
         return None
 
-    def _append_message_in_order(self, messages, entry, recent_count=5):
-        current_dt = self._parse_message_time(entry.get("time"))
-        if current_dt is None or not messages:
-            messages.append(entry)
-            return messages
+    @classmethod
+    def _received_at(cls, message_time, fallback=None):
+        parsed = cls._parse_message_time(message_time)
+        return parsed.timestamp() if parsed else float(time.time() if fallback is None else fallback)
 
-        recent_start = max(0, len(messages) - recent_count)
-        recent_messages = messages[recent_start:]
-        has_later_recent = False
-        for item in recent_messages:
-            item_dt = self._parse_message_time(item.get("time"))
-            if item_dt and item_dt > current_dt:
-                has_later_recent = True
-                break
+    @staticmethod
+    def _message_image_paths(entry):
+        entry = entry if isinstance(entry, dict) else {}
+        image_paths = entry.get("image_paths")
+        if isinstance(image_paths, list):
+            paths = [str(path or "").strip() for path in image_paths if str(path or "").strip()]
+            if paths:
+                return paths
+        raw = str(entry.get("content", "") or "").strip()
+        if str(entry.get("type", "") or "").strip().lower() == "image":
+            return [raw] if raw and raw != "[图片]" else []
+        if not raw:
+            return []
+        _text, paths = split_quoted_image_message(raw)
+        return [str(path).strip() for path in paths if str(path or "").strip()]
 
-        if not has_later_recent:
-            messages.append(entry)
-            return messages
+    @classmethod
+    def _normalize_entry(cls, entry):
+        entry = entry if isinstance(entry, dict) else {}
+        msg_type = str(entry.get("type", "text") or "text").strip() or "text"
+        raw_content = str(entry.get("content", "") or "")
+        image_paths = cls._message_image_paths(entry)
+        content = "[图片]" if msg_type.lower() == "image" else raw_content
+        normalized = {
+            "time": cls._normalize_message_time(entry.get("time")),
+            "type": msg_type,
+            "attr": str(entry.get("attr", "") or ""),
+            "sender": str(entry.get("sender", "") or ""),
+            "content": content,
+        }
+        source = str(entry.get("source", "") or "").strip()
+        if source:
+            normalized["source"] = source
+        if image_paths:
+            normalized["image_paths"] = image_paths
+        raw_notes = entry.get("visual_notes")
+        raw_notes = raw_notes if isinstance(raw_notes, list) else []
+        raw_notes = [str(note or "").strip() for note in raw_notes]
+        if image_paths:
+            notes = [
+                raw_notes[index] if index < len(raw_notes) else ""
+                for index in range(len(image_paths))
+            ]
+        else:
+            notes = [note for note in raw_notes if note]
+        fallback_note = str(entry.get("visual_note", "") or "").strip()
+        if fallback_note and not any(notes):
+            notes = [fallback_note]
+        if any(notes):
+            normalized["visual_notes"] = notes
+            normalized["visual_note"] = next(note for note in notes if note)
+        return normalized
 
-        sortable_recent = []
-        for idx, item in enumerate(recent_messages):
-            item_dt = self._parse_message_time(item.get("time")) or datetime.max
-            sortable_recent.append((item_dt, idx, item))
-        sortable_recent.append((current_dt, len(recent_messages), entry))
-        sortable_recent.sort(key=lambda item: (item[0], item[1]))
-        messages[recent_start:] = [item for _, _, item in sortable_recent]
-        return messages
+    @staticmethod
+    def _direction(attr):
+        attr = str(attr or "").strip().lower()
+        if attr == "self":
+            return "manual_self"
+        if attr in {"friend", "system"}:
+            return attr
+        return "unknown"
+
+    def _store_entry(self, conversation, entry, *, chat_type, event_id, fallback_time=None):
+        metadata = {
+            key: entry[key]
+            for key in ("source", "image_paths", "visual_notes", "visual_note")
+            if key in entry
+        }
+        return {
+            "event_id": event_id,
+            "conversation": conversation,
+            "chat_type": str(chat_type or "private"),
+            "direction": self._direction(entry.get("attr")),
+            "sender": entry.get("sender", ""),
+            "content": entry.get("content", ""),
+            "original_content": entry.get("content", ""),
+            "message_type": entry.get("type", "text"),
+            "native_attr": entry.get("attr", ""),
+            "native_time": entry.get("time", ""),
+            "received_at": self._received_at(entry.get("time"), fallback_time),
+            "metadata": metadata,
+        }
+
+    @staticmethod
+    def _event_id(prefix, value=None):
+        if value is None:
+            return f"evt_{prefix}_{uuid.uuid4().hex}"
+        digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+        return f"evt_{prefix}_{digest}"
+
+    def _legacy_memory_files(self):
+        base = Path(account_area_dir(self.base_path, self.wx_id, "memory"))
+        if not base.is_dir():
+            return []
+        result = []
+        directories = (path for path in base.iterdir() if path.is_dir())
+        for directory in sorted(directories, key=lambda path: path.name):
+            preferred = directory / f"{directory.name}_memory.json"
+            candidates = sorted(directory.glob("*_memory.json"))
+            path = preferred if preferred.is_file() else (candidates[0] if candidates else None)
+            if path is not None:
+                result.append((read_memory_original_name(str(directory), directory.name), path))
+        return result
+
+    def _migrate_legacy_json_once(self):
+        if self.message_store.migration_completed(LEGACY_MEMORY_MIGRATION_KEY):
+            return
+        imported = []
+        fallback = time.time()
+        sequence = 0
+        for raw_conversation, path in self._legacy_memory_files():
+            conversation = self.resolve_chat_name(raw_conversation)
+            if not conversation:
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, list):
+                continue
+            for index, raw_entry in enumerate(payload):
+                if not isinstance(raw_entry, dict):
+                    continue
+                entry = self._normalize_entry(raw_entry)
+                identity = json.dumps(
+                    [conversation, path.name, index, entry],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                imported.append(
+                    self._store_entry(
+                        conversation,
+                        entry,
+                        chat_type="private",
+                        event_id=self._event_id("legacy", identity),
+                        fallback_time=fallback + sequence / 1000000,
+                    )
+                )
+                sequence += 1
+        self.message_store.import_history_once(
+            LEGACY_MEMORY_MIGRATION_KEY,
+            imported,
+            now=fallback,
+        )
 
     def save_message(
         self,
@@ -220,51 +289,30 @@ class MemoryManager:
         image_paths=None,
         visual_notes=None,
     ):
-        path = self._get_memory_path(chat_name)
-        normalized_msg_type = str(msg_type).strip().lower()
-        normalized_image_paths = [
-            str(path or "").strip()
-            for path in (image_paths or [])
-            if str(path or "").strip()
-        ]
-        raw_visual_notes = [str(note or "").strip() for note in (visual_notes or [])]
-        if normalized_image_paths:
-            normalized_visual_notes = [
-                raw_visual_notes[index] if index < len(raw_visual_notes) else ""
-                for index, _path in enumerate(normalized_image_paths)
-            ]
-        else:
-            normalized_visual_notes = [note for note in raw_visual_notes if note]
-        normalized_content = str(content)
-        if normalized_msg_type == "image":
-            normalized_content = "[图片]"
-        entry = {
-            "time": self._normalize_message_time(message_time),
-            "type": str(msg_type),
-            "attr": str(msg_attr),
-            "sender": str(sender),
-            "content": normalized_content,
-        }
-        if normalized_image_paths:
-            entry["image_paths"] = normalized_image_paths
-        if any(normalized_visual_notes):
-            entry["visual_notes"] = normalized_visual_notes
-            entry["visual_note"] = next((note for note in normalized_visual_notes if note), "")
-        with self._get_lock(chat_name):
-            if os.path.exists(path):
-                try:
-                    with open(path, "r", encoding="utf-8") as file:
-                        messages = json.load(file)
-                    if not isinstance(messages, list):
-                        messages = []
-                except Exception:
-                    messages = []
-            else:
-                messages = []
-            messages = self._append_message_in_order(messages, entry, recent_count=5)
-            if len(messages) > max_count:
-                messages = messages[-max_count:]
-            _atomic_write_json(path, messages)
+        del max_count
+        conversation = self.resolve_chat_name(chat_name)
+        entry = self._normalize_entry(
+            {
+                "time": message_time,
+                "type": msg_type,
+                "attr": msg_attr,
+                "sender": sender,
+                "content": content,
+                "image_paths": image_paths or [],
+                "visual_notes": visual_notes or [],
+            }
+        )
+        self.message_store.import_history_once(
+            None,
+            [
+                self._store_entry(
+                    conversation,
+                    entry,
+                    chat_type="private",
+                    event_id=self._event_id("memory"),
+                )
+            ],
+        )
 
     def append_missing_messages(
         self,
@@ -277,245 +325,127 @@ class MemoryManager:
         chat_type="private",
         anchor_recent_count=5,
     ):
-        path = self._get_memory_path(chat_name)
+        conversation = self.resolve_chat_name(chat_name)
         normalized_entries = []
         for entry in entries or []:
             if not isinstance(entry, dict):
                 continue
-            msg_type = str(entry.get("type", "text") or "text").strip() or "text"
-            content = str(entry.get("content", "") or "")
-            if msg_type.lower() == "image":
-                content = "[图片]"
-            normalized = {
-                "time": self._normalize_message_time(entry.get("time")),
-                "type": msg_type,
-                "attr": str(entry.get("attr", "") or ""),
-                "sender": str(entry.get("sender", "") or ""),
-                "content": content,
-            }
-            source = str(entry.get("source", "") or "").strip()
-            if source:
-                normalized["source"] = source
-            if bool(entry.get("time_inferred")):
-                normalized["time_inferred"] = True
-            if isinstance(entry.get("image_paths"), list):
-                image_paths = [str(path or "").strip() for path in entry.get("image_paths") if str(path or "").strip()]
-                if image_paths:
-                    normalized["image_paths"] = image_paths
-            if isinstance(entry.get("visual_notes"), list):
-                visual_notes = [str(note or "").strip() for note in entry.get("visual_notes")]
-                if any(visual_notes):
-                    normalized["visual_notes"] = visual_notes
-                    normalized["visual_note"] = next((note for note in visual_notes if note), "")
+            normalized = self._normalize_entry(entry)
             if unique_message_key(normalized):
                 normalized_entries.append(normalized)
+
+        history_limit = self._positive_count(max_count, fallback=5000)
+        messages = self.get_messages(conversation, history_limit)
         if not normalized_entries:
-            return {"added": 0, "total": len(self.get_messages(chat_name, max_count))}
+            return {"added": 0, "total": len(messages)}
 
-        with self._get_lock(chat_name):
-            if os.path.exists(path):
-                try:
-                    with open(path, "r", encoding="utf-8") as file:
-                        messages = json.load(file)
-                    if not isinstance(messages, list):
-                        messages = []
-                except Exception:
-                    messages = []
-            else:
-                messages = []
+        repair_plan = None
+        if reconcile_visible_snapshot:
+            repair_plan = build_repair_plan(
+                messages,
+                normalized_entries,
+                anchor_recent_count=anchor_recent_count,
+                chat_type=chat_type,
+            )
+            normalized_entries = (
+                repair_plan.messages_to_append
+                if repair_plan.anchor_found or not require_anchor
+                else []
+            )
 
-            repair_plan = None
-            if reconcile_visible_snapshot:
-                repair_plan = build_repair_plan(
-                    messages,
-                    normalized_entries,
-                    anchor_recent_count=anchor_recent_count,
+        existing_keys = {
+            unique_message_key(item)
+            for item in messages
+            if isinstance(item, dict) and unique_message_key(item)
+        }
+        indexed = list(enumerate(normalized_entries))
+        indexed.sort(
+            key=lambda pair: (
+                self._parse_message_time(pair[1].get("time")) or datetime.max,
+                pair[0],
+            )
+        )
+        to_append = []
+        for _index, entry in indexed:
+            key = unique_message_key(entry)
+            if not key or (not reconcile_visible_snapshot and key in existing_keys):
+                continue
+            if not reconcile_visible_snapshot:
+                existing_keys.add(key)
+            to_append.append(
+                self._store_entry(
+                    conversation,
+                    entry,
                     chat_type=chat_type,
-                )
-                normalized_entries = (
-                    repair_plan.messages_to_append
-                    if repair_plan.anchor_found or not require_anchor
-                    else []
-                )
-
-            existing_keys = {
-                unique_message_key(item)
-                for item in messages
-                if isinstance(item, dict) and unique_message_key(item)
-            }
-            added = 0
-            indexed_entries = list(enumerate(normalized_entries))
-            indexed_entries.sort(
-                key=lambda pair: (
-                    self._parse_message_time(pair[1].get("time")) or datetime.max,
-                    pair[0],
+                    event_id=self._event_id("repair"),
                 )
             )
-            normalized_entries = [entry for _, entry in indexed_entries]
-            for entry in normalized_entries:
-                entry.pop("time_inferred", None)
-                key = unique_message_key(entry)
-                if not key or (not reconcile_visible_snapshot and key in existing_keys):
-                    continue
-                messages = self._append_message_in_order(messages, entry, recent_count=10)
-                if not reconcile_visible_snapshot:
-                    existing_keys.add(key)
-                added += 1
-            try:
-                max_count = int(max_count)
-            except (TypeError, ValueError):
-                max_count = 0
-            if max_count > 0 and len(messages) > max_count:
-                messages = messages[-max_count:]
-            if added:
-                _atomic_write_json(path, messages)
-            result = {"added": added, "total": len(messages)}
-            if repair_plan is not None:
-                result.update(
-                    anchor_found=repair_plan.anchor_found,
-                    anchor_index=repair_plan.anchor_index,
-                )
-            return result
-
-    @staticmethod
-    def _message_image_paths(entry):
-        entry = entry if isinstance(entry, dict) else {}
-        msg_type = str(entry.get("type", "") or "").strip().lower()
-        image_paths = entry.get("image_paths")
-        if isinstance(image_paths, list):
-            normalized_paths = [str(path or "").strip() for path in image_paths if str(path or "").strip()]
-            if normalized_paths:
-                return normalized_paths
-        raw = str(entry.get("content", "") or "").strip()
-        if msg_type == "image":
-            return [raw] if raw and raw != "[图片]" else []
-        if not raw:
-            return []
-        _text_part, image_paths = split_quoted_image_message(raw)
-        return [path for path in image_paths if str(path or "").strip()]
+        added = self.message_store.import_history_once(None, to_append)
+        result = {
+            "added": added,
+            "total": len(self.get_messages(conversation, history_limit)),
+        }
+        if repair_plan is not None:
+            result.update(
+                anchor_found=repair_plan.anchor_found,
+                anchor_index=repair_plan.anchor_index,
+            )
+        return result
 
     def attach_visual_notes(self, chat_name, image_paths, visual_notes):
-        normalized_paths = [str(path or "").strip() for path in (image_paths or []) if str(path or "").strip()]
-        normalized_notes = [str(note or "").strip() for note in (visual_notes or [])]
-        if not normalized_paths or not any(normalized_notes):
-            return False
-        note_by_path = {
-            path: normalized_notes[index]
-            for index, path in enumerate(normalized_paths)
-            if index < len(normalized_notes) and normalized_notes[index]
-        }
-        if not note_by_path:
-            return False
-        path = self._find_existing_memory_file(chat_name)
-        if not os.path.exists(path):
-            return False
-        with self._get_lock(chat_name):
-            try:
-                with open(path, "r", encoding="utf-8") as file:
-                    messages = json.load(file)
-                if not isinstance(messages, list):
-                    return False
-            except Exception:
-                return False
+        conversation = self.resolve_chat_name(chat_name)
+        return self.message_store.attach_visual_notes(conversation, image_paths, visual_notes)
 
-            updated = False
-            matched_paths = set()
-            for entry in reversed(messages):
-                entry_paths = self._message_image_paths(entry)
-                if not entry_paths:
-                    continue
-                entry_notes = list(entry.get("visual_notes") or [])
-                merged_notes = []
-                changed = False
-                for index, entry_path in enumerate(entry_paths):
-                    existing = str(entry_notes[index] or "").strip() if index < len(entry_notes) else ""
-                    note = note_by_path.get(entry_path, existing)
-                    if note:
-                        matched_paths.add(entry_path)
-                    merged_notes.append(note)
-                    if note != existing:
-                        changed = True
-                if not any(str(note or "").strip() for note in merged_notes):
-                    continue
-                primary_note = next((note for note in merged_notes if str(note or "").strip()), "")
-                if entry.get("type") == "image" and entry.get("content") != "[图片]":
-                    entry["content"] = "[图片]"
-                    changed = True
-                if entry.get("image_paths") != entry_paths:
-                    entry["image_paths"] = entry_paths
-                    changed = True
-                if entry.get("visual_note") != primary_note:
-                    entry["visual_note"] = primary_note
-                    changed = True
-                if entry.get("visual_notes") != merged_notes:
-                    entry["visual_notes"] = merged_notes
-                    changed = True
-                if changed:
-                    updated = True
-                if matched_paths >= set(note_by_path):
-                    break
-            if not updated:
-                return False
-            _atomic_write_json(path, messages)
-            return True
+    @staticmethod
+    def _positive_count(value, *, fallback=0):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return fallback
+        return value if value > 0 else fallback
+
+    @classmethod
+    def _legacy_message(cls, event):
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        native_time = str(event.get("native_time", "") or "").strip()
+        if native_time:
+            message_time = cls._normalize_message_time(native_time)
+        else:
+            message_time = datetime.fromtimestamp(float(event["received_at"])).strftime("%Y/%m/%d %H:%M:%S")
+        attr = str(event.get("native_attr", "") or "")
+        if not attr:
+            attr = "self" if event.get("direction") in {"manual_self", "bot_echo"} else str(event.get("direction", "") or "")
+        item = {
+            "event_id": str(event.get("event_id", "") or ""),
+            "time": message_time,
+            "type": str(event.get("message_type", "text") or "text"),
+            "attr": attr,
+            "sender": str(event.get("sender", "") or ""),
+            "content": str(event.get("content", "") or ""),
+        }
+        for key in ("source", "image_paths", "visual_notes", "visual_note"):
+            if key in metadata:
+                item[key] = metadata[key]
+        return item
 
     def get_messages(self, chat_name, count):
-        path = self._find_existing_memory_file(chat_name)
-        if not os.path.exists(path):
+        count = self._positive_count(count)
+        if not count:
             return []
-        try:
-            count = int(count)
-        except (TypeError, ValueError):
-            count = 0
-        if count <= 0:
-            return []
-        try:
-            with open(path, "r", encoding="utf-8") as file:
-                messages = json.load(file)
-            if isinstance(messages, list):
-                return messages[-count:]
-        except Exception:
-            pass
-        return []
+        events = self.message_store.history(
+            self.resolve_chat_name(chat_name),
+            count,
+            chat_type=None,
+        )
+        return [self._legacy_message(event) for event in events]
 
     def list_chat_names(self):
-        base = account_area_dir(self.base_path, self.wx_id, "memory")
-        if not os.path.isdir(base):
-            return []
-        names = []
-        for chat_dir in os.listdir(base):
-            chat_path = os.path.join(base, chat_dir)
-            if not os.path.isdir(chat_path):
-                continue
-            try:
-                has_memory_file = any(filename.endswith("_memory.json") for filename in os.listdir(chat_path))
-            except OSError:
-                has_memory_file = False
-            if has_memory_file:
-                names.append(read_memory_original_name(chat_path, chat_dir))
-        return sorted(set(name for name in names if str(name or "").strip()))
+        return self.message_store.list_conversations()
 
     def clear_messages(self, chat_name):
-        path = self._find_existing_memory_file(chat_name)
-        if not os.path.exists(path):
-            path = self._get_memory_path(chat_name)
-        with self._get_lock(chat_name):
-            try:
-                _atomic_write_json(path, [], indent=None)
-            except Exception:
-                pass
+        self.message_store.delete_conversation(self.resolve_chat_name(chat_name))
 
     def clear_all_messages(self):
-        count = 0
-        base = account_area_dir(self.base_path, self.wx_id, "memory")
-        if not os.path.exists(base):
-            return count
-        for chat_dir in os.listdir(base):
-            memory_file = os.path.join(base, chat_dir, f"{chat_dir}_memory.json")
-            if os.path.exists(memory_file):
-                try:
-                    _atomic_write_json(memory_file, [], indent=None)
-                    count += 1
-                except Exception:
-                    pass
+        count = len(self.list_chat_names())
+        self.message_store.clear_history()
         return count

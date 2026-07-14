@@ -58,7 +58,7 @@ from core.account_storage import (
 from core.config import coerce_float_range, sanitize_api_capability_map, set_api_capability
 from core.config import api_supports_capability
 from core.runtime_metrics import RuntimeMetricsStore
-from core.memory import read_memory_original_name, resolve_memory_storage_name
+from core.memory import MemoryManager, resolve_memory_storage_name
 from core.chat_history_format import format_memory_record_for_display
 from core.contact_profiles import (
     contact_display_name,
@@ -328,8 +328,6 @@ def normalize_voice_reply_config(config):
     ) or list(DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
     config.setdefault('chat_voice_reply_limit_count', 50)
     config.setdefault('chat_voice_reply_limit_hours', 24)
-    config.pop('chat_voice_session_minutes', None)
-    config.pop('chat_voice_session_turns', None)
     config.setdefault('group_voice_reply_switch', False)
     config.setdefault('group_voice_recognition_switch', False)
     group_trigger_mode_source = config.get('group_voice_reply_trigger_modes')
@@ -367,6 +365,10 @@ def _account_area_dir(wx_id, area, *, create=False, base_dir=None):
 
 def _account_memory_dir(wx_id, *, create=False):
     return _account_area_dir(wx_id, 'memory', create=create, base_dir=MEMORY_BASE)
+
+
+def _account_memory_manager(wx_id):
+    return MemoryManager(wx_id, MEMORY_BASE)
 
 
 def _account_chat_memory_dir(wx_id, *, create=False):
@@ -2162,11 +2164,6 @@ def dashboard():
     config.setdefault('group_image_recognition_switch', False)  # 群组图片识别开关
     config.setdefault('group_voice_recognition_switch', False)  # 群组语音转文字开关
     config.setdefault('group_image_recognition_api',   0)        # 群组识别接口索引
-    config.pop('custom_forward_switch', None)
-    config.pop('custom_forward_list', None)
-    config.pop('moments_api_index', None)
-    config.pop('moments_task_list', None)
-
     config.setdefault('siver_panel_enabled', False)
     config.setdefault('siver_panel_activation_code', '')
     config.setdefault('siver_panel_activation_code_applied_hash', '')
@@ -2195,7 +2192,6 @@ def dashboard():
     config.setdefault('chat_tts_map', {})
     config.setdefault('group_prompt_map', {})
     config.setdefault('chat_memory_switch', True)
-    config.pop('chat_memory_exclude_list', None)
     config.setdefault('chat_memory_message_threshold', 100)
     config.setdefault('chat_memory_interval_hours', 12)
     config.setdefault('api_error_reply', '')               # 接口调用失败时的固定回复，留空=静默
@@ -3226,17 +3222,6 @@ def save_config(config_data):
                     account_wx_id,
                 )
             merged_config.pop('material_outreach_list', None)
-        for removed_field in (
-            'admin',
-            'custom_forward_switch',
-            'custom_forward_list',
-            'moments_api_index',
-            'moments_task_list',
-            'chat_memory_exclude_list',
-            'chat_voice_session_minutes',
-            'chat_voice_session_turns',
-        ):
-            merged_config.pop(removed_field, None)
         merged_config.pop('task_scope_wx_id', None)
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(merged_config, f, ensure_ascii=False, indent=4)
@@ -4890,40 +4875,8 @@ def _chat_memory_merge_incoming_memories(store, chat_name, wx_id, incoming_memor
 
 
 def _chat_memory_messages_for_user(wx_id, chat_name):
-    storage_name = resolve_memory_storage_name(chat_name)
-    memory_base = _account_memory_dir(wx_id)
-    memory_path = os.path.join(memory_base, storage_name, f'{storage_name}_memory.json')
-    try:
-        if not os.path.exists(memory_path):
-            chat_dir = os.path.join(memory_base, storage_name)
-            if not os.path.isdir(chat_dir):
-                return []
-            mem_files = [f for f in os.listdir(chat_dir) if f.endswith('_memory.json')]
-            if not mem_files:
-                return []
-            memory_path = os.path.join(chat_dir, mem_files[0])
-        with open(memory_path, 'r', encoding='utf-8') as f:
-            messages = json.load(f)
-        return messages if isinstance(messages, list) else []
-    except Exception:
-        return []
-
-
-def _memory_chat_dir_has_messages(chat_path):
-    try:
-        mem_files = [f for f in os.listdir(chat_path) if f.endswith('_memory.json')]
-    except OSError:
-        return False
-    for filename in mem_files:
-        path = os.path.join(chat_path, filename)
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                messages = json.load(f)
-            if isinstance(messages, list) and len(messages) > 0:
-                return True
-        except Exception:
-            continue
-    return False
+    wx_id = _validate_known_account_wx_id(wx_id, base_dir=MEMORY_BASE)
+    return _account_memory_manager(wx_id).get_messages(chat_name, sys.maxsize)
 
 
 def _chat_memory_wx_ids():
@@ -6386,22 +6339,12 @@ def backup_now():
 def memory_list():
     """返回所有微信号目录"""
     try:
-        return jsonify({'status': 'success', **_account_picker_payload(MEMORY_BASE)})
+        payload = _account_picker_payload(MEMORY_BASE)
+        for wx_id in payload['wx_ids']:
+            _account_memory_manager(wx_id)
+        return jsonify({'status': 'success', **payload})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
-
-def _safe_is_dir(parent_abs, name):
-    """os.path.isdir 在 Windows 上对末尾含 '.' 的名称会自动去掉 '.' 导致误判。
-    用 UNC 长路径前缀绕过 Windows 路径规范化，其他系统走普通逻辑。"""
-    if os.name == 'nt':
-        p = '\\\\?\\' + parent_abs + '\\' + name
-    else:
-        p = os.path.join(parent_abs, name)
-    try:
-        import stat as _stat
-        return _stat.S_ISDIR(os.stat(p).st_mode)
-    except OSError:
-        return False
 
 
 @app.route('/memory/chats/<wx_id>')
@@ -6409,18 +6352,12 @@ def _safe_is_dir(parent_abs, name):
 def memory_chats(wx_id):
     """返回指定微信号下所有窗口名"""
     try:
-        wx_path = _account_memory_dir(wx_id)
-        if not os.path.exists(wx_path):
-            return jsonify({'status': 'success', 'chats': []})
-        wx_abs = os.path.abspath(wx_path)
-        chats = []
-        for d in os.listdir(wx_path):
-            if not _safe_is_dir(wx_abs, d):
-                continue
-            chat_path = os.path.join(wx_path, d)
-            if not _memory_chat_dir_has_messages(chat_path):
-                continue
-            chats.append({'name': read_memory_original_name(chat_path, d), 'storage_name': d})
+        wx_id = _validate_known_account_wx_id(wx_id, base_dir=MEMORY_BASE)
+        manager = _account_memory_manager(wx_id)
+        chats = [
+            {'name': name, 'storage_name': resolve_memory_storage_name(name)}
+            for name in manager.list_chat_names()
+        ]
         chats.sort(key=lambda item: (
             _wechat_name_sort_key(item.get('name')),
             str(item.get('storage_name') or ''),
@@ -6434,28 +6371,15 @@ def memory_chats(wx_id):
 def memory_data(wx_id, chat_name):
     """返回指定窗口的记忆数据（JSON 列表）"""
     try:
-        dir_abs = os.path.abspath(_account_memory_dir(wx_id))
-        storage_name = resolve_memory_storage_name(chat_name)
-        if os.name == 'nt':
-            chat_dir = '\\\\?\\' + dir_abs + '\\' + storage_name
-        else:
-            chat_dir = os.path.join(dir_abs, storage_name)
-        if not os.path.exists(chat_dir):
-            return jsonify({'status': 'success', 'messages': []})
-        # 扫目录找实际的 *_memory.json 文件（Windows 可能截断目录名导致文件名与目录名不一致）
-        mem_files = [f for f in os.listdir(chat_dir) if f.endswith('_memory.json')]
-        if not mem_files:
-            return jsonify({'status': 'success', 'messages': []})
-        if os.name == 'nt':
-            file_path = '\\\\?\\' + dir_abs + '\\' + storage_name + '\\' + mem_files[0]
-        else:
-            file_path = os.path.join(chat_dir, mem_files[0])
-        with open(file_path, 'r', encoding='utf-8') as f:
-            messages = json.load(f)
-        visible_messages = [
-            format_memory_record_for_display(item) if isinstance(item, dict) else item
-            for item in (messages if isinstance(messages, list) else [])
-        ]
+        wx_id = _validate_known_account_wx_id(wx_id, base_dir=MEMORY_BASE)
+        messages = _account_memory_manager(wx_id).get_messages(chat_name, sys.maxsize)
+        visible_messages = []
+        for item in messages:
+            if isinstance(item, dict):
+                item = dict(item)
+                item.pop('event_id', None)
+                item = format_memory_record_for_display(item)
+            visible_messages.append(item)
         return jsonify({'status': 'success', 'messages': visible_messages})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
@@ -6466,16 +6390,7 @@ def memory_delete_wx(wx_id):
     """删除指定微信号的所有记忆"""
     try:
         wx_id = _validate_known_account_wx_id(wx_id, base_dir=MEMORY_BASE)
-        target_abs = os.path.abspath(_account_memory_dir(wx_id))
-        base_abs = os.path.abspath(str(account_dir(MEMORY_BASE, wx_id).parent))
-        if os.path.commonpath([base_abs, target_abs]) != base_abs:
-            return jsonify({'status': 'error', 'message': '微信号路径无效'}), 400
-        if os.name == 'nt':
-            wx_path = '\\\\?\\' + target_abs
-        else:
-            wx_path = target_abs
-        if os.path.exists(wx_path):
-            shutil.rmtree(wx_path)
+        _account_memory_manager(wx_id).clear_all_messages()
         log('SUCCESS', f'已删除微信号 {wx_id} 的所有记忆')
         return jsonify({'status': 'success', 'message': '已删除'})
     except ValueError as e:
@@ -6486,20 +6401,10 @@ def memory_delete_wx(wx_id):
 @app.route('/memory/delete_chat/<wx_id>/<chat_name>', methods=['DELETE'])
 @login_required
 def memory_delete_chat(wx_id, chat_name):
-    """删除指定窗口的记忆文件"""
+    """删除指定窗口的聊天记录"""
     try:
         wx_id = _validate_known_account_wx_id(wx_id, base_dir=MEMORY_BASE)
-        parent_abs = os.path.abspath(_account_memory_dir(wx_id))
-        storage_name = resolve_memory_storage_name(chat_name)
-        target_abs = os.path.abspath(os.path.join(parent_abs, storage_name))
-        if os.path.commonpath([parent_abs, target_abs]) != parent_abs:
-            return jsonify({'status': 'error', 'message': '聊天记录路径无效'}), 400
-        if os.name == 'nt':
-            chat_path = '\\\\?\\' + target_abs
-        else:
-            chat_path = target_abs
-        if os.path.exists(chat_path):
-            shutil.rmtree(chat_path)
+        _account_memory_manager(wx_id).clear_messages(chat_name)
         log('SUCCESS', f'已删除 {wx_id}/{chat_name} 的记忆')
         return jsonify({'status': 'success', 'message': '已删除'})
     except ValueError as e:

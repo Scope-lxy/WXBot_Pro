@@ -82,7 +82,6 @@ class ContactIdentityTests(unittest.TestCase):
             (config_dir / "config.json").write_text(json.dumps({
                 "listen_list": [old_name],
                 "global_blacklist": [old_name],
-                "chat_memory_exclude_list": [old_name],
                 "chat_prompt_map": {old_name: "人设A"},
                 "chat_api_map": {old_name: 1},
                 "chat_tts_map": {old_name: 2},

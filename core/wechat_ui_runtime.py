@@ -267,6 +267,7 @@ class WeChatUIRuntime:
             ingress_source="subwindow",
             received_at=time.time(),
         )
+        envelope._wxbot_source_batch = f"subwindow:{time.time_ns()}"
         if (
             envelope.type in {"image", "quote"}
             and self._inbound_media_enabled(conversation, envelope.type)
@@ -549,6 +550,7 @@ class WeChatUIRuntime:
         chat_type = str(result.get("chat_type") or getattr(self._client, "chat_type", "private") or "private")
         raw_messages = list(result.get("msg") or captured)
         envelopes = []
+        source_batch = f"global:{time.time_ns()}"
         for index, message in enumerate(raw_messages):
             envelope = MessageEnvelope.from_wx_message(
                 message,
@@ -556,6 +558,7 @@ class WeChatUIRuntime:
                 received_at=time.time(),
                 window_order=index,
             )
+            envelope._wxbot_source_batch = source_batch
             if payload.get("download_media") and chat_type != "group":
                 method_name = "download_quote_image" if envelope.type == "quote" else "download"
                 if envelope.type in {"image", "quote"}:
@@ -588,11 +591,13 @@ class WeChatUIRuntime:
             getter = getattr(self._client, "GetAllSubWindow", None)
             chats = list(getter() or []) if callable(getter) else list(self._listen_chats.values())
             names = []
+            current = {}
             for chat in chats:
                 name = str(getattr(chat, "who", "") or "").strip()
                 if name and name not in names:
-                    self._listen_chats[name] = chat
+                    current[name] = chat
                     names.append(name)
+            self._listen_chats = current
             return names
         if operation == "chat_with":
             name = str(payload.get("conversation") or "").strip()

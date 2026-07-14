@@ -1657,10 +1657,10 @@ html.icons-pref-local [class*=" bi-"]::before {
               </div>
               <div>
                 <label class="cfg-label">可申请时间段</label>
-                <div class="ai-moments-time-window">
-                  <input type="time" class="form-control ai-moments-control" id="friend_request_time_start" value="{{ friend_request_time_start }}">
-                  <span class="ai-moments-time-separator">-</span>
-                  <input type="time" class="form-control ai-moments-control" id="friend_request_time_end" value="{{ friend_request_time_end }}">
+                <div class="task-workbench-time-window">
+                  <input type="time" class="form-control task-workbench-control" id="friend_request_time_start" value="{{ friend_request_time_start }}">
+                  <span class="task-workbench-time-separator">-</span>
+                  <input type="time" class="form-control task-workbench-control" id="friend_request_time_end" value="{{ friend_request_time_end }}">
                 </div>
               </div>
               <div>
@@ -1694,10 +1694,10 @@ html.icons-pref-local [class*=" bi-"]::before {
         <h5 class="ui-head__title">自动加好友队列和记录</h5>
         <span class="desc ui-head__desc">查看待执行的好友申请队列，以及已经结束的申请结果</span>
       </div>
-      <div class="moments-execution-grid">
-        <section class="ai-moments-runtime-block friend-request-runtime-block" data-friend-request-runtime-card="queue">
-          <div class="ai-moments-pane-head ui-head ui-head--section">
-            <div class="ai-moments-pane-title ui-head__main">
+      <div class="task-runtime-grid">
+        <section class="task-runtime-block friend-request-runtime-block" data-friend-request-runtime-card="queue">
+          <div class="task-workbench-pane-head ui-head ui-head--section">
+            <div class="task-workbench-pane-title ui-head__main">
               <h5 class="ui-head__title">待执行</h5>
               <span class="desc" id="friend-request-candidate-desc">共 {{ friend_request_summary.get('candidate_count', 0) }} 人</span>
             </div>
@@ -1705,16 +1705,16 @@ html.icons-pref-local [class*=" bi-"]::before {
               <button type="button" class="ui-btn ui-btn--secondary ui-btn--l4" id="btn-friend-request-refresh"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
             </div>
           </div>
-          <div class="ai-moments-runtime-list friend-request-candidate-list" id="friend-request-candidate-list"></div>
+          <div class="task-runtime-list friend-request-candidate-list" id="friend-request-candidate-list"></div>
         </section>
-        <section class="ai-moments-runtime-block friend-request-runtime-block" data-friend-request-runtime-card="executions">
-          <div class="ai-moments-pane-head ui-head ui-head--section">
-            <div class="ai-moments-pane-title ui-head__main">
+        <section class="task-runtime-block friend-request-runtime-block" data-friend-request-runtime-card="executions">
+          <div class="task-workbench-pane-head ui-head ui-head--section">
+            <div class="task-workbench-pane-title ui-head__main">
               <h5 class="ui-head__title">已执行</h5>
               <span class="desc" id="friend-request-execution-desc">最近 30 条执行结果</span>
             </div>
           </div>
-          <div class="ai-moments-runtime-list friend-request-execution-list" id="friend-request-execution-list"></div>
+          <div class="task-runtime-list friend-request-execution-list" id="friend-request-execution-list"></div>
         </section>
       </div>
     </div>
@@ -1893,10 +1893,10 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
             <div>
               <label class="cfg-label">维护时间段</label>
-              <div class="ai-moments-time-window">
-                <input type="time" class="form-control ai-moments-control" id="contact_directory_auto_maintenance_window_start" value="{{ config.get('contact_directory_auto_maintenance_window_start', '00:00') }}">
-                <span class="ai-moments-time-separator">-</span>
-                <input type="time" class="form-control ai-moments-control" id="contact_directory_auto_maintenance_window_end" value="{{ config.get('contact_directory_auto_maintenance_window_end', '23:59') }}">
+              <div class="task-workbench-time-window">
+                <input type="time" class="form-control task-workbench-control" id="contact_directory_auto_maintenance_window_start" value="{{ config.get('contact_directory_auto_maintenance_window_start', '00:00') }}">
+                <span class="task-workbench-time-separator">-</span>
+                <input type="time" class="form-control task-workbench-control" id="contact_directory_auto_maintenance_window_end" value="{{ config.get('contact_directory_auto_maintenance_window_end', '23:59') }}">
               </div>
               <div class="cfg-hint">只有在这个时间段内，才会尝试自动维护；支持跨天，例如 22:00 - 07:00</div>
             </div>
@@ -2036,19 +2036,19 @@ html.icons-pref-local [class*=" bi-"]::before {
 
   <!-- ===== Tab: Scheduled Message ===== -->
   <div class="config-panel" id="tab-scheduled-message">
-    <div class="cfg-card ai-moments-card scheduled-message-card" id="scheduled-message-card">
+    <div class="cfg-card task-workbench-card scheduled-message-card" id="scheduled-message-card">
       <div class="ui-head ui-head--page">
         <i class="bi bi-chat-square-text ui-head__icon"></i>
         <h5 class="ui-head__title">定时消息</h5>
         <span class="desc ui-head__desc">创建定时消息任务，可发送文字或文件</span>
       </div>
-      <div class="ai-moments-toolbar">
-        <div class="ai-moments-status-row" id="scheduled-message-status-row">
-          <span class="ai-moments-chip ui-pill is-success" id="scheduled-message-task-count">总任务 0</span>
-          <span class="ai-moments-chip ui-pill is-success">已启用 0</span>
-          <span class="ai-moments-chip ui-pill is-danger">已停用 0</span>
-          <span class="ai-moments-chip ui-pill is-info">等待发送 0</span>
-          <span class="ai-moments-chip ui-pill is-running">发送中 0</span>
+      <div class="task-workbench-toolbar">
+        <div class="task-workbench-status-row" id="scheduled-message-status-row">
+          <span class="task-workbench-chip ui-pill is-success" id="scheduled-message-task-count">总任务 0</span>
+          <span class="task-workbench-chip ui-pill is-success">已启用 0</span>
+          <span class="task-workbench-chip ui-pill is-danger">已停用 0</span>
+          <span class="task-workbench-chip ui-pill is-info">等待发送 0</span>
+          <span class="task-workbench-chip ui-pill is-running">发送中 0</span>
         </div>
         <div class="summary-action-row">
           <select class="form-select cfg-inline-control ui-head-select task-scope-wx-select" id="scheduled-message-account-select" data-task-tab="tab-scheduled-message">
@@ -2062,18 +2062,18 @@ html.icons-pref-local [class*=" bi-"]::before {
           </select>
         </div>
       </div>
-      <div class="ai-moments-workbench">
-        {% set moments_tag_placeholder = (contact_directory_options.wx_id ~ ' 的标签') if contact_directory_options.wx_id else '当前账号的标签' %}
-        <section class="ai-moments-pane ui-workbench-pane ui-workbench-pane--list">
-          <div class="ai-moments-pane-head ui-head ui-head--section">
-            <div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">任务列表</h5><span class="desc">管理待发送的定时消息任务</span></div>
+      <div class="task-workbench-layout">
+        {% set task_tag_placeholder = (contact_directory_options.wx_id ~ ' 的标签') if contact_directory_options.wx_id else '当前账号的标签' %}
+        <section class="task-workbench-pane ui-workbench-pane ui-workbench-pane--list">
+          <div class="task-workbench-pane-head ui-head ui-head--section">
+            <div class="task-workbench-pane-title ui-head__main"><h5 class="ui-head__title">任务列表</h5><span class="desc">管理待发送的定时消息任务</span></div>
             <button type="button" class="ui-btn ui-btn--add ui-btn--l2" id="btn-add-scheduled-message-task"><i class="bi bi-plus-circle"></i> 添加任务</button>
           </div>
           <div id="scheduled_message_task_list" class="ui-workbench-scroll-body"></div>
         </section>
-        <section class="ai-moments-pane ui-workbench-pane ui-workbench-pane--detail">
-          <div class="ai-moments-pane-head ui-head ui-head--section">
-            <div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">任务详情</h5><span class="desc">选中左侧任务后在这里设置内容和发送条件</span></div>
+        <section class="task-workbench-pane ui-workbench-pane ui-workbench-pane--detail">
+          <div class="task-workbench-pane-head ui-head ui-head--section">
+            <div class="task-workbench-pane-title ui-head__main"><h5 class="ui-head__title">任务详情</h5><span class="desc">选中左侧任务后在这里设置内容和发送条件</span></div>
             <div class="scheduled-message-detail-actions ui-head__actions">
               <button type="button" class="ui-btn ui-btn--add ui-btn--l2 js-add-scheduled-message-detail-file" {% if not config.scheduled_message_task_list %}disabled{% endif %}><i class="bi bi-plus-circle"></i> 添加文件</button>
             </div>
@@ -2105,7 +2105,7 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <div class="scheduled-message-section">
                   <div class="scheduled-message-content-stack">
                     <div class="scheduled-message-text-block">
-                      <textarea class="form-control ai-moments-control scheduled-message-text-input" rows="1" placeholder="输入要发送的消息，可留空">{{ message_text }}</textarea>
+                      <textarea class="form-control task-workbench-control scheduled-message-text-input" rows="1" placeholder="输入要发送的消息，可留空">{{ message_text }}</textarea>
                     </div>
                     <div class="scheduled-message-file-block"{% if not message_files %} style="display:none"{% endif %}>
                       <div class="file-path-list scheduled-message-file-list">
@@ -2125,7 +2125,7 @@ html.icons-pref-local [class*=" bi-"]::before {
                   <div class="scheduled-message-field-grid">
                     <div class="scheduled-message-field">
                       <label class="cfg-label">发送目标</label>
-                      <select class="form-select ai-moments-control scheduled-target-mode">
+                      <select class="form-select task-workbench-control scheduled-target-mode">
                           <option value="all" {% if targets_mode == 'all' %}selected{% endif %}>全部</option>
                           <option value="include" {% if targets_mode == 'include' %}selected{% endif %}>发给谁</option>
                           <option value="exclude" {% if targets_mode == 'exclude' %}selected{% endif %}>不发给谁</option>
@@ -2133,9 +2133,9 @@ html.icons-pref-local [class*=" bi-"]::before {
                     </div>
                     <div class="scheduled-message-field">
                       <label class="cfg-label">选择标签</label>
-                      <div class="compact-multiselect scheduled-message-tag-multiselect{% if targets_mode == 'all' %} disabled{% endif %}" data-placeholder="{{ moments_tag_placeholder }}">
-                        <button type="button" class="compact-multiselect-trigger ai-moments-control" {% if targets_mode == 'all' %}disabled{% endif %}>
-                          <span class="compact-multiselect-summary is-placeholder">{{ moments_tag_placeholder }}</span>
+                      <div class="compact-multiselect scheduled-message-tag-multiselect{% if targets_mode == 'all' %} disabled{% endif %}" data-placeholder="{{ task_tag_placeholder }}">
+                        <button type="button" class="compact-multiselect-trigger task-workbench-control" {% if targets_mode == 'all' %}disabled{% endif %}>
+                          <span class="compact-multiselect-summary is-placeholder">{{ task_tag_placeholder }}</span>
                           <i class="bi bi-chevron-down"></i>
                         </button>
                         <div class="compact-multiselect-panel">
@@ -2164,12 +2164,12 @@ html.icons-pref-local [class*=" bi-"]::before {
                     </div>
                     <div class="scheduled-message-field scheduled-manual-target-field">
                       <label class="cfg-label">昵称或备注</label>
-                      <textarea class="form-control ai-moments-control scheduled-manual-target-names" rows="2" placeholder="每行一个，可设置多个">{{ manual_target_names|join('\n') }}</textarea>
+                      <textarea class="form-control task-workbench-control scheduled-manual-target-names" rows="2" placeholder="每行一个，可设置多个">{{ manual_target_names|join('\n') }}</textarea>
                     </div>
                     <div class="scheduled-message-field scheduled-manual-target-spacer" aria-hidden="true"></div>
                     <div class="scheduled-message-field">
                       <label class="cfg-label">时间规则</label>
-                      <select class="form-select ai-moments-control scheduled-trigger-kind">
+                      <select class="form-select task-workbench-control scheduled-trigger-kind">
                           <option value="fixed" {% if trigger_kind != 'random' %}selected{% endif %}>固定时间</option>
                           <option value="random" {% if trigger_kind == 'random' %}selected{% endif %}>随机时间</option>
                         </select>
@@ -2177,13 +2177,13 @@ html.icons-pref-local [class*=" bi-"]::before {
                     <div class="scheduled-message-field">
                       <label class="cfg-label scheduled-message-time-label">{% if trigger_kind == 'random' %}选择时间段{% else %}选择时间{% endif %}</label>
                       <div class="scheduled-message-fixed-datetime-wrap"{% if trigger_kind == 'random' %} hidden{% endif %}>
-                        <input type="datetime-local" class="form-control ai-moments-control scheduled-datetime" value="{{ fixed_start_at }}">
+                        <input type="datetime-local" class="form-control task-workbench-control scheduled-datetime" value="{{ fixed_start_at }}">
                       </div>
                       <div class="scheduled-message-random-window-wrap"{% if trigger_kind != 'random' %} hidden{% endif %}>
-                        <div class="ai-moments-time-window">
-                          <input type="time" class="form-control ai-moments-control scheduled-window-start" value="{{ time_window_parts[0] if time_window_parts|length > 0 else '09:00' }}">
-                          <span class="ai-moments-time-separator">-</span>
-                          <input type="time" class="form-control ai-moments-control scheduled-window-end" value="{{ time_window_parts[1] if time_window_parts|length > 1 else '21:00' }}">
+                        <div class="task-workbench-time-window">
+                          <input type="time" class="form-control task-workbench-control scheduled-window-start" value="{{ time_window_parts[0] if time_window_parts|length > 0 else '09:00' }}">
+                          <span class="task-workbench-time-separator">-</span>
+                          <input type="time" class="form-control task-workbench-control scheduled-window-end" value="{{ time_window_parts[1] if time_window_parts|length > 1 else '21:00' }}">
                         </div>
                       </div>
                     </div>
@@ -2199,19 +2199,19 @@ html.icons-pref-local [class*=" bi-"]::before {
               <div class="scheduled-message-section scheduled-message-content-placeholder">
                 <div class="scheduled-message-content-stack">
                   <div class="scheduled-message-text-block">
-                    <textarea class="form-control ai-moments-control scheduled-message-placeholder-control" rows="1" placeholder="输入要发送的消息，可留空" disabled>添加任务后可在此处设置消息内容</textarea>
+                    <textarea class="form-control task-workbench-control scheduled-message-placeholder-control" rows="1" placeholder="输入要发送的消息，可留空" disabled>添加任务后可在此处设置消息内容</textarea>
                   </div>
                 </div>
               </div>
               <div class="scheduled-message-config-block scheduled-message-config-placeholder">
                 <div class="detail-config-separator"></div>
                 <div class="scheduled-message-field-grid">
-                  <div class="scheduled-message-field"><label class="cfg-label">发送目标</label><select class="form-select ai-moments-control scheduled-message-placeholder-control" disabled><option>全部</option></select></div>
-                  <div class="scheduled-message-field"><label class="cfg-label">选择标签</label><div class="compact-multiselect scheduled-message-tag-multiselect disabled" data-placeholder="{{ moments_tag_placeholder }}"><button type="button" class="compact-multiselect-trigger ai-moments-control scheduled-message-placeholder-action" disabled><span class="compact-multiselect-summary is-placeholder">{{ moments_tag_placeholder }}</span><i class="bi bi-chevron-down"></i></button></div></div>
-                  <div class="scheduled-message-field scheduled-manual-target-field"><label class="cfg-label">昵称或备注</label><textarea class="form-control ai-moments-control scheduled-manual-target-names scheduled-message-placeholder-control" rows="2" placeholder="每行一个，可设置多个" disabled></textarea></div>
+                  <div class="scheduled-message-field"><label class="cfg-label">发送目标</label><select class="form-select task-workbench-control scheduled-message-placeholder-control" disabled><option>全部</option></select></div>
+                  <div class="scheduled-message-field"><label class="cfg-label">选择标签</label><div class="compact-multiselect scheduled-message-tag-multiselect disabled" data-placeholder="{{ task_tag_placeholder }}"><button type="button" class="compact-multiselect-trigger task-workbench-control scheduled-message-placeholder-action" disabled><span class="compact-multiselect-summary is-placeholder">{{ task_tag_placeholder }}</span><i class="bi bi-chevron-down"></i></button></div></div>
+                  <div class="scheduled-message-field scheduled-manual-target-field"><label class="cfg-label">昵称或备注</label><textarea class="form-control task-workbench-control scheduled-manual-target-names scheduled-message-placeholder-control" rows="2" placeholder="每行一个，可设置多个" disabled></textarea></div>
                   <div class="scheduled-message-field scheduled-manual-target-spacer" aria-hidden="true"></div>
-                  <div class="scheduled-message-field"><label class="cfg-label">时间规则</label><select class="form-select ai-moments-control scheduled-message-placeholder-control" disabled><option>固定时间</option></select></div>
-                  <div class="scheduled-message-field"><label class="cfg-label scheduled-message-time-label">选择时间</label><input type="text" class="form-control ai-moments-control scheduled-message-placeholder-control" value="选择任务后在这里设置发送时间和目标" disabled></div>
+                  <div class="scheduled-message-field"><label class="cfg-label">时间规则</label><select class="form-select task-workbench-control scheduled-message-placeholder-control" disabled><option>固定时间</option></select></div>
+                  <div class="scheduled-message-field"><label class="cfg-label scheduled-message-time-label">选择时间</label><input type="text" class="form-control task-workbench-control scheduled-message-placeholder-control" value="选择任务后在这里设置发送时间和目标" disabled></div>
                 </div>
               </div>
             </div>
@@ -2221,14 +2221,14 @@ html.icons-pref-local [class*=" bi-"]::before {
     </div>
     <div class="cfg-card" id="scheduled-message-runtime-card">
       <div class="ui-head ui-head--page"><i class="bi bi-list-check ui-head__icon"></i><h5 class="ui-head__title">任务队列与执行记录</h5><span class="desc ui-head__desc">查看等待发送的消息，以及已经结束的发送结果</span></div>
-      <div class="moments-execution-grid">
-        <section class="ai-moments-runtime-block" data-task-runtime-module="scheduled_message" data-task-runtime-card="queue">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">等待发送</h5><span class="desc">查看下一批按任务设置自动发送的消息</span></div><span class="ai-moments-chip ui-pill" id="scheduled-message-runtime-pending-count" data-task-runtime-count>0 条</span></div>
-          <div class="ai-moments-runtime-list" id="scheduled_message_runtime_pending" data-task-runtime-list></div>
+      <div class="task-runtime-grid">
+        <section class="task-runtime-block" data-task-runtime-module="scheduled_message" data-task-runtime-card="queue">
+          <div class="task-workbench-pane-head ui-head ui-head--section"><div class="task-workbench-pane-title ui-head__main"><h5 class="ui-head__title">等待发送</h5><span class="desc">查看下一批按任务设置自动发送的消息</span></div><span class="task-workbench-chip ui-pill" id="scheduled-message-runtime-pending-count" data-task-runtime-count>0 条</span></div>
+          <div class="task-runtime-list" id="scheduled_message_runtime_pending" data-task-runtime-list></div>
         </section>
-        <section class="ai-moments-runtime-block" data-task-runtime-module="scheduled_message" data-task-runtime-card="executions">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">发送记录</h5><span class="desc">查看已经结束的发送结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="scheduled_message">清空</button></div>
-          <div class="ai-moments-runtime-list" id="scheduled_message_runtime_executed" data-task-runtime-list></div>
+        <section class="task-runtime-block" data-task-runtime-module="scheduled_message" data-task-runtime-card="executions">
+          <div class="task-workbench-pane-head ui-head ui-head--section"><div class="task-workbench-pane-title ui-head__main"><h5 class="ui-head__title">发送记录</h5><span class="desc">查看已经结束的发送结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="scheduled_message">清空</button></div>
+          <div class="task-runtime-list" id="scheduled_message_runtime_executed" data-task-runtime-list></div>
         </section>
       </div>
     </div>
@@ -2244,12 +2244,12 @@ html.icons-pref-local [class*=" bi-"]::before {
         <span class="desc ui-head__desc">创建素材转发任务，也可启用 AI自动转发 系统任务</span>
       </div>
       <div class="material-status-toolbar">
-        <div class="ai-moments-status-row">
-          <span class="ai-moments-chip ui-pill is-success" id="material-task-count">总任务 {{ material_task_count + 1 }}</span>
-          <span class="ai-moments-chip ui-pill is-info" id="material-outreach-total-materials-chip">全部素材 {{ material_outreach_status.stats.materials_total }}</span>
-          <span class="ai-moments-chip ui-pill is-success" id="material-outreach-available-materials-chip">可用素材 {{ material_outreach_status.stats.available_materials }}</span>
-          <span class="ai-moments-chip ui-pill is-info" id="material-outreach-pending-chip">等待转发 {{ material_outreach_status.pending_count }}</span>
-          <span class="ai-moments-chip ui-pill is-running" id="material-outreach-running-chip">转发中 0</span>
+        <div class="task-workbench-status-row">
+          <span class="task-workbench-chip ui-pill is-success" id="material-task-count">总任务 {{ material_task_count + 1 }}</span>
+          <span class="task-workbench-chip ui-pill is-info" id="material-outreach-total-materials-chip">全部素材 {{ material_outreach_status.stats.materials_total }}</span>
+          <span class="task-workbench-chip ui-pill is-success" id="material-outreach-available-materials-chip">可用素材 {{ material_outreach_status.stats.available_materials }}</span>
+          <span class="task-workbench-chip ui-pill is-info" id="material-outreach-pending-chip">等待转发 {{ material_outreach_status.pending_count }}</span>
+          <span class="task-workbench-chip ui-pill is-running" id="material-outreach-running-chip">转发中 0</span>
         </div>
         <div class="summary-action-row">
           <select class="form-select cfg-inline-control ui-head-select task-scope-wx-select" id="material-outreach-account-select" data-task-tab="tab-schedule">
@@ -2263,10 +2263,10 @@ html.icons-pref-local [class*=" bi-"]::before {
           </select>
         </div>
       </div>
-      <div class="ai-moments-workbench">
-        <div class="ai-moments-pane ui-workbench-pane ui-workbench-pane--list">
-          <div class="ai-moments-pane-head ui-head ui-head--section listen-rule-head">
-            <div class="ai-moments-pane-title ui-head__main">
+      <div class="task-workbench-layout">
+        <div class="task-workbench-pane ui-workbench-pane ui-workbench-pane--list">
+          <div class="task-workbench-pane-head ui-head ui-head--section listen-rule-head">
+            <div class="task-workbench-pane-title ui-head__main">
               <div class="listen-rule-tabs ui-tab-command listen-rule-tabs--l2" role="tablist" aria-label="素材转发配置切换">
                 <button type="button" class="listen-rule-tab ui-tab-command__option active is-active material-tab-button" data-material-tab="tasks">任务列表</button>
                 <button type="button" class="listen-rule-tab ui-tab-command__option material-tab-button" data-material-tab="sources">素材来源</button>
@@ -2384,13 +2384,13 @@ html.icons-pref-local [class*=" bi-"]::before {
                 {% if preview_target_label %}
                   {% set _ = material_time_parts.items.append(preview_target_label if preview_target_label != '全部好友' else '发给：全部好友') %}
                 {% endif %}
-                <div class="ai-moments-task-preview material-task-preview{% if loop.first %} selected{% endif %}" data-mtaskid="{{ item.id }}">
-                  <div class="ai-moments-task-head">
-                    <h6 class="ai-moments-task-title"><span class="ai-moments-title-status ui-pill--status ui-pill--l4 {% if item.enabled %}is-warning{% else %}is-danger{% endif %}">{% if item.enabled %}无实例{% else %}已停用{% endif %}</span><span class="ai-moments-task-title-text">{{ item.display_title }}</span></h6>
-                    <button type="button" class="ui-switch ui-switch--l3 ai-moments-task-switch {% if item.enabled %}{% else %}off{% endif %}" aria-pressed="{% if item.enabled %}true{% else %}false{% endif %}"><span>{% if item.enabled %}已启用{% else %}已停用{% endif %}</span><span class="ui-switch-knob"></span></button>
+                <div class="task-workbench-task-preview material-task-preview{% if loop.first %} selected{% endif %}" data-mtaskid="{{ item.id }}">
+                  <div class="task-workbench-task-head">
+                    <h6 class="task-workbench-task-title"><span class="task-workbench-title-status ui-pill--status ui-pill--l4 {% if item.enabled %}is-warning{% else %}is-danger{% endif %}">{% if item.enabled %}无实例{% else %}已停用{% endif %}</span><span class="task-workbench-task-title-text">{{ item.display_title }}</span></h6>
+                    <button type="button" class="ui-switch ui-switch--l3 task-workbench-task-switch {% if item.enabled %}{% else %}off{% endif %}" aria-pressed="{% if item.enabled %}true{% else %}false{% endif %}"><span>{% if item.enabled %}已启用{% else %}已停用{% endif %}</span><span class="ui-switch-knob"></span></button>
                   </div>
-                  <div class="ai-moments-task-meta">{{ material_meta_parts.items|join(' · ') }}</div>
-                  <div class="ai-moments-task-time">{{ material_time_parts.items|join(' · ') }}</div>
+                  <div class="task-workbench-task-meta">{{ material_meta_parts.items|join(' · ') }}</div>
+                  <div class="task-workbench-task-time">{{ material_time_parts.items|join(' · ') }}</div>
                   <div class="cfg-action-row scheduled-message-card-footer-actions">
                     <div class="scheduled-message-card-primary-actions">
                       <button type="button" class="ui-btn ui-btn--soft ui-btn--l3 btn-duplicate-material-task">复制任务</button>
@@ -2400,14 +2400,14 @@ html.icons-pref-local [class*=" bi-"]::before {
                 </div>
                 {% endfor %}
               {% endif %}
-            <div class="ai-moments-task-preview material-task-preview material-ai-card" data-mtaskid="__ai_material" data-pending-count="{{ ai_material_outreach_status.pending_count }}" data-today-sent-count="{{ ai_material_outreach_status.get('today_sent_count', 0) }}">
-              <div class="ai-moments-task-head">
-                <h6 class="ai-moments-task-title"><span class="ai-moments-title-status ui-pill--status ui-pill--l4 is-danger material-task-kind-pill material-task-kind-pill--system">自动任务</span><span class="ai-moments-task-title-text">AI自动转发</span></h6>
-                <button type="button" class="ui-switch ui-switch--l3 ai-moments-task-switch {% if not config.ai_material_outreach_switch %}off{% endif %}" data-switch-input="#ai_material_outreach_switch" aria-pressed="{% if config.ai_material_outreach_switch %}true{% else %}false{% endif %}"><span>{% if config.ai_material_outreach_switch %}已启用{% else %}已停用{% endif %}</span><span class="ui-switch-knob"></span></button>
+            <div class="task-workbench-task-preview material-task-preview material-ai-card" data-mtaskid="__ai_material" data-pending-count="{{ ai_material_outreach_status.pending_count }}" data-today-sent-count="{{ ai_material_outreach_status.get('today_sent_count', 0) }}">
+              <div class="task-workbench-task-head">
+                <h6 class="task-workbench-task-title"><span class="task-workbench-title-status ui-pill--status ui-pill--l4 is-danger material-task-kind-pill material-task-kind-pill--system">自动任务</span><span class="task-workbench-task-title-text">AI自动转发</span></h6>
+                <button type="button" class="ui-switch ui-switch--l3 task-workbench-task-switch {% if not config.ai_material_outreach_switch %}off{% endif %}" data-switch-input="#ai_material_outreach_switch" aria-pressed="{% if config.ai_material_outreach_switch %}true{% else %}false{% endif %}"><span>{% if config.ai_material_outreach_switch %}已启用{% else %}已停用{% endif %}</span><span class="ui-switch-knob"></span></button>
                 <input class="form-check-input" type="checkbox" id="ai_material_outreach_switch" {% if config.ai_material_outreach_switch %}checked{% endif %} hidden>
               </div>
-              <div class="ai-moments-task-meta ai-material-card-meta">聊天时智能分析是否适合转发素材，并自动执行转发</div>
-              <div class="ai-moments-task-time ai-material-card-time">判定 {{ config.ai_material_outreach_detection_interval_minutes }} 分钟 + {{ config.ai_material_outreach_detection_message_threshold }} 条 · 候选素材 {{ ai_material_outreach_status.get('candidate_count', material_outreach_status.stats.available_runtime_materials) }} 条 · 待发送 {{ ai_material_outreach_status.pending_count }} · 今日已发 {{ ai_material_outreach_status.get('today_sent_count', 0) }}</div>
+              <div class="task-workbench-task-meta ai-material-card-meta">聊天时智能分析是否适合转发素材，并自动执行转发</div>
+              <div class="task-workbench-task-time ai-material-card-time">判定 {{ config.ai_material_outreach_detection_interval_minutes }} 分钟 + {{ config.ai_material_outreach_detection_message_threshold }} 条 · 候选素材 {{ ai_material_outreach_status.get('candidate_count', material_outreach_status.stats.available_runtime_materials) }} 条 · 待发送 {{ ai_material_outreach_status.pending_count }} · 今日已发 {{ ai_material_outreach_status.get('today_sent_count', 0) }}</div>
             </div>
             </div>
           </div>
@@ -2456,11 +2456,11 @@ html.icons-pref-local [class*=" bi-"]::before {
                 {% set forward_test_status = material.forward_test_status or 'unknown' %}
                 {% set forward_test_label = {'success':'最近发送成功','failed':'最近发送失败','unknown':'暂无发送记录'}.get(forward_test_status, '暂无发送记录') %}
                 {% set forward_test_class = {'success':' is-success','failed':' is-danger','unknown':' is-info'}.get(forward_test_status, '') %}
-                <div class="ai-moments-task-preview material-management-card{% if loop.first %} selected{% endif %}{% if material_status != 'active' %} is-disabled{% endif %}" data-material-id="{{ material.id }}" data-material-status="{{ material_status }}" data-material-source="{{ material.source or '' }}" data-material-type="{{ material.type_bucket or material.type or '' }}">
-                  <div class="ai-moments-task-head">
-                    <h6 class="ai-moments-task-title">
-                      <span class="ai-moments-title-status ui-pill--status ui-pill--l4{% if material_status != 'active' %} gold{% endif %}">{{ '可用' if material_status == 'active' else '停用' }}</span>
-                      <span class="ai-moments-task-title-text">{{ material_title }}</span>
+                <div class="task-workbench-task-preview material-management-card{% if loop.first %} selected{% endif %}{% if material_status != 'active' %} is-disabled{% endif %}" data-material-id="{{ material.id }}" data-material-status="{{ material_status }}" data-material-source="{{ material.source or '' }}" data-material-type="{{ material.type_bucket or material.type or '' }}">
+                  <div class="task-workbench-task-head">
+                    <h6 class="task-workbench-task-title">
+                      <span class="task-workbench-title-status ui-pill--status ui-pill--l4{% if material_status != 'active' %} gold{% endif %}">{{ '可用' if material_status == 'active' else '停用' }}</span>
+                      <span class="task-workbench-task-title-text">{{ material_title }}</span>
                     </h6>
                   </div>
                   <div class="material-management-copy">
@@ -2478,14 +2478,14 @@ html.icons-pref-local [class*=" bi-"]::before {
                 </div>
                 {% endfor %}
               {% else %}
-                <div class="ai-moments-empty">暂无素材。先在素材来源里投喂链接、小程序、图片等内容。</div>
+                <div class="task-workbench-empty">暂无素材。先在素材来源里投喂链接、小程序、图片等内容。</div>
               {% endif %}
             </div>
           </div>
         </div>
-        <div class="ai-moments-pane ui-workbench-pane ui-workbench-pane--detail">
-          <div class="ai-moments-pane-head ui-head ui-head--section">
-            <div class="ai-moments-pane-title ui-head__main">
+        <div class="task-workbench-pane ui-workbench-pane ui-workbench-pane--detail">
+          <div class="task-workbench-pane-head ui-head ui-head--section">
+            <div class="task-workbench-pane-title ui-head__main">
               <h5 class="ui-head__title" id="material-detail-title">任务详情</h5>
               <span class="desc" id="material-detail-desc">选中左侧任务后在这里设置素材和转发条件</span>
             </div>
@@ -2539,7 +2539,7 @@ html.icons-pref-local [class*=" bi-"]::before {
                     <div class="scheduled-message-field material-fixed-material-row">
                       <label class="cfg-label">选择素材</label>
                       {% set fixed_material_ns = namespace(status='active') %}
-                      <select class="form-select ai-moments-control material-fixed-material-id">
+                      <select class="form-select task-workbench-control material-fixed-material-id">
                         <option value="" {% if not item.get('fixed_material_id') %}selected{% endif %}>请选择固定素材</option>
                         {% for material in material_outreach_status.materials|sort(attribute='created_at', reverse=True) %}
                         {% set material_type_key = material.get('type_bucket') or material.get('type') or '' %}
@@ -2565,10 +2565,10 @@ html.icons-pref-local [class*=" bi-"]::before {
                         </div>
                         <div class="material-ai-preface-fields" {% if not preface_ai_enabled %}style="display:none"{% endif %}>
                           <input type="hidden" class="material-ai-preface-failure-mode" value="{{ ai_preface_failure_mode if ai_preface_failure_mode in ['send_without_preface', 'skip_target'] else 'send_without_preface' }}">
-                          <div class="scheduled-message-field material-ai-preface-extra-note"><label class="cfg-label">补充说明</label><textarea class="form-control ai-moments-control material-ai-preface-extra-instruction" rows="3" placeholder="可为空">{{ ai_preface_extra_instruction }}</textarea></div>
+                          <div class="scheduled-message-field material-ai-preface-extra-note"><label class="cfg-label">补充说明</label><textarea class="form-control task-workbench-control material-ai-preface-extra-instruction" rows="3" placeholder="可为空">{{ ai_preface_extra_instruction }}</textarea></div>
                           <div class="scheduled-message-field-grid material-ai-preface-grid">
-                            <div class="scheduled-message-field"><label class="cfg-label">转发目的</label><input type="text" class="form-control ai-moments-control material-ai-preface-goal" value="{{ ai_preface_goal }}" placeholder="日常问候 / 升温关系 / 引导支持"></div>
-                            <div class="scheduled-message-field"><label class="cfg-label">文案力度</label><select class="form-select ai-moments-control material-ai-preface-intensity"><option value="含蓄委婉" {% if ai_preface_intensity == '含蓄委婉' %}selected{% endif %}>含蓄委婉</option><option value="自然表达" {% if ai_preface_intensity == '自然表达' %}selected{% endif %}>自然表达</option><option value="积极主动" {% if ai_preface_intensity == '积极主动' %}selected{% endif %}>积极主动</option></select></div>
+                            <div class="scheduled-message-field"><label class="cfg-label">转发目的</label><input type="text" class="form-control task-workbench-control material-ai-preface-goal" value="{{ ai_preface_goal }}" placeholder="日常问候 / 升温关系 / 引导支持"></div>
+                            <div class="scheduled-message-field"><label class="cfg-label">文案力度</label><select class="form-select task-workbench-control material-ai-preface-intensity"><option value="含蓄委婉" {% if ai_preface_intensity == '含蓄委婉' %}selected{% endif %}>含蓄委婉</option><option value="自然表达" {% if ai_preface_intensity == '自然表达' %}selected{% endif %}>自然表达</option><option value="积极主动" {% if ai_preface_intensity == '积极主动' %}selected{% endif %}>积极主动</option></select></div>
                           </div>
                         </div>
                       </div>
@@ -2580,12 +2580,12 @@ html.icons-pref-local [class*=" bi-"]::before {
                   <div class="scheduled-message-field-grid">
                     <div class="scheduled-message-field material-target-selector">
                       <label class="cfg-label">发送目标</label>
-                      <select class="form-select ai-moments-control material-target-mode"><option value="all" {% if target_mode == 'all' %}selected{% endif %}>全部</option><option value="include" {% if target_mode == 'include' %}selected{% endif %}>发给谁</option><option value="exclude" {% if target_mode == 'exclude' %}selected{% endif %}>不发给谁</option></select>
+                      <select class="form-select task-workbench-control material-target-mode"><option value="all" {% if target_mode == 'all' %}selected{% endif %}>全部</option><option value="include" {% if target_mode == 'include' %}selected{% endif %}>发给谁</option><option value="exclude" {% if target_mode == 'exclude' %}selected{% endif %}>不发给谁</option></select>
                     </div>
                     <div class="scheduled-message-field material-target-selector">
                       <label class="cfg-label">选择标签</label>
-                      <div class="compact-multiselect scheduled-message-tag-multiselect material-target-tag-multiselect{% if target_mode == 'all' %} disabled{% endif %}" data-placeholder="{{ moments_tag_placeholder }}">
-                        <button type="button" class="compact-multiselect-trigger ai-moments-control" {% if target_mode == 'all' %}disabled{% endif %}><span class="compact-multiselect-summary is-placeholder">{{ moments_tag_placeholder }}</span><i class="bi bi-chevron-down"></i></button>
+                      <div class="compact-multiselect scheduled-message-tag-multiselect material-target-tag-multiselect{% if target_mode == 'all' %} disabled{% endif %}" data-placeholder="{{ task_tag_placeholder }}">
+                        <button type="button" class="compact-multiselect-trigger task-workbench-control" {% if target_mode == 'all' %}disabled{% endif %}><span class="compact-multiselect-summary is-placeholder">{{ task_tag_placeholder }}</span><i class="bi bi-chevron-down"></i></button>
                         <div class="compact-multiselect-panel">
                           <div class="compact-multiselect-search"><input type="text" class="form-control compact-multiselect-search-input" placeholder="搜索标签" {% if target_mode == 'all' %}disabled{% endif %}></div>
                           <div class="compact-multiselect-options">
@@ -2601,7 +2601,7 @@ html.icons-pref-local [class*=" bi-"]::before {
                     </div>
                     <div class="scheduled-message-field material-target-selector">
                       <label class="cfg-label">昵称或备注</label>
-                      <textarea class="form-control ai-moments-control material-manual-targets-textarea" rows="1" placeholder="每行一个，可设置多个">{{ manual_target_names|join('\n') }}</textarea>
+                      <textarea class="form-control task-workbench-control material-manual-targets-textarea" rows="1" placeholder="每行一个，可设置多个">{{ manual_target_names|join('\n') }}</textarea>
                     </div>
                   </div>
                 </div>
@@ -2609,18 +2609,18 @@ html.icons-pref-local [class*=" bi-"]::before {
                   <div class="scheduled-message-field-grid">
                     <div class="scheduled-message-field">
                       <label class="cfg-label">时间规则</label>
-                      <select class="form-select ai-moments-control material-mode"><option value="fixed" {% if item.get('trigger_strategy', item.mode) == 'fixed' %}selected{% endif %}>固定时间</option><option value="random" {% if item.get('trigger_strategy', item.mode) == 'random' %}selected{% endif %}>时间窗口</option></select>
+                      <select class="form-select task-workbench-control material-mode"><option value="fixed" {% if item.get('trigger_strategy', item.mode) == 'fixed' %}selected{% endif %}>固定时间</option><option value="random" {% if item.get('trigger_strategy', item.mode) == 'random' %}selected{% endif %}>时间窗口</option></select>
                     </div>
                     <div class="scheduled-message-field material-fixed-datetime-wrap" {% if item.get('trigger_strategy', item.mode) == 'random' %}style="display:none"{% endif %}>
                       <label class="cfg-label">选择时间</label>
-                      <input type="datetime-local" class="form-control ai-moments-control material-datetime" value="{{ start_at[:16] if start_at else '' }}">
+                      <input type="datetime-local" class="form-control task-workbench-control material-datetime" value="{{ start_at[:16] if start_at else '' }}">
                     </div>
                     <div class="scheduled-message-field material-time-window-wrap" {% if item.get('trigger_strategy', item.mode) != 'random' %}style="display:none"{% endif %}>
                       <label class="cfg-label">选择时间段</label>
-                      <div class="ai-moments-time-window">
-                        <input type="time" class="form-control ai-moments-control material-window-start" value="{{ item.time_start or '00:00' }}">
-                        <span class="ai-moments-time-separator">-</span>
-                        <input type="time" class="form-control ai-moments-control material-window-end" value="{{ item.time_end or '23:59' }}">
+                      <div class="task-workbench-time-window">
+                        <input type="time" class="form-control task-workbench-control material-window-start" value="{{ item.time_start or '00:00' }}">
+                        <span class="task-workbench-time-separator">-</span>
+                        <input type="time" class="form-control task-workbench-control material-window-end" value="{{ item.time_end or '23:59' }}">
                       </div>
                     </div>
                   </div>
@@ -2637,11 +2637,11 @@ html.icons-pref-local [class*=" bi-"]::before {
                   <div class="scheduled-message-field-grid">
                     <div class="scheduled-message-field">
                       <label class="cfg-label">素材来源</label>
-                      <select class="form-select ai-moments-control material-source-filter"><option value="" {% if not material_source_filter %}selected{% endif %}>全部来源</option>{% for source in material_sources %}<option value="{{ source }}" {% if material_source_filter == source %}selected{% endif %}>{{ source }}</option>{% endfor %}</select>
+                      <select class="form-select task-workbench-control material-source-filter"><option value="" {% if not material_source_filter %}selected{% endif %}>全部来源</option>{% for source in material_sources %}<option value="{{ source }}" {% if material_source_filter == source %}selected{% endif %}>{{ source }}</option>{% endfor %}</select>
                     </div>
                     <div class="scheduled-message-field">
                       <label class="cfg-label">素材类型</label>
-                      <select class="form-select ai-moments-control material-type-filter"><option value="all" {% if material_type_value == 'all' %}selected{% endif %}>全部类型</option><option value="link" {% if material_type_value == 'link' %}selected{% endif %}>链接</option><option value="miniapp" {% if material_type_value == 'miniapp' %}selected{% endif %}>小程序</option><option value="personal_card" {% if material_type_value == 'personal_card' %}selected{% endif %}>名片</option><option value="image" {% if material_type_value == 'image' %}selected{% endif %}>图片</option><option value="video" {% if material_type_value == 'video' %}selected{% endif %}>视频</option><option value="file" {% if material_type_value == 'file' %}selected{% endif %}>文件</option><option value="note" {% if material_type_value == 'note' %}selected{% endif %}>笔记</option><option value="location" {% if material_type_value == 'location' %}selected{% endif %}>位置</option><option value="merge" {% if material_type_value == 'merge' %}selected{% endif %}>聊天记录</option></select>
+                      <select class="form-select task-workbench-control material-type-filter"><option value="all" {% if material_type_value == 'all' %}selected{% endif %}>全部类型</option><option value="link" {% if material_type_value == 'link' %}selected{% endif %}>链接</option><option value="miniapp" {% if material_type_value == 'miniapp' %}selected{% endif %}>小程序</option><option value="personal_card" {% if material_type_value == 'personal_card' %}selected{% endif %}>名片</option><option value="image" {% if material_type_value == 'image' %}selected{% endif %}>图片</option><option value="video" {% if material_type_value == 'video' %}selected{% endif %}>视频</option><option value="file" {% if material_type_value == 'file' %}selected{% endif %}>文件</option><option value="note" {% if material_type_value == 'note' %}selected{% endif %}>笔记</option><option value="location" {% if material_type_value == 'location' %}selected{% endif %}>位置</option><option value="merge" {% if material_type_value == 'merge' %}selected{% endif %}>聊天记录</option></select>
                     </div>
                     <div class="scheduled-message-field material-preface-field">
                       <label class="cfg-label">附加文案</label>
@@ -2655,10 +2655,10 @@ html.icons-pref-local [class*=" bi-"]::before {
                         </div>
                         <div class="material-ai-preface-fields" {% if not preface_ai_enabled %}style="display:none"{% endif %}>
                           <input type="hidden" class="material-ai-preface-failure-mode" value="{{ ai_preface_failure_mode if ai_preface_failure_mode in ['send_without_preface', 'skip_target'] else 'send_without_preface' }}">
-                          <div class="scheduled-message-field material-ai-preface-extra-note"><label class="cfg-label">补充说明</label><textarea class="form-control ai-moments-control material-ai-preface-extra-instruction" rows="3" placeholder="可为空">{{ ai_preface_extra_instruction }}</textarea></div>
+                          <div class="scheduled-message-field material-ai-preface-extra-note"><label class="cfg-label">补充说明</label><textarea class="form-control task-workbench-control material-ai-preface-extra-instruction" rows="3" placeholder="可为空">{{ ai_preface_extra_instruction }}</textarea></div>
                           <div class="scheduled-message-field-grid material-ai-preface-grid">
-                            <div class="scheduled-message-field"><label class="cfg-label">转发目的</label><input type="text" class="form-control ai-moments-control material-ai-preface-goal" value="{{ ai_preface_goal }}" placeholder="日常问候 / 升温关系 / 引导支持"></div>
-                            <div class="scheduled-message-field"><label class="cfg-label">文案力度</label><select class="form-select ai-moments-control material-ai-preface-intensity"><option value="含蓄委婉" {% if ai_preface_intensity == '含蓄委婉' %}selected{% endif %}>含蓄委婉</option><option value="自然表达" {% if ai_preface_intensity == '自然表达' %}selected{% endif %}>自然表达</option><option value="积极主动" {% if ai_preface_intensity == '积极主动' %}selected{% endif %}>积极主动</option></select></div>
+                            <div class="scheduled-message-field"><label class="cfg-label">转发目的</label><input type="text" class="form-control task-workbench-control material-ai-preface-goal" value="{{ ai_preface_goal }}" placeholder="日常问候 / 升温关系 / 引导支持"></div>
+                            <div class="scheduled-message-field"><label class="cfg-label">文案力度</label><select class="form-select task-workbench-control material-ai-preface-intensity"><option value="含蓄委婉" {% if ai_preface_intensity == '含蓄委婉' %}selected{% endif %}>含蓄委婉</option><option value="自然表达" {% if ai_preface_intensity == '自然表达' %}selected{% endif %}>自然表达</option><option value="积极主动" {% if ai_preface_intensity == '积极主动' %}selected{% endif %}>积极主动</option></select></div>
                           </div>
                         </div>
                       </div>
@@ -2670,12 +2670,12 @@ html.icons-pref-local [class*=" bi-"]::before {
                   <div class="scheduled-message-field-grid">
                     <div class="scheduled-message-field material-target-selector">
                       <label class="cfg-label">发送目标</label>
-                      <select class="form-select ai-moments-control material-target-mode"><option value="all" {% if target_mode == 'all' %}selected{% endif %}>全部</option><option value="include" {% if target_mode == 'include' %}selected{% endif %}>发给谁</option><option value="exclude" {% if target_mode == 'exclude' %}selected{% endif %}>不发给谁</option></select>
+                      <select class="form-select task-workbench-control material-target-mode"><option value="all" {% if target_mode == 'all' %}selected{% endif %}>全部</option><option value="include" {% if target_mode == 'include' %}selected{% endif %}>发给谁</option><option value="exclude" {% if target_mode == 'exclude' %}selected{% endif %}>不发给谁</option></select>
                     </div>
                     <div class="scheduled-message-field material-target-selector">
                       <label class="cfg-label">选择标签</label>
-                      <div class="compact-multiselect scheduled-message-tag-multiselect material-target-tag-multiselect{% if target_mode == 'all' %} disabled{% endif %}" data-placeholder="{{ moments_tag_placeholder }}">
-                        <button type="button" class="compact-multiselect-trigger ai-moments-control" {% if target_mode == 'all' %}disabled{% endif %}><span class="compact-multiselect-summary is-placeholder">{{ moments_tag_placeholder }}</span><i class="bi bi-chevron-down"></i></button>
+                      <div class="compact-multiselect scheduled-message-tag-multiselect material-target-tag-multiselect{% if target_mode == 'all' %} disabled{% endif %}" data-placeholder="{{ task_tag_placeholder }}">
+                        <button type="button" class="compact-multiselect-trigger task-workbench-control" {% if target_mode == 'all' %}disabled{% endif %}><span class="compact-multiselect-summary is-placeholder">{{ task_tag_placeholder }}</span><i class="bi bi-chevron-down"></i></button>
                         <div class="compact-multiselect-panel">
                           <div class="compact-multiselect-search"><input type="text" class="form-control compact-multiselect-search-input" placeholder="搜索标签" {% if target_mode == 'all' %}disabled{% endif %}></div>
                           <div class="compact-multiselect-options">
@@ -2691,17 +2691,17 @@ html.icons-pref-local [class*=" bi-"]::before {
                     </div>
                     <div class="scheduled-message-field material-target-selector">
                       <label class="cfg-label">昵称或备注</label>
-                      <textarea class="form-control ai-moments-control material-manual-targets-textarea" rows="1" placeholder="每行一个，可设置多个">{{ manual_target_names|join('\n') }}</textarea>
+                      <textarea class="form-control task-workbench-control material-manual-targets-textarea" rows="1" placeholder="每行一个，可设置多个">{{ manual_target_names|join('\n') }}</textarea>
                     </div>
                     <div class="scheduled-message-field material-repeat-rule-field cfg-inline-combo-slot">
                       <label class="cfg-label">循环规则</label>
                       <div class="cfg-inline-combo cfg-inline-combo--repeat-rule material-repeat-rule">
                         <div class="cfg-inline-combo__field">
-                          <select class="form-select ai-moments-control cfg-inline-combo__input material-repeat-type"><option value="daily" {% if item.get('repeat_type', 'daily') == 'daily' %}selected{% endif %}>每天</option><option value="weekly" {% if item.get('repeat_type', 'daily') == 'weekly' %}selected{% endif %}>每周</option><option value="monthly" {% if item.get('repeat_type', 'daily') == 'monthly' %}selected{% endif %}>每月</option></select>
+                          <select class="form-select task-workbench-control cfg-inline-combo__input material-repeat-type"><option value="daily" {% if item.get('repeat_type', 'daily') == 'daily' %}selected{% endif %}>每天</option><option value="weekly" {% if item.get('repeat_type', 'daily') == 'weekly' %}selected{% endif %}>每周</option><option value="monthly" {% if item.get('repeat_type', 'daily') == 'monthly' %}selected{% endif %}>每月</option></select>
                         </div>
                         <span class="cfg-inline-combo__separator material-repeat-rule-text">发送</span>
                         <div class="cfg-inline-combo__field">
-                          <input type="number" class="form-control ai-moments-control cfg-inline-combo__input material-random-days-count" min="1" max="31" value="{{ random_days_count or 1 }}">
+                          <input type="number" class="form-control task-workbench-control cfg-inline-combo__input material-random-days-count" min="1" max="31" value="{{ random_days_count or 1 }}">
                           <span class="cfg-inline-combo__suffix material-repeat-rule-unit">次</span>
                         </div>
                       </div>
@@ -2712,18 +2712,18 @@ html.icons-pref-local [class*=" bi-"]::before {
                   <div class="scheduled-message-field-grid">
                     <div class="scheduled-message-field">
                       <label class="cfg-label">时间规则</label>
-                      <select class="form-select ai-moments-control material-mode"><option value="fixed" {% if item.get('trigger_strategy', item.mode) == 'fixed' %}selected{% endif %}>固定时间</option><option value="random" {% if item.get('trigger_strategy', item.mode) != 'fixed' %}selected{% endif %}>时间窗口</option></select>
+                      <select class="form-select task-workbench-control material-mode"><option value="fixed" {% if item.get('trigger_strategy', item.mode) == 'fixed' %}selected{% endif %}>固定时间</option><option value="random" {% if item.get('trigger_strategy', item.mode) != 'fixed' %}selected{% endif %}>时间窗口</option></select>
                     </div>
                     <div class="scheduled-message-field material-fixed-datetime-wrap" {% if item.get('trigger_strategy', item.mode) != 'fixed' %}style="display:none"{% endif %}>
                       <label class="cfg-label">选择时间</label>
-                      <input type="datetime-local" class="form-control ai-moments-control material-datetime" value="{{ start_at[:16] if start_at else '' }}">
+                      <input type="datetime-local" class="form-control task-workbench-control material-datetime" value="{{ start_at[:16] if start_at else '' }}">
                     </div>
                     <div class="scheduled-message-field material-time-window-wrap" {% if item.get('trigger_strategy', item.mode) == 'fixed' %}style="display:none"{% endif %}>
                       <label class="cfg-label">选择时间段</label>
-                      <div class="ai-moments-time-window">
-                        <input type="time" class="form-control ai-moments-control material-window-start" value="{{ item.time_start or '12:00' }}">
-                        <span class="ai-moments-time-separator">-</span>
-                        <input type="time" class="form-control ai-moments-control material-window-end" value="{{ item.time_end or '21:30' }}">
+                      <div class="task-workbench-time-window">
+                        <input type="time" class="form-control task-workbench-control material-window-start" value="{{ item.time_start or '12:00' }}">
+                        <span class="task-workbench-time-separator">-</span>
+                        <input type="time" class="form-control task-workbench-control material-window-end" value="{{ item.time_end or '21:30' }}">
                       </div>
                     </div>
                   </div>
@@ -2732,7 +2732,7 @@ html.icons-pref-local [class*=" bi-"]::before {
               {% endif %}
               {% endfor %}
             {% else %}
-              <div class="ai-moments-empty" id="material-detail-empty">暂无任务详情。添加任务后在这里设置素材、时间和目标。</div>
+              <div class="task-workbench-empty" id="material-detail-empty">暂无任务详情。添加任务后在这里设置素材、时间和目标。</div>
             {% endif %}
             <div class="material-detail-editor" id="ai-material-outreach-card" data-mtaskid="__ai_material" hidden>
               <div class="material-detail-section">
@@ -2741,7 +2741,7 @@ html.icons-pref-local [class*=" bi-"]::before {
                   <div class="scheduled-message-field">
                     <label class="cfg-label">素材来源</label>
                     <div class="compact-multiselect ai-material-source-multiselect" id="ai_material_outreach_allowed_sources_wrap" data-placeholder="全部来源">
-                      <button type="button" class="compact-multiselect-trigger ai-moments-control">
+                      <button type="button" class="compact-multiselect-trigger task-workbench-control">
                         <span class="compact-multiselect-summary is-placeholder">全部来源</span>
                         <i class="bi bi-chevron-down"></i>
                       </button>
@@ -2765,7 +2765,7 @@ html.icons-pref-local [class*=" bi-"]::before {
                   </div>
                   <div class="scheduled-message-field">
                     <label class="cfg-label" for="ai_material_outreach_sensitivity">素材关联度</label>
-                    <select class="form-select ai-moments-control" id="ai_material_outreach_sensitivity">
+                    <select class="form-select task-workbench-control" id="ai_material_outreach_sensitivity">
                       <option value="conservative" {% if config.ai_material_outreach_sensitivity == 'conservative' %}selected{% endif %}>严格：只选强相关素材</option>
                       <option value="balanced" {% if config.ai_material_outreach_sensitivity == 'balanced' %}selected{% endif %}>均衡：能自然接上就发</option>
                       <option value="aggressive" {% if config.ai_material_outreach_sensitivity == 'aggressive' %}selected{% endif %}>宽松：可自然转场就发</option>
@@ -2773,14 +2773,14 @@ html.icons-pref-local [class*=" bi-"]::before {
                   </div>
                   <div class="scheduled-message-field">
                     <label class="cfg-label" for="ai_material_outreach_preface_enabled">AI生成文案</label>
-                    <select class="form-select ai-moments-control" id="ai_material_outreach_preface_enabled">
+                    <select class="form-select task-workbench-control" id="ai_material_outreach_preface_enabled">
                       <option value="true" {% if config.ai_material_outreach_preface_enabled %}selected{% endif %}>开启</option>
                       <option value="false" {% if not config.ai_material_outreach_preface_enabled %}selected{% endif %}>关闭</option>
                     </select>
                   </div>
                   <div class="scheduled-message-field ai-material-preface-extra">
                     <label class="cfg-label" for="ai_material_outreach_preface_intensity">文案力度</label>
-                    <select class="form-select ai-moments-control" id="ai_material_outreach_preface_intensity">
+                    <select class="form-select task-workbench-control" id="ai_material_outreach_preface_intensity">
                       <option value="含蓄委婉" {% if config.ai_material_outreach_preface_intensity == '含蓄委婉' %}selected{% endif %}>含蓄委婉</option>
                       <option value="自然表达" {% if config.ai_material_outreach_preface_intensity == '自然表达' %}selected{% endif %}>自然表达</option>
                       <option value="积极主动" {% if config.ai_material_outreach_preface_intensity == '积极主动' %}selected{% endif %}>积极主动</option>
@@ -2788,11 +2788,11 @@ html.icons-pref-local [class*=" bi-"]::before {
                   </div>
                   <div class="scheduled-message-field ai-material-preface-extra">
                     <label class="cfg-label" for="ai_material_outreach_preface_goal">转发目的</label>
-                    <input type="text" class="form-control ai-moments-control" id="ai_material_outreach_preface_goal" value="{{ config.ai_material_outreach_preface_goal or '日常问候' }}" placeholder="日常问候 / 升温关系 / 引导支持">
+                    <input type="text" class="form-control task-workbench-control" id="ai_material_outreach_preface_goal" value="{{ config.ai_material_outreach_preface_goal or '日常问候' }}" placeholder="日常问候 / 升温关系 / 引导支持">
                   </div>
-                  <div class="scheduled-message-field"><label class="cfg-label" for="ai_material_outreach_daily_limit_per_friend">每次最多转发（次）</label><input type="number" class="form-control ai-moments-control" id="ai_material_outreach_daily_limit_per_friend" min="1" max="99" value="{{ config.ai_material_outreach_daily_limit_per_friend }}"></div>
-                  <div class="scheduled-message-field"><label class="cfg-label" for="ai_material_outreach_detection_interval_minutes">判定周期（分钟）</label><input type="number" class="form-control ai-moments-control" id="ai_material_outreach_detection_interval_minutes" min="1" max="1440" value="{{ config.ai_material_outreach_detection_interval_minutes }}"></div>
-                  <div class="scheduled-message-field"><label class="cfg-label" for="ai_material_outreach_detection_message_threshold">判定门槛（条）</label><input type="number" class="form-control ai-moments-control" id="ai_material_outreach_detection_message_threshold" min="1" max="999" value="{{ config.ai_material_outreach_detection_message_threshold }}"></div>
+                  <div class="scheduled-message-field"><label class="cfg-label" for="ai_material_outreach_daily_limit_per_friend">每次最多转发（次）</label><input type="number" class="form-control task-workbench-control" id="ai_material_outreach_daily_limit_per_friend" min="1" max="99" value="{{ config.ai_material_outreach_daily_limit_per_friend }}"></div>
+                  <div class="scheduled-message-field"><label class="cfg-label" for="ai_material_outreach_detection_interval_minutes">判定周期（分钟）</label><input type="number" class="form-control task-workbench-control" id="ai_material_outreach_detection_interval_minutes" min="1" max="1440" value="{{ config.ai_material_outreach_detection_interval_minutes }}"></div>
+                  <div class="scheduled-message-field"><label class="cfg-label" for="ai_material_outreach_detection_message_threshold">判定门槛（条）</label><input type="number" class="form-control task-workbench-control" id="ai_material_outreach_detection_message_threshold" min="1" max="999" value="{{ config.ai_material_outreach_detection_message_threshold }}"></div>
                 </div>
               </div>
             </div>
@@ -2806,14 +2806,14 @@ html.icons-pref-local [class*=" bi-"]::before {
               <div class="material-detail-editor material-management-detail{% if loop.first %} active{% endif %}" {% if not loop.first %}hidden{% endif %} data-material-id="{{ material.id }}" data-material-status="{{ material_status }}" data-material-source="{{ material.source or '' }}" data-material-type="{{ material.type_bucket or material.type or '' }}">
                 <div class="material-detail-section">
                   <div class="scheduled-message-field-grid">
-                    <div class="scheduled-message-field" style="grid-column:1 / -1;"><label class="cfg-label">素材归属</label><select class="form-select ai-moments-control material-ownership"><option value="我的作品" {% if (material.ownership or '我的作品') == '我的作品' %}selected{% endif %}>我的作品</option><option value="第三方作品" {% if material.ownership == '第三方作品' %}selected{% endif %}>第三方作品</option></select></div>
-                    <div class="scheduled-message-field" style="grid-column:1 / -1;"><label class="cfg-label">素材备注</label><textarea class="form-control ai-moments-control material-copy-note" rows="4" placeholder="补充这条素材的使用场景、版权提醒或备注">{{ material.copy_note or '' }}</textarea></div>
+                    <div class="scheduled-message-field" style="grid-column:1 / -1;"><label class="cfg-label">素材归属</label><select class="form-select task-workbench-control material-ownership"><option value="我的作品" {% if (material.ownership or '我的作品') == '我的作品' %}selected{% endif %}>我的作品</option><option value="第三方作品" {% if material.ownership == '第三方作品' %}selected{% endif %}>第三方作品</option></select></div>
+                    <div class="scheduled-message-field" style="grid-column:1 / -1;"><label class="cfg-label">素材备注</label><textarea class="form-control task-workbench-control material-copy-note" rows="4" placeholder="补充这条素材的使用场景、版权提醒或备注">{{ material.copy_note or '' }}</textarea></div>
                   </div>
                 </div>
               </div>
               {% endfor %}
             {% else %}
-              <div class="ai-moments-empty">暂无素材详情。</div>
+              <div class="task-workbench-empty">暂无素材详情。</div>
             {% endif %}
           </div>
         </div>
@@ -2825,17 +2825,17 @@ html.icons-pref-local [class*=" bi-"]::before {
         <h5>任务队列与执行记录</h5>
         <span class="desc">查看等待转发的素材，以及已经结束的转发结果</span>
       </div>
-      <div class="moments-execution-grid">
-        <section class="ai-moments-runtime-block" data-task-runtime-module="material_outreach" data-task-runtime-card="queue">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">等待转发</h5><span class="desc">查看等待转发给好友的素材</span></div><span class="ai-moments-chip ui-pill" id="material-outreach-runtime-pending-count" data-task-runtime-count>{{ material_outreach_status.pending_count }} 条</span></div>
-          <div id="material_outreach_runtime_pending" class="ai-moments-runtime-list" data-task-runtime-list>
-            <div class="ai-moments-empty task-runtime-empty-state">暂无等待转发的素材。</div>
+      <div class="task-runtime-grid">
+        <section class="task-runtime-block" data-task-runtime-module="material_outreach" data-task-runtime-card="queue">
+          <div class="task-workbench-pane-head ui-head ui-head--section"><div class="task-workbench-pane-title ui-head__main"><h5 class="ui-head__title">等待转发</h5><span class="desc">查看等待转发给好友的素材</span></div><span class="task-workbench-chip ui-pill" id="material-outreach-runtime-pending-count" data-task-runtime-count>{{ material_outreach_status.pending_count }} 条</span></div>
+          <div id="material_outreach_runtime_pending" class="task-runtime-list" data-task-runtime-list>
+            <div class="task-workbench-empty task-runtime-empty-state">暂无等待转发的素材。</div>
           </div>
         </section>
-        <section class="ai-moments-runtime-block" data-task-runtime-module="material_outreach" data-task-runtime-card="executions">
-          <div class="ai-moments-pane-head ui-head ui-head--section"><div class="ai-moments-pane-title ui-head__main"><h5 class="ui-head__title">转发记录</h5><span class="desc">查看已经结束的素材转发结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="material_outreach">清空</button></div>
-          <div class="ai-moments-runtime-list" id="material_outreach_runtime_executed" data-task-runtime-list>
-            <div class="ai-moments-empty task-runtime-empty-state">暂无转发记录。</div>
+        <section class="task-runtime-block" data-task-runtime-module="material_outreach" data-task-runtime-card="executions">
+          <div class="task-workbench-pane-head ui-head ui-head--section"><div class="task-workbench-pane-title ui-head__main"><h5 class="ui-head__title">转发记录</h5><span class="desc">查看已经结束的素材转发结果</span></div><button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" data-task-runtime-clear="material_outreach">清空</button></div>
+          <div class="task-runtime-list" id="material_outreach_runtime_executed" data-task-runtime-list>
+            <div class="task-workbench-empty task-runtime-empty-state">暂无转发记录。</div>
           </div>
         </section>
       </div>
@@ -3331,7 +3331,7 @@ $(function(){
   }
   function materialAiPrefaceGoalInputHtml(value){
     value = materialAiPrefaceGoalValue(value);
-    return '<input type="text" class="form-control ai-moments-control material-ai-preface-goal" value="' + escapeHtml(value) + '" placeholder="日常问候 / 升温关系 / 引导支持">';
+    return '<input type="text" class="form-control task-workbench-control material-ai-preface-goal" value="' + escapeHtml(value) + '" placeholder="日常问候 / 升温关系 / 引导支持">';
   }
   function materialAiPrefaceIntensityOptionsHtml(value){
     value = $.trim(String(value || ''));
@@ -3379,10 +3379,10 @@ $(function(){
       '</div>'+
       '<div class="material-ai-preface-fields"' + (state.aiEnabled ? '' : ' style="display:none"') + '>'+
         '<input type="hidden" class="material-ai-preface-failure-mode" value="'+failureMode+'">'+
-        '<div class="scheduled-message-field material-ai-preface-extra-note"><label class="cfg-label">补充说明</label><textarea class="form-control ai-moments-control material-ai-preface-extra-instruction" rows="3" placeholder="可为空">'+extraInstruction+'</textarea></div>'+
+        '<div class="scheduled-message-field material-ai-preface-extra-note"><label class="cfg-label">补充说明</label><textarea class="form-control task-workbench-control material-ai-preface-extra-instruction" rows="3" placeholder="可为空">'+extraInstruction+'</textarea></div>'+
         '<div class="scheduled-message-field-grid material-ai-preface-grid">'+
           '<div class="scheduled-message-field"><label class="cfg-label">转发目的</label>'+materialAiPrefaceGoalInputHtml(config.ai_preface_goal || '')+'</div>'+
-          '<div class="scheduled-message-field"><label class="cfg-label">文案力度</label><select class="form-select ai-moments-control material-ai-preface-intensity">'+materialAiPrefaceIntensityOptionsHtml(config.ai_preface_intensity || '')+'</select></div>'+
+          '<div class="scheduled-message-field"><label class="cfg-label">文案力度</label><select class="form-select task-workbench-control material-ai-preface-intensity">'+materialAiPrefaceIntensityOptionsHtml(config.ai_preface_intensity || '')+'</select></div>'+
         '</div>'+
       '</div>'+
     '</div>';
@@ -3567,7 +3567,7 @@ $(function(){
     var disabledAttr = disabled ? ' disabled' : '';
     var placeholder = CONTACT_DIRECTORY_OPTIONS && CONTACT_DIRECTORY_OPTIONS.wx_id ? (CONTACT_DIRECTORY_OPTIONS.wx_id + ' 的标签') : '当前账号的标签';
     return '<div class="compact-multiselect scheduled-message-tag-multiselect'+(disabled ? ' disabled' : '')+'" data-placeholder="'+escapeHtml(placeholder)+'">'+
-      '<button type="button" class="compact-multiselect-trigger ai-moments-control"'+disabledAttr+'>'+
+      '<button type="button" class="compact-multiselect-trigger task-workbench-control"'+disabledAttr+'>'+
         '<span class="compact-multiselect-summary is-placeholder">'+escapeHtml(placeholder)+'</span>'+
         '<i class="bi bi-chevron-down"></i>'+
       '</button>'+
@@ -3594,13 +3594,13 @@ $(function(){
     var targetMode = mode;
     var targetTags = targetMode === 'exclude' ? excludeTags : includeTags;
     return '<div class="scheduled-message-field material-target-selector">'+
-      '<label class="cfg-label">发送目标</label><select class="form-select ai-moments-control material-target-mode"><option value="all"'+(targetMode==='all'?' selected':'')+'>全部</option><option value="include"'+(targetMode==='include'?' selected':'')+'>发给谁</option><option value="exclude"'+(targetMode==='exclude'?' selected':'')+'>不发给谁</option></select>'+
+      '<label class="cfg-label">发送目标</label><select class="form-select task-workbench-control material-target-mode"><option value="all"'+(targetMode==='all'?' selected':'')+'>全部</option><option value="include"'+(targetMode==='include'?' selected':'')+'>发给谁</option><option value="exclude"'+(targetMode==='exclude'?' selected':'')+'>不发给谁</option></select>'+
     '</div>'+
     '<div class="scheduled-message-field material-target-selector">'+
       '<label class="cfg-label">选择标签</label>'+renderMaterialTagMultiSelect('material-target-tags', targetTags)+
     '</div>'+
     '<div class="scheduled-message-field material-target-selector">'+
-      '<label class="cfg-label">昵称或备注</label><textarea class="form-control ai-moments-control material-manual-targets-textarea" rows="1" placeholder="每行一个，可设置多个">'+escapeHtml(manualNames.join('\n'))+'</textarea>'+
+      '<label class="cfg-label">昵称或备注</label><textarea class="form-control task-workbench-control material-manual-targets-textarea" rows="1" placeholder="每行一个，可设置多个">'+escapeHtml(manualNames.join('\n'))+'</textarea>'+
     '</div>';
   }
   function selectedCompactMultiSelectValues($wrap){
@@ -3673,7 +3673,7 @@ $(function(){
     $wrap.find('.compact-multiselect-empty').toggle(visibleCount === 0);
   }
   function initializeCompactMultiSelects($root){
-    ($root && $root.length ? $root : $(document)).find('.compact-multiselect.material-tag-multiselect,.compact-multiselect.ai-moments-tag-multiselect,.compact-multiselect.scheduled-message-tag-multiselect,.compact-multiselect.voice-trigger-multiselect,.compact-multiselect.ai-material-source-multiselect,.compact-multiselect.ai-material-type-multiselect').each(function(){
+    ($root && $root.length ? $root : $(document)).find('.compact-multiselect.material-tag-multiselect,.compact-multiselect.task-workbench-tag-multiselect,.compact-multiselect.scheduled-message-tag-multiselect,.compact-multiselect.voice-trigger-multiselect,.compact-multiselect.ai-material-source-multiselect,.compact-multiselect.ai-material-type-multiselect').each(function(){
       updateCompactMultiSelectSummary($(this));
       filterCompactMultiSelectOptions($(this), $(this).find('.compact-multiselect-search-input').val() || '');
     });
@@ -4088,16 +4088,16 @@ $(function(){
         '</button>';
     }
     return '' +
-      '<div class="ai-moments-runtime-row">' +
-        '<div class="ai-moments-runtime-main">' +
-          '<div class="ai-moments-runtime-title-row">' +
-            '<span class="ai-moments-runtime-result ui-pill--status ui-pill--l4 ' + taskWorkbenchRuntimeStatusClass(item.status) + '" data-task-runtime-status>' + escapeHtml(statusText) + '</span>' +
-            '<strong class="ai-moments-runtime-title-text">' + escapeHtml(item.title || '未命名任务') + '</strong>' +
+      '<div class="task-runtime-row">' +
+        '<div class="task-runtime-main">' +
+          '<div class="task-runtime-title-row">' +
+            '<span class="task-runtime-result ui-pill--status ui-pill--l4 ' + taskWorkbenchRuntimeStatusClass(item.status) + '" data-task-runtime-status>' + escapeHtml(statusText) + '</span>' +
+            '<strong class="task-runtime-title-text">' + escapeHtml(item.title || '未命名任务') + '</strong>' +
           '</div>' +
           (metaText ? '<div class="task-workbench-runtime-meta">' + escapeHtml(metaText) + '</div>' : '') +
           '<div class="task-workbench-runtime-time">' + escapeHtml(timeText) + '</div>' +
         '</div>' +
-        '<div class="ai-moments-runtime-side">' +
+        '<div class="task-runtime-side">' +
           '<div class="task-runtime-action-slot" data-task-runtime-action-slot>' + actionHtml + '</div>' +
         '</div>' +
       '</div>';
@@ -4114,8 +4114,8 @@ $(function(){
     if(!items.length){
       $list.html(
         kind === 'queue'
-          ? '<div class="ai-moments-empty task-runtime-empty-state">' + taskWorkbenchQueueEmptyText(moduleName) + '</div>'
-          : '<div class="ai-moments-empty task-runtime-empty-state">' + taskWorkbenchExecutionEmptyText(moduleName) + '</div>'
+          ? '<div class="task-workbench-empty task-runtime-empty-state">' + taskWorkbenchQueueEmptyText(moduleName) + '</div>'
+          : '<div class="task-workbench-empty task-runtime-empty-state">' + taskWorkbenchExecutionEmptyText(moduleName) + '</div>'
       );
       return;
     }
@@ -4886,16 +4886,16 @@ $(function(){
     var result = String(candidate.last_result || '').trim();
     var displayStatus = candidate.can_run === true ? 'pending' : candidate.status;
     return ''+
-      '<div class="ai-moments-runtime-row friend-request-runtime-row">'+
-        '<div class="ai-moments-runtime-main">'+
-          '<div class="ai-moments-runtime-title-row">'+
-            '<span class="ai-moments-runtime-result ui-pill--status ui-pill--l4 '+escapeHtml(friendRequestRuntimeStatusClass(displayStatus))+'">'+escapeHtml(friendRequestStatusLabel(displayStatus))+'</span>'+
-            '<strong class="ai-moments-runtime-title-text" title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</strong>'+
+      '<div class="task-runtime-row friend-request-runtime-row">'+
+        '<div class="task-runtime-main">'+
+          '<div class="task-runtime-title-row">'+
+            '<span class="task-runtime-result ui-pill--status ui-pill--l4 '+escapeHtml(friendRequestRuntimeStatusClass(displayStatus))+'">'+escapeHtml(friendRequestStatusLabel(displayStatus))+'</span>'+
+            '<strong class="task-runtime-title-text" title="'+escapeHtml(name)+'">'+escapeHtml(name)+'</strong>'+
           '</div>'+
           '<div class="task-workbench-runtime-meta" title="'+escapeHtml(tags || '无标签')+'">'+escapeHtml(tags || '无标签')+'</div>'+
           '<div class="task-workbench-runtime-time" title="'+escapeHtml(result)+'">'+escapeHtml(result || friendRequestRuntimeTime(candidate))+'</div>'+
         '</div>'+
-        '<div class="ai-moments-runtime-side">'+
+        '<div class="task-runtime-side">'+
           '<span class="task-runtime-action-placeholder" aria-hidden="true"></span>'+
         '</div>'+
       '</div>';
@@ -4905,16 +4905,16 @@ $(function(){
     var target = String(item.name || item.target || '未命名').trim();
     var message = String(item.message || '').trim();
     return ''+
-      '<div class="ai-moments-runtime-row friend-request-runtime-row">'+
-        '<div class="ai-moments-runtime-main">'+
-          '<div class="ai-moments-runtime-title-row">'+
-            '<span class="ai-moments-runtime-result ui-pill--status ui-pill--l4 '+escapeHtml(friendRequestRuntimeStatusClass(item.status))+'">'+escapeHtml(friendRequestStatusLabel(item.status))+'</span>'+
-            '<strong class="ai-moments-runtime-title-text" title="'+escapeHtml(target)+'">'+escapeHtml(target)+'</strong>'+
+      '<div class="task-runtime-row friend-request-runtime-row">'+
+        '<div class="task-runtime-main">'+
+          '<div class="task-runtime-title-row">'+
+            '<span class="task-runtime-result ui-pill--status ui-pill--l4 '+escapeHtml(friendRequestRuntimeStatusClass(item.status))+'">'+escapeHtml(friendRequestStatusLabel(item.status))+'</span>'+
+            '<strong class="task-runtime-title-text" title="'+escapeHtml(target)+'">'+escapeHtml(target)+'</strong>'+
           '</div>'+
           '<div class="task-workbench-runtime-meta" title="'+escapeHtml(message || '无结果说明')+'">'+escapeHtml(message || '无结果说明')+'</div>'+
           '<div class="task-workbench-runtime-time">'+escapeHtml(friendRequestShortTime(item.at))+'</div>'+
         '</div>'+
-        '<div class="ai-moments-runtime-side">'+
+        '<div class="task-runtime-side">'+
           '<span class="task-runtime-action-placeholder" aria-hidden="true"></span>'+
         '</div>'+
       '</div>';
@@ -5135,10 +5135,10 @@ $(function(){
     var typeLabel = materialTypeDisplayLabel(material.type_bucket || material.type || '素材');
     var ownership = $.trim(material.ownership || '我的作品') || '我的作品';
     return ''+
-      '<div class="ai-moments-task-preview material-management-card'+(selected?' selected':'')+(status !== 'active' ? ' is-disabled':'')+'" data-material-id="'+escapeHtml(id)+'" data-material-status="'+escapeHtml(status)+'" data-material-source="'+escapeHtml(material.source || '')+'" data-material-type="'+escapeHtml(material.type_bucket || material.type || '')+'">'+
-        '<div class="ai-moments-task-head"><h6 class="ai-moments-task-title">'+
-          '<span class="ai-moments-title-status ui-pill--status ui-pill--l4 '+escapeHtml(statusInfo.statusClass || '')+'">'+escapeHtml(statusInfo.text)+'</span>'+
-          '<span class="ai-moments-task-title-text">'+escapeHtml(materialPreviewTitle(material))+'</span>'+
+      '<div class="task-workbench-task-preview material-management-card'+(selected?' selected':'')+(status !== 'active' ? ' is-disabled':'')+'" data-material-id="'+escapeHtml(id)+'" data-material-status="'+escapeHtml(status)+'" data-material-source="'+escapeHtml(material.source || '')+'" data-material-type="'+escapeHtml(material.type_bucket || material.type || '')+'">'+
+        '<div class="task-workbench-task-head"><h6 class="task-workbench-task-title">'+
+          '<span class="task-workbench-title-status ui-pill--status ui-pill--l4 '+escapeHtml(statusInfo.statusClass || '')+'">'+escapeHtml(statusInfo.text)+'</span>'+
+          '<span class="task-workbench-task-title-text">'+escapeHtml(materialPreviewTitle(material))+'</span>'+
         '</h6></div>'+
         '<div class="material-management-copy"><div class="material-management-source">素材来源：'+escapeHtml(material.source || '未知来源')+'</div></div>'+
         '<div class="material-management-foot"><div class="scheduled-message-summary-tags material-management-meta">'+
@@ -5157,8 +5157,8 @@ $(function(){
     return ''+
       '<div class="material-detail-editor material-management-detail'+(active?' active':'')+'" '+(active?'':'hidden')+' data-material-id="'+escapeHtml(material.id || '')+'" data-material-status="'+escapeHtml(material.status || 'active')+'" data-material-source="'+escapeHtml(material.source || '')+'" data-material-type="'+escapeHtml(material.type_bucket || material.type || '')+'">'+
         '<div class="material-detail-section"><div class="scheduled-message-field-grid">'+
-          '<div class="scheduled-message-field" style="grid-column:1 / -1;"><label class="cfg-label">素材归属</label><select class="form-select ai-moments-control material-ownership"><option value="我的作品"'+(ownership === '我的作品' ? ' selected' : '')+'>我的作品</option><option value="第三方作品"'+(ownership === '第三方作品' ? ' selected' : '')+'>第三方作品</option></select></div>'+
-          '<div class="scheduled-message-field" style="grid-column:1 / -1;"><label class="cfg-label">素材备注</label><textarea class="form-control ai-moments-control material-copy-note" rows="4" placeholder="补充这条素材的使用场景、版权提醒或备注">'+escapeHtml(copyNote)+'</textarea></div>'+
+          '<div class="scheduled-message-field" style="grid-column:1 / -1;"><label class="cfg-label">素材归属</label><select class="form-select task-workbench-control material-ownership"><option value="我的作品"'+(ownership === '我的作品' ? ' selected' : '')+'>我的作品</option><option value="第三方作品"'+(ownership === '第三方作品' ? ' selected' : '')+'>第三方作品</option></select></div>'+
+          '<div class="scheduled-message-field" style="grid-column:1 / -1;"><label class="cfg-label">素材备注</label><textarea class="form-control task-workbench-control material-copy-note" rows="4" placeholder="补充这条素材的使用场景、版权提醒或备注">'+escapeHtml(copyNote)+'</textarea></div>'+
         '</div></div>'+
       '</div>';
   }
@@ -5175,8 +5175,8 @@ $(function(){
       activeId = String(materials[0].id || '');
     }
     if(!materials.length){
-      $list.html('<div class="ai-moments-empty">暂无素材。先在素材来源里投喂链接、小程序、图片等内容。</div>');
-      $details.html('<div class="ai-moments-empty">暂无素材详情。</div>');
+      $list.html('<div class="task-workbench-empty">暂无素材。先在素材来源里投喂链接、小程序、图片等内容。</div>');
+      $details.html('<div class="task-workbench-empty">暂无素材详情。</div>');
       syncMaterialManagementSaveButton();
       return;
     }
@@ -5842,7 +5842,7 @@ $(function(){
     var files = Array.isArray(message.files) ? message.files.slice(0, KEYWORD_MAX_FILES) : [];
     return ''+
       '<div class="scheduled-message-text-block">'+
-        '<textarea class="form-control ai-moments-control scheduled-message-text-input new-friend-message-text-input" rows="1" placeholder="输入欢迎内容，可留空">'+escapeHtml(textValue)+'</textarea>'+
+        '<textarea class="form-control task-workbench-control scheduled-message-text-input new-friend-message-text-input" rows="1" placeholder="输入欢迎内容，可留空">'+escapeHtml(textValue)+'</textarea>'+
       '</div>'+
       '<div class="scheduled-message-file-block new-friend-message-file-wrap"'+(files.length ? '' : ' style="display:none"')+'>'+
         '<div class="file-path-list scheduled-message-file-list new-friend-message-file-list">'+files.map(function(pathValue){ return buildNewFriendMessageFileRow(pathValue); }).join('')+'</div>'+
@@ -6135,7 +6135,7 @@ $(function(){
         '<div class="scheduled-message-section">'+
           '<div class="scheduled-message-content-stack">'+
             '<div class="scheduled-message-text-block">'+
-              '<textarea class="form-control ai-moments-control scheduled-message-text-input" rows="1" placeholder="输入要发送的消息，可留空">'+escapeHtml(contentModel.text)+'</textarea>'+
+              '<textarea class="form-control task-workbench-control scheduled-message-text-input" rows="1" placeholder="输入要发送的消息，可留空">'+escapeHtml(contentModel.text)+'</textarea>'+
             '</div>'+
             '<div class="scheduled-message-file-block"'+(fileRows ? '' : ' style="display:none"')+'>'+
               '<div class="file-path-list scheduled-message-file-list">'+fileRows+'</div>'+
@@ -6145,12 +6145,12 @@ $(function(){
         '<div class="scheduled-message-config-block">'+
           '<div class="detail-config-separator"></div>'+
           '<div class="scheduled-message-field-grid">'+
-            '<div class="scheduled-message-field"><label class="cfg-label">发送目标</label><select class="form-select ai-moments-control scheduled-target-mode"><option value="all"'+(targetMode === 'all' ? ' selected' : '')+'>全部</option><option value="include"'+(targetMode === 'include' ? ' selected' : '')+'>发给谁</option><option value="exclude"'+(targetMode === 'exclude' ? ' selected' : '')+'>不发给谁</option></select></div>'+
+            '<div class="scheduled-message-field"><label class="cfg-label">发送目标</label><select class="form-select task-workbench-control scheduled-target-mode"><option value="all"'+(targetMode === 'all' ? ' selected' : '')+'>全部</option><option value="include"'+(targetMode === 'include' ? ' selected' : '')+'>发给谁</option><option value="exclude"'+(targetMode === 'exclude' ? ' selected' : '')+'>不发给谁</option></select></div>'+
             '<div class="scheduled-message-field"><label class="cfg-label">选择标签</label>'+renderScheduledMessageTagMultiSelect(targetTags, targetMode === 'all')+'</div>'+
-            '<div class="scheduled-message-field scheduled-manual-target-field"><label class="cfg-label">昵称或备注</label><textarea class="form-control ai-moments-control scheduled-manual-target-names" rows="2" placeholder="每行一个，可设置多个">'+escapeHtml(manualTargetNames.join('\n'))+'</textarea></div>'+
+            '<div class="scheduled-message-field scheduled-manual-target-field"><label class="cfg-label">昵称或备注</label><textarea class="form-control task-workbench-control scheduled-manual-target-names" rows="2" placeholder="每行一个，可设置多个">'+escapeHtml(manualTargetNames.join('\n'))+'</textarea></div>'+
             '<div class="scheduled-message-field scheduled-manual-target-spacer" aria-hidden="true"></div>'+
-            '<div class="scheduled-message-field"><label class="cfg-label">时间规则</label><select class="form-select ai-moments-control scheduled-trigger-kind"><option value="fixed"'+(triggerKind !== 'random' ? ' selected' : '')+'>固定时间</option><option value="random"'+(triggerKind === 'random' ? ' selected' : '')+'>随机时间</option></select></div>'+
-            '<div class="scheduled-message-field"><label class="cfg-label scheduled-message-time-label">'+(triggerKind === 'random' ? '选择时间段' : '选择时间')+'</label><div class="scheduled-message-fixed-datetime-wrap"'+(triggerKind === 'random' ? ' hidden' : '')+'><input type="datetime-local" class="form-control ai-moments-control scheduled-datetime" value="'+escapeHtml(fixedValue)+'"></div><div class="scheduled-message-random-window-wrap"'+(triggerKind !== 'random' ? ' hidden' : '')+'><div class="ai-moments-time-window"><input type="time" class="form-control ai-moments-control scheduled-window-start" value="'+escapeHtml(windowParts.start)+'"><span class="ai-moments-time-separator">-</span><input type="time" class="form-control ai-moments-control scheduled-window-end" value="'+escapeHtml(windowParts.end)+'"></div></div></div>'+
+            '<div class="scheduled-message-field"><label class="cfg-label">时间规则</label><select class="form-select task-workbench-control scheduled-trigger-kind"><option value="fixed"'+(triggerKind !== 'random' ? ' selected' : '')+'>固定时间</option><option value="random"'+(triggerKind === 'random' ? ' selected' : '')+'>随机时间</option></select></div>'+
+            '<div class="scheduled-message-field"><label class="cfg-label scheduled-message-time-label">'+(triggerKind === 'random' ? '选择时间段' : '选择时间')+'</label><div class="scheduled-message-fixed-datetime-wrap"'+(triggerKind === 'random' ? ' hidden' : '')+'><input type="datetime-local" class="form-control task-workbench-control scheduled-datetime" value="'+escapeHtml(fixedValue)+'"></div><div class="scheduled-message-random-window-wrap"'+(triggerKind !== 'random' ? ' hidden' : '')+'><div class="task-workbench-time-window"><input type="time" class="form-control task-workbench-control scheduled-window-start" value="'+escapeHtml(windowParts.start)+'"><span class="task-workbench-time-separator">-</span><input type="time" class="form-control task-workbench-control scheduled-window-end" value="'+escapeHtml(windowParts.end)+'"></div></div></div>'+
           '</div>'+
         '</div>'+
       '</div>';
@@ -6216,7 +6216,7 @@ $(function(){
     });
     counts.pending = parseInt(runtimeStats.queue_pending, 10) || 0;
     counts.running = parseInt(runtimeStats.queue_running, 10) || 0;
-    var $chips = $('#scheduled-message-status-row .ai-moments-chip');
+    var $chips = $('#scheduled-message-status-row .task-workbench-chip');
     $chips.eq(1).text('已启用 ' + (counts.enabled || 0));
     $chips.eq(2).text('已停用 ' + (counts.disabled || 0));
     $chips.eq(3).text('等待发送 ' + (counts.pending || 0));
@@ -6238,20 +6238,20 @@ $(function(){
 
     var $list = $('#scheduled_message_task_list').empty();
     if(!tasks.length){
-      $list.append('<div class="ai-moments-empty">暂无定时消息任务。</div>');
+      $list.append('<div class="task-workbench-empty">暂无定时消息任务。</div>');
     } else {
       tasks.forEach(function(task){
         var metaText = scheduledMessageCardMetaText(task);
         var timeText = scheduledMessageCardTimeText(task);
         var badge = scheduledMessageInstanceBadge(task);
         $list.append(
-          '<div class="ai-moments-task-preview scheduled-message-task-preview'+(task.id === activeScheduledMessageTaskId ? ' selected' : '')+'" data-task-id="'+escapeHtml(task.id)+'">'+
-            '<div class="ai-moments-task-head">'+
-              '<h6 class="ai-moments-task-title"><span class="ai-moments-title-status ui-pill--status ui-pill--l4 '+badge.cls+'">'+badge.text+'</span><span class="ai-moments-task-title-text">'+escapeHtml(scheduledMessageSummaryName(task))+'</span></h6>'+
+          '<div class="task-workbench-task-preview scheduled-message-task-preview'+(task.id === activeScheduledMessageTaskId ? ' selected' : '')+'" data-task-id="'+escapeHtml(task.id)+'">'+
+            '<div class="task-workbench-task-head">'+
+              '<h6 class="task-workbench-task-title"><span class="task-workbench-title-status ui-pill--status ui-pill--l4 '+badge.cls+'">'+badge.text+'</span><span class="task-workbench-task-title-text">'+escapeHtml(scheduledMessageSummaryName(task))+'</span></h6>'+
               '<button type="button" class="ui-switch ui-switch--l3 scheduled-task-switch '+(task.enabled ? '' : 'off')+'" aria-pressed="'+(task.enabled ? 'true' : 'false')+'"><span>'+(task.enabled ? '已启用' : '已停用')+'</span><span class="ui-switch-knob"></span></button>'+
             '</div>'+
-            (metaText ? '<div class="ai-moments-task-meta">'+escapeHtml(metaText)+'</div>' : '')+
-            '<div class="ai-moments-task-time">'+escapeHtml(timeText)+'</div>'+
+            (metaText ? '<div class="task-workbench-task-meta">'+escapeHtml(metaText)+'</div>' : '')+
+            '<div class="task-workbench-task-time">'+escapeHtml(timeText)+'</div>'+
             '<div class="cfg-action-row scheduled-message-card-footer-actions">'+
               '<div class="scheduled-message-card-primary-actions">'+
                 '<button type="button" class="ui-btn ui-btn--secondary ui-btn--l3 btn-view-scheduled-message-task">查看详情</button>'+
@@ -9090,21 +9090,21 @@ $(function(){
     return $.trim($editor.find('.material-time-window').val() || formatTimeWindowValue('', '', '00:00', '23:59'));
   }
   function renderMaterialTimeWindowControl(startValue, endValue){
-    return '<div class="ai-moments-time-window">'+
-      '<input type="time" class="form-control ai-moments-control material-window-start" value="'+escapeHtml(startValue || '00:00')+'">'+
-      '<span class="ai-moments-time-separator">-</span>'+
-      '<input type="time" class="form-control ai-moments-control material-window-end" value="'+escapeHtml(endValue || '23:59')+'">'+
+    return '<div class="task-workbench-time-window">'+
+      '<input type="time" class="form-control task-workbench-control material-window-start" value="'+escapeHtml(startValue || '00:00')+'">'+
+      '<span class="task-workbench-time-separator">-</span>'+
+      '<input type="time" class="form-control task-workbench-control material-window-end" value="'+escapeHtml(endValue || '23:59')+'">'+
     '</div>';
   }
   function renderMaterialRepeatRuleControl(repeatType, count){
     return '<div class="scheduled-message-field material-repeat-rule-field cfg-inline-combo-slot"><label class="cfg-label">循环规则</label>'+
       '<div class="cfg-inline-combo cfg-inline-combo--repeat-rule material-repeat-rule">'+
         '<div class="cfg-inline-combo__field">'+
-          '<select class="form-select ai-moments-control cfg-inline-combo__input material-repeat-type">'+materialRepeatTypeOptionsHtml(repeatType || 'daily')+'</select>'+
+          '<select class="form-select task-workbench-control cfg-inline-combo__input material-repeat-type">'+materialRepeatTypeOptionsHtml(repeatType || 'daily')+'</select>'+
         '</div>'+
         '<span class="cfg-inline-combo__separator material-repeat-rule-text">发送</span>'+
         '<div class="cfg-inline-combo__field">'+
-          '<input type="number" class="form-control ai-moments-control cfg-inline-combo__input material-random-days-count" min="1" max="31" value="'+escapeHtml(count || 1)+'">'+
+          '<input type="number" class="form-control task-workbench-control cfg-inline-combo__input material-random-days-count" min="1" max="31" value="'+escapeHtml(count || 1)+'">'+
           '<span class="cfg-inline-combo__suffix material-repeat-rule-unit">次</span>'+
         '</div>'+
       '</div></div>';
@@ -9156,7 +9156,7 @@ $(function(){
       var $editor = $(this);
       var taskId = String($editor.data('mtaskid') || '').trim();
       if(!taskId || taskId === '__ai_material') return;
-      materialTaskPreviewByTaskId(taskId).find('.ai-moments-task-title-text').text(materialTaskDisplayTitleFromEditor($editor));
+      materialTaskPreviewByTaskId(taskId).find('.task-workbench-task-title-text').text(materialTaskDisplayTitleFromEditor($editor));
     });
   }
   function materialTaskPreviewStatusBadge(taskId, enabled){
@@ -9174,10 +9174,10 @@ $(function(){
     if(!$preview.length || $preview.hasClass('material-ai-card')) return;
     var taskId = String($preview.data('mtaskid') || '').trim();
     if(!taskId) return;
-    var enabled = !$preview.find('.ai-moments-task-switch').first().hasClass('off');
+    var enabled = !$preview.find('.task-workbench-task-switch').first().hasClass('off');
     var badge = materialTaskPreviewStatusBadge(taskId, enabled);
-    $preview.find('.ai-moments-title-status').first()
-      .attr('class', 'ai-moments-title-status ui-pill--status ui-pill--l4 ' + badge.cls)
+    $preview.find('.task-workbench-title-status').first()
+      .attr('class', 'task-workbench-title-status ui-pill--status ui-pill--l4 ' + badge.cls)
       .text(badge.text);
   }
   function syncAllMaterialTaskPreviewStatuses(){
@@ -9259,12 +9259,12 @@ $(function(){
     var prefaceState = materialPrefaceStateFromEditor($editor);
     var aiGoal = materialAiPrefaceGoalValue($editor.find('.material-ai-preface-goal').val());
     var prefaceSummary = materialPrefaceSummaryText(prefaceState.mode, prefaceState.text, aiGoal, $.trim($editor.find('.material-ai-preface-intensity').val() || ''));
-    $preview.find('.ai-moments-task-meta').text(materialTaskCardMetaText({
+    $preview.find('.task-workbench-task-meta').text(materialTaskCardMetaText({
       isRecurring: isRecurring,
       sourceLabel: sourceLabel,
       prefaceSummary: prefaceSummary
     }));
-    $preview.find('.ai-moments-task-time').text(materialTaskCardTimeText({
+    $preview.find('.task-workbench-task-time').text(materialTaskCardTimeText({
       timeLabel: timeLabel,
       targetLabel: targetLabel
     }));
@@ -9276,13 +9276,13 @@ $(function(){
     var isRecurring = repeatType !== 'once';
     var enabledBadge = '无实例';
     var enabledClass = 'is-warning';
-    return '<div class="ai-moments-task-preview material-task-preview selected" data-mtaskid="'+escapeHtml(taskId)+'">'+
-      '<div class="ai-moments-task-head">'+
-        '<h6 class="ai-moments-task-title"><span class="ai-moments-title-status ui-pill--status ui-pill--l4 ' + enabledClass + '">' + enabledBadge + '</span><span class="ai-moments-task-title-text">' + (repeatType !== 'once' ? '全部来源+全部' : '未选择素材') + '</span></h6>'+
-        '<button type="button" class="ui-switch ui-switch--l3 ai-moments-task-switch" aria-pressed="true"><span>已启用</span><span class="ui-switch-knob"></span></button>'+
+    return '<div class="task-workbench-task-preview material-task-preview selected" data-mtaskid="'+escapeHtml(taskId)+'">'+
+      '<div class="task-workbench-task-head">'+
+        '<h6 class="task-workbench-task-title"><span class="task-workbench-title-status ui-pill--status ui-pill--l4 ' + enabledClass + '">' + enabledBadge + '</span><span class="task-workbench-task-title-text">' + (repeatType !== 'once' ? '全部来源+全部' : '未选择素材') + '</span></h6>'+
+        '<button type="button" class="ui-switch ui-switch--l3 task-workbench-task-switch" aria-pressed="true"><span>已启用</span><span class="ui-switch-knob"></span></button>'+
       '</div>'+
-      '<div class="ai-moments-task-meta">' + escapeHtml(materialTaskCardMetaText({ isRecurring: isRecurring, prefaceSummary: 'AI生成文案：日常问候' })) + '</div>'+
-      '<div class="ai-moments-task-time">' + escapeHtml(materialTaskCardTimeText({ timeLabel: isRecurring ? '12:00 - 21:30' : formatMaterialPreviewDateTime(currentFixedDateTimeDefault()), targetLabel: '全部好友' })) + '</div>'+
+      '<div class="task-workbench-task-meta">' + escapeHtml(materialTaskCardMetaText({ isRecurring: isRecurring, prefaceSummary: 'AI生成文案：日常问候' })) + '</div>'+
+      '<div class="task-workbench-task-time">' + escapeHtml(materialTaskCardTimeText({ timeLabel: isRecurring ? '12:00 - 21:30' : formatMaterialPreviewDateTime(currentFixedDateTimeDefault()), targetLabel: '全部好友' })) + '</div>'+
       '<div class="cfg-action-row scheduled-message-card-footer-actions"><div class="scheduled-message-card-primary-actions"><button type="button" class="ui-btn ui-btn--soft ui-btn--l3 btn-duplicate-material-task">复制任务</button></div><button type="button" class="ui-btn ui-btn--danger ui-btn--l3 btn-delete-material-task">删除</button></div>'+
     '</div>';
   }
@@ -9298,8 +9298,8 @@ $(function(){
       '<input type="checkbox" class="material-task-enabled" checked hidden>'+
       '<div class="material-detail-section material-material-row">'+
         '<div class="scheduled-message-field-grid">'+
-          '<div class="scheduled-message-field"><label class="cfg-label">素材来源</label><select class="form-select ai-moments-control material-source-filter">'+materialSourceOptionsHtml('')+'</select></div>'+
-          '<div class="scheduled-message-field"><label class="cfg-label">素材类型</label><select class="form-select ai-moments-control material-type-filter">'+materialTypeOptionsHtml('all')+'</select></div>'+
+          '<div class="scheduled-message-field"><label class="cfg-label">素材来源</label><select class="form-select task-workbench-control material-source-filter">'+materialSourceOptionsHtml('')+'</select></div>'+
+          '<div class="scheduled-message-field"><label class="cfg-label">素材类型</label><select class="form-select task-workbench-control material-type-filter">'+materialTypeOptionsHtml('all')+'</select></div>'+
           '<div class="scheduled-message-field material-preface-field"><label class="cfg-label">附加文案</label>'+renderMaterialPrefaceEditor({preface_mode:"ai"})+'</div></div>'+
         '</div>'+
       '<div class="material-detail-separator"></div>'+
@@ -9308,8 +9308,8 @@ $(function(){
       '</div>'+
       '<div class="material-detail-section material-trigger-row">'+
         '<div class="scheduled-message-field-grid">'+
-          '<div class="scheduled-message-field"><label class="cfg-label">时间规则</label><select class="form-select ai-moments-control material-mode"><option value="fixed">固定时间</option><option value="random" selected>时间窗口</option></select></div>'+
-          '<div class="scheduled-message-field material-fixed-datetime-wrap" style="display:none"><label class="cfg-label">选择时间</label><input type="datetime-local" class="form-control ai-moments-control material-datetime" value="'+currentFixedDateTimeDefault()+'"></div>'+
+          '<div class="scheduled-message-field"><label class="cfg-label">时间规则</label><select class="form-select task-workbench-control material-mode"><option value="fixed">固定时间</option><option value="random" selected>时间窗口</option></select></div>'+
+          '<div class="scheduled-message-field material-fixed-datetime-wrap" style="display:none"><label class="cfg-label">选择时间</label><input type="datetime-local" class="form-control task-workbench-control material-datetime" value="'+currentFixedDateTimeDefault()+'"></div>'+
           '<div class="scheduled-message-field material-time-window-wrap"><label class="cfg-label">选择时间段</label>'+renderMaterialTimeWindowControl('12:00', '21:30')+'</div>'+
         '</div>'+
       '</div>'+
@@ -9323,7 +9323,7 @@ $(function(){
       '<input type="checkbox" class="material-task-enabled" checked hidden>'+
       '<div class="material-detail-section material-material-row">'+
         '<div class="scheduled-message-field-grid">'+
-          '<div class="scheduled-message-field material-fixed-material-row"><label class="cfg-label">选择素材</label><select class="form-select ai-moments-control material-fixed-material-id">'+materialFixedOptionsHtml('', '', 'all')+'</select><div class="cfg-hint material-management-error material-fixed-material-warning" style="display:none;"></div></div>'+
+          '<div class="scheduled-message-field material-fixed-material-row"><label class="cfg-label">选择素材</label><select class="form-select task-workbench-control material-fixed-material-id">'+materialFixedOptionsHtml('', '', 'all')+'</select><div class="cfg-hint material-management-error material-fixed-material-warning" style="display:none;"></div></div>'+
           '<div class="scheduled-message-field material-preface-field"><label class="cfg-label">附加文案</label>'+renderMaterialPrefaceEditor({preface_mode:"ai"})+'</div></div>'+
         '</div>'+
       '<div class="material-detail-separator"></div>'+
@@ -9332,8 +9332,8 @@ $(function(){
       '</div>'+
       '<div class="material-detail-section material-trigger-row">'+
         '<div class="scheduled-message-field-grid">'+
-          '<div class="scheduled-message-field"><label class="cfg-label">时间规则</label><select class="form-select ai-moments-control material-mode"><option value="fixed" selected>固定时间</option><option value="random">时间窗口</option></select></div>'+
-          '<div class="scheduled-message-field material-fixed-datetime-wrap"><label class="cfg-label">选择时间</label><input type="datetime-local" class="form-control ai-moments-control material-datetime" value="'+currentFixedDateTimeDefault()+'"></div>'+
+          '<div class="scheduled-message-field"><label class="cfg-label">时间规则</label><select class="form-select task-workbench-control material-mode"><option value="fixed" selected>固定时间</option><option value="random">时间窗口</option></select></div>'+
+          '<div class="scheduled-message-field material-fixed-datetime-wrap"><label class="cfg-label">选择时间</label><input type="datetime-local" class="form-control task-workbench-control material-datetime" value="'+currentFixedDateTimeDefault()+'"></div>'+
           '<div class="scheduled-message-field material-time-window-wrap" style="display:none"><label class="cfg-label">选择时间段</label>'+renderMaterialTimeWindowControl('00:00', '23:59')+'</div>'+
         '</div>'+
       '</div>'+
@@ -9446,7 +9446,7 @@ $(function(){
     $('.material-outreach-item .material-fixed-material-id').each(function(){
       if(String($(this).val() || '') !== String(materialId || '')) return;
       var taskId = materialTaskEditorFromNode(this).data('mtaskid');
-      var label = materialTaskPreviewByTaskId(taskId).find('.ai-moments-task-title-text').text();
+      var label = materialTaskPreviewByTaskId(taskId).find('.task-workbench-task-title-text').text();
       labels.push($.trim(label || taskId || '未命名任务'));
     });
     return labels;
@@ -9465,7 +9465,7 @@ $(function(){
         var $card = $('#material_management_list .material-management-card[data-material-id="'+id+'"]');
         var $editor = $('#material_management_detail_container .material-management-detail[data-material-id="'+id+'"]');
         $card.attr('data-material-status', status).toggleClass('is-disabled', status !== 'active');
-        $card.find('.ai-moments-title-status').text(statusInfo.text).toggleClass('gold', statusInfo.statusClass === 'gold');
+        $card.find('.task-workbench-title-status').text(statusInfo.text).toggleClass('gold', statusInfo.statusClass === 'gold');
         updateMetaChip($card.find('.material-management-ownership-chip'), ownership, '');
         updateMetaChip($card.find('.material-management-forward-chip'), forwardInfo.text, forwardInfo.metaClass);
         updateMetaChip($card.find('.material-management-runtime-chip'), runtimeInfo.text, runtimeInfo.metaClass);
@@ -9614,7 +9614,7 @@ $(function(){
     var nextId = $('#material_outreach_task_container .material-task-preview').first().data('mtaskid') || '';
     setActiveMaterialDetail(nextId);
   });
-  $(document).on('click','.material-task-preview .ai-moments-task-switch',function(e){
+  $(document).on('click','.material-task-preview .task-workbench-task-switch',function(e){
     e.stopPropagation();
     var $btn = $(this);
     var taskId = $btn.closest('.material-task-preview').data('mtaskid');

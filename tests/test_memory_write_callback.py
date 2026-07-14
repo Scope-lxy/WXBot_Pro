@@ -132,8 +132,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         )
         bot.memory_manager = CaptureMemory()
         bot._should_skip_message_memory = lambda chat, msg: False
-        bot._handle_admin_forward_input = lambda _chat, _msg: False
-        bot._handle_admin_moments_input = lambda _chat, _msg: False
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot._record_received_message = lambda: None
         bot._update_alllisten_timestamp = lambda *_args, **_kwargs: None
@@ -553,7 +551,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             AllListen_switch=False,
             listen_list=["张三"],
             global_blacklist=[],
-            custom_forward_switch=False,
             chat_image_recognition_switch=False,
             chat_voice_recognition_switch=False,
             chat_keyword_switch=False,
@@ -573,8 +570,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             split_long_text=lambda text: [text],
         )
         bot.memory_manager = InMemoryChatMemory()
-        bot._handle_admin_forward_input = lambda _chat, _msg: False
-        bot._handle_admin_moments_input = lambda _chat, _msg: False
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot._record_received_message = lambda: None
         bot._mark_chat_memory_dirty = lambda _chat, _msg: True
@@ -931,8 +926,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         )
         bot.memory_manager = CaptureMemory()
         bot._should_skip_message_memory = lambda chat, msg: False
-        bot._handle_admin_forward_input = lambda _chat, _msg: False
-        bot._handle_admin_moments_input = lambda _chat, _msg: False
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot._record_received_message = lambda: None
         bot._pause_group_reply = False
@@ -981,8 +974,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         )
         bot.memory_manager = CaptureMemory()
         bot._should_skip_message_memory = lambda chat, msg: False
-        bot._handle_admin_forward_input = lambda _chat, _msg: False
-        bot._handle_admin_moments_input = lambda _chat, _msg: False
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot._record_received_message = lambda: None
         bot._pause_group_reply = False

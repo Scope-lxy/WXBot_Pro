@@ -22,7 +22,7 @@
 - 本项目是个人自用 fork，优先当前实际体验和代码可维护性，不为旧任务、旧实例、旧记录额外保留兼容层。
 - 能收敛成单一真源时，不并行维护两套字段、两套流程或两套 UI 心智。
 - 不提交本地私密配置和账号数据，尤其是 `data/config/`、`data/prompt/`、`data/accounts/`。
-- 高风险链路改动优先补测试：登录 / session、消息路由、图片链路、发送清洗、会话记忆、任务调度、素材转发和发圈。
+- 高风险链路改动优先补测试：登录 / session、消息路由、图片链路、发送清洗、会话记忆、任务调度和素材转发。
 - 模块拆分只整理本项目业务层，不顺手改 `wxautox4`、wxauto 消息类、监听实现、下载实现或微信窗口控制底层。
 - Windows PowerShell 看到中文乱码时，先按终端显示问题处理，不直接重写中文内容。
 
@@ -60,7 +60,7 @@
 `web_server.py` 负责：
 
 - 登录态、session、首页和日志拉取。
-- `config.json`、`admin.json`、`email.json`、`webhook.json` 等配置读写。
+- `config.json`、`admin.json`、`email.json` 等配置读写。
 - 接口连通性测试和视觉能力测试，并写入 `api_capability_map`。
 - Prompt、人设近况、会话记忆、聊天记录、通讯录、素材转发、备份等页面 API。
 - 统一任务工作台 API：`/api/task-workbench/<module>` 与 `/api/task-workbench/<module>/runtime`。
@@ -150,14 +150,14 @@
 - `data/config/admin.json`：面板账号密码。
 - `data/config/email.json`：邮件通知配置。
 - `data/config/reply_count.json`：私聊好友与群聊成员的回复次数限制计数；群聊键由群名和发言人共同组成。
-- `data/config/runtime_metrics_v1.json`：状态面板、数据图表和管理员 `/状态` 使用的小时级运行统计。
+- `data/config/runtime_metrics_v1.json`：状态面板和数据图表使用的小时级运行统计。
 - `data/prompt/`：人格模板和人格近况文件。
 - `data/system_prompts/`：系统 Prompt 片段及其备份。
 - `data/accounts/<wx_id>/memory/`：聊天记录。
 - `data/accounts/<wx_id>/chat_memory/`：会话记忆 JSON 真源。
 - `data/accounts/<wx_id>/contact_profiles/contacts.json`：通讯录档案真源，使用 v2 瘦身结构。
 - `data/accounts/<wx_id>/contact_merge_backups/`：联系人合并前的账号级保险备份。
-- `data/accounts/<wx_id>/tasks/`：关键词、定时消息、素材转发、发圈等任务模块。
+- `data/accounts/<wx_id>/tasks/`：关键词、定时消息和素材转发等任务模块。
 - `data/accounts/<wx_id>/relationship_scan/relationships.json`：关系扫描结果。
 - `data/accounts/<wx_id>/friend_request/state.json`：好友申请设置、候选人和执行记录。
 - `data/accounts/<wx_id>/ui_delivery/journal.json`：语音、文件、转发和 quote 的非幂等微信投递账本。
@@ -192,7 +192,7 @@ owner 按 FIFO 执行，已经开始的动作不可被后到任务抢占。AI �
 
 ### 动态监听
 
-动态监听采用轻量按需补窗。普通增删监听不触发微信客户端重绑，不恢复主循环高频巡检。普通补窗失败先进入 30s / 60s 延后重试，之后按 60s 低频继续等待，不设“超时写记忆并放弃”的出口；同一好友已有延后任务时只合并消息，不重复补窗。只有“已监听但无子窗口”残留状态允许受控关闭重建。
+动态监听采用轻量按需补窗。普通增删监听不触发微信客户端重绑，不恢复主循环高频巡检。普通补窗失败先进入 30s / 60s 延后重试，之后在 600s 待处理窗口内按 60s 继续尝试；窗口耗尽后标记 `listen_degraded` 并停止自动重试，不把未验收消息写入记忆。同一好友已有延后任务时只合并消息，不重复补窗。只有“已监听但无子窗口”残留状态允许受控关闭重建。
 
 固定监听可低频巡检补回，但不能和全局监听延后补窗抢微信 UI。
 
@@ -244,7 +244,7 @@ AI 回复发送前统一走回复预处理：先按 `clean_ai_reply_switch` 清�
 
 定时消息、素材转发走统一时间模型。新增任务类面板时优先复用现有任务工作台 contract / storage / service。
 
-非幂等动作在调用前持久化执行围栏。定时消息按“目标 × 内容”保存 `pending / inflight / done / failed / queued / uncertain`；好友申请真正提交只做一次；素材批次预写 `inflight`；朋友圈发布前保存快照。进程中断后无法确认结果的一律进入 `uncertain` 或待确认，禁止自动重放。好友申请候选生成前必须重新计算 `duplicate_send_name`，并与 `send_name_unsearchable` 一起排除；`contact_key` 不能让微信的名称搜索具备同名消歧能力，禁止在无法唯一定位时自动提交。
+非幂等动作在调用前持久化执行围栏。定时消息按“目标 × 内容”保存 `pending / inflight / done / failed / queued / uncertain`；好友申请真正提交只做一次；素材批次预写 `inflight`。进程中断后无法确认结果的一律进入 `uncertain` 或待确认，禁止自动重放。好友申请候选生成前必须重新计算 `duplicate_send_name`，并与 `send_name_unsearchable` 一起排除；`contact_key` 不能让微信的名称搜索具备同名消歧能力，禁止在无法唯一定位时自动提交。
 
 普通语音、文件、转发和 quote 由 `core/ui_delivery_journal.py` 在 owner 调用前写入 `inflight`，明确返回后写 `done`；调用异常或启动时发现遗留 `inflight` 时收敛为 `uncertain`。投递 ID 不按条数截断，素材转发还必须记录 `request_id / run_id / batch_id / targets`，同一业务批次结果未知时外层立即停止，禁止换一个随机 ID 自动再试。关键词、定时任务、新好友欢迎、quote 后续文字和 AI 拆分气泡都逐项提交；每项开始前复核会话或任务版本，新消息、停止或配置变化可以取消尚未开始的剩余项。不得把已完成、结果未知和尚未开始的多项合并成一个模糊结果，更不得把根本未开始的后续项一并冻结。
 
@@ -268,7 +268,7 @@ owner 在真实微信动作前通过 `task_version_provider` 复核配置或任�
 - 登录 / session。
 - 微信监听注册、动态子窗口缓存和全局监听按需补窗。
 - 消息回调分流顺序。
-- 管理员接管态、发圈态和素材来源静默规则优先级。
+- 素材来源静默规则与普通消息路由的优先级。
 - 发送前清洗、拆分多条和后续气泡间隔策略；不再设置首条回复延迟。
 - outbound echo 过滤和私聊 `self` 手动接管判定。
 - 回复轮数计数和超限结束语。

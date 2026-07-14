@@ -223,7 +223,6 @@ class WeChatUIRuntimeTests(unittest.TestCase):
                 listen_list=[],
                 group_switch=False,
                 group=[],
-                custom_forward_switch=False,
             ),
             all_Mode_listen_list=[],
             _listen_chats={},

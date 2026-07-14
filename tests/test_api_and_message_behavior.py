@@ -435,7 +435,6 @@ class MessageBehaviorTests(unittest.TestCase):
                     listen_list=["张三"],
                     group=[],
                     group_switch=False,
-                    custom_forward_switch=False,
                     chat_image_recognition_switch=False,
                     chat_voice_recognition_switch=False,
                 )
@@ -446,12 +445,6 @@ class MessageBehaviorTests(unittest.TestCase):
 
             def _record_received_message(self):
                 self.msg_received_count += 1
-
-            def _handle_admin_forward_input(self, _chat, _msg):
-                return False
-
-            def _handle_admin_moments_input(self, _chat, _msg):
-                return False
 
             def _handle_material_source_message(self, _chat, _msg):
                 return False

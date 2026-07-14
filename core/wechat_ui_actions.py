@@ -59,7 +59,12 @@ class ActionBatchInterrupted(RuntimeError):
         super().__init__(f"第 {self.failed_index + 1} 个发送动作结果未知：{cause}")
 
 
-LIGHTWEIGHT_INTENTS = frozenset({UIIntentKind.GET_MESSAGES, UIIntentKind.SEND_TEXT, UIIntentKind.SEND_TEXT_BATCH})
+LIGHTWEIGHT_INTENTS = frozenset({
+    UIIntentKind.POLL_MESSAGES,
+    UIIntentKind.GET_MESSAGES,
+    UIIntentKind.SEND_TEXT,
+    UIIntentKind.SEND_TEXT_BATCH,
+})
 JOURNALED_DELIVERY_INTENTS = frozenset({
     UIIntentKind.SEND_FILE,
     UIIntentKind.SEND_AUDIO,

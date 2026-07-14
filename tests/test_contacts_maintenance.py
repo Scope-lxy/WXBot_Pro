@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from core.memory import MemoryManager
 from core.wechat_ui_runtime import WeChatUIRuntime
 from feature.contacts import analyze_refresh_batch
 from feature.contacts import auto_maintenance_is_due
@@ -28,11 +29,16 @@ from feature.contacts import refresh_contact_profiles_single_batch
 from feature.contacts import run_contact_auto_maintenance_collector
 from feature.contacts import set_contact_profiles_paused
 from web_server import (
+    _chat_memory_messages_for_user,
     _contact_profiles_browser_contacts,
     _chat_memory_user_sort_key,
     _wechat_name_sort_key,
     app,
     memory_chats,
+    memory_data,
+    memory_delete_chat,
+    memory_delete_wx,
+    memory_list,
 )
 from web_server import _contact_profiles_summary
 from core.contact_profiles import load_directory as load_contact_directory
@@ -177,7 +183,7 @@ class WeChatNameSortTests(unittest.TestCase):
                     encoding="utf-8",
                 )
 
-            with patch("web_server._account_memory_dir", return_value=str(base)):
+            with patch("web_server.MEMORY_BASE", temp_dir):
                 with app.test_request_context("/memory/chats/wx_test"):
                     response = memory_chats.__wrapped__("wx_test")
 
@@ -200,13 +206,98 @@ class WeChatNameSortTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with patch("web_server._account_memory_dir", return_value=str(base)):
+            with patch("web_server.MEMORY_BASE", temp_dir):
                 with app.test_request_context("/memory/chats/wx_test"):
                     response = memory_chats.__wrapped__("wx_test")
 
             payload = response.get_json()
 
         self.assertEqual([item["name"] for item in payload["chats"]], ["112"])
+
+
+class MemorySQLiteEndpointTests(unittest.TestCase):
+    @staticmethod
+    def _save(manager, chat_name, content):
+        manager.save_message(
+            chat_name,
+            chat_name,
+            content,
+            "text",
+            "friend",
+            100,
+            message_time="2026/07/14 08:00:00",
+        )
+
+    def test_memory_list_triggers_legacy_migration(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            memory_dir = Path(temp_dir) / "accounts" / "wx_test" / "memory" / "张三"
+            memory_dir.mkdir(parents=True)
+            (memory_dir / "张三_memory.json").write_text(
+                json.dumps([{"attr": "friend", "sender": "张三", "content": "旧消息"}], ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            with (
+                patch("web_server.MEMORY_BASE", temp_dir),
+                patch("web_server._read_last_wx_id", return_value=""),
+                app.test_request_context("/memory/list"),
+            ):
+                response = memory_list.__wrapped__()
+
+            payload = response.get_json()
+            self.assertEqual(payload["status"], "success")
+            self.assertIn("wx_test", payload["wx_ids"])
+            self.assertTrue((Path(temp_dir) / "accounts" / "wx_test" / "message_store.sqlite3").is_file())
+            self.assertEqual(
+                [item["content"] for item in MemoryManager("wx_test", temp_dir).get_messages("张三", 10)],
+                ["旧消息"],
+            )
+
+    def test_memory_data_and_extraction_helper_are_account_scoped(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            first = MemoryManager("wx_one", temp_dir)
+            second = MemoryManager("wx_two", temp_dir)
+            self._save(first, "张三", "账号一")
+            self._save(second, "张三", "账号二")
+
+            with patch("web_server.MEMORY_BASE", temp_dir):
+                with app.test_request_context("/memory/data/wx_one/张三"):
+                    response = memory_data.__wrapped__("wx_one", "张三")
+                extracted = _chat_memory_messages_for_user("wx_two", "张三")
+
+            panel_messages = response.get_json()["messages"]
+            self.assertEqual([item["content"] for item in panel_messages], ["账号一"])
+            self.assertNotIn("event_id", panel_messages[0])
+            self.assertEqual([item["content"] for item in extracted], ["账号二"])
+
+    def test_memory_delete_chat_only_hides_selected_conversation(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemoryManager("wx_test", temp_dir)
+            self._save(manager, "张三", "消息一")
+            self._save(manager, "李四", "消息二")
+
+            with patch("web_server.MEMORY_BASE", temp_dir):
+                with app.test_request_context("/memory/delete_chat/wx_test/张三", method="DELETE"):
+                    response = memory_delete_chat.__wrapped__("wx_test", "张三")
+
+            reloaded = MemoryManager("wx_test", temp_dir)
+            self.assertEqual(response.get_json()["status"], "success")
+            self.assertEqual(reloaded.get_messages("张三", 10), [])
+            self.assertEqual([item["content"] for item in reloaded.get_messages("李四", 10)], ["消息二"])
+
+    def test_memory_delete_wx_hides_all_account_history(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemoryManager("wx_test", temp_dir)
+            self._save(manager, "张三", "消息一")
+            self._save(manager, "李四", "消息二")
+
+            with patch("web_server.MEMORY_BASE", temp_dir):
+                with app.test_request_context("/memory/delete_wx/wx_test", method="DELETE"):
+                    response = memory_delete_wx.__wrapped__("wx_test")
+
+            reloaded = MemoryManager("wx_test", temp_dir)
+            self.assertEqual(response.get_json()["status"], "success")
+            self.assertEqual(reloaded.list_chat_names(), [])
 
 
 class ContactMaintenancePrepareTests(unittest.TestCase):

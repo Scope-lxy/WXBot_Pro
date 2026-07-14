@@ -793,8 +793,6 @@ class WXBotConfig:
         self.ai_material_outreach_preface_goal = ai_outreach_config["ai_material_outreach_preface_goal"]
         self.ai_material_outreach_preface_intensity = ai_outreach_config["ai_material_outreach_preface_intensity"]
 
-        self.config.pop('moments_api_index', None)
-        self.config.pop('moments_task_list', None)
         # 对话记忆配置
         self.memory_switch        = self.config.get('memory_switch', True)
         self.memory_context_switch = bool(self.config.get('memory_context_switch', self.memory_switch))
@@ -825,9 +823,6 @@ class WXBotConfig:
         self.group_voice_recognition_switch = bool(self.config.get('group_voice_recognition_switch', False))
         self.group_image_recognition_api    = int(self.config.get('group_image_recognition_api', 0))
 
-        self.config.pop('custom_forward_switch', None)
-        self.config.pop('custom_forward_list', None)
-
         # 多 Prompt 配置
         self.default_prompt   = self.config.get('default_prompt', '默认')
         self.chat_prompt_map  = self.config.get('chat_prompt_map', {})
@@ -851,7 +846,6 @@ class WXBotConfig:
             self.save_config()
             log(message="已自动补充会话记忆配置默认值并写回配置文件")
         self.chat_memory_switch = bool(self.config.get('chat_memory_switch', True))
-        self.config.pop('chat_memory_exclude_list', None)
         self.chat_memory_message_threshold = self._coerce_int_range(
             self.config.get('chat_memory_message_threshold', 100), 100, 10, 200
         )
@@ -907,8 +901,6 @@ class WXBotConfig:
         self.chat_voice_reply_limit_hours = self._coerce_int_range(
             self.config.get('chat_voice_reply_limit_hours', 24), 24, 0, 720
         )
-        self.config.pop('chat_voice_session_minutes', None)
-        self.config.pop('chat_voice_session_turns', None)
         self.group_voice_reply_switch = bool(self.config.get('group_voice_reply_switch', False))
         group_trigger_mode_source = self.config.get('group_voice_reply_trigger_modes', None)
         self.group_voice_reply_trigger_modes = [

@@ -192,9 +192,6 @@ def state_schema_error(relative_path: str, payload: Any) -> str:
         if normalized.endswith(("/tasks.json", "/materials.json")):
             if not isinstance(payload, list):
                 return "tasks_list_schema"
-        elif normalized.endswith("/custom_forward/rules.json"):
-            if not isinstance(payload, list):
-                return "custom_forward_rules_schema"
         elif normalized.endswith("/keyword_reply/rules.json"):
             if not isinstance(payload, dict):
                 return "keyword_reply_rules_schema"

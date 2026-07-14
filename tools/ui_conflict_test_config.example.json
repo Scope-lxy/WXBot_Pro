@@ -10,7 +10,6 @@
   "scheduled_targets": 3,
   "material_targets": 3,
   "scheduled_message_text": "【WXBot 冲突测试】定时消息，请忽略。",
-  "moments_text": "【WXBot 冲突测试】朋友圈测试，请忽略。",
   "contact_refresh_mode": "test",
   "contact_refresh_start_name": "",
   "task_timeout_seconds": 240,
