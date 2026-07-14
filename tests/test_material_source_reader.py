@@ -48,6 +48,7 @@ class RecordingLock:
 
 def make_bot(owner):
     bot = WXBot.__new__(WXBot)
+    bot.config = SimpleNamespace(group_switch=False, group=[])
     bot._ui_owner = owner
     bot._material_source_read_strategies = {}
     bot._material_source_read_locks = {}
@@ -72,6 +73,7 @@ class MaterialSourceReaderTests(unittest.TestCase):
             intent.payload,
             {
                 "conversation": "素材源",
+                "chat_type": "private",
                 "limit": 5,
                 "goback": False,
                 "target_signature": "",
@@ -79,6 +81,18 @@ class MaterialSourceReaderTests(unittest.TestCase):
             },
         )
         self.assertEqual(timeout, wechat_ui_actions.UI_CALL_WAIT_TIMEOUT)
+
+    def test_group_source_read_keeps_group_identity(self):
+        owner = RecordingOwner({"messages": [], "strategy": "子窗口历史"})
+        bot = make_bot(owner)
+        bot.config.group_switch = True
+        bot.config.group = ["群素材源"]
+
+        bot._read_material_source_messages("群素材源", 5, goback=False)
+
+        intent, _timeout = owner.calls[0]
+        self.assertEqual(intent.payload["conversation"], "群素材源")
+        self.assertEqual(intent.payload["chat_type"], "group")
 
     def test_read_passes_targeted_refresh_options_to_owner(self):
         owner = RecordingOwner({"messages": [], "strategy": "定向读取"})
@@ -150,6 +164,25 @@ class MaterialSourceReaderTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(error, "")
         self.assertEqual(events, ["enter:source", "owner:阿英2", "exit:source"])
+
+    def test_group_source_forward_keeps_group_identity(self):
+        bot = make_bot(object())
+        bot.config.group_switch = True
+        bot.config.group = ["群素材源"]
+        captured = []
+        bot._ui_forward_message = lambda chat, *_args, **_kwargs: captured.append(chat) or True
+
+        success, error = bot._forward_material_message(
+            SimpleNamespace(type="link", content="素材"),
+            ["阿英2"],
+            material_source="群素材源",
+        )
+
+        self.assertTrue(success)
+        self.assertEqual(error, "")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0].who, "群素材源")
+        self.assertEqual(captured[0].chat_type, "group")
 
 
 if __name__ == "__main__":

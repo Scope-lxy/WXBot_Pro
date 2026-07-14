@@ -85,7 +85,14 @@ def _render_visual_note_for_user_message(note_text):
     return "\n".join(part for part in parts if str(part or "").strip()).strip()
 
 
-def build_image_user_message(chat_type="private", sender="", attached_text="", image_count=1, visual_notes=None):
+def build_image_user_message(
+    chat_type="private",
+    sender="",
+    attached_text="",
+    image_count=1,
+    visual_notes=None,
+    image_senders=None,
+):
     lines = []
     sender = str(sender or "").strip()
     try:
@@ -93,25 +100,39 @@ def build_image_user_message(chat_type="private", sender="", attached_text="", i
     except Exception:
         image_count = 1
     image_label = "一张图片" if image_count == 1 else f"{image_count}张图片"
+    raw_notes = list(visual_notes or [])
     rendered_notes = [
-        _render_visual_note_for_user_message(note)
-        for note in (visual_notes or [])
-        if str(note or "").strip()
+        _render_visual_note_for_user_message(raw_notes[index])
+        if index < len(raw_notes) and str(raw_notes[index] or "").strip()
+        else ""
+        for index in range(image_count)
     ]
-    if chat_type == "group" and sender:
-        lines.append(f"{sender}发来{image_label}：" if rendered_notes else f"{sender}发来{image_label}。")
+    owners = [
+        str(image_senders[index] or "").strip()
+        if index < len(image_senders or [])
+        else ""
+        for index in range(image_count)
+    ]
+    distinct_owners = list(dict.fromkeys(owner for owner in owners if owner))
+    if chat_type == "group" and len(distinct_owners) == 1:
+        owner = distinct_owners[0]
+        lines.append(f"{owner}发来{image_label}：" if any(rendered_notes) else f"{owner}发来{image_label}。")
+    elif chat_type == "group" and distinct_owners:
+        lines.append(f"群聊中发来{image_label}：" if any(rendered_notes) else f"群聊中发来{image_label}。")
     else:
         if image_count == 1:
-            lines.append("本轮消息包含图片：" if rendered_notes else "本轮消息包含图片。")
+            lines.append("本轮消息包含图片：" if any(rendered_notes) else "本轮消息包含图片。")
         else:
-            lines.append(f"本轮消息包含{image_count}张图片：" if rendered_notes else f"本轮消息包含{image_count}张图片。")
-    for index, note in enumerate(rendered_notes[:image_count], start=1):
+            lines.append(f"本轮消息包含{image_count}张图片：" if any(rendered_notes) else f"本轮消息包含{image_count}张图片。")
+    for index, note in enumerate(rendered_notes, start=1):
         prefix = "[图片]" if image_count == 1 else f"[图片{index}]"
+        if chat_type == "group" and len(distinct_owners) > 1 and owners[index - 1]:
+            prefix += f"（发送者：{owners[index - 1]}）"
         lines.append(f"{prefix}{note}" if note else prefix)
     attached_text = str(attached_text or "").strip()
     if attached_text:
         if chat_type == "group" and sender:
-            lines.append(f"附带文字：{attached_text}")
+            lines.append(f"{sender}说：{attached_text}")
         else:
             lines.append(f"消息内容：{attached_text}")
     return build_current_turn_user_message("\n".join(lines))

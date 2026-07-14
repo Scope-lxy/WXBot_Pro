@@ -25,6 +25,57 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertIn("url_for('static', filename='jquery-3.6.0.min.js')", dashboard)
         self.assertNotIn("npm/jquery@3.6.0", dashboard)
 
+    def test_group_rows_support_per_group_tts_selection(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+
+        self.assertIn('class="form-select group-tts-select"', dashboard)
+        self.assertIn("config.get('group_tts_map', {}).get(g)", dashboard)
+        self.assertIn("group_tts_map:{}", dashboard)
+        self.assertIn("configData.group_tts_map[name]=ttsIdx", dashboard)
+        self.assertIn("$('.chat-tts-select, .group-tts-select')", dashboard)
+
+    def test_chat_rule_dropdowns_are_capped_while_name_column_stays_flexible(self):
+        root = Path(__file__).resolve().parents[1]
+        css = (root / "templates" / "static" / "dashboard.css").read_text(encoding="utf-8")
+
+        self.assertEqual(css.count("minmax(100px, 1fr) repeat(3, minmax(100px, 132px)) 36px"), 2)
+        for selector in (
+            ".chat-prompt-select",
+            ".chat-api-select",
+            ".chat-tts-select",
+            ".group-prompt-select",
+            ".group-api-select",
+            ".group-tts-select",
+        ):
+            self.assertIn(f"{selector} {{ grid-area:", css)
+            self.assertIn("max-width: 132px;", css.split(f"{selector} {{", 1)[1].split("}", 1)[0])
+
+    def test_chat_list_and_settings_headers_have_alignment_descriptions(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+
+        for description in (
+            "设置私聊回复状态与免打扰会话过滤",
+            "添加监听群聊，并为每个群配置专属人设与接口",
+            "设置群聊回复范围、发送方式与入群欢迎",
+        ):
+            self.assertEqual(dashboard.count(f'<span class="desc">{description}</span>'), 1)
+
+    def test_group_tts_map_validation_keeps_only_valid_bindings(self):
+        config = {
+            "group_tts_map": {
+                " 测试群 ": "1",
+                "": 2,
+                "无效接口": "x",
+                "负数接口": -1,
+            }
+        }
+
+        web_server._coerce_dict_fields(config)
+
+        self.assertEqual(config["group_tts_map"], {"测试群": 1})
+
     def test_friend_request_clear_executions_route_preserves_duplicate_index(self):
         wx_id = "wxid_test"
         with tempfile.TemporaryDirectory() as data_dir:
@@ -134,6 +185,26 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertNotIn("reply_delay_first_max", dashboard)
         self.assertEqual(dashboard.count("开启后，第二条及后续气泡会自然停顿"), 2)
         self.assertNotIn("AI 已经显式换行拆好的内容会原样发送", dashboard)
+
+    def test_group_quote_reply_is_a_visible_independent_switch(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+
+        self.assertEqual(dashboard.count('id="group_reply_quote"'), 1)
+        quote_control = dashboard.split('id="group_reply_quote"', 1)[0].rsplit("<div", 1)[-1]
+        self.assertNotIn("hidden", quote_control)
+        self.assertIn('<span class="switch-title">回复时引用</span>', dashboard)
+        self.assertIn('<span class="switch-title">入群欢迎消息</span>', dashboard)
+        self.assertNotIn("回复时引用原消息", dashboard)
+        self.assertNotIn("启用入群欢迎消息", dashboard)
+        control_order = [
+            dashboard.index('id="group_reply_at"'),
+            dashboard.index('id="group_reply_at_msg"'),
+            dashboard.index('id="group_welcome"'),
+            dashboard.index('id="group_reply_quote"'),
+        ]
+        self.assertEqual(control_order, sorted(control_order))
+        self.assertIn("group_reply_quote:$('#group_reply_quote').is(':checked')", dashboard)
 
     def test_split_reply_delay_dropdown_values_are_coerced_to_booleans(self):
         config = {

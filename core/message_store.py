@@ -14,11 +14,12 @@ from pathlib import Path
 from core.account_storage import account_file
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_REPLY_TTL_SECONDS = 15 * 60
 
 ACTION_STATES = {"pending", "inflight", "done", "uncertain", "cancelled", "stale", "expired"}
 CHAT_TYPES = {"private", "group"}
+REPLY_ECHO_KINDS = {"text", "voice", "file", "quote"}
 
 
 class MessageStoreConflictError(RuntimeError):
@@ -117,7 +118,7 @@ class MessageStore:
         connection = self._connect()
         try:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, 2, SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, SCHEMA_VERSION}:
                 raise MessageStoreSchemaError(
                     f"unsupported message store schema {version}; expected {SCHEMA_VERSION}"
                 )
@@ -204,6 +205,24 @@ class MessageStore:
 
                 CREATE INDEX IF NOT EXISTS idx_delivery_actions_turn
                     ON delivery_actions(turn_id, action_index);
+
+                CREATE TABLE IF NOT EXISTS reply_echo_expectations (
+                    action_id TEXT PRIMARY KEY,
+                    conversation TEXT NOT NULL,
+                    chat_type TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    confirmable INTEGER NOT NULL CHECK (confirmable IN (0, 1)),
+                    message_types_json TEXT NOT NULL,
+                    at TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL CHECK (state IN ('reserved', 'active', 'matched', 'complete')),
+                    expires_at REAL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_reply_echo_expiry
+                    ON reply_echo_expectations(state, expires_at, updated_at);
 
                 CREATE TABLE IF NOT EXISTS ui_deliveries (
                     delivery_id TEXT PRIMARY KEY,
@@ -301,6 +320,15 @@ class MessageStore:
         item = dict(row)
         item["metadata"] = json.loads(item.pop("metadata_json"))
         item["details"] = json.loads(item.pop("details_json"))
+        return item
+
+    @staticmethod
+    def _reply_echo_row(row):
+        item = dict(row)
+        item["confirmable"] = bool(item["confirmable"])
+        item["message_types"] = tuple(json.loads(item.pop("message_types_json")))
+        confirmed_content = str(item.pop("confirmed_content", "") or "")
+        item["content"] = confirmed_content or str(item.get("content", "") or "")
         return item
 
     @staticmethod
@@ -497,7 +525,6 @@ class MessageStore:
                             native_hash = ?,
                             native_hash_text = ?,
                             native_time = ?,
-                            received_at = ?,
                             metadata_json = ?,
                             state_updated_at = ?
                         WHERE delivery_id = ?
@@ -512,11 +539,14 @@ class MessageStore:
                             str(_event_value(event, "native_hash", "") or ""),
                             str(_event_value(event, "native_hash_text", "") or ""),
                             str(_event_value(event, "native_time", "") or ""),
-                            received_at,
                             _json_object(metadata),
                             stored_at,
                             related_delivery_id,
                         ),
+                    )
+                    connection.execute(
+                        "DELETE FROM reply_echo_expectations WHERE action_id = ?",
+                        (related_delivery_id,),
                     )
                     return {"event_id": event_id, "is_new": False, "version": version}
                 values = self._confirmed_outbound_values(
@@ -535,6 +565,10 @@ class MessageStore:
                     connection,
                     values,
                     advances_version=False,
+                )
+                connection.execute(
+                    "DELETE FROM reply_echo_expectations WHERE action_id = ?",
+                    (related_delivery_id,),
                 )
                 return {
                     "event_id": recorded["event_id"],
@@ -792,6 +826,221 @@ class MessageStore:
         )
 
     @staticmethod
+    def _normalized_action_ids(action_ids):
+        return list(dict.fromkeys(
+            str(action_id or "").strip()
+            for action_id in action_ids or ()
+            if str(action_id or "").strip()
+        ))
+
+    def reserve_reply_echo(
+        self,
+        action_id,
+        *,
+        conversation,
+        chat_type,
+        kind,
+        content,
+        confirmable=True,
+        message_types=(),
+        at="",
+        now=None,
+    ):
+        action_id = _required_text(action_id, "action_id")
+        conversation = _required_text(conversation, "conversation")
+        chat_type = _required_chat_type(chat_type)
+        kind = _required_text(kind, "kind").lower()
+        if kind not in REPLY_ECHO_KINDS:
+            raise ValueError(f"unsupported reply echo kind: {kind}")
+        content = _required_text(content, "content")
+        message_types = tuple(dict.fromkeys(
+            str(item or "").strip().lower()
+            for item in message_types or ()
+            if str(item or "").strip()
+        ))
+        at = str(at or "").strip().lstrip("@").strip()
+        current = _now(now)
+        immutable = (
+            conversation,
+            chat_type,
+            kind,
+            content,
+            int(bool(confirmable)),
+            json.dumps(message_types, ensure_ascii=False, separators=(",", ":")),
+            at,
+        )
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM reply_echo_expectations WHERE action_id = ?",
+                (action_id,),
+            ).fetchone()
+            if existing is not None:
+                stored = (
+                    str(existing["conversation"]),
+                    str(existing["chat_type"]),
+                    str(existing["kind"]),
+                    str(existing["content"]),
+                    int(existing["confirmable"]),
+                    str(existing["message_types_json"]),
+                    str(existing["at"]),
+                )
+                if stored != immutable:
+                    raise MessageStoreConflictError(
+                        f"reply echo {action_id} was reused for different content"
+                    )
+                return False
+            connection.execute(
+                """
+                INSERT INTO reply_echo_expectations(
+                    action_id, conversation, chat_type, kind, content,
+                    confirmable, message_types_json, at, state, expires_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'reserved', NULL, ?, ?)
+                """,
+                (action_id, *immutable, current, current),
+            )
+            return True
+
+    def activate_reply_echoes(self, action_ids, *, expires_at, now=None):
+        action_ids = self._normalized_action_ids(action_ids)
+        if not action_ids:
+            return 0
+        expires_at = _timestamp(expires_at, "expires_at")
+        current = _now(now)
+        placeholders = ", ".join("?" for _ in action_ids)
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE reply_echo_expectations SET
+                    state = 'active', expires_at = ?, updated_at = ?
+                WHERE action_id IN ({placeholders}) AND state = 'reserved'
+                """,
+                [expires_at, current, *action_ids],
+            )
+            return cursor.rowcount
+
+    def complete_reply_echoes(self, action_ids, *, expires_at, now=None):
+        action_ids = self._normalized_action_ids(action_ids)
+        if not action_ids:
+            return 0
+        expires_at = _timestamp(expires_at, "expires_at")
+        current = _now(now)
+        placeholders = ", ".join("?" for _ in action_ids)
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                f"""
+                UPDATE reply_echo_expectations SET
+                    state = CASE WHEN state = 'active' THEN 'complete' ELSE state END,
+                    expires_at = CASE
+                        WHEN state = 'active' OR expires_at IS NULL THEN ?
+                        ELSE expires_at
+                    END,
+                    updated_at = ?
+                WHERE action_id IN ({placeholders})
+                  AND state IN ('active', 'complete')
+                """,
+                [expires_at, current, *action_ids],
+            )
+            return cursor.rowcount
+
+    def mark_reply_echo_matched(self, action_id, *, expires_at, now=None):
+        action_id = _required_text(action_id, "action_id")
+        expires_at = _timestamp(expires_at, "expires_at")
+        current = _now(now)
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE reply_echo_expectations SET
+                    state = 'matched',
+                    expires_at = CASE WHEN state = 'active' THEN ? ELSE expires_at END,
+                    updated_at = ?
+                WHERE action_id = ? AND state IN ('active', 'matched', 'complete')
+                """,
+                (expires_at, current, action_id),
+            )
+            return cursor.rowcount == 1
+
+    def discard_reply_echoes(self, action_ids):
+        action_ids = self._normalized_action_ids(action_ids)
+        if not action_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in action_ids)
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                f"DELETE FROM reply_echo_expectations WHERE action_id IN ({placeholders})",
+                action_ids,
+            )
+            return cursor.rowcount
+
+    def prune_reply_echoes(self, *, now=None):
+        current = _now(now)
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM reply_echo_expectations
+                WHERE state IN ('matched', 'complete')
+                  AND expires_at IS NOT NULL
+                  AND expires_at <= ?
+                """,
+                (current,),
+            )
+            return cursor.rowcount
+
+    def recover_reply_echoes(self, *, ttl, limit=512, max_age=DEFAULT_REPLY_TTL_SECONDS, now=None):
+        current = _now(now)
+        ttl = max(1.0, float(ttl))
+        limit = max(1, int(limit))
+        max_age = max(ttl, float(max_age))
+        with self._transaction() as connection:
+            connection.execute("DELETE FROM reply_echo_expectations WHERE state = 'reserved'")
+            connection.execute(
+                """
+                DELETE FROM reply_echo_expectations
+                WHERE state IN ('active', 'matched', 'complete')
+                  AND (
+                      expires_at IS NULL
+                      OR expires_at <= ?
+                      OR created_at <= ?
+                  )
+                """,
+                (current, current - max_age),
+            )
+            rows = connection.execute(
+                """
+                SELECT expectation.*, event.content AS confirmed_content
+                FROM reply_echo_expectations AS expectation
+                LEFT JOIN chat_events AS event
+                  ON event.delivery_id = expectation.action_id
+                WHERE expectation.state IN ('active', 'matched', 'complete')
+                  AND expectation.expires_at > ?
+                ORDER BY expectation.created_at, expectation.action_id
+                """,
+                (current,),
+            ).fetchall()
+            if len(rows) > limit:
+                dropped = [str(row["action_id"]) for row in rows[:-limit]]
+                placeholders = ", ".join("?" for _ in dropped)
+                connection.execute(
+                    f"DELETE FROM reply_echo_expectations WHERE action_id IN ({placeholders})",
+                    dropped,
+                )
+                rows = rows[-limit:]
+            return [self._reply_echo_row(row) for row in rows]
+
+    def reply_echo_expectations(self):
+        with self._reader() as connection:
+            rows = connection.execute(
+                """
+                SELECT expectation.*, event.content AS confirmed_content
+                FROM reply_echo_expectations AS expectation
+                LEFT JOIN chat_events AS event
+                  ON event.delivery_id = expectation.action_id
+                ORDER BY expectation.created_at, expectation.action_id
+                """
+            ).fetchall()
+            return [self._reply_echo_row(row) for row in rows]
+
+    @staticmethod
     def _import_event_values(entry, stored_at):
         event_id = _required_text(_event_value(entry, "event_id"), "event_id")
         conversation = _required_text(_event_value(entry, "conversation"), "conversation")
@@ -1037,7 +1286,16 @@ class MessageStore:
         with self._reader() as connection:
             return self._current_version(connection, conversation, chat_type)
 
-    def history(self, conversation, limit, *, chat_type="private", exclude_event_ids=()):
+    def history(
+        self,
+        conversation,
+        limit,
+        *,
+        chat_type="private",
+        exclude_event_ids=(),
+        before_event_seq=None,
+        before_event_ids=(),
+    ):
         conversation = _required_text(conversation, "conversation")
         normalized_chat_type = None if chat_type is None else _required_chat_type(chat_type)
         try:
@@ -1048,29 +1306,101 @@ class MessageStore:
             return []
         excluded = list(dict.fromkeys(str(item or "").strip() for item in exclude_event_ids))
         excluded = [item for item in excluded if item]
+        boundary_ids = list(dict.fromkeys(
+            str(item or "").strip() for item in before_event_ids or ()
+        ))
+        boundary_ids = [item for item in boundary_ids if item]
+        if before_event_seq is not None and boundary_ids:
+            raise ValueError("before_event_seq and before_event_ids are mutually exclusive")
+        if before_event_seq is not None:
+            try:
+                before_event_seq = int(before_event_seq)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("before_event_seq must be an integer") from exc
+            if before_event_seq < 0:
+                raise ValueError("before_event_seq must not be negative")
         exclusion_sql = ""
         chat_type_sql = ""
-        parameters = [conversation]
-        if normalized_chat_type is not None:
-            chat_type_sql = " AND chat_type = ?"
-            parameters.append(normalized_chat_type)
-        if excluded:
-            exclusion_sql = f" AND event_id NOT IN ({', '.join('?' for _ in excluded)})"
-            parameters.extend(excluded)
-        parameters.append(limit)
         with self._reader() as connection:
+            if boundary_ids:
+                placeholders = ", ".join("?" for _ in boundary_ids)
+                rows = connection.execute(
+                    f"""
+                    SELECT event_id, conversation, chat_type, event_seq
+                    FROM chat_events WHERE event_id IN ({placeholders})
+                    """,
+                    boundary_ids,
+                ).fetchall()
+                if len(rows) != len(boundary_ids):
+                    raise MessageStoreConflictError(
+                        "one or more history boundary event IDs do not exist"
+                    )
+                for row in rows:
+                    if row["conversation"] != conversation or (
+                        normalized_chat_type is not None
+                        and row["chat_type"] != normalized_chat_type
+                    ):
+                        raise MessageStoreConflictError(
+                            f"event {row['event_id']} does not belong to the history conversation"
+                        )
+                before_event_seq = min(int(row["event_seq"]) for row in rows)
+
+            parameters = [conversation]
+            if normalized_chat_type is not None:
+                chat_type_sql = " AND chat_type = ?"
+                parameters.append(normalized_chat_type)
+            if excluded:
+                exclusion_sql = f" AND event_id NOT IN ({', '.join('?' for _ in excluded)})"
+                parameters.extend(excluded)
+            cutoff_sql = ""
+            if before_event_seq is not None:
+                cutoff_sql = " AND event_seq < ?"
+                parameters.append(before_event_seq)
+            parameters.append(limit)
             rows = connection.execute(
                 f"""
                 SELECT * FROM (
                     SELECT * FROM chat_events
                     WHERE conversation = ? {chat_type_sql}
-                      AND history_visible = 1 {exclusion_sql}
+                      AND history_visible = 1 {exclusion_sql} {cutoff_sql}
                     ORDER BY received_at DESC, event_seq DESC
                     LIMIT ?
                 )
                 ORDER BY received_at, event_seq
                 """,
                 parameters,
+            ).fetchall()
+            return [self._event_row(row) for row in rows]
+
+    def recent_image_events(self, conversation, *, chat_type, since, limit=9):
+        conversation = _required_text(conversation, "conversation")
+        chat_type = _required_chat_type(chat_type)
+        try:
+            since = float(since)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("since must be a timestamp") from exc
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("limit must be an integer") from exc
+        if limit <= 0:
+            return []
+        with self._reader() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM (
+                    SELECT * FROM chat_events
+                    WHERE conversation = ?
+                      AND chat_type = ?
+                      AND history_visible = 1
+                      AND message_type = 'image'
+                      AND received_at >= ?
+                    ORDER BY received_at DESC, event_seq DESC
+                    LIMIT ?
+                )
+                ORDER BY received_at, event_seq
+                """,
+                (conversation, chat_type, since, limit),
             ).fetchall()
             return [self._event_row(row) for row in rows]
 

@@ -219,6 +219,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-shield-check"></i>
         <h5>wxautox4 授权状态</h5>
+        <span class="desc">查看微信自动化功能是否可正常使用</span>
         <div class="ui-head__actions">
           <button type="button" id="btn-update-kernel" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2 ui-btn--push">检查更新</button>
         </div>
@@ -377,6 +378,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-router"></i>
         <h5>远程访问服务</h5>
+        <span class="desc">在其他设备上远程打开和管理机器人面板</span>
       </div>
       <div class="cfg-flow">
         <div class="page-inline-notice page-inline-notice--success">
@@ -574,7 +576,6 @@ html.icons-pref-local [class*=" bi-"]::before {
           <i class="bi bi-save"></i> 保存配置
         </button>
       </div>
-      <div class="cfg-hint" style="margin-top:8px;">选择 DusAPI 时接口地址自动填写 · <a href="https://dusapi.com" target="_blank" style="color:#07C160;">dusapi.com 获取 Key</a></div>
     </div>
     {% set tts_configs = config.get('tts_configs', []) %}
     <div class="cfg-card">
@@ -763,7 +764,7 @@ html.icons-pref-local [class*=" bi-"]::before {
         <div class="page-inline-notice page-inline-notice--note">
           <i class="bi bi-info-circle-fill page-inline-notice__icon"></i>
           <div class="page-inline-notice__content">
-            人设近况与基础人设一起存储在 <code>data/prompt/</code> 文件夹，文件名形如 <code>小东-人设近况.md</code>。
+            人设近况与基础人设一起存储在 <code>data/prompt/</code> 文件夹。
             清空近况并保存时会直接删除对应文件，避免空近况进入最终 Prompt。
           </div>
         </div>
@@ -805,6 +806,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-database-check"></i>
         <h5>会话记忆配置</h5>
+        <span class="desc">设置机器人何时整理对话记忆</span>
         <div class="ui-head__actions">
           <label class="ui-switch ui-switch--l1 ui-head-switch" for="chat_memory_switch">
             <input class="form-check-input" type="checkbox" id="chat_memory_switch" {% if config.get('chat_memory_switch', True) %}checked{% endif %}>
@@ -879,7 +881,17 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Listen ===== -->
   <div class="config-panel" id="tab-listen">
     <div class="cfg-card">
-      <div class="ui-head ui-head--page listen-page-head"><i class="bi bi-ear"></i><h5>私聊监听</h5></div>
+      <div class="ui-head ui-head--page listen-page-head">
+        <i class="bi bi-ear"></i>
+        <h5>私聊监听</h5>
+        <span class="desc">设置机器人监听和回复哪些好友消息</span>
+        <div class="ui-head__actions">
+          <label class="ui-switch ui-switch--l1 ui-head-switch" for="AllListen_switch" title="监听全部私聊（黑名单除外）">
+            <input class="form-check-input" type="checkbox" id="AllListen_switch" name="AllListen_switch" {% if config.AllListen_switch %}checked{% endif %}>
+            <span class="ui-switch-knob"></span>
+          </label>
+        </div>
+      </div>
       <div class="listen-page-summary" id="listen_page_summary">
         <span class="ui-pill ui-pill--status {% if config.AllListen_switch %}is-danger{% else %}is-success{% endif %}" id="listen_summary_mode">{% if config.AllListen_switch %}黑名单模式{% else %}白名单模式{% endif %}</span>
         <span id="listen_summary_whitelist" class="ui-pill is-success">白名单 {{ config.get('listen_list', [])|length }}</span>
@@ -948,10 +960,11 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
         </div>
         <div class="listen-mode-card">
-          <div class="ui-head ui-head--section"><div class="ui-head__main"><h5>私聊设置</h5></div></div>
-          <div class="switch-row switch-row--primary">
-            <input class="form-check-input" type="checkbox" id="AllListen_switch" name="AllListen_switch" {% if config.AllListen_switch %}checked{% endif %}>
-            <label for="AllListen_switch"><span class="switch-title">监听全部私聊（黑名单除外）</span></label>
+          <div class="ui-head ui-head--section">
+            <div class="ui-head__main">
+              <h5>私聊设置</h5>
+              <span class="desc">设置私聊回复状态与免打扰会话过滤</span>
+            </div>
           </div>
           <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="chat_listen_only" name="chat_listen_only" {% if config.get('chat_listen_only', False) %}checked{% endif %}>
@@ -968,6 +981,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-image"></i>
         <h5>内容识别</h5>
+        <span class="desc">设置是否识别好友发来的图片和语音</span>
         <div class="ui-head__actions">
           <select class="form-select ui-head-select recognition-api-select" id="chat_image_recognition_api" name="chat_image_recognition_api" title="辅助识图接口">
             {% for cfg in config.api_configs %}
@@ -998,16 +1012,16 @@ html.icons-pref-local [class*=" bi-"]::before {
     </div>
     {% set chat_merge_delay = config.get('chat_message_merge_delay', 20) | int %}
     <div class="cfg-card chat-ability-card chat-ability-card--reply">
-      <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5><span class="desc">设置私聊回复的次数、节奏、拆分和语音发送</span></div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--text-limit">
-          <div class="ui-head ui-head--item">
+          <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>回复次数限制</h5>
               <span class="desc">按好友分别统计，每成功完成一轮回复计 1 次</span>
             </div>
             <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l3 ui-head-switch" for="chat_text_reply_limit_switch">
+              <label class="ui-switch ui-switch--l2 ui-head-switch" for="chat_text_reply_limit_switch">
                 <input class="form-check-input" type="checkbox" id="chat_text_reply_limit_switch"
                        {% if config.get('chat_text_reply_limit_switch', False) %}checked{% endif %}>
                 <span class="ui-switch-knob"></span>
@@ -1054,13 +1068,13 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
         </div>
         <div class="chat-ability-block chat-ability-block--voice-reply">
-          <div class="ui-head ui-head--item">
+          <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>使用语音回复</h5>
               <span class="desc">只作用于 AI 自动回复；满足规则时优先发微信语音条</span>
             </div>
             <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l3 ui-head-switch" for="chat_voice_reply_switch">
+              <label class="ui-switch ui-switch--l2 ui-head-switch" for="chat_voice_reply_switch">
                 <input class="form-check-input" type="checkbox" id="chat_voice_reply_switch"
                        {% if config.get('chat_voice_reply_switch', False) %}checked{% endif %}>
                 <span class="ui-switch-knob"></span>
@@ -1128,13 +1142,13 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
         </div>
         <div class="chat-ability-block chat-ability-block--split">
-          <div class="ui-head ui-head--item">
+          <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>自动拆分回复</h5>
               <span class="desc">系统会在发送前按自然边界拆分文字回复，尽量保留聊天感</span>
             </div>
             <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l3 ui-head-switch" for="chat_split_reply_switch">
+              <label class="ui-switch ui-switch--l2 ui-head-switch" for="chat_split_reply_switch">
                 <input class="form-check-input" type="checkbox" id="chat_split_reply_switch"
                        {% if config.get('chat_split_reply_switch', False) %}checked{% endif %}>
                 <span class="ui-switch-knob"></span>
@@ -1167,7 +1181,7 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
         </div>
         <div class="chat-ability-block chat-ability-block--merge">
-          <div class="ui-head ui-head--item">
+          <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>连续消息合并</h5>
               <span class="desc">等待短时间后统一发给 AI，避免连续语音/文字/图片触发多次回复</span>
@@ -1190,18 +1204,31 @@ html.icons-pref-local [class*=" bi-"]::before {
 
   <!-- ===== Tab: Group ===== -->
   <div class="config-panel" id="tab-group">
-    <div class="cfg-card">
-      <div class="ui-head ui-head--page group-page-head"><i class="bi bi-people"></i><h5>群聊监听</h5></div>
+    <div class="cfg-card" id="group_listen_card">
+      <div class="ui-head ui-head--page group-page-head">
+        <i class="bi bi-people"></i>
+        <h5>群聊监听</h5>
+        <span class="desc">设置机器人监听和回复哪些群聊消息</span>
+        <div class="ui-head__actions">
+          <label class="ui-switch ui-switch--l1 ui-head-switch" for="group_switch" title="启用群聊监听（仅名单内）">
+            <input class="form-check-input" type="checkbox" id="group_switch" name="group_switch" {% if config.group_switch %}checked{% endif %}>
+            <span class="ui-switch-knob"></span>
+          </label>
+        </div>
+      </div>
       <div class="group-page-summary" id="group_page_summary">
-        <span class="ui-pill ui-pill--status {% if config.group_switch %}is-success{% else %}is-danger{% endif %}" id="group_summary_switch">群聊回复：{% if config.group_switch %}开{% else %}关{% endif %}</span>
+        <span class="ui-pill ui-pill--status {% if config.group_switch %}is-success{% else %}is-danger{% endif %}" id="group_summary_switch">群聊监听：{% if config.group_switch %}开{% else %}关{% endif %}</span>
         <span id="group_summary_at" class="ui-pill is-info">仅@回复：{% if config.group_reply_at %}开{% else %}关{% endif %}</span>
         <span id="group_summary_welcome" class="ui-pill {% if config.group_welcome %}is-success{% else %}is-info{% endif %}">入群欢迎：{% if config.group_welcome %}开{% else %}关{% endif %}</span>
         <span id="group_summary_count" class="ui-pill is-success">群组 {{ config.group|length }}</span>
       </div>
       <div class="group-config-shell">
         <div class="group-rule-card">
-            <div class="ui-head ui-head--section">
-            <div class="ui-head__main"><h5>监听群名单</h5></div>
+          <div class="ui-head ui-head--section">
+            <div class="ui-head__main">
+              <h5>监听群名单</h5>
+              <span class="desc">添加监听群聊，并为每个群配置专属人设与接口</span>
+            </div>
             <div class="ui-head__actions">
               <button type="button" class="ui-btn ui-btn--add ui-btn--l3" id="btn-add-group-item"><i class="bi bi-plus-circle"></i> 添加群组</button>
             </div>
@@ -1225,6 +1252,12 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <option value="{{ loop.index0 }}" {% if config.group_api_map.get(g) == loop.index0 %}selected{% endif %}>接口{{ loop.index }}: {{ cfg.model }}</option>
                 {% endfor %}
               </select>
+              <select class="form-select group-tts-select" title="该群专属语音接口（默认=全局语音接口）">
+                <option value="-1">默认语音接口</option>
+                {% for cfg in config.get('tts_configs', []) %}
+                <option value="{{ loop.index0 }}" {% if config.get('group_tts_map', {}).get(g) == loop.index0 %}selected{% endif %}>语音接口{{ loop.index }}: {{ cfg.get('model_label') or cfg.get('model') or cfg.get('voice_name') or ('语音接口 ' ~ loop.index) }}</option>
+                {% endfor %}
+              </select>
               <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
             </div>
             {% endfor %}
@@ -1232,12 +1265,13 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
         <div class="group-strategy-card">
           <div class="group-option-panel adaptive-switch-panel">
-            <div class="ui-head ui-head--section"><div class="ui-head__main"><h5>群聊设置</h5></div></div>
-            <div class="group-switch-grid">
-              <div class="switch-row switch-row--primary switch-row--full">
-                <input class="form-check-input" type="checkbox" id="group_switch" name="group_switch" {% if config.group_switch %}checked{% endif %}>
-                <label for="group_switch"><span class="switch-title">启用群聊监听（仅名单内）</span></label>
+            <div class="ui-head ui-head--section">
+              <div class="ui-head__main">
+                <h5>群聊设置</h5>
+                <span class="desc">设置群聊回复范围、发送方式与入群欢迎</span>
               </div>
+            </div>
+            <div class="group-switch-grid">
               <div class="switch-row switch-row--full">
                 <input class="form-check-input" type="checkbox" id="group_listen_only" name="group_listen_only" {% if config.get('group_listen_only', False) %}checked{% endif %}>
                 <label for="group_listen_only"><span class="switch-title">关闭 AI 回复，其他功能照常</span></label>
@@ -1250,10 +1284,13 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <input class="form-check-input" type="checkbox" id="group_reply_at_msg" name="group_reply_at_msg" {% if config.group_reply_at_msg %}checked{% endif %}>
                 <label for="group_reply_at_msg"><span class="switch-title">回复时@对方</span></label>
               </div>
-              <input class="form-check-input" type="checkbox" id="group_reply_quote" name="group_reply_quote" checked hidden>
-              <div class="switch-row switch-row--full">
+              <div class="switch-row">
                 <input class="form-check-input" type="checkbox" id="group_welcome" name="group_welcome" {% if config.group_welcome %}checked{% endif %}>
-                <label for="group_welcome"><span class="switch-title">启用入群欢迎消息</span></label>
+                <label for="group_welcome"><span class="switch-title">入群欢迎消息</span></label>
+              </div>
+              <div class="switch-row" data-group-listen-only-dependent="reply-quote">
+                <input class="form-check-input" type="checkbox" id="group_reply_quote" name="group_reply_quote" {% if config.group_reply_quote %}checked{% endif %}>
+                <label for="group_reply_quote"><span class="switch-title">回复时引用</span></label>
               </div>
             </div>
           </div>
@@ -1272,6 +1309,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-image"></i>
         <h5>内容识别</h5>
+        <span class="desc">设置是否识别群聊中的图片和语音</span>
         <div class="ui-head__actions">
           <select class="form-select ui-head-select recognition-api-select" id="group_image_recognition_api" name="group_image_recognition_api" title="辅助识图接口">
             {% for cfg in config.api_configs %}
@@ -1301,16 +1339,16 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
     <div class="cfg-card chat-ability-card chat-ability-card--reply">
-      <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5><span class="desc">设置群聊回复的次数、节奏、拆分和语音发送</span></div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--text-limit">
-          <div class="ui-head ui-head--item">
+          <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>回复次数限制</h5>
               <span class="desc">按群聊和发言成员分别统计，每成功完成一轮回复计 1 次</span>
             </div>
             <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l3 ui-head-switch" for="group_text_reply_limit_switch">
+              <label class="ui-switch ui-switch--l2 ui-head-switch" for="group_text_reply_limit_switch">
                 <input class="form-check-input" type="checkbox" id="group_text_reply_limit_switch"
                        {% if config.get('group_text_reply_limit_switch', False) %}checked{% endif %}>
                 <span class="ui-switch-knob"></span>
@@ -1357,12 +1395,13 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
         </div>
         <div class="chat-ability-block chat-ability-block--voice-reply">
-          <div class="ui-head ui-head--item">
+          <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>使用语音回复</h5>
+              <span class="desc">只作用于 AI 自动回复；满足规则时优先发微信语音条</span>
             </div>
             <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l3 ui-head-switch" for="group_voice_reply_switch">
+              <label class="ui-switch ui-switch--l2 ui-head-switch" for="group_voice_reply_switch">
                 <input class="form-check-input" type="checkbox" id="group_voice_reply_switch"
                        {% if config.get('group_voice_reply_switch', False) %}checked{% endif %}>
                 <span class="ui-switch-knob"></span>
@@ -1430,13 +1469,13 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
         </div>
         <div class="chat-ability-block chat-ability-block--split">
-          <div class="ui-head ui-head--item">
+          <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>自动拆分回复</h5>
               <span class="desc">系统会在发送前按自然边界拆分文字回复，尽量保留聊天感</span>
             </div>
             <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l3 ui-head-switch" for="group_split_reply_switch">
+              <label class="ui-switch ui-switch--l2 ui-head-switch" for="group_split_reply_switch">
                 <input class="form-check-input" type="checkbox" id="group_split_reply_switch"
                        {% if config.get('group_split_reply_switch', False) %}checked{% endif %}>
                 <span class="ui-switch-knob"></span>
@@ -1475,13 +1514,14 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Friend ===== -->
   <div class="config-panel" id="tab-friend">
     <div class="cfg-card new-friend-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-person-plus"></i><h5>通过新好友</h5></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-person-plus"></i><h5>通过新好友</h5><span class="desc">自动通过好友申请，并发送欢迎消息或文件</span></div>
       <div class="new-friend-config-shell">
         <div class="new-friend-main-stack">
           <div class="new-friend-block">
             <div class="ui-head ui-head--section">
               <div class="ui-head__main">
                 <h5>自动通过好友申请</h5>
+                <span class="desc">每次检查会在此区间内随机等待；范围为 60 - 3600 秒。</span>
               </div>
               <div class="ui-head__actions">
                 <label class="ui-switch ui-switch--l2 ui-head-switch" for="new_friend_switch" title="自动通过新好友申请">
@@ -1490,15 +1530,19 @@ html.icons-pref-local [class*=" bi-"]::before {
                 </label>
               </div>
             </div>
-            <div class="new-friend-l3-group new-friend-interval-group">
-              <div class="new-friend-interval-grid">
-                <div>
-                  <label class="cfg-label" for="new_friend_check_min">最短检查间隔（秒，60-3600）</label>
-                  <input type="number" class="form-control" id="new_friend_check_min" name="new_friend_check_min" min="60" max="3600" value="{{ config.new_friend_check_min|default(60) }}">
+            <div class="new-friend-interval-group">
+              <label class="cfg-label" for="new_friend_check_min">检查间隔</label>
+              <div class="cfg-inline-combo cfg-inline-combo--reply-limit">
+                <div class="cfg-inline-combo__field">
+                  <span class="cfg-inline-combo__prefix">最短</span>
+                  <input type="number" class="form-control cfg-inline-combo__input" id="new_friend_check_min" name="new_friend_check_min" min="60" max="3600" value="{{ config.new_friend_check_min|default(60) }}">
+                  <span class="cfg-inline-combo__suffix">秒</span>
                 </div>
-                <div>
-                  <label class="cfg-label" for="new_friend_check_max">最长检查间隔（秒，60-3600）</label>
-                  <input type="number" class="form-control" id="new_friend_check_max" name="new_friend_check_max" min="60" max="3600" value="{{ config.new_friend_check_max|default(300) }}">
+                <span class="cfg-inline-combo__separator">至</span>
+                <div class="cfg-inline-combo__field">
+                  <span class="cfg-inline-combo__prefix">最长</span>
+                  <input type="number" class="form-control cfg-inline-combo__input" id="new_friend_check_max" name="new_friend_check_max" min="60" max="3600" value="{{ config.new_friend_check_max|default(300) }}">
+                  <span class="cfg-inline-combo__suffix">秒</span>
                 </div>
               </div>
             </div>
@@ -1508,6 +1552,7 @@ html.icons-pref-local [class*=" bi-"]::before {
             <div class="ui-head ui-head--section new-friend-welcome-head">
               <div class="ui-head__main">
                 <h5>欢迎消息</h5>
+                <span class="desc">通过好友申请后，自动发送文字或文件</span>
               </div>
               <div class="ui-head__actions">
                 <button type="button" class="ui-btn ui-btn--add ui-btn--l2 js-add-new-friend-file"><i class="bi bi-plus-circle"></i> 添加文件</button>
@@ -1519,10 +1564,11 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
 
         <div class="new-friend-block new-friend-archive-block">
-          <div class="ui-head ui-head--section">
-            <div class="ui-head__main">
-              <h5>自动修改备注和标签</h5>
-            </div>
+            <div class="ui-head ui-head--section">
+              <div class="ui-head__main">
+                <h5>自动修改备注和标签</h5>
+                <span class="desc">通过好友申请后，按规则补充备注和标签</span>
+              </div>
             <div class="ui-head__actions">
               <label class="ui-switch ui-switch--l2 ui-head-switch" for="new_friend_archive_switch" title="自动修改备注和标签">
                 <input class="form-check-input" type="checkbox" id="new_friend_archive_switch" name="new_friend_archive_switch" {% if config.get('new_friend_archive_switch', True) %}checked{% endif %}>
@@ -1691,7 +1737,11 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Keyword ===== -->
   <div class="config-panel" id="tab-keyword">
     <div class="cfg-card keyword-reply-card">
-      <div class="ui-head ui-head--page" data-account-scope="keyword_reply"><i class="bi bi-key"></i><h5>关键词回复</h5></div>
+      <div class="ui-head ui-head--page" data-account-scope="keyword_reply">
+        <i class="bi bi-key"></i>
+        <h5>关键词回复</h5>
+        <span class="desc">消息命中关键词后，自动发送预设的文字或文件</span>
+      </div>
       {% set keyword_count = config.keyword_dict|length %}
       <div class="keyword-reply-summary">
         <div class="summary-status-row">
@@ -1707,7 +1757,10 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="keyword-reply-body">
         <div class="keyword-rule-card ui-workbench-pane ui-workbench-pane--list">
           <div class="ui-head ui-head--section">
-            <div class="ui-head__main"><h5>具体规则</h5></div>
+            <div class="ui-head__main">
+              <h5>具体规则</h5>
+              <span class="desc">设置关键词和命中后自动发送的回复内容</span>
+            </div>
             <div class="ui-head__actions"><button type="button" class="ui-btn ui-btn--add ui-btn--l2" id="btn-add-keyword"><i class="bi bi-plus-circle"></i> 添加关键词</button></div>
           </div>
           <div id="keyword_container" class="keyword-rule-list ui-workbench-scroll-body">
@@ -1749,7 +1802,10 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
         <div class="keyword-trigger-card ui-workbench-pane ui-workbench-pane--detail">
           <div class="ui-head ui-head--section">
-            <div class="ui-head__main"><h5>触发范围</h5></div>
+            <div class="ui-head__main">
+              <h5>触发范围</h5>
+              <span class="desc">选择关键词回复在哪些聊天场景生效</span>
+            </div>
           </div>
           <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="chat_keyword_switch" name="chat_keyword_switch" {% if config.chat_keyword_switch %}checked{% endif %}>
@@ -2822,7 +2878,7 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Other ===== -->
   <div class="config-panel" id="tab-other">
     <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-exclamation-octagon"></i><h5>接口报错回复</h5></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-exclamation-octagon"></i><h5>接口报错回复</h5><span class="desc">聊天接口出错时，自动发送预设的提示</span></div>
       <div class="cfg-page-form">
         <div class="cfg-page-field">
         <label class="cfg-label" for="api_error_reply" style="font-weight:600;">固定回复内容</label>
@@ -2880,6 +2936,7 @@ html.icons-pref-local [class*=" bi-"]::before {
     <div class="cfg-card">
       <div class="ui-head ui-head--page">
         <i class="bi bi-clock-history"></i><h5>定时启停</h5>
+        <span class="desc">按每天设定的时间自动启动和停止机器人</span>
         <label class="ui-switch ui-switch--l1 ui-head-switch" for="everyday_start_stop_bot_switch" title="启用定时启停">
           <input class="form-check-input" type="checkbox" id="everyday_start_stop_bot_switch" name="everyday_start_stop_bot_switch" {% if config.everyday_start_stop_bot_switch %}checked{% endif %}>
           <span class="ui-switch-knob"></span>
@@ -2900,6 +2957,7 @@ html.icons-pref-local [class*=" bi-"]::before {
     <div class="cfg-card">
       <div class="ui-head ui-head--page">
         <i class="bi bi-folder2-open"></i><h5>自动清理缓存</h5>
+        <span class="desc">定期删除过期的微信图片、语音等缓存</span>
       </div>
       <div class="cfg-page-form">
         <div class="row g-3">
@@ -2925,7 +2983,7 @@ html.icons-pref-local [class*=" bi-"]::before {
   <!-- ===== Tab: Account ===== -->
   <div class="config-panel" id="tab-account">
     <div class="cfg-card">
-      <div class="ui-head ui-head--page"><i class="bi bi-person-gear"></i><h5>后台账号密码</h5></div>
+      <div class="ui-head ui-head--page"><i class="bi bi-person-gear"></i><h5>后台账号密码</h5><span class="desc">修改登录这个管理面板的用户名和密码</span></div>
       <div class="mb-3">
         <label class="cfg-label" for="acc-username">用户名</label>
         <input type="text" class="form-control" id="acc-username" placeholder="请输入新用户名" autocomplete="off">
@@ -6588,7 +6646,7 @@ $(function(){
         $('.tts-config-item').first().find('.tts-radio').prop('checked', true).trigger('change');
       }
       renumberTtsConfigs();
-      refreshAllWhitelistTtsDropdowns();
+      refreshAllTtsDropdowns();
     });
 
   function apiTestEscape(text){
@@ -6744,11 +6802,11 @@ $(function(){
 
   $(document).on('change', '.tts-sdk-select', function(){
     syncTtsModelOptions($(this).closest('.tts-config-item'));
-    refreshAllWhitelistTtsDropdowns();
+    refreshAllTtsDropdowns();
   });
   $(document).on('change', '.tts-model-select', function(){
     syncTtsVoiceDocsHint($(this).closest('.tts-config-item'));
-    refreshAllWhitelistTtsDropdowns();
+    refreshAllTtsDropdowns();
   });
 
   $('#btn-add-tts-config').click(function(){
@@ -6875,7 +6933,7 @@ $(function(){
       $('.tts-config-item').each(function(i){
         $(this).find('.tts-config-num').text('接口 ' + (i + 1));
       });
-      refreshAllWhitelistTtsDropdowns();
+      refreshAllTtsDropdowns();
     }
 
     function syncTtsPreviewVisibility($item, visible){
@@ -6957,6 +7015,9 @@ $(function(){
         '</select>'+
         '<select class="form-select group-api-select" title="该群调用的AI接口（选默认则跟随全局配置）">'+
           buildGroupApiOpts(-1)+
+        '</select>'+
+        '<select class="form-select group-tts-select" title="该群专属语音接口">'+
+          buildTtsOpts(-1)+
         '</select>'+
         '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
       '</div>'
@@ -7153,7 +7214,7 @@ $(function(){
     });
     return s;
   }
-  function buildChatTtsOpts(selectedIdx) {
+  function buildTtsOpts(selectedIdx) {
     var s = '<option value="-1"'+(selectedIdx===-1?' selected':'')+'>默认语音接口</option>';
     $('#tts_configs_container .tts-config-item').each(function(i){
       var model = $(this).find('[name="tts_model"] option:selected').text().trim();
@@ -7176,11 +7237,11 @@ $(function(){
       });
     });
   }
-  function refreshAllWhitelistTtsDropdowns() {
-    $('#listen_whitelist_container .chat-tts-select').each(function(){
+  function refreshAllTtsDropdowns() {
+    $('.chat-tts-select, .group-tts-select').each(function(){
       var cur = parseInt($(this).val(), 10);
       if(isNaN(cur)) cur = -1;
-      $(this).html(buildChatTtsOpts(cur));
+      $(this).html(buildTtsOpts(cur));
     });
   }
 
@@ -7410,7 +7471,7 @@ $(function(){
       '<input type="text" class="form-control listen-whitelist-name" name="listen_list" value="'+escapeHtml(name)+'" placeholder="好友昵称或备注">'+
       '<select class="form-select chat-prompt-select" title="好友人设">'+buildPromptOpts(chatPromptMapInitial[name] || '')+'</select>'+
       '<select class="form-select chat-api-select" title="专属接口">'+buildChatApiOpts(!isNaN(apiIndex) && apiIndex >= 0 ? apiIndex : -1)+'</select>'+
-      '<select class="form-select chat-tts-select" title="专属语音接口">'+buildChatTtsOpts(!isNaN(ttsIndex) && ttsIndex >= 0 ? ttsIndex : -1)+'</select>'+
+      '<select class="form-select chat-tts-select" title="专属语音接口">'+buildTtsOpts(!isNaN(ttsIndex) && ttsIndex >= 0 ? ttsIndex : -1)+'</select>'+
       '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
       '</div>';
   }
@@ -7500,7 +7561,7 @@ $(function(){
     var groupCount = $('#group_container input[name="group"]').filter(function(){ return $.trim($(this).val()); }).length;
     var groupSwitchOn = $('#group_switch').is(':checked');
     $('#group_summary_switch')
-      .text('群聊回复：' + (groupSwitchOn ? '开' : '关'))
+      .text('群聊监听：' + (groupSwitchOn ? '开' : '关'))
       .toggleClass('is-success', groupSwitchOn)
       .toggleClass('is-danger', !groupSwitchOn);
     $('#group_summary_at').text('仅@回复：' + ($('#group_reply_at').is(':checked') ? '开' : '关'));
@@ -7516,13 +7577,17 @@ $(function(){
     }
   }
 
-  function syncGroupListenOnlyControls(){
+  function syncGroupControls(){
+    var groupEnabled = $('#group_switch').is(':checked');
     var listenOnly = $('#group_listen_only').is(':checked');
-    if(listenOnly){
-      $('#group_switch').prop('checked', true);
-    }
-    $('#group_reply_at, #group_reply_at_msg').prop('disabled', listenOnly);
-    $('[data-group-listen-only-dependent="reply-at"], [data-group-listen-only-dependent="reply-at-msg"]').toggleClass('is-disabled', listenOnly);
+    var $groupCard = $('#group_listen_card');
+    var $dependentControls = $groupCard.find('input, select, textarea, button').not('#group_switch');
+    $dependentControls.prop('disabled', !groupEnabled);
+    $groupCard.find('.group-config-shell').attr('aria-disabled', groupEnabled ? 'false' : 'true');
+    $groupCard.find('.switch-row').toggleClass('is-disabled', !groupEnabled);
+    $('#group_reply_at, #group_reply_at_msg, #group_reply_quote').prop('disabled', !groupEnabled || listenOnly);
+    $('[data-group-listen-only-dependent="reply-at"], [data-group-listen-only-dependent="reply-at-msg"], [data-group-listen-only-dependent="reply-quote"]')
+      .toggleClass('is-disabled', !groupEnabled || listenOnly);
     refreshGroupSummary();
   }
 
@@ -7571,9 +7636,9 @@ $(function(){
   $(document).on('input change', '#group_container input, #group_container select, #group_switch, #group_listen_only, #group_reply_at, #group_reply_at_msg, #group_welcome', function(){
     refreshGroupSummary();
   });
-  $('#group_listen_only').on('change', syncGroupListenOnlyControls);
-  $('#group_switch').on('change', syncGroupListenOnlyControls);
-  syncGroupListenOnlyControls();
+  $('#group_listen_only').on('change', syncGroupControls);
+  $('#group_switch').on('change', syncGroupControls);
+  syncGroupControls();
   refreshGroupSummary();
 
   function collectSelectedValues($select){
@@ -9874,7 +9939,7 @@ $(function(){
       group_keyword_at_only:$('#group_keyword_at_only').is(':checked'),
       group_welcome_msg:$('#group_welcome_msg').val(),
       default_prompt:$('#default_prompt_select').val()||'默认',
-      listen_list:[], global_blacklist:[], group:[], group_api_map:{}, group_prompt_map:{}, new_friend_msg:{text:'', files:[]},
+      listen_list:[], global_blacklist:[], group:[], group_api_map:{}, group_tts_map:{}, group_prompt_map:{}, new_friend_msg:{text:'', files:[]},
       chat_prompt_map:{}, chat_api_map:{}, chat_tts_map:{},
       chat_memory_switch:$('#chat_memory_switch').is(':checked'),
       chat_memory_message_threshold:parseInt($('#chat_memory_message_threshold').val())||100,
@@ -9977,6 +10042,8 @@ $(function(){
       configData.group.push(name);
       var idx=parseInt($(this).find('.group-api-select').val());
       if(!isNaN(idx) && idx>=0){ configData.group_api_map[name]=idx; }
+      var ttsIdx=parseInt($(this).find('.group-tts-select').val());
+      if(!isNaN(ttsIdx) && ttsIdx>=0){ configData.group_tts_map[name]=ttsIdx; }
       var gpv=$(this).find('.group-prompt-select').val();
       if(gpv){ configData.group_prompt_map[name]=gpv; }
     });
@@ -11508,7 +11575,7 @@ $(function(){
   });
 
   // ===== Memory Panel =====
-  var _memWxId = null, _memChatName = null;
+  var _memWxId = null, _memChatName = null, _memChatType = null;
   var _memoryChats = [];
 
   // 渲染一条消息气泡
@@ -11532,13 +11599,13 @@ $(function(){
   }
 
   // 加载并渲染消息列表
-  function loadMemoryMessages(wxid, chat){
+  function loadMemoryMessages(wxid, chat, chatType){
     var $c = $('#memory-msg-container');
     $('#memory-browser-msg').hide();
     $('#memory-msg-title').text(chat);
     $('#memory-msg-count').text('加载中...');
     $c.html('<div style="text-align:center;color:var(--muted);font-size:13px;padding:20px;">加载中...</div>');
-    $.getJSON('/memory/data/'+encodeURIComponent(wxid)+'/'+encodeURIComponent(chat))
+    $.getJSON('/memory/data/'+encodeURIComponent(wxid)+'/'+encodeURIComponent(chat), {chat_type:chatType})
       .done(function(res){
         $('#memory-browser-msg').hide();
         $c.empty();
@@ -11566,6 +11633,14 @@ $(function(){
     return (typeof chatItem === 'string') ? chatItem : (chatItem && chatItem.name ? chatItem.name : '');
   }
 
+  function memoryChatType(chatItem){
+    return (chatItem && chatItem.chat_type === 'group') ? 'group' : 'private';
+  }
+
+  function memoryChatKey(chatItem){
+    return memoryChatType(chatItem) + '\u0000' + memoryChatName(chatItem);
+  }
+
   function renderMemoryChatList(chats, autoSelect){
     var wxid = _memWxId;
     var $list = $('#memory-chat-list').empty();
@@ -11578,28 +11653,40 @@ $(function(){
     }
     filtered.forEach(function(chatItem){
       var chat = memoryChatName(chatItem);
+      var chatType = memoryChatType(chatItem);
       if(!chat) return;
       var safeChat = $('<span>').text(chat).html();
+      var safeScope = chatType === 'group' ? '群聊' : '私聊';
       var $item = $('<div class="memory-list-item">' +
-        '<span class="item-name" title="'+safeChat+'">'+safeChat+'</span>' +
+        '<span class="item-name" title="'+safeScope+' · '+safeChat+'">'+safeScope+' · '+safeChat+'</span>' +
         '<button type="button" class="btn-del-mem" title="删除"><i class="bi bi-trash"></i></button>' +
         '</div>');
-      if(chat === autoSelect) $item.addClass('selected');
+      if(autoSelect && memoryChatKey(chatItem) === memoryChatKey(autoSelect)) $item.addClass('selected');
       $item.on('click', function(e){
         if($(e.target).closest('.btn-del-mem').length) return;
         $('.memory-list-item','#memory-chat-list').removeClass('selected');
         $item.addClass('selected');
         _memChatName = chat;
+        _memChatType = chatType;
         $('#memory-msg-area').show().css('display','flex');
-        loadMemoryMessages(wxid, chat);
+        loadMemoryMessages(wxid, chat, chatType);
       });
       $item.find('.btn-del-mem').on('click', function(){
         svModal.confirm('确定删除窗口「'+chat+'」的聊天记录？', function(){
-          $.ajax({ url:'/memory/delete_chat/'+encodeURIComponent(wxid)+'/'+encodeURIComponent(chat), type:'DELETE' })
+          $.ajax({
+            url:'/memory/delete_chat/'+encodeURIComponent(wxid)+'/'+encodeURIComponent(chat),
+            type:'DELETE',
+            data:{chat_type:chatType}
+          })
             .done(function(r){
               if(r.status==='success'){
                 $('#memory-browser-msg').hide();
-                if(_memChatName===chat){ _memChatName=null; $('#memory-msg-area').hide(); $('#memory-msg-container').empty(); }
+                if(_memChatName===chat && _memChatType===chatType){
+                  _memChatName=null;
+                  _memChatType=null;
+                  $('#memory-msg-area').hide();
+                  $('#memory-msg-container').empty();
+                }
                 loadMemoryChatList(wxid);
               } else {
                 showMsg('memory-browser-msg', r.message || '删除失败', false);
@@ -11612,10 +11699,9 @@ $(function(){
       });
       $list.append($item);
     });
-    var chatNames = chats.map(memoryChatName);
-    if(autoSelect && chatNames.indexOf(autoSelect) !== -1 && filtered.some(function(item){ return memoryChatName(item) === autoSelect; })){
+    if(autoSelect && filtered.some(function(item){ return memoryChatKey(item) === memoryChatKey(autoSelect); })){
       $('#memory-msg-area').show().css('display','flex');
-      loadMemoryMessages(wxid, autoSelect);
+      loadMemoryMessages(wxid, memoryChatName(autoSelect), memoryChatType(autoSelect));
     }
   }
 
@@ -11639,7 +11725,7 @@ $(function(){
   }
 
   // 加载微信号列表；若 autoWx 有值则自动选中并恢复子级选中状态
-  function loadMemoryWxList(autoWx, autoChat){
+  function loadMemoryWxList(autoWx, autoChat, autoChatType){
     $.getJSON('/memory/list')
       .done(function(res){
         $('#memory-browser-msg').hide();
@@ -11647,6 +11733,7 @@ $(function(){
           renderWxIdSelect($('#memory-wx-select'), [], '微信号：暂无微信号', '', '微信号');
           _memWxId = null;
           _memChatName = null;
+          _memChatType = null;
           _memoryChats = [];
           $('#memory-chat-panel').hide();
           $('#memory-msg-area').hide();
@@ -11662,10 +11749,14 @@ $(function(){
         // 自动恢复选中状态，并级联加载子列表
         if(_memWxId){
           $('#memory-chat-panel').show();
-          loadMemoryChatList(_memWxId, autoChat||undefined);
+          loadMemoryChatList(
+            _memWxId,
+            autoChat ? {name:autoChat, chat_type:autoChatType||'private'} : undefined
+          );
         } else if(autoWx) {
           _memWxId = null;
           _memChatName = null;
+          _memChatType = null;
           $('#memory-chat-panel').hide();
           $('#memory-msg-area').hide();
           $('#memory-chat-list, #memory-msg-container').empty();
@@ -11690,6 +11781,7 @@ $(function(){
   $('#memory-wx-select').on('change', function(){
     _memWxId = ($(this).val() || '').trim() || null;
     _memChatName = null;
+    _memChatType = null;
     _memoryChats = [];
     $('#memory-msg-area').hide();
     $('#memory-chat-list, #memory-msg-container').empty();
@@ -11703,10 +11795,13 @@ $(function(){
   });
   // 刷新按钮：保留当前选中的微信号和窗口，刷新后自动恢复并更新消息
   $(document).on('click', '#btn-refresh-memory', function(){
-    loadMemoryWxList(_memWxId||undefined, _memChatName||undefined);
+    loadMemoryWxList(_memWxId||undefined, _memChatName||undefined, _memChatType||undefined);
   });
   $('#memory-chat-search').on('input', function(){
-    renderMemoryChatList(_memoryChats, _memChatName);
+    renderMemoryChatList(
+      _memoryChats,
+      _memChatName ? {name:_memChatName, chat_type:_memChatType||'private'} : undefined
+    );
   });
 
   // ===== Log Polling =====

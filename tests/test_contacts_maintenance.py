@@ -238,7 +238,14 @@ class MemorySQLiteEndpointTests(unittest.TestCase):
             self.assertEqual(payload["status"], "success")
             self.assertIn("wx_test", payload["wx_ids"])
             self.assertTrue((Path(temp_dir) / "accounts" / "wx_test" / "message_store.sqlite3").is_file())
-            self.assertEqual(MemoryManager("wx_test", temp_dir).get_messages("张三", 10), [])
+            self.assertEqual(
+                MemoryManager("wx_test", temp_dir).get_messages(
+                    "张三",
+                    10,
+                    chat_type="private",
+                ),
+                [],
+            )
 
     def test_memory_data_and_extraction_helper_are_account_scoped(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -248,7 +255,7 @@ class MemorySQLiteEndpointTests(unittest.TestCase):
             self._save(second, "张三", "账号二")
 
             with patch("web_server.MEMORY_BASE", temp_dir):
-                with app.test_request_context("/memory/data/wx_one/张三"):
+                with app.test_request_context("/memory/data/wx_one/张三?chat_type=private"):
                     response = memory_data.__wrapped__("wx_one", "张三")
                 extracted = _chat_memory_messages_for_user("wx_two", "张三")
 
@@ -264,13 +271,23 @@ class MemorySQLiteEndpointTests(unittest.TestCase):
             self._save(manager, "李四", "消息二")
 
             with patch("web_server.MEMORY_BASE", temp_dir):
-                with app.test_request_context("/memory/delete_chat/wx_test/张三", method="DELETE"):
+                with app.test_request_context(
+                    "/memory/delete_chat/wx_test/张三?chat_type=private",
+                    method="DELETE",
+                ):
                     response = memory_delete_chat.__wrapped__("wx_test", "张三")
 
             reloaded = MemoryManager("wx_test", temp_dir)
             self.assertEqual(response.get_json()["status"], "success")
-            self.assertEqual(reloaded.get_messages("张三", 10), [])
-            self.assertEqual([item["content"] for item in reloaded.get_messages("李四", 10)], ["消息二"])
+            self.assertEqual(reloaded.get_messages("张三", 10, chat_type="private"), [])
+            self.assertEqual(
+                [item["content"] for item in reloaded.get_messages(
+                    "李四",
+                    10,
+                    chat_type="private",
+                )],
+                ["消息二"],
+            )
 
     def test_memory_delete_wx_hides_all_account_history(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -284,7 +301,8 @@ class MemorySQLiteEndpointTests(unittest.TestCase):
 
             reloaded = MemoryManager("wx_test", temp_dir)
             self.assertEqual(response.get_json()["status"], "success")
-            self.assertEqual(reloaded.list_chat_names(), [])
+            self.assertEqual(reloaded.list_chat_names(chat_type="private"), [])
+            self.assertEqual(reloaded.list_chat_names(chat_type="group"), [])
 
 
 class ContactMaintenancePrepareTests(unittest.TestCase):

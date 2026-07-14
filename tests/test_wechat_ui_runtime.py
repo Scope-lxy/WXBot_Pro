@@ -356,12 +356,90 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime.bootstrap({"listeners": []})
 
         with self.assertRaises(IntentNeedsExclusive):
-            runtime.send_text({"conversation": "张三", "text": "你好"})
+            runtime.send_text({"conversation": "张三", "chat_type": "private", "text": "你好"})
 
-        result = runtime.send_text({"conversation": "张三", "text": "你好", "_exclusive_retry": True})
+        result = runtime.send_text({"conversation": "张三", "chat_type": "private", "text": "你好", "_exclusive_retry": True})
 
         self.assertTrue(result)
         self.assertEqual(client.chats["张三"].sent, [("你好", None)])
+
+    def test_same_name_private_and_group_windows_use_requested_chat_type(self):
+        private_chat = FakeChat("同名会话")
+        group_chat = FakeChat("同名会话")
+        group_chat.chat_type = "group"
+
+        class SameNameClient(FakeClient):
+            def GetAllSubWindow(self):
+                return [private_chat, group_chat]
+
+            def GetSubWindow(self, nickname):
+                return private_chat if nickname == "同名会话" else None
+
+        runtime = WeChatUIRuntime(
+            lambda *_args: None,
+            client_factory=lambda _version: SameNameClient(),
+        )
+        runtime.bootstrap({"listeners": []})
+
+        runtime.send_text({
+            "conversation": "同名会话",
+            "chat_type": "private",
+            "text": "私聊回复",
+        })
+        runtime.send_text({
+            "conversation": "同名会话",
+            "chat_type": "group",
+            "text": "群聊回复",
+        })
+
+        self.assertEqual(private_chat.sent, [("私聊回复", None)])
+        self.assertEqual(group_chat.sent, [("群聊回复", None)])
+
+    def test_untyped_same_name_window_lookup_refuses_to_guess(self):
+        private_chat = FakeChat("同名会话")
+        group_chat = FakeChat("同名会话")
+        group_chat.chat_type = "group"
+
+        class SameNameClient(FakeClient):
+            def GetAllSubWindow(self):
+                return [private_chat, group_chat]
+
+        runtime = WeChatUIRuntime(
+            lambda *_args: None,
+            client_factory=lambda _version: SameNameClient(),
+        )
+        runtime.bootstrap({"listeners": []})
+
+        with self.assertRaisesRegex(RuntimeError, "拒绝猜测"):
+            runtime.main_window({
+                "operation": "subwindow_identity",
+                "conversation": "同名会话",
+            })
+
+    def test_duplicate_same_type_windows_refuse_to_send(self):
+        first = FakeChat("重复群")
+        second = FakeChat("重复群")
+        first.chat_type = "group"
+        second.chat_type = "group"
+
+        class DuplicateGroupClient(FakeClient):
+            def GetAllSubWindow(self):
+                return [first, second]
+
+        runtime = WeChatUIRuntime(
+            lambda *_args: None,
+            client_factory=lambda _version: DuplicateGroupClient(),
+        )
+        runtime.bootstrap({"listeners": []})
+
+        with self.assertRaisesRegex(RuntimeError, "无法区分"):
+            runtime.send_text({
+                "conversation": "重复群",
+                "chat_type": "group",
+                "text": "不能猜目标",
+            })
+        self.assertEqual(first.sent, [])
+        self.assertEqual(second.sent, [])
 
     def test_send_actions_reports_completed_boundary_when_middle_action_raises(self):
         client = FakeClient()
@@ -379,6 +457,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         with self.assertRaises(ActionBatchInterrupted) as caught:
             runtime.send_actions({
                 "conversation": "张三",
+                "chat_type": "private",
                 "actions": [
                     {"type": "text", "text": "第一条"},
                     {"type": "text", "text": "第二条"},
@@ -406,6 +485,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         with self.assertRaises(ActionBatchInterrupted) as caught:
             runtime.send_actions({
                 "conversation": "张三",
+                "chat_type": "private",
                 "actions": [
                     {"type": "text", "text": "第一条"},
                     {"type": "text", "text": "第二条"},
@@ -420,6 +500,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
     def test_quote_rolls_original_message_into_view_before_action(self):
         client = FakeClient()
         chat = client.chats.setdefault("测试群", FakeChat("测试群"))
+        chat.chat_type = "group"
         events = []
         source = SimpleNamespace(
             type="text",
@@ -432,10 +513,11 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         )
         chat.messages = [source]
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
-        runtime.bootstrap({"listeners": [{"name": "测试群"}]})
+        runtime.bootstrap({"listeners": [{"name": "测试群", "chat_type": "group"}]})
 
         runtime.quote_message({
             "conversation": "测试群",
+            "chat_type": "group",
             "message_type": "text",
             "message_attr": "friend",
             "message_sender": "群成员",
@@ -454,7 +536,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
         runtime.bootstrap({"listeners": [{"name": "张三"}]})
 
-        messages = runtime.get_messages({"conversation": "张三"})
+        messages = runtime.get_messages({"conversation": "张三", "chat_type": "private"})
 
         self.assertEqual([message.content for message in messages], ["正文"])
         self.assertTrue(all(isinstance(message, MessageEnvelope) for message in messages))
@@ -472,7 +554,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
         runtime.bootstrap({"listeners": [{"name": "LXYou"}]})
 
-        messages = runtime.get_messages({"conversation": "LXYou"})
+        messages = runtime.get_messages({"conversation": "LXYou", "chat_type": "private"})
 
         self.assertEqual(messages[0].content, '语音4"秒私聊验收，C语语音测试。')
         self.assertEqual(messages[0].original_content, '语音4"秒私聊验收，C语语音测试。')
@@ -499,7 +581,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         )
         runtime.bootstrap({"listeners": [{"name": "瑞东（私人号）"}]})
 
-        messages = runtime.get_messages({"conversation": "瑞东（私人号）"})
+        messages = runtime.get_messages({"conversation": "瑞东（私人号）", "chat_type": "private"})
 
         self.assertEqual([message.content for message in messages], ["旧的自己消息"])
         self.assertEqual(received, [])
@@ -533,7 +615,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         thread = threading.Thread(target=emit_real_message)
         thread.start()
 
-        runtime.get_messages({"conversation": "瑞东（私人号）"})
+        runtime.get_messages({"conversation": "瑞东（私人号）", "chat_type": "private"})
         thread.join(1)
 
         self.assertEqual([message.content for _conversation, message in received], ["刚发的新消息"])
@@ -550,7 +632,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime.bootstrap({"listeners": [{"name": "张三"}]})
 
         with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
-            runtime.get_messages({"conversation": "张三"})
+            runtime.get_messages({"conversation": "张三", "chat_type": "private"})
         client.callback(
             SimpleNamespace(id="new-1", type="text", attr="friend", sender="张三", content="错误后的新消息"),
             chat,
@@ -753,7 +835,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
         runtime.bootstrap({"listeners": [{"name": "素材源"}]})
 
-        result = runtime.read_material_messages({"conversation": "素材源", "limit": 20})
+        result = runtime.read_material_messages({"conversation": "素材源", "chat_type": "private", "limit": 20})
 
         self.assertEqual(result["strategy"], "子窗口公开 GetHistoryMessage")
         self.assertIsInstance(result["messages"][0], MessageEnvelope)
@@ -783,7 +865,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         )
         runtime.bootstrap({"listeners": [{"name": "素材源"}]})
 
-        result = runtime.read_material_messages({"conversation": "素材源", "limit": 20})
+        result = runtime.read_material_messages({"conversation": "素材源", "chat_type": "private", "limit": 20})
 
         self.assertEqual(result["messages"][0].content, "C:/docs/a.pdf")
         self.assertEqual(received, [])
@@ -818,7 +900,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
         runtime.bootstrap({"listeners": [{"name": "素材源"}]})
 
-        result = runtime.read_material_messages({"conversation": "素材源", "limit": 20})
+        result = runtime.read_material_messages({"conversation": "素材源", "chat_type": "private", "limit": 20})
 
         self.assertEqual(result["strategy"], "子窗口公开 GetHistoryMessage")
         self.assertEqual(result["messages"][0].content, "C:/docs/a.pdf")
@@ -858,7 +940,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
         runtime.bootstrap({"listeners": [{"name": "素材源"}]})
 
-        result = runtime.read_material_messages({"conversation": "素材源", "limit": 20})
+        result = runtime.read_material_messages({"conversation": "素材源", "chat_type": "private", "limit": 20})
 
         self.assertEqual(result["strategy"], "主窗口公开 GetHistoryMessage")
         self.assertEqual(result["messages"][0].content, "C:/docs/main.pdf")
@@ -881,6 +963,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         runtime.forward_message({
             "conversation": "素材源",
+            "chat_type": "private",
             "message_type": "file",
             "message_attr": "friend",
             "message_sender": "素材源",
@@ -905,6 +988,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "拒绝猜测"):
             runtime._locate_message({
                 "conversation": "张三",
+                "chat_type": "private",
                 "message_type": "text",
                 "message_attr": "friend",
                 "message_sender": "张三",
@@ -924,6 +1008,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         located = runtime._locate_message({
             "conversation": "张三",
+            "chat_type": "private",
             "message_type": "text",
             "message_attr": "friend",
             "message_sender": "张三",
@@ -953,6 +1038,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         result = runtime.download_media({
             "conversation": "瑞东（私人号）",
+            "chat_type": "private",
             "message_type": "image",
             "message_attr": "friend",
             "message_sender": "瑞东（私人号）",
@@ -981,6 +1067,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         result = runtime.download_media({
             "conversation": "瑞东（私人号）",
+            "chat_type": "private",
             "message_type": "image",
             "message_attr": "friend",
             "message_sender": "瑞东（私人号）",
@@ -1001,6 +1088,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         located = runtime._locate_message({
             "conversation": "张三",
+            "chat_type": "private",
             "message_type": "image",
             "message_attr": "friend",
             "message_sender": "张三",
@@ -1024,6 +1112,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "停止历史翻页定位"):
             runtime._locate_message({
                 "conversation": "张三",
+                "chat_type": "private",
                 "message_type": "image",
                 "message_attr": "friend",
                 "message_sender": "张三",

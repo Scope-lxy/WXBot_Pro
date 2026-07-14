@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 @dataclass
 class WindowRetry:
     conversation: str
+    chat_type: str
     first_failed_at: float
     next_retry_at: float
     attempts: int = 0
@@ -36,28 +37,39 @@ class ListenerWindowSupervisor:
         self._degraded_after = max(1.0, float(degraded_after))
         self._degraded_interval = max(self._retry_interval, float(degraded_interval))
         self._clock = clock
-        self._items: dict[str, WindowRetry] = {}
+        self._items: dict[tuple[str, str], WindowRetry] = {}
         self._lock = threading.RLock()
 
-    def request(self, conversation, *, error="", allow_rebuild=False, now=None):
+    @staticmethod
+    def _key(conversation, chat_type):
         name = str(conversation or "").strip()
+        normalized_type = str(chat_type or "private").strip().lower() or "private"
+        if normalized_type == "friend":
+            normalized_type = "private"
+        if normalized_type not in {"private", "group"}:
+            raise ValueError("chat_type must be private or group")
+        return normalized_type, name
+
+    def request(self, conversation, *, chat_type="private", error="", allow_rebuild=False, now=None):
+        key = self._key(conversation, chat_type)
+        normalized_type, name = key
         if not name:
             return False
         now = self._clock() if now is None else float(now)
         with self._lock:
-            item = self._items.get(name)
+            item = self._items.get(key)
             if item is None:
-                item = WindowRetry(name, now, now)
-                self._items[name] = item
+                item = WindowRetry(name, normalized_type, now, now)
+                self._items[key] = item
             item.allow_rebuild = item.allow_rebuild or bool(allow_rebuild)
             if error:
                 item.last_error = str(error)
             return True
 
-    def contains(self, conversation):
-        name = str(conversation or "").strip()
+    def contains(self, conversation, *, chat_type="private"):
+        key = self._key(conversation, chat_type)
         with self._lock:
-            return name in self._items
+            return key in self._items
 
     def claim_due(self, *, limit=1, now=None):
         now = self._clock() if now is None else float(now)
@@ -68,50 +80,64 @@ class ListenerWindowSupervisor:
                     item for item in self._items.values()
                     if not item.inflight and item.next_retry_at <= now
                 ),
-                key=lambda item: (item.next_retry_at, item.first_failed_at, item.conversation),
+                key=lambda item: (
+                    item.next_retry_at,
+                    item.first_failed_at,
+                    item.chat_type,
+                    item.conversation,
+                ),
             )
             for item in due[: max(1, int(limit or 1))]:
                 item.inflight = True
                 claimed.append(asdict(item))
         return claimed
 
-    def succeeded(self, conversation):
-        name = str(conversation or "").strip()
+    def succeeded(self, conversation, *, chat_type="private"):
+        key = self._key(conversation, chat_type)
         with self._lock:
-            return self._items.pop(name, None) is not None
+            return self._items.pop(key, None) is not None
 
-    def release(self, conversation, *, retry_after=0.0, now=None):
+    def release(self, conversation, *, chat_type="private", retry_after=0.0, now=None):
         """Release a claim when no window attempt was made."""
-        name = str(conversation or "").strip()
+        key = self._key(conversation, chat_type)
         now = self._clock() if now is None else float(now)
         with self._lock:
-            item = self._items.get(name)
+            item = self._items.get(key)
             if item is None:
                 return False
             item.inflight = False
             item.next_retry_at = max(item.next_retry_at, now + max(0.0, float(retry_after)))
             return True
 
-    def consume_rebuild(self, conversation):
+    def consume_rebuild(self, conversation, *, chat_type="private"):
         """Allow one controlled close/rebuild for a stale registration."""
-        name = str(conversation or "").strip()
+        key = self._key(conversation, chat_type)
         with self._lock:
-            item = self._items.get(name)
+            item = self._items.get(key)
             if item is None or not item.allow_rebuild:
                 return False
             item.allow_rebuild = False
             return True
 
-    def failed(self, conversation, error="", *, allow_rebuild=False, now=None):
-        name = str(conversation or "").strip()
+    def failed(
+        self,
+        conversation,
+        error="",
+        *,
+        chat_type="private",
+        allow_rebuild=False,
+        now=None,
+    ):
+        key = self._key(conversation, chat_type)
+        normalized_type, name = key
         if not name:
             return None
         now = self._clock() if now is None else float(now)
         with self._lock:
-            item = self._items.get(name)
+            item = self._items.get(key)
             if item is None:
-                item = WindowRetry(name, now, now)
-                self._items[name] = item
+                item = WindowRetry(name, normalized_type, now, now)
+                self._items[key] = item
             item.inflight = False
             item.attempts += 1
             item.allow_rebuild = item.allow_rebuild or bool(allow_rebuild)
@@ -131,7 +157,10 @@ class ListenerWindowSupervisor:
         with self._lock:
             return [
                 asdict(item)
-                for item in sorted(self._items.values(), key=lambda item: item.conversation)
+                for item in sorted(
+                    self._items.values(),
+                    key=lambda item: (item.chat_type, item.conversation),
+                )
             ]
 
     def clear(self):

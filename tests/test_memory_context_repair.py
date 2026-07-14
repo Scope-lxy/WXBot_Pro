@@ -149,6 +149,44 @@ class MemoryContextRepairCoreTests(unittest.TestCase):
         self.assertTrue(plan.anchor_found)
         self.assertEqual([item["content"] for item in plan.messages_to_append], ["那就好"])
 
+    def test_group_self_quote_at_prefix_matches_plain_bot_echo(self):
+        local = [
+            {
+                "time": "2026/07/15 02:00:00",
+                "attr": "friend",
+                "sender": "群友A",
+                "type": "text",
+                "content": "问题",
+            },
+            {
+                "time": "2026/07/15 02:00:01",
+                "attr": "self",
+                "sender": "self",
+                "type": "text",
+                "content": "机器人回复",
+            },
+        ]
+        remote = [
+            dict(local[0]),
+            {
+                "time": "2026/07/15 02:00:02",
+                "attr": "self",
+                "sender": "self",
+                "type": "text",
+                "content": "@群友A\u2005机器人回复",
+            },
+        ]
+
+        plan = build_repair_plan(
+            local,
+            remote,
+            anchor_recent_count=5,
+            chat_type="group",
+        )
+
+        self.assertTrue(plan.anchor_found)
+        self.assertEqual(plan.messages_to_append, [])
+
     def test_anchor_matching_skips_voice_messages_as_unstable_anchors(self):
         local = [
             {"time": "2026/07/04 08:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "第一句"},
@@ -626,7 +664,10 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
             append_history_message(manager, "张三", "张三", "好", "text", "friend", 100)
             append_history_message(manager, "张三", "张三", "好", "text", "friend", 100)
 
-            self.assertEqual([item["content"] for item in manager.get_messages("张三", 10)], ["好", "好"])
+            self.assertEqual(
+                [item["content"] for item in manager.get_messages("张三", 10, chat_type="private")],
+                ["好", "好"],
+            )
 
     def test_save_message_keeps_repeated_content_with_same_message_time(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -635,7 +676,10 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
             append_history_message(manager, "张三", "张三", "好", "text", "friend", 100, message_time="2026/07/03 05:00:00")
             append_history_message(manager, "张三", "张三", "好", "text", "friend", 100, message_time="2026/07/03 05:00:00")
 
-            self.assertEqual([item["content"] for item in manager.get_messages("张三", 10)], ["好", "好"])
+            self.assertEqual(
+                [item["content"] for item in manager.get_messages("张三", 10, chat_type="private")],
+                ["好", "好"],
+            )
 
     def test_visible_snapshot_reconciliation_is_idempotent_and_preserves_occurrences(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -649,6 +693,7 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
                 ],
                 100,
                 reconcile_visible_snapshot=True,
+                chat_type="private",
             )
             second = manager.append_missing_messages(
                 "张三",
@@ -658,9 +703,10 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
                 ],
                 100,
                 reconcile_visible_snapshot=True,
+                chat_type="private",
             )
 
-            stored = manager.get_messages("张三", 10)
+            stored = manager.get_messages("张三", 10, chat_type="private")
             self.assertEqual(first["added"], 2)
             self.assertEqual(second["added"], 0)
             self.assertEqual([item["content"] for item in stored], ["[图片]", "[图片]"])
@@ -677,10 +723,14 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
                     {"time": "2026/07/03 05:01:00", "attr": "self", "sender": "self", "type": "text", "content": "早呀"},
                 ],
                 100,
+                chat_type="private",
             )
 
             self.assertEqual(result["added"], 1)
-            self.assertEqual([item["content"] for item in manager.get_messages("张三", 10)], ["早", "早呀"])
+            self.assertEqual(
+                [item["content"] for item in manager.get_messages("张三", 10, chat_type="private")],
+                ["早", "早呀"],
+            )
 
     def test_append_missing_messages_sorts_entries_by_time(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -694,11 +744,12 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
                     {"time": "2026/07/03 05:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "第一条"},
                 ],
                 100,
+                chat_type="private",
             )
 
             self.assertEqual(result["added"], 3)
             self.assertEqual(
-                [item["content"] for item in manager.get_messages("张三", 10)],
+                [item["content"] for item in manager.get_messages("张三", 10, chat_type="private")],
                 ["第一条", "第二条", "第三条"],
             )
 
@@ -714,10 +765,11 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
                     {"time": "2026-07-12 01:39:00", "attr": "self", "sender": "self", "type": "text", "content": "第二句回复", "message_id": "text-3"},
                 ],
                 100,
+                chat_type="private",
             )
 
             self.assertEqual(
-                [item["content"] for item in manager.get_messages("张三", 10)],
+                [item["content"] for item in manager.get_messages("张三", 10, chat_type="private")],
                 ["你好", "第一句回复", "第二句回复"],
             )
 
@@ -746,15 +798,17 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
                 snapshot,
                 100,
                 reconcile_visible_snapshot=True,
+                chat_type="private",
             )
             second = manager.append_missing_messages(
                 "张三",
                 snapshot,
                 100,
                 reconcile_visible_snapshot=True,
+                chat_type="private",
             )
 
-            stored = manager.get_messages("张三", 10)
+            stored = manager.get_messages("张三", 10, chat_type="private")
             self.assertEqual(first["added"], 3)
             self.assertEqual(second["added"], 0)
             self.assertEqual(
@@ -786,9 +840,10 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
                 ],
                 100,
                 reconcile_visible_snapshot=True,
+                chat_type="private",
             )
 
-            stored = manager.get_messages("张三", 10)
+            stored = manager.get_messages("张三", 10, chat_type="private")
             self.assertEqual(stored[0]["time"], "2026/07/12 01:16:59")
             self.assertNotIn("time_inferred", stored[0])
 
@@ -842,6 +897,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                     {"time": "2", "attr": "self", "sender": "self", "type": "text", "content": "早呀"},
                 ],
                 100,
+                chat_type="private",
             )
             chat = FakeChat(visible=[
                 msg("早", time="1"),
@@ -852,7 +908,7 @@ class WXBotContextRepairTests(unittest.TestCase):
             bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
             self.assertEqual(
-                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10, chat_type="private")],
                 ["早", "早呀", "新内容"],
             )
 
@@ -863,6 +919,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                 "张三",
                 [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
                 100,
+                chat_type="private",
             )
             chat = FakeChat(visible=[
                 msg("旧锚点", time="1"),
@@ -882,6 +939,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                 "张三",
                 [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
                 100,
+                chat_type="private",
             )
             chat = FakeChat(
                 visible=[msg("新内容", time="3")],
@@ -893,7 +951,7 @@ class WXBotContextRepairTests(unittest.TestCase):
             self.assertFalse(repaired)
             self.assertFalse(hasattr(chat, "history_args"))
             self.assertEqual(
-                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10, chat_type="private")],
                 ["旧锚点"],
             )
 
@@ -904,13 +962,17 @@ class WXBotContextRepairTests(unittest.TestCase):
                 "张三",
                 [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
                 100,
+                chat_type="private",
             )
             chat = FakeChat(visible=[msg("新内容", time="3")])
 
             repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
             self.assertFalse(repaired)
-            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("张三", 10)], ["旧锚点"])
+            self.assertEqual(
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10, chat_type="private")],
+                ["旧锚点"],
+            )
 
     def test_without_anchor_does_not_initialize_empty_history_from_visible_snapshot(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -920,7 +982,10 @@ class WXBotContextRepairTests(unittest.TestCase):
             repaired = bot._repair_private_context_before_ai(chat, msg("第二条", time="2"))
 
             self.assertFalse(repaired)
-            self.assertEqual(bot.memory_manager.get_messages("张三", 10), [])
+            self.assertEqual(
+                bot.memory_manager.get_messages("张三", 10, chat_type="private"),
+                [],
+            )
 
     def test_snapshot_time_markers_insert_stopped_period_messages_before_current_trigger(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -929,6 +994,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                 "张三",
                 [{"time": "2026/07/12 01:39:33", "attr": "friend", "sender": "张三", "type": "text", "content": "当前消息", "message_id": "native-current"}],
                 100,
+                chat_type="private",
             )
             chat = FakeChat(visible=[
                 msg("01:20", attr="system", sender="system", msg_type="time", time="2026/07/12 01:20:00"),
@@ -945,7 +1011,7 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             self.assertTrue(repaired)
             self.assertEqual(
-                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10, chat_type="private")],
                 ["更早人工回复", "[图片]", "当前消息"],
             )
 
@@ -959,6 +1025,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                     {"time": "2026/07/03 05:03:00", "attr": "friend", "sender": "张三", "type": "text", "content": "后来呢"},
                 ],
                 100,
+                chat_type="private",
             )
             bot._memory_context_repair_startup_done.add("张三")
             bot._memory_context_repair_last_at["private:张三"] = 0
@@ -974,7 +1041,7 @@ class WXBotContextRepairTests(unittest.TestCase):
             self.assertFalse(repaired)
             self.assertEqual(chat.get_all_calls, 0)
             self.assertEqual(
-                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10, chat_type="private")],
                 ["早", "后来呢"],
             )
 
@@ -988,6 +1055,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                     {"time": "2", "attr": "friend", "sender": "张三", "type": "text", "content": "第二条"},
                 ],
                 100,
+                chat_type="private",
             )
             bot._memory_context_repair_startup_done.add("张三")
             chat = FakeChat(visible=[msg("微信界面消息", time="3")])
@@ -1007,7 +1075,7 @@ class WXBotContextRepairTests(unittest.TestCase):
             self.assertFalse(repaired)
             self.assertEqual(chat.get_all_calls, 0)
             self.assertEqual(
-                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10, chat_type="private")],
                 ["第一条", "第二条"],
             )
 
@@ -1021,6 +1089,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                     {"time": "2026/07/03 05:10:00", "attr": "friend", "sender": "张三", "type": "text", "content": "当前消息"},
                 ],
                 100,
+                chat_type="private",
             )
             bot._memory_context_repair_startup_done.add("张三")
             bot._memory_context_repair_last_at["private:张三"] = 0
@@ -1037,11 +1106,11 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             self.assertFalse(hasattr(chat, "history_args"))
             self.assertEqual(
-                [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
+                [item["content"] for item in bot.memory_manager.get_messages("张三", 10, chat_type="private")],
                 ["本地旧消息", "当前消息"],
             )
 
-    def test_group_configured_chat_does_not_repair(self):
+    def test_private_chat_is_repaired_even_when_name_is_in_group_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = self.make_bot(tmp)
             bot.config.group = ["测试群"]
@@ -1049,14 +1118,25 @@ class WXBotContextRepairTests(unittest.TestCase):
                 "测试群",
                 [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
                 100,
+                chat_type="private",
             )
-            chat = FakeChat(visible=[msg("新内容", time="3")])
+            chat = FakeChat(visible=[
+                msg("旧锚点", time="1"),
+                msg("新内容", time="3"),
+            ])
             chat.who = "测试群"
 
             repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
-            self.assertFalse(repaired)
-            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("测试群", 10)], ["旧锚点"])
+            self.assertTrue(repaired)
+            self.assertEqual(
+                [item["content"] for item in bot.memory_manager.get_messages(
+                    "测试群",
+                    10,
+                    chat_type="private",
+                )],
+                ["旧锚点", "新内容"],
+            )
 
     def test_group_chat_type_does_not_repair(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1065,6 +1145,7 @@ class WXBotContextRepairTests(unittest.TestCase):
                 "未配置群",
                 [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
                 100,
+                chat_type="group",
             )
             chat = FakeChat(visible=[msg("新内容", time="3")])
             chat.who = "未配置群"
@@ -1073,7 +1154,14 @@ class WXBotContextRepairTests(unittest.TestCase):
             repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
 
             self.assertFalse(repaired)
-            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("未配置群", 10)], ["旧锚点"])
+            self.assertEqual(
+                [item["content"] for item in bot.memory_manager.get_messages(
+                    "未配置群",
+                    10,
+                    chat_type="group",
+                )],
+                ["旧锚点"],
+            )
 
     def test_group_current_trigger_is_not_duplicated_during_visible_repair(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1102,6 +1190,10 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             self.assertTrue(repaired)
             self.assertEqual(
-                [item["content"] for item in bot.memory_manager.get_messages("测试群", 10)],
+                [item["content"] for item in bot.memory_manager.get_messages(
+                    "测试群",
+                    10,
+                    chat_type="group",
+                )],
                 ["当前触发"],
             )

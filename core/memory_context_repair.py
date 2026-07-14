@@ -46,6 +46,16 @@ def normalize_message_content(content, msg_type="") -> str:
     return text
 
 
+def normalize_group_self_content(content) -> str:
+    text = clean_text(content)
+    if text.startswith("@") and "\u2005" in text:
+        _mention, _separator, body = text.partition("\u2005")
+        body = body.lstrip()
+        if body:
+            return body
+    return text
+
+
 def message_content_candidates(content, msg_type="", *, allow_voice_shell=False) -> tuple[str, ...]:
     msg_type = normalize_message_type(msg_type)
     text = normalize_message_content(content, msg_type)
@@ -82,20 +92,26 @@ def relaxed_duplicate_keys(item, *, chat_type="private", allow_voice_shell=False
         return set()
     msg_type = normalize_message_type(item.get("type"))
     direction = _anchor_direction(item)
+    normalized_chat_type = clean_text(chat_type).lower()
     parts = [direction]
-    if clean_text(chat_type).lower() == "group" and direction != "self":
+    if normalized_chat_type == "group" and direction != "self":
         sender = clean_text(item.get("sender"))
         if not sender:
             return set()
         parts.append(sender)
     parts.append(msg_type)
+    contents = message_content_candidates(
+        item.get("content"),
+        msg_type,
+        allow_voice_shell=allow_voice_shell,
+    )
+    if normalized_chat_type == "group" and direction == "self":
+        contents = tuple(dict.fromkeys(
+            [*contents, *(normalize_group_self_content(content) for content in contents)]
+        ))
     return {
         "|".join(parts + [content])
-        for content in message_content_candidates(
-            item.get("content"),
-            msg_type,
-            allow_voice_shell=allow_voice_shell,
-        )
+        for content in contents
     }
 
 
@@ -148,6 +164,8 @@ def repair_anchor_fingerprint(item, *, chat_type="private") -> str:
     if not content and msg_type not in {"image", "emotion", "video", "file"}:
         return ""
     direction = _anchor_direction(item)
+    if clean_text(chat_type).lower() == "group" and direction == "self":
+        content = normalize_group_self_content(content)
     parts = [direction]
     if clean_text(chat_type).lower() == "group" and direction != "self":
         sender = clean_text(item.get("sender"))

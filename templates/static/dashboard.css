@@ -192,12 +192,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .scheduled-message-empty,
 .scheduled-message-empty-content { background: var(--surface-l4); border-color: var(--layer-border-subtle); }
 .new-friend-block { background: var(--surface-l2); border-color: var(--layer-border); }
-.new-friend-l3-group { background: var(--surface-l3); border: 1px solid var(--layer-border-subtle); border-radius: 6px; padding: 12px; }
-.chat-ability-block,
-.task-runtime-block,
-.new-friend-l3-group { padding: var(--ui-l3-card-padding); }
-.new-friend-l3-group + .new-friend-l3-group { margin-top: 12px; }
-.new-friend-l3-group .cfg-hint:last-child { margin-bottom: 0; }
+.task-runtime-block { padding: var(--ui-l3-card-padding); }
 .ui-head { --ui-head-row-height: var(--ui-l1-head-row-height); --ui-head-control-height: var(--ui-l1-control-height); --ui-head-divider-gap: var(--ui-l1-head-divider-gap); --ui-head-body-gap: var(--ui-l1-body-gap); display: flex; align-items: center; gap: var(--cfg-inline-gap); height: calc(var(--ui-head-row-height) + var(--ui-head-divider-gap)); min-height: 0; margin-bottom: var(--ui-head-body-gap); padding-bottom: var(--ui-head-divider-gap); border-bottom: 1px solid var(--border); flex-wrap: nowrap; overflow: hidden; min-width: 0; }
 .ui-head > i,
 .ui-head__icon { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 20px; line-height: 1; color: var(--primary); }
@@ -785,9 +780,8 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .ui-btn--icon.is-danger:hover,
 .scheduled-message-delete-badge:hover,
 .ui-btn--icon.ui-btn--l3 { width: var(--ui-l3-icon-size); height: var(--ui-l3-icon-size); min-width: var(--ui-l3-icon-size); min-height: var(--ui-l3-icon-size); flex: 0 0 var(--ui-l3-icon-size); }
-.task-runtime-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--task-gap); }
+.task-runtime-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--task-gap, 14px); }
 .task-runtime-block { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--ui-l3-card-padding); background: #fff; }
-.task-runtime-block h5 { margin: 0 0 10px; font-size: 15px; font-weight: 700; }
 .task-runtime-list { display: grid; gap: 6px; max-height: calc(10 * 56px + 9 * 6px); overflow-y: auto; overflow-x: hidden; padding-right: 2px; align-content: start; }
 .task-runtime-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: #FAFBFC; font-size: 12.5px; min-height: 56px; }
 .task-runtime-main { min-width: 0; flex: 1 1 auto; display: grid; gap: 4px; }
@@ -1176,30 +1170,32 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .listen-rule-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .listen-rule-toolbar .listen-rule-tabs { margin-left: auto; }
 .listen-rule-list,
-.group-rule-list { display: grid; gap: 10px; }
-.listen-rule-row { display: grid; align-items: center; gap: 8px; margin-bottom: 0; width: 100%; min-width: 0; grid-template-columns: repeat(4, minmax(100px, 1fr)) 36px; grid-template-areas: "name prompt api tts remove"; }
-.group-rule-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; margin-bottom: 0; }
+.group-rule-list { display: grid; gap: 10px; max-height: calc(10 * var(--ui-control-height) + 9 * 10px); overflow-x: hidden; overflow-y: auto; padding-right: 2px; align-content: start; container-type: inline-size; }
+.listen-rule-row { display: grid; align-items: center; gap: 8px; margin-bottom: 0; width: 100%; min-width: 0; grid-template-columns: minmax(100px, 1fr) repeat(3, minmax(100px, 132px)) 36px; grid-template-areas: "name prompt api tts remove"; }
+.group-rule-row { display: grid; align-items: center; gap: 8px; margin-bottom: 0; width: 100%; min-width: 0; grid-template-columns: minmax(100px, 1fr) repeat(3, minmax(100px, 132px)) 36px; grid-template-areas: "name prompt api tts remove"; }
 .listen-rule-row > *,
 .group-rule-row > * { min-width: 0; }
 .listen-rule-row .listen-whitelist-name { grid-area: name; width: 100%; min-width: 100px; }
-.listen-rule-row .chat-prompt-select { grid-area: prompt; width: 100%; min-width: 100px; }
-.listen-rule-row .chat-api-select { grid-area: api; width: 100%; min-width: 100px; }
-.listen-rule-row .chat-tts-select { grid-area: tts; width: 100%; min-width: 100px; }
+.listen-rule-row .chat-prompt-select { grid-area: prompt; width: 100%; min-width: 100px; max-width: 132px; }
+.listen-rule-row .chat-api-select { grid-area: api; width: 100%; min-width: 100px; max-width: 132px; }
+.listen-rule-row .chat-tts-select { grid-area: tts; width: 100%; min-width: 100px; max-width: 132px; }
 .listen-rule-row .chat-max-round-input { flex: 0 1 96px; width: 96px; min-width: 96px; }
 .listen-rule-row .btn-rm { grid-area: remove; justify-self: end; }
 .listen-rule-row .btn-rm,
-.group-rule-row .btn-rm { flex: 0 0 36px; }
+.group-rule-row .btn-rm { grid-area: remove; justify-self: end; }
 .listen-rule-row--simple { grid-template-columns: minmax(100px, 1fr) 36px; grid-template-areas: "name remove"; }
 .listen-rule-row--simple .listen-blacklist-name { grid-area: name; width: 100%; min-width: 100px; }
 .listen-rule-row--compact .global-prompt-exception-user { flex: 1 1 144px; min-width: 144px; }
 .listen-rule-row--compact .global-prompt-exception-profile { flex: 0 1 112px; width: 112px; min-width: 112px; }
 @container (max-width: 467px) {
-  .listen-rule-row { grid-template-columns: repeat(2, minmax(100px, 1fr)) 36px; grid-template-areas: "name prompt remove" "api tts remove"; }
+  .listen-rule-row,
+  .group-rule-row { grid-template-columns: repeat(2, minmax(100px, 1fr)) 36px; grid-template-areas: "name prompt remove" "api tts remove"; }
   .listen-rule-row--simple { grid-template-columns: minmax(100px, 1fr) 36px; grid-template-areas: "name remove"; }
 }
-.group-rule-row input[name="group"] { flex: 1 1 144px; min-width: 144px; }
-.group-rule-row .group-prompt-select { flex: 0 1 112px; width: 112px; min-width: 112px; }
-.group-rule-row .group-api-select { flex: 0 1 112px; width: 112px; min-width: 112px; }
+.group-rule-row input[name="group"] { grid-area: name; width: 100%; min-width: 100px; }
+.group-rule-row .group-prompt-select { grid-area: prompt; width: 100%; min-width: 100px; max-width: 132px; }
+.group-rule-row .group-api-select { grid-area: api; width: 100%; min-width: 100px; max-width: 132px; }
+.group-rule-row .group-tts-select { grid-area: tts; width: 100%; min-width: 100px; max-width: 132px; }
 .group-strategy-card { display: grid; gap: var(--ui-panel-gap); }
 .group-option-panel,
 .group-welcome-panel { padding: 0; border: 0; background: transparent; }
@@ -1220,7 +1216,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .contact-maintenance-pill-label { color: inherit; font-weight: 700; }
 .contact-maintenance-pill-value { color: inherit; font-weight: 800; font-variant-numeric: tabular-nums; }
 .contact-maintenance-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
-.contact-maintenance-body .ui-head--section .ui-head__main { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; column-gap: 10px; row-gap: 8px; }
 .contact-maintenance-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 0; }
 .contact-maintenance-note { margin: 0; }
 .contact-maintenance-auto-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -1303,17 +1298,17 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .new-friend-block { min-width: 0; padding: var(--ui-l2-card-padding); border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
 .new-friend-block .switch-row { margin-bottom: 10px; }
 .new-friend-block .switch-row:last-child { margin-bottom: 0; }
-.new-friend-interval-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-width: 0; }
-.new-friend-interval-grid .cfg-label { display: block; margin-bottom: 6px; }
 .new-friend-archive-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: start; min-width: 0; }
 .new-friend-archive-note { margin-top: 8px; }
 .new-friend-nickname-label { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 13.5px; font-weight: 600; color: var(--card-fg); cursor: pointer; }
+.new-friend-welcome-block { display: flex; flex-direction: column; min-height: 0; }
 .new-friend-message-editor { min-height: 0; }
+.new-friend-welcome-block .new-friend-message-editor { display: flex; flex: 1 1 auto; flex-direction: column; }
+.new-friend-welcome-block .scheduled-message-text-block { display: flex; flex: 1 1 auto; min-height: 0; }
+.new-friend-welcome-block .new-friend-message-text-input { flex: 1 1 auto; height: auto; min-height: var(--ui-control-height); }
 .new-friend-welcome-head .ui-head__actions { gap: 8px; }
 .new-friend-message-file-list { display: grid; gap: 8px; }
 .new-friend-block { background: var(--surface-l2); border-color: var(--layer-border); }
-.new-friend-l3-group { background: var(--surface-l3); border-color: var(--layer-border-subtle); }
-.new-friend-l3-group .switch-row { background: transparent; padding: 0; border-radius: 0; }
 @media (max-width: 900px) {
   .keyword-reply-body { grid-template-columns: 1fr; }
   .summary-action-row { width: 100%; margin-left: 0; justify-content: flex-start; }
@@ -1324,7 +1319,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .new-friend-config-shell { grid-template-columns: 1fr; }
   .new-friend-main-stack { grid-template-columns: 1fr; }
   .new-friend-archive-grid { grid-template-columns: 1fr; }
-  .new-friend-interval-grid { grid-template-columns: 1fr; }
   .contact-maintenance-body { grid-template-columns: 1fr; }
   .contact-maintenance-auto-grid { grid-template-columns: 1fr; }
   .contact-maintenance-body .contact-maintenance-auto-grid--stacked { grid-template-columns: 1fr; }
@@ -1349,10 +1343,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .new-friend-welcome-head { flex-wrap: wrap; align-items: flex-start; }
   .new-friend-welcome-head .ui-head__actions { width: 100%; justify-content: flex-start; }
 }
-@media (max-width: 560px) {
-  .contact-maintenance-body .ui-head--section .ui-head__main { grid-template-columns: minmax(0, 1fr); }
-  .contact-maintenance-body .ui-head--section .ui-head__main .desc { display: none; }
-}
 .page-inline-notice { --ui-notice-icon-size: 16px; --ui-notice-line-height: 1.7; --ui-notice-title-line-height: 1.55; display: grid; grid-template-columns: var(--ui-notice-icon-size) minmax(0, 1fr); align-items: center; column-gap: 10px; width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; overflow-wrap: anywhere; word-break: break-word; margin: 0; padding: 10px 14px; border: 1px solid transparent; border-radius: 8px; font-size: 13px; font-weight: 400; line-height: var(--ui-notice-line-height); }
 .page-inline-notice__icon { width: var(--ui-notice-icon-size); min-width: var(--ui-notice-icon-size); font-size: var(--ui-notice-icon-size); line-height: 1; margin-top: 0; text-align: center; }
 .page-inline-notice__content { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; color: inherit; }
@@ -1368,17 +1358,13 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .page-inline-notice--success .page-inline-notice__icon { color: #059669; }
 .page-inline-notice--danger { background: #FEF2F2; border-color: #FECACA; color: #B42318; }
 .page-inline-notice--danger .page-inline-notice__icon { color: #DC2626; }
-.chat-ability-card .ui-head { margin-bottom: 16px; }
+.chat-ability-card > .ui-head.ui-head--page { margin-bottom: 16px; }
 .recognition-api-select { min-width: 280px; max-width: 380px; font-weight: 800; }
 .recognition-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .recognition-inline-row { min-height: 44px; margin-bottom: 0; }
 .chat-ability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .chat-ability-stack { display: grid; gap: 16px; }
-.chat-ability-block { min-width: 0; padding: var(--ui-l3-card-padding); border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
-.chat-ability-block .ui-head.ui-head--item { border-bottom: 0; margin-bottom: 12px; padding-bottom: 0; min-height: var(--ui-l3-control-height); height: auto; overflow: visible; }
-.chat-ability-block .ui-head.ui-head--item .ui-head__main { min-width: 0; flex: 1 1 auto; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 8px; row-gap: 2px; }
-.chat-ability-block .ui-head.ui-head--item h5 { margin: 0; font-size: 14px; font-weight: 700; line-height: 1.5; }
-.chat-ability-block .ui-head.ui-head--item .desc { margin: 0; white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.6; }
+.chat-ability-block { min-width: 0; padding: var(--ui-l2-card-padding); border: 1px solid var(--border); border-radius: var(--radius); background: #fff; }
 .chat-ability-settings { margin-top: 0; }
 .chat-ability-note { margin-top: 12px; font-size: 12px; color: var(--muted); line-height: 1.7; }
 .chat-ability-note strong { color: var(--card-fg); font-weight: 600; }
@@ -1408,11 +1394,6 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .recognition-card-grid { grid-template-columns: 1fr; }
   .recognition-api-select { max-width: none; width: 100%; }
 }
-@media (max-width: 700px) {
-  .chat-ability-block--text-limit .ui-head.ui-head--item { align-items: flex-start; }
-  .chat-ability-block--text-limit .ui-head.ui-head--item .ui-head__main { grid-template-columns: minmax(0, 1fr); }
-}
-
 /* ===== Memory Panel ===== */
 .memory-layout { display: flex; gap: 0; height: 560px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; min-width: 0; }
 .memory-layout.memory-layout-two-pane { overflow-x: auto; overflow-y: hidden; }

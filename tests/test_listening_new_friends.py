@@ -70,6 +70,9 @@ class PassNewFriendsTests(unittest.TestCase):
             if intent.kind == listening.wechat_ui_actions.UIIntentKind.SEND_ACTIONS
         ]
         self.assertEqual(len(send_intents), 2)
+        self.assertTrue(
+            all(intent.payload["chat_type"] == "private" for intent in send_intents)
+        )
         self.assertEqual([len(intent.payload["actions"]) for intent in send_intents], [1, 1])
         self.assertEqual(send_intents[0].payload["actions"][0]["type"], "text")
         self.assertEqual(send_intents[1].payload["actions"][0]["type"], "file")
@@ -79,12 +82,20 @@ class PassNewFriendsTests(unittest.TestCase):
 class GroupWelcomeTests(unittest.TestCase):
     def test_group_welcome_submits_one_journaled_action(self):
         sent = []
+        tracked = []
+
+        def send_tracked(target, action, sender, **kwargs):
+            tracked.append((target, action, kwargs))
+            return sender(kwargs["delivery_id"])
+
         bot = SimpleNamespace(
             config=SimpleNamespace(group_welcome_msg="欢迎"),
             _config_ui_task_guard=lambda _category: ("group_welcome", 3),
+            _send_tracked_outbound=send_tracked,
         )
         chat = SimpleNamespace(
             who="测试群",
+            chat_type="group",
             SendActions=lambda actions, **kwargs: sent.append((actions, kwargs)) or True,
         )
         messages = (
@@ -105,8 +116,25 @@ class GroupWelcomeTests(unittest.TestCase):
                     self.assertEqual(actions, [{"type": "text", "text": "欢迎", "at": expected_name}])
                     self.assertEqual(kwargs["task_version"], 3)
                     self.assertTrue(kwargs["delivery_id"].startswith("group-welcome:"))
+                    self.assertEqual(kwargs["echo_delivery_ids"], (kwargs["delivery_id"],))
 
         self.assertEqual(len(sent), 2)
+        self.assertEqual([item[0] for item in tracked], ["测试群", "测试群"])
+        self.assertTrue(all(item[2]["chat_type"] == "group" for item in tracked))
+
+    def test_empty_group_welcome_is_silent(self):
+        bot = SimpleNamespace(
+            config=SimpleNamespace(group_welcome_msg=""),
+            _config_ui_task_guard=lambda _category: ("group_welcome", 3),
+            _send_tracked_outbound=lambda *_args, **_kwargs: self.fail("空欢迎语不应发送"),
+        )
+        chat = SimpleNamespace(who="测试群", chat_type="group")
+
+        self.assertTrue(listening.send_group_welcome_msg(
+            bot,
+            chat,
+            SimpleNamespace(content='"张三"加入群聊'),
+        ))
 
 
 if __name__ == "__main__":

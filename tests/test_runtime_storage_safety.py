@@ -135,7 +135,14 @@ os._exit(91)
                         dict(old_entry, event_id="new-message", content="新消息", original_content="新消息")
                     ])
 
-            self.assertEqual([item["content"] for item in manager.get_messages("张三", 10)], ["旧消息"])
+            self.assertEqual(
+                [item["content"] for item in manager.get_messages(
+                    "张三",
+                    10,
+                    chat_type="private",
+                )],
+                ["旧消息"],
+            )
 
     def test_ui_delivery_journal_freezes_interrupted_send_and_rejects_same_id(self):
         with tempfile.TemporaryDirectory() as tmp:

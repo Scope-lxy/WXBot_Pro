@@ -1,8 +1,10 @@
 import sqlite3
+import tempfile
 import threading
 import unittest
 from dataclasses import FrozenInstanceError
 
+from core.message_store import MessageStore
 from core.reply_delivery import (
     ClaimStatus,
     DeliveryStatus,
@@ -392,6 +394,29 @@ class ReplyDeliveryTests(unittest.TestCase):
         self.assertEqual(matched.action_id, "turn-1:0")
         self.assertIsNone(tracker.match("Alice", "text", "hello"))
 
+    def test_group_echo_tracker_matches_native_at_prefix_for_text_and_quote(self):
+        for message_type in ("text", "quote"):
+            with self.subTest(message_type=message_type):
+                tracker = ReplyEchoTracker()
+                tracker.reserve(
+                    "turn-1:0",
+                    "测试群",
+                    ReplyAction("quote", "机器人回复"),
+                    chat_type="group",
+                    at="群友A",
+                )
+                tracker.activate(("turn-1:0",))
+
+                matched = tracker.match(
+                    "测试群",
+                    message_type,
+                    "@群友A\u2005机器人回复",
+                    chat_type="group",
+                )
+
+                self.assertIsNotNone(matched)
+                self.assertEqual(matched.action_id, "turn-1:0")
+
     def test_echo_tracker_is_inactive_while_reserved(self):
         now = {"value": 10.0}
         tracker = ReplyEchoTracker(ttl=5, clock=lambda: now["value"])
@@ -419,6 +444,38 @@ class ReplyDeliveryTests(unittest.TestCase):
         now["value"] = 71.0
 
         self.assertIsNone(tracker.match("Alice", "text", "same"))
+
+    def test_text_echo_can_outlive_short_voice_grace_without_fuzzy_voice_match(self):
+        now = {"value": 10.0}
+        tracker = ReplyEchoTracker(
+            ttl=60,
+            text_ttl=300,
+            clock=lambda: now["value"],
+        )
+        tracker.reserve(
+            "text",
+            "Team",
+            ReplyAction("quote", "answer"),
+            chat_type="group",
+            at="A",
+        )
+        tracker.reserve(
+            "voice",
+            "Team",
+            ReplyAction("voice", "spoken answer"),
+            chat_type="group",
+        )
+        tracker.activate(("text", "voice"))
+        tracker.complete(("text", "voice"))
+
+        now["value"] = 71.0
+
+        self.assertIsNotNone(
+            tracker.match("Team", "text", "@A\u2005answer", chat_type="group")
+        )
+        self.assertIsNone(
+            tracker.match("Team", "voice", '语音3"秒', chat_type="group")
+        )
 
     def test_material_echo_can_match_its_exact_native_type(self):
         tracker = ReplyEchoTracker()
@@ -471,6 +528,218 @@ class ReplyDeliveryTests(unittest.TestCase):
         self.assertIsNotNone(
             tracker.match("同名会话", "text", "reply", chat_type="group")
         )
+
+    def test_persisted_echo_survives_restart_until_the_fact_is_recorded(self):
+        now = {"value": 10.0}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "echo_restart")
+            tracker = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+            tracker.reserve(
+                "turn-1:0",
+                "测试群",
+                ReplyAction("quote", "机器人回复"),
+                chat_type="group",
+                at="群友A",
+            )
+            tracker.activate(("turn-1:0",))
+            tracker.complete(("turn-1:0",))
+
+            now["value"] = 20.0
+            restarted = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+            matched = restarted.match(
+                "测试群",
+                "quote",
+                "@群友A\u2005机器人回复",
+                chat_type="group",
+            )
+            self.assertEqual(matched.action_id, "turn-1:0")
+            self.assertEqual(matched.content, "机器人回复")
+            self.assertEqual(store.reply_echo_expectations()[0]["state"], "matched")
+
+            now["value"] = 21.0
+            restarted_after_match = ReplyEchoTracker(
+                store=store,
+                ttl=60,
+                clock=lambda: now["value"],
+            )
+            self.assertIsNotNone(restarted_after_match.match(
+                "测试群",
+                "quote",
+                "@群友A\u2005机器人回复",
+                chat_type="group",
+            ))
+
+            store.record_inbound({
+                "conversation": "测试群",
+                "chat_type": "group",
+                "direction": "bot_echo",
+                "sender": "self",
+                "content": "机器人回复",
+                "original_content": "机器人回复",
+                "message_type": "quote",
+                "native_attr": "self",
+                "native_id": "native-echo",
+                "received_at": 21.0,
+                "stored_at": 21.0,
+                "source": "subwindow",
+                "source_batch": "restart",
+                "source_order": 0,
+                "related_delivery_id": "turn-1:0",
+            })
+            self.assertEqual(store.reply_echo_expectations(), [])
+
+            now["value"] = 22.0
+            after_record = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+            self.assertIsNone(after_record.match(
+                "测试群",
+                "quote",
+                "@群友A\u2005机器人回复",
+                chat_type="group",
+            ))
+
+    def test_reserved_echo_is_not_recovered_before_the_ui_handler_starts(self):
+        now = {"value": 10.0}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "echo_reserved")
+            tracker = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+            tracker.reserve("turn-1:0", "Alice", ReplyAction("text", "reply"))
+
+            now["value"] = 11.0
+            restarted = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+
+            self.assertIsNone(restarted.match("Alice", "text", "reply"))
+            self.assertEqual(store.reply_echo_expectations(), [])
+
+    def test_active_echo_gets_a_short_recovery_window_after_restart(self):
+        now = {"value": 10.0}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "echo_active")
+            tracker = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+            tracker.reserve("turn-1:0", "Alice", ReplyAction("text", "reply"))
+            tracker.activate(("turn-1:0",))
+
+            now["value"] = 20.0
+            restarted = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+
+            self.assertIsNotNone(restarted.match("Alice", "text", "reply"))
+
+    def test_persisted_echo_does_not_expire_during_a_slow_live_send(self):
+        now = {"value": 10.0}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "echo_slow_live_send")
+            tracker = ReplyEchoTracker(store=store, ttl=5, clock=lambda: now["value"])
+            tracker.reserve("turn-1:0", "Alice", ReplyAction("voice", "[语音]"))
+            tracker.activate(("turn-1:0",))
+
+            now["value"] = 41.0
+            self.assertIsNotNone(tracker.match("Alice", "voice", '语音31"秒'))
+            tracker.complete(("turn-1:0",))
+
+            now["value"] = 47.0
+            self.assertIsNone(tracker.match("Alice", "voice", '语音31"秒'))
+
+    def test_restart_does_not_revive_an_expired_completed_echo(self):
+        now = {"value": 10.0}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "echo_completed_expired")
+            tracker = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+            tracker.reserve("turn-1:0", "Alice", ReplyAction("text", "reply"))
+            tracker.activate(("turn-1:0",))
+            tracker.complete(("turn-1:0",))
+
+            now["value"] = 71.0
+            restarted = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+
+            self.assertIsNone(restarted.match("Alice", "text", "reply"))
+            self.assertEqual(store.reply_echo_expectations(), [])
+
+    def test_restart_does_not_revive_an_expired_active_echo(self):
+        now = {"value": 10.0}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "echo_active_expired")
+            tracker = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+            tracker.reserve("turn-1:0", "Alice", ReplyAction("text", "reply"))
+            tracker.activate(("turn-1:0",))
+
+            now["value"] = 71.0
+            restarted = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+
+            self.assertIsNone(restarted.match("Alice", "text", "reply"))
+            self.assertEqual(store.reply_echo_expectations(), [])
+
+    def test_persisted_match_survives_same_process_fact_write_retry(self):
+        now = {"value": 10.0}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "echo_same_process_retry")
+            tracker = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+            tracker.reserve(
+                "turn-1:0",
+                "测试群",
+                ReplyAction("quote", "机器人回复"),
+                chat_type="group",
+                at="群友A",
+            )
+            tracker.activate(("turn-1:0",))
+            tracker.complete(("turn-1:0",))
+
+            first = tracker.match(
+                "测试群",
+                "quote",
+                "@群友A\u2005机器人回复",
+                chat_type="group",
+            )
+            retry = tracker.match(
+                "测试群",
+                "quote",
+                "@群友A\u2005机器人回复",
+                chat_type="group",
+            )
+
+            self.assertEqual(first.action_id, "turn-1:0")
+            self.assertEqual(retry.action_id, "turn-1:0")
+            self.assertEqual(store.reply_echo_expectations()[0]["state"], "matched")
+
+            store.record_inbound({
+                "conversation": "测试群",
+                "chat_type": "group",
+                "direction": "bot_echo",
+                "sender": "self",
+                "content": "机器人回复",
+                "original_content": "机器人回复",
+                "message_type": "quote",
+                "native_attr": "self",
+                "native_id": "native-echo-retry",
+                "received_at": 11.0,
+                "stored_at": 11.0,
+                "source": "subwindow",
+                "source_batch": "same-process-retry",
+                "source_order": 0,
+                "related_delivery_id": "turn-1:0",
+            })
+            tracker.acknowledge("turn-1:0")
+
+            self.assertEqual(store.reply_echo_expectations(), [])
+            self.assertIsNone(tracker.match(
+                "测试群",
+                "quote",
+                "@群友A\u2005机器人回复",
+                chat_type="group",
+            ))
+
+    def test_persisted_echo_never_recovers_beyond_the_reply_ttl(self):
+        now = {"value": 10.0}
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "echo_expired")
+            tracker = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+            tracker.reserve("turn-1:0", "Alice", ReplyAction("text", "reply"))
+            tracker.activate(("turn-1:0",))
+            tracker.complete(("turn-1:0",))
+
+            now["value"] = 911.0
+            restarted = ReplyEchoTracker(store=store, ttl=60, clock=lambda: now["value"])
+
+            self.assertIsNone(restarted.match("Alice", "text", "reply"))
+            self.assertEqual(store.reply_echo_expectations(), [])
 
     def test_stop_preserves_a_turn_cancelled_during_prepare(self):
         store = FakeStore()

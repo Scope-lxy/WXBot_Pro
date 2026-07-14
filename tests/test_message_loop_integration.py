@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -19,7 +20,7 @@ from core.reply_delivery import (
     ReplyEchoTracker,
     ReplyTurn,
 )
-from core.wechat_ui_runtime import WeChatUIRuntime
+from core.wechat_ui_runtime import MessageLocateError, WeChatUIRuntime
 from wxbot_core import WXBot
 
 
@@ -74,6 +75,427 @@ def enqueue_friend(bot, content, native_id):
 
 
 class MessageLoopIntegrationTests(unittest.TestCase):
+    def test_ai_history_stops_before_current_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+
+            def record(native_id, content):
+                return bot._message_store.record_inbound({
+                    "conversation": "Team",
+                    "chat_type": "group",
+                    "direction": "friend",
+                    "sender": "Bob",
+                    "content": content,
+                    "original_content": content,
+                    "message_type": "text",
+                    "native_attr": "group",
+                    "native_id": native_id,
+                    "received_at": time.time(),
+                    "source": "test",
+                    "source_batch": native_id,
+                    "source_order": 0,
+                })
+
+            record("before", "earlier context")
+            current = record("current", "current question")
+            record("future", "later correction")
+
+            history = bot._load_chat_history(
+                "Team",
+                20,
+                chat_type="group",
+                event_ids=(current["event_id"],),
+            )
+
+            self.assertEqual([item["content"] for item in history], ["earlier context"])
+
+    def test_group_visual_note_remains_in_model_history_without_pending_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            bot.config.memory_context_count = 10
+            bot.config.memory_max_count = 100
+            bot._message_store.record_inbound({
+                "conversation": "Team",
+                "chat_type": "group",
+                "direction": "friend",
+                "sender": "群友A",
+                "content": "[图片]",
+                "original_content": r"C:\tmp\car.png",
+                "message_type": "image",
+                "native_attr": "group",
+                "native_id": "group-image",
+                "received_at": time.time(),
+                "source": "test",
+                "source_batch": "group-image",
+                "source_order": 0,
+                "metadata": {"image_paths": [r"C:\tmp\car.png"]},
+            })
+            self.assertTrue(bot._message_store.attach_visual_notes(
+                "Team",
+                [r"C:\tmp\car.png"],
+                [
+                    "图片概览：一辆银色汽车。\n"
+                    "可见文字：未提取到明确文字。\n"
+                    "关键细节：车身为银色。\n"
+                    "不确定项：车型无法确认。"
+                ],
+                chat_type="group",
+            ))
+            current = bot._message_store.record_inbound({
+                "conversation": "Team",
+                "chat_type": "group",
+                "direction": "friend",
+                "sender": "群友B",
+                "content": "刚才那辆车是什么颜色？",
+                "original_content": "刚才那辆车是什么颜色？",
+                "message_type": "text",
+                "native_attr": "group",
+                "native_id": "group-question-after-image",
+                "received_at": time.time() + 1,
+                "source": "test",
+                "source_batch": "group-question-after-image",
+                "source_order": 0,
+            })
+
+            history = bot._get_model_context_history(
+                "Team",
+                event_ids=(current["event_id"],),
+                chat_type="group",
+            )
+
+            self.assertEqual(len(history), 1)
+            self.assertIn("群友A: [图片]", history[0]["content"])
+            self.assertIn("一辆银色汽车", history[0]["content"])
+
+    def test_group_pending_image_context_restores_from_sqlite_after_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "group-image.png"
+            image_path.write_bytes(b"image")
+            bot = make_delivery_bot(tmp)
+            received_at = time.time() - 60
+            bot._message_store.record_inbound({
+                "conversation": "Team",
+                "chat_type": "group",
+                "direction": "friend",
+                "sender": "群友A",
+                "content": "[图片]",
+                "original_content": str(image_path),
+                "message_type": "image",
+                "native_attr": "group",
+                "native_id": "restart-group-image",
+                "received_at": received_at,
+                "source": "test",
+                "source_batch": "restart-group-image",
+                "source_order": 0,
+                "metadata": {"image_paths": [str(image_path)]},
+            })
+            bot._chat_merge_lock = threading.Lock()
+            bot._pending_visual_contexts = {}
+
+            restored = bot._get_pending_visual_context("Team", chat_type="group")
+
+            self.assertEqual(restored["image_paths"], [str(image_path)])
+            self.assertEqual(restored["image_senders"], ["群友A"])
+            self.assertAlmostEqual(
+                restored["expires_at"],
+                received_at + 7200,
+                delta=0.1,
+            )
+
+            bot._pending_visual_contexts = {}
+            with mock.patch("wxbot_core.time.time", return_value=received_at + 7201):
+                self.assertIsNone(
+                    bot._get_pending_visual_context("Team", chat_type="group")
+                )
+
+    def test_first_group_image_is_not_duplicated_by_sqlite_restore_during_append(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "first-group-image.png"
+            image_path.write_bytes(b"image")
+            bot = make_delivery_bot(tmp)
+            bot._message_store.record_inbound({
+                "conversation": "Team",
+                "chat_type": "group",
+                "direction": "friend",
+                "sender": "群友A",
+                "content": "[图片]",
+                "original_content": str(image_path),
+                "message_type": "image",
+                "native_attr": "group",
+                "native_id": "first-group-image",
+                "received_at": time.time(),
+                "source": "test",
+                "source_batch": "first-group-image",
+                "source_order": 0,
+                "metadata": {"image_paths": [str(image_path)]},
+            })
+            bot._chat_merge_lock = threading.Lock()
+            bot._pending_visual_contexts = {}
+
+            context = bot._set_pending_visual_context(
+                "Team",
+                [str(image_path)],
+                chat_type="group",
+                senders=["群友A"],
+                append=True,
+            )
+
+            self.assertEqual(context["image_paths"], [str(image_path)])
+            self.assertEqual(context["image_senders"], ["群友A"])
+
+    def test_group_restart_does_not_merge_analyzed_old_batch_into_new_image(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old_path = Path(tmp) / "old.png"
+            new_path = Path(tmp) / "new.png"
+            old_path.write_bytes(b"old")
+            new_path.write_bytes(b"new")
+            bot = make_delivery_bot(tmp)
+            now = time.time()
+            bot._message_store.record_inbound({
+                "conversation": "Team",
+                "chat_type": "group",
+                "direction": "friend",
+                "sender": "群友A",
+                "content": "[图片]",
+                "original_content": str(old_path),
+                "message_type": "image",
+                "native_attr": "group",
+                "native_id": "old-group-image",
+                "received_at": now - 40,
+                "source": "test",
+                "source_batch": "old-group-image",
+                "source_order": 0,
+                "metadata": {
+                    "image_paths": [str(old_path)],
+                    "visual_notes": ["图片概览：旧图片。"],
+                },
+            })
+            bot._message_store.record_inbound({
+                "conversation": "Team",
+                "chat_type": "group",
+                "direction": "friend",
+                "sender": "群友B",
+                "content": "[图片]",
+                "original_content": str(new_path),
+                "message_type": "image",
+                "native_attr": "group",
+                "native_id": "new-group-image",
+                "received_at": now - 20,
+                "source": "test",
+                "source_batch": "new-group-image",
+                "source_order": 0,
+                "metadata": {"image_paths": [str(new_path)]},
+            })
+            bot._chat_merge_lock = threading.Lock()
+            bot._pending_visual_contexts = {}
+
+            restored = bot._get_pending_visual_context("Team", chat_type="group")
+
+            self.assertEqual(restored["image_paths"], [str(new_path)])
+            self.assertEqual(restored["image_senders"], ["群友B"])
+
+    def test_runtime_restart_recognizes_late_group_echo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = WXBot.__new__(WXBot)
+            first.config = SimpleNamespace(DATA_DIR=tmp)
+            first._ui_owner = None
+            first._initialize_message_runtime("account")
+            first._reply_echo_tracker.reserve(
+                "late-group-echo",
+                "Team",
+                ReplyAction("text", "answer"),
+                chat_type="group",
+                confirmable=False,
+            )
+            first._reply_echo_tracker.activate(("late-group-echo",))
+
+            restarted = WXBot.__new__(WXBot)
+            restarted.config = SimpleNamespace(DATA_DIR=tmp)
+            restarted._ui_owner = None
+            restarted._initialize_message_runtime("account")
+            echo = MessageEnvelope(
+                id="late-native",
+                type="text",
+                attr="self",
+                sender="self",
+                content="answer",
+                _wxbot_received_at=time.time(),
+            )
+
+            self.assertTrue(
+                restarted._persist_ui_message(ConversationRef("Team", "group"), echo)
+            )
+
+            history = restarted._message_store.history("Team", 10, chat_type="group")
+            self.assertEqual([(item["direction"], item["content"]) for item in history], [
+                ("bot_echo", "answer"),
+            ])
+            self.assertEqual(restarted._message_store.conversation_version("Team", chat_type="group"), 0)
+            self.assertEqual(restarted._message_store.reply_echo_expectations(), [])
+
+    def test_group_quote_at_callback_is_one_echo_and_does_not_advance_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            bot._reply_echo_tracker = ReplyEchoTracker(store=bot._message_store)
+            conversation = ConversationRef("Team", "group")
+            inbound = MessageEnvelope(
+                id="group-question",
+                type="text",
+                attr="group",
+                sender="群友A",
+                content="@机器人 问题",
+                original_content="@机器人 问题",
+                _wxbot_received_at=time.time(),
+            )
+            self.assertTrue(bot._persist_ui_message(conversation, inbound))
+            version_before_echo = bot._message_store.conversation_version(
+                "Team",
+                chat_type="group",
+            )
+
+            def quote_message(_chat, _message, _content, **kwargs):
+                action_ids = tuple(kwargs.get("echo_delivery_ids") or ())
+                bot._reply_echo_tracker.activate(action_ids)
+                bot._reply_echo_tracker.complete(action_ids)
+                return True
+
+            bot._ui_quote_message = quote_message
+            chat = FakeChat("Team", lambda **_kwargs: True, chat_type="group")
+            delivery = bot._deliver_reply_actions(
+                chat,
+                inbound,
+                (ReplyAction("quote", "机器人回复"),),
+                chat_type="group",
+                at_first="群友A",
+            )
+            self.assertEqual(delivery.status, DeliveryStatus.DONE)
+
+            echo = MessageEnvelope(
+                id="group-quote-echo",
+                type="text",
+                attr="self",
+                sender="self",
+                content="@群友A\u2005机器人回复",
+                original_content="@群友A\u2005机器人回复",
+                _wxbot_received_at=time.time(),
+            )
+            self.assertFalse(bot._persist_ui_message(conversation, echo))
+
+            history = bot._message_store.history("Team", 10, chat_type="group")
+            self.assertEqual(
+                [(item["direction"], item["content"]) for item in history],
+                [("friend", "@机器人 问题"), ("bot_echo", "机器人回复")],
+            )
+            self.assertEqual(
+                bot._message_store.conversation_version("Team", chat_type="group"),
+                version_before_echo,
+            )
+            self.assertEqual(bot._message_store.reply_echo_expectations(), [])
+
+    def test_group_version_zero_is_not_replaced_after_manual_takeover(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            received_at = time.time()
+            inbound = bot._message_store.record_inbound({
+                "conversation": "Team",
+                "chat_type": "group",
+                "direction": "friend",
+                "sender": "Bob",
+                "content": "question",
+                "original_content": "question",
+                "message_type": "text",
+                "native_attr": "group",
+                "native_id": "group-zero-1",
+                "received_at": received_at,
+                "source": "test",
+                "source_batch": "group-zero",
+                "source_order": 0,
+            })
+            message = MessageEnvelope(content="question", sender="Bob", attr="group")
+            message._wxbot_event_id = inbound["event_id"]
+            message._wxbot_event_ids = (inbound["event_id"],)
+            message._wxbot_event_version = 0
+            message._wxbot_reply_expires_at = received_at + 600
+            bot._message_store.record_inbound({
+                "conversation": "Team",
+                "chat_type": "group",
+                "direction": "manual_self",
+                "sender": "self",
+                "content": "我来处理",
+                "original_content": "我来处理",
+                "message_type": "text",
+                "native_attr": "self",
+                "native_id": "group-manual-1",
+                "received_at": received_at + 1,
+                "source": "test",
+                "source_batch": "group-manual",
+                "source_order": 0,
+            })
+
+            turn_id = bot._ensure_reply_job(
+                FakeChat("Team", lambda **_kwargs: True, chat_type="group"),
+                message,
+                chat_type="group",
+                route_source="group_ai",
+            )
+
+            self.assertEqual(bot._message_store.get_reply_job(turn_id)["expected_version"], 0)
+            self.assertEqual(
+                bot._message_store.mark_reply_job_generating(turn_id),
+                "stale",
+            )
+
+    def test_no_reply_state_write_propagates_sqlite_busy(self):
+        bot = WXBot.__new__(WXBot)
+        bot._message_store = SimpleNamespace(
+            mark_inbound_events=lambda *_args: (_ for _ in ()).throw(
+                sqlite3.OperationalError("database is locked")
+            )
+        )
+        message = SimpleNamespace(_wxbot_event_ids=("event-1",))
+
+        with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+            bot._mark_inbound_no_reply(message)
+
+    def test_stop_before_group_generation_cancels_event_without_creating_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            received_at = time.time()
+            stored = bot._message_store.record_inbound({
+                "conversation": "Team",
+                "chat_type": "group",
+                "direction": "friend",
+                "sender": "Bob",
+                "content": "question",
+                "original_content": "question",
+                "message_type": "text",
+                "native_attr": "group",
+                "native_id": "group-stop-1",
+                "received_at": received_at,
+                "source": "test",
+                "source_batch": "group-stop",
+                "source_order": 0,
+            })
+            message = MessageEnvelope(content="question", sender="Bob", attr="group")
+            message._wxbot_event_id = stored["event_id"]
+            message._wxbot_event_ids = (stored["event_id"],)
+            message._wxbot_event_version = 0
+            message._wxbot_reply_expires_at = received_at + 600
+            bot._stop_requested.set()
+
+            result = bot._reply_job_can_generate(
+                FakeChat("Team", lambda **_kwargs: True, chat_type="group"),
+                message,
+                chat_type="group",
+                route_source="group_ai",
+            )
+
+            self.assertFalse(result)
+            self.assertEqual(
+                bot._message_store.get_event(stored["event_id"])["processing_state"],
+                "cancelled",
+            )
+
     def test_raw_friend_chat_reaches_private_reply_delivery_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_delivery_bot(tmp)
@@ -457,18 +879,10 @@ class MessageLoopIntegrationTests(unittest.TestCase):
                 "cancelled",
             )
 
-    def test_group_sqlite_busy_failure_uses_the_same_ingress_retry(self):
+    def test_group_sqlite_busy_failure_retries_inside_group_pipeline(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_delivery_bot(tmp)
-            bot._ui_ingress_stop = threading.Event()
-            bot._ui_owner = SimpleNamespace(wait_for_contact_idle=lambda: True)
-            scheduled = []
             cancelled = []
-            bot._schedule_ui_ingress_retry = (
-                lambda conversation, message, delay: scheduled.append(
-                    (conversation, message, delay)
-                )
-            )
             bot._cancel_failed_reply_attempt = (
                 lambda *_args: cancelled.append(True) or ""
             )
@@ -484,19 +898,24 @@ class MessageLoopIntegrationTests(unittest.TestCase):
                 _wxbot_received_at=time.time(),
             )
             conversation = ConversationRef("Team", "group")
-            bot._enqueue_ui_message(conversation, message)
-            worker = threading.Thread(target=bot._run_ui_ingress)
-            worker.start()
-            try:
-                bot._ui_ingress_queue.join()
-            finally:
-                bot._ui_ingress_stop.set()
-                worker.join(1)
+            bot._persist_ui_message(conversation, message)
+            with mock.patch.object(bot, "_start_group_message_worker_locked"):
+                bot._enqueue_group_message_for_business(conversation, message)
 
-            self.assertEqual(len(scheduled), 1)
-            self.assertEqual(scheduled[0][0], conversation)
-            self.assertIs(scheduled[0][1], message)
-            self.assertEqual(scheduled[0][2], 1.0)
+            timer = mock.Mock()
+            with mock.patch("wxbot_core.threading.Timer", return_value=timer) as timer_type:
+                self.assertTrue(bot._run_group_message_pipeline_worker(conversation))
+
+            timer_type.assert_called_once_with(
+                1.0,
+                bot._resume_group_message_pipeline,
+                args=(conversation,),
+            )
+            timer.start.assert_called_once_with()
+            pipeline = bot._group_message_pipelines[conversation.who]
+            self.assertIs(pipeline["retry_timer"], timer)
+            self.assertFalse(pipeline["worker_running"])
+            self.assertIs(pipeline["messages"][0], message)
             self.assertEqual(cancelled, [])
 
     def test_empty_group_reply_is_silent_and_cancels_the_job(self):
@@ -721,6 +1140,43 @@ class MessageLoopIntegrationTests(unittest.TestCase):
 
             self.assertEqual(caught.exception.status, DeliveryStatus.EXPIRED)
 
+    def test_quote_location_failure_falls_back_to_plain_text_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            inbound = enqueue_friend(bot, "question", "friend-quote-fallback")
+            action = ReplyAction("quote", "answer")
+            turn_id = bot._ensure_reply_job(
+                FakeChat("Alice", lambda **_kwargs: True),
+                inbound,
+                route_source="private_ai",
+            )
+            from core.reply_delivery import ReplyTurn
+
+            turn = ReplyTurn(
+                turn_id=turn_id,
+                conversation="Alice",
+                expected_version=inbound._wxbot_event_version,
+                expires_at=inbound._wxbot_reply_expires_at,
+                event_ids=inbound._wxbot_event_ids,
+                actions=(action,),
+            )
+            sent = []
+            chat = FakeChat(
+                "Alice",
+                lambda msg=None, at=None, **_kwargs: sent.append((msg, at)) or True,
+            )
+            bot._ui_quote_message = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                MessageLocateError("original message is no longer visible")
+            )
+            context = {
+                "chat": chat,
+                "message": inbound,
+                "at_first": "Bob",
+            }
+
+            self.assertTrue(bot._send_reply_delivery(turn, action, f"{turn_id}:0", context))
+            self.assertEqual(sent, [("answer", "Bob")])
+
     def test_owner_activates_then_completes_echo_around_the_handler(self):
         clock = {"now": 0.0}
         tracker = ReplyEchoTracker(ttl=5, clock=lambda: clock["now"])
@@ -789,6 +1245,7 @@ class MessageLoopIntegrationTests(unittest.TestCase):
 
         results = runtime.send_actions({
             "conversation": "Alice",
+            "chat_type": "private",
             "actions": [
                 {"type": "file", "path": "a.txt", "echo_delivery_id": "batch:0"},
                 {"type": "file", "path": "b.txt", "echo_delivery_id": "batch:1"},
@@ -957,6 +1414,26 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             owner.stop()
 
         self.assertEqual(wxauto_calls, [])
+
+    def test_group_voice_snapshot_lookup_keeps_group_identity(self):
+        bot = WXBot.__new__(WXBot)
+        calls = []
+        group_chat = SimpleNamespace(
+            who="同名会话",
+            chat_type="group",
+            GetAllMessage=lambda: [],
+        )
+        bot.wx = SimpleNamespace(
+            GetSubWindow=lambda nickname, chat_type: calls.append(
+                (nickname, chat_type)
+            ) or group_chat,
+        )
+
+        self.assertEqual(
+            bot._read_pending_voice_snapshot(ConversationRef("同名会话", "group")),
+            [],
+        )
+        self.assertEqual(calls, [("同名会话", "group")])
 
     def test_group_prepare_keeps_group_scope_after_facade_lookup(self):
         with tempfile.TemporaryDirectory() as tmp:

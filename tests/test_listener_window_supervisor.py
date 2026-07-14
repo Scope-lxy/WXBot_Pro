@@ -10,6 +10,7 @@ def test_window_supervisor_retries_without_message_payloads():
     assert len(claimed) == 1
     assert set(claimed[0]) == {
         "conversation",
+        "chat_type",
         "first_failed_at",
         "next_retry_at",
         "attempts",
@@ -46,3 +47,18 @@ def test_window_supervisor_success_removes_retry_state():
 
     assert supervisor.succeeded("张三") is True
     assert supervisor.snapshot() == []
+
+
+def test_window_supervisor_isolates_same_named_private_and_group_chats():
+    supervisor = ListenerWindowSupervisor(clock=lambda: 0.0)
+    supervisor.request("同名会话", chat_type="private")
+    supervisor.request("同名会话", chat_type="group")
+
+    claimed = supervisor.claim_due(limit=2, now=0)
+
+    assert [(item["chat_type"], item["conversation"]) for item in claimed] == [
+        ("group", "同名会话"),
+        ("private", "同名会话"),
+    ]
+    assert supervisor.succeeded("同名会话", chat_type="group") is True
+    assert supervisor.contains("同名会话", chat_type="private") is True

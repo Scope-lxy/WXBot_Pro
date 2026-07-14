@@ -2,6 +2,7 @@
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -45,6 +46,45 @@ MESSAGE_TYPE_PREFIX_PATTERNS = {
 }
 VIDEO_DURATION_SUFFIX_RE = re.compile(r'\s*(\d+:\d+)\s*$')
 LOCAL_PATH_RE = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\|/|file://)', re.IGNORECASE)
+
+
+def _group_mention_spans(content, at_marker):
+    content = str(content or "")
+    at_marker = str(at_marker or "")
+    if not at_marker:
+        return []
+    spans = []
+    start = 0
+    while True:
+        index = content.find(at_marker, start)
+        if index < 0:
+            return spans
+        end = index + len(at_marker)
+        boundary = end == len(content)
+        if not boundary:
+            next_char = content[end]
+            boundary = next_char.isspace() or unicodedata.category(next_char)[0] in {"P", "Z"}
+        if boundary:
+            spans.append((index, end))
+        start = end
+
+
+def contains_group_mention(content, at_marker):
+    return bool(_group_mention_spans(content, at_marker))
+
+
+def strip_group_mention(content, at_marker):
+    content = str(content or "")
+    spans = _group_mention_spans(content, at_marker)
+    if not spans:
+        return content.strip()
+    parts = []
+    cursor = 0
+    for start, end in spans:
+        parts.append(content[cursor:start])
+        cursor = end
+    parts.append(content[cursor:])
+    return "".join(parts).strip()
 
 
 def _plain_scalar(value: Any, default: Any = "") -> Any:

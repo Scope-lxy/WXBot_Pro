@@ -115,6 +115,69 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertIn("张三", bot._private_message_pipelines)
         self.assertEqual(store.get_event(msg._wxbot_event_id)["direction"], "bot_echo")
 
+    def test_group_quote_echo_with_at_updates_one_history_event_without_manual_takeover(self):
+        bot = WXBot.__new__(WXBot)
+        store = self._attach_message_store(bot)
+        store.append_confirmed_outbound_once(
+            "turn-1:0",
+            "测试群",
+            content="机器人回复",
+            sent_at=100,
+            chat_type="group",
+        )
+        bot._reply_echo_tracker.reserve(
+            "turn-1:0",
+            "测试群",
+            ReplyAction("quote", "机器人回复"),
+            confirmable=False,
+            chat_type="group",
+            at="群友A",
+        )
+        bot._reply_echo_tracker.activate(("turn-1:0",))
+        msg = MessageEnvelope(
+            attr="self",
+            sender="self",
+            content="@群友A\u2005机器人回复",
+            type="quote",
+            id="native-echo-1",
+        )
+
+        self.assertFalse(
+            bot._persist_ui_message(ConversationRef("测试群", "group"), msg)
+        )
+
+        history = store.history("测试群", 10, chat_type="group")
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["direction"], "bot_echo")
+        self.assertEqual(history[0]["content"], "机器人回复")
+        self.assertEqual(store.conversation_version("测试群", chat_type="group"), 0)
+
+    def test_group_message_log_uses_chat_type_even_when_native_attr_is_friend(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            memory_switch=False,
+            group_welcome=False,
+            group=["测试群"],
+            cmd="admin",
+        )
+        bot.memory_manager = None
+        bot._handle_material_source_message = lambda *_args: False
+        bot._mark_chat_memory_dirty = lambda *_args: False
+        bot.process_message = lambda *_args: True
+        bot.callback_is_die = False
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_stop_requested = lambda: False
+        msg = MessageEnvelope(attr="friend", sender="群友A", content="你好", type="text")
+        msg._wxbot_inbound_direction = "friend"
+        chat = SimpleNamespace(who="测试群", chat_type="group")
+
+        with mock.patch("wxbot_core.log") as log_mock:
+            bot.message_handle_callback(msg, chat)
+
+        messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
+        self.assertTrue(any("群聊 测试群：收到文本消息" in item for item in messages))
+        self.assertFalse(any("私聊 测试群" in item for item in messages))
+
     def test_private_voice_echo_self_callback_does_not_interrupt_ai_reply(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
@@ -799,31 +862,41 @@ class MemoryWriteCallbackTests(unittest.TestCase):
                 "metadata": {},
             }])
 
-            self.assertEqual(manager.list_chat_names(), ["张三"])
+            self.assertEqual(manager.list_chat_names(chat_type="private"), ["张三"])
 
-    def test_startup_memory_compensation_marks_existing_chats_only(self):
+    def test_startup_memory_compensation_marks_all_existing_private_chats(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(memory_switch=True, group=["群聊"])
-        bot.memory_manager = SimpleNamespace(list_chat_names=lambda: ["张三", "群聊", ""])
+        listed_types = []
+        bot.memory_manager = SimpleNamespace(
+            list_chat_names=lambda *, chat_type: listed_types.append(chat_type) or ["张三", "群聊", ""]
+        )
         marked = []
         bot._mark_chat_memory_dirty = lambda chat, msg: marked.append((chat.who, msg.attr)) or True
 
         with mock.patch("wxbot_core.log") as fake_log:
             count = bot._enqueue_existing_chat_memory_checks()
 
-        self.assertEqual(count, 1)
-        self.assertEqual(marked, [("张三", "friend")])
+        self.assertEqual(count, 2)
+        self.assertEqual(marked, [("张三", "friend"), ("群聊", "friend")])
+        self.assertEqual(listed_types, ["private"])
         self.assertFalse(fake_log.called)
 
-    def test_memory_update_logs_success_without_api_text(self):
+    def test_private_memory_update_uses_chat_type_even_when_name_is_in_group_config(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             memory_switch=True,
             memory_max_count=5000,
-            group=[],
+            group=["B-岁月静好3"],
             cmd="admin",
         )
-        bot.memory_manager = SimpleNamespace(get_messages=lambda *_args, **_kwargs: [{"content": "hello"}])
+        read_calls = []
+        bot.memory_manager = SimpleNamespace(
+            get_messages=lambda name, count, *, chat_type: (
+                read_calls.append((name, count, chat_type))
+                or [{"content": "hello"}]
+            )
+        )
         bot._should_skip_message_memory = lambda chat, msg: False
         bot._init_prompt_system = lambda: SimpleNamespace(
             auto_memory_enabled_for=lambda *_args, **_kwargs: True,
@@ -837,6 +910,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             result = bot._maybe_update_chat_memory(SimpleNamespace(who="B-岁月静好3", chat_type="private"), SimpleNamespace(attr="friend"))
 
         self.assertTrue(result)
+        self.assertEqual(read_calls, [("B-岁月静好3", 5000, "private")])
         self.assertTrue(any(level == "INFO" and "会话记忆已更新：B-岁月静好3" == message for level, message in logs))
         self.assertFalse(any("API返回成功" in message for _level, message in logs))
 

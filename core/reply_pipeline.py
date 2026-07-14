@@ -18,6 +18,7 @@ class ImageReplyRequest:
     final_api_supports_vision: bool
     image_path: str = ""
     image_paths: Optional[list[str]] = None
+    image_senders: Optional[list[str]] = None
     visual_notes: Optional[list[str]] = None
     on_visual_notes: Optional[Callable[[list[str], list[str]], None]] = None
     final_api_index: int = 0
@@ -66,17 +67,27 @@ class ImageReplyPipeline:
                 normalized.append(None)
         return normalized
 
+    @staticmethod
+    def _normalize_image_senders(request: ImageReplyRequest, image_paths):
+        senders = list(request.image_senders or [])
+        return [
+            str(senders[index] or "").strip() if index < len(senders) else ""
+            for index, _path in enumerate(image_paths)
+        ]
+
     def _reply_with_direct_vision(self, request: ImageReplyRequest):
         scene = "群聊" if request.chat_type == "group" else "私聊"
         self.log_info(
             f"{scene} {request.chat_name}：AI 正在识别图片并生成回复"
         )
         image_paths = self._resolved_image_paths(request)
+        image_senders = self._normalize_image_senders(request, image_paths)
         message = self.user_message_builder(
             request.chat_type,
             sender=request.sender,
             attached_text=request.attached_text,
             image_count=len(image_paths),
+            image_senders=image_senders,
         )
         prompt = self.prompt_builder(
             request.chat_name,
@@ -102,6 +113,7 @@ class ImageReplyPipeline:
             f"{scene} {request.chat_name}：AI 正在先识别图片内容，再生成回复"
         )
         image_paths = self._resolved_image_paths(request)
+        image_senders = self._normalize_image_senders(request, image_paths)
         normalized_notes = self._normalize_visual_notes(request, image_paths)
         notes = []
         for index, image_path in enumerate(image_paths):
@@ -111,7 +123,7 @@ class ImageReplyPipeline:
                     image_path=image_path,
                     recognition_api=request.recognition_api,
                     chat_type=request.chat_type,
-                    sender=request.sender,
+                    sender=image_senders[index] or request.sender,
                     # Visual notes are saved as image summaries, so keep them image-only.
                     attached_text="",
                 )
@@ -123,6 +135,7 @@ class ImageReplyPipeline:
             sender=request.sender,
             attached_text=request.attached_text,
             image_count=len(image_paths),
+            image_senders=image_senders,
             visual_notes=[note.render() for note in notes],
         )
         image_parse_block = self.image_parse_block_builder()

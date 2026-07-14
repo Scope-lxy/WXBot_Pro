@@ -149,7 +149,7 @@ class DeliveryNotStarted(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class ExpectedReplyEcho:
-    """One short-lived outbound echo expectation kept only in memory."""
+    """One short-lived outbound echo expectation."""
 
     action_id: str
     conversation: str
@@ -160,17 +160,103 @@ class ExpectedReplyEcho:
     confirmable: bool = True
     matchable: bool = False
     message_types: tuple[str, ...] = ()
+    at: str = ""
+    matched: bool = False
+
+
+class ReplyEchoStore(Protocol):
+    def reserve_reply_echo(
+        self,
+        action_id: str,
+        *,
+        conversation: str,
+        chat_type: str,
+        kind: str,
+        content: str,
+        confirmable: bool,
+        message_types: tuple[str, ...],
+        at: str,
+        now: float,
+    ) -> bool: ...
+
+    def activate_reply_echoes(
+        self,
+        action_ids,
+        *,
+        expires_at: float,
+        now: float,
+    ) -> int: ...
+
+    def complete_reply_echoes(
+        self,
+        action_ids,
+        *,
+        expires_at: float,
+        now: float,
+    ) -> int: ...
+
+    def mark_reply_echo_matched(
+        self,
+        action_id: str,
+        *,
+        expires_at: float,
+        now: float,
+    ) -> bool: ...
+
+    def discard_reply_echoes(self, action_ids) -> int: ...
+
+    def prune_reply_echoes(self, *, now: float) -> int: ...
+
+    def recover_reply_echoes(
+        self,
+        *,
+        ttl: float,
+        limit: int,
+        now: float,
+    ) -> list[dict[str, Any]]: ...
 
 
 class ReplyEchoTracker:
     """Correlate wxautox self callbacks with a claimed reply bubble."""
 
-    def __init__(self, *, ttl=60.0, max_items=512, clock=time.time) -> None:
+    def __init__(
+        self,
+        *,
+        ttl=60.0,
+        text_ttl=None,
+        max_items=512,
+        clock=time.time,
+        store: ReplyEchoStore | None = None,
+    ) -> None:
         self._ttl = max(1.0, float(ttl))
+        self._text_ttl = self._ttl if text_ttl is None else max(self._ttl, float(text_ttl))
         self._max_items = max(1, int(max_items))
         self._clock = clock
+        self._store = store
         self._items: OrderedDict[str, ExpectedReplyEcho] = OrderedDict()
         self._lock = threading.Lock()
+        if self._store is not None:
+            recovered = self._store.recover_reply_echoes(
+                ttl=max(self._ttl, self._text_ttl),
+                limit=self._max_items,
+                now=float(self._clock()),
+            )
+            for item in recovered:
+                expected = ExpectedReplyEcho(
+                    action_id=str(item.get("action_id") or "").strip(),
+                    conversation=str(item.get("conversation") or "").strip(),
+                    chat_type=str(item.get("chat_type") or "private").strip().lower(),
+                    kind=ReplyKind(str(item.get("kind") or "text")),
+                    content=str(item.get("content") or "").strip(),
+                    expires_at=float(item.get("expires_at") or 0.0),
+                    confirmable=bool(item.get("confirmable", True)),
+                    matchable=True,
+                    message_types=tuple(item.get("message_types") or ()),
+                    at=str(item.get("at") or "").strip(),
+                    matched=str(item.get("state") or "") == "matched",
+                )
+                if expected.action_id and expected.conversation and expected.content:
+                    self._items[expected.action_id] = expected
 
     def reserve(
         self,
@@ -181,6 +267,7 @@ class ReplyEchoTracker:
         confirmable=True,
         chat_type="private",
         message_types=(),
+        at="",
     ) -> None:
         now = float(self._clock())
         expected = ExpectedReplyEcho(
@@ -191,6 +278,7 @@ class ReplyEchoTracker:
             content=str(action.content or "").strip(),
             expires_at=0.0,
             confirmable=bool(confirmable),
+            at=str(at or "").strip().lstrip("@").strip(),
             message_types=tuple(
                 dict.fromkeys(
                     str(item or "").strip().lower()
@@ -203,10 +291,32 @@ class ReplyEchoTracker:
             raise ValueError("echo action_id and conversation are required")
         with self._lock:
             self._prune_locked(now)
+            existing = self._items.get(expected.action_id)
+            if existing is not None:
+                if not self._same_identity(existing, expected):
+                    raise ValueError(
+                        f"echo action_id {expected.action_id} was reused for different content"
+                    )
+                return
+            if self._store is not None:
+                self._store.reserve_reply_echo(
+                    expected.action_id,
+                    conversation=expected.conversation,
+                    chat_type=expected.chat_type,
+                    kind=expected.kind.value,
+                    content=expected.content,
+                    confirmable=expected.confirmable,
+                    message_types=expected.message_types,
+                    at=expected.at,
+                    now=now,
+                )
             self._items[expected.action_id] = expected
             self._items.move_to_end(expected.action_id)
             while len(self._items) > self._max_items:
-                self._items.popitem(last=False)
+                action_id, _discarded = next(iter(self._items.items()))
+                if self._store is not None:
+                    self._store.discard_reply_echoes((action_id,))
+                self._items.pop(action_id, None)
 
     def match(
         self,
@@ -231,26 +341,50 @@ class ReplyEchoTracker:
                     continue
                 if not self._matches(expected, message_type, content):
                     continue
-                if content and content == expected.content:
-                    self._items.pop(action_id, None)
-                    return expected
+                if (
+                    content
+                    and self._normalize_echo_text(content)
+                    == self._normalize_echo_text(expected.content)
+                ):
+                    return self._mark_matched_locked(action_id, expected, now)
                 if fallback is None:
                     fallback = (action_id, expected)
             if fallback is not None:
                 action_id, expected = fallback
-                self._items.pop(action_id, None)
-                return expected
+                return self._mark_matched_locked(action_id, expected, now)
         return None
 
     def discard(self, action_id: str) -> None:
+        action_id = str(action_id or "").strip()
         with self._lock:
-            self._items.pop(str(action_id or "").strip(), None)
+            if self._store is not None:
+                self._store.discard_reply_echoes((action_id,))
+            self._items.pop(action_id, None)
+
+    def acknowledge(self, action_id: str) -> None:
+        """Forget one matched echo after its chat fact committed."""
+
+        action_id = str(action_id or "").strip()
+        with self._lock:
+            self._items.pop(action_id, None)
 
     def activate(self, action_ids) -> None:
         now = float(self._clock())
         with self._lock:
-            for action_id in action_ids or ():
-                key = str(action_id or "").strip()
+            keys = [
+                str(action_id or "").strip()
+                for action_id in action_ids or ()
+                if str(action_id or "").strip() in self._items
+            ]
+            if self._store is not None and keys:
+                for ttl in {self._echo_ttl(self._items[key]) for key in keys}:
+                    matching = [key for key in keys if self._echo_ttl(self._items[key]) == ttl]
+                    self._store.activate_reply_echoes(
+                        matching,
+                        expires_at=now + ttl,
+                        now=now,
+                    )
+            for key in keys:
                 expected = self._items.get(key)
                 if expected is None:
                     continue
@@ -264,28 +398,108 @@ class ReplyEchoTracker:
     def complete(self, action_ids) -> None:
         now = float(self._clock())
         with self._lock:
-            for action_id in action_ids or ():
-                key = str(action_id or "").strip()
+            keys = [
+                str(action_id or "").strip()
+                for action_id in action_ids or ()
+                if str(action_id or "").strip() in self._items
+            ]
+            if self._store is not None and keys:
+                for ttl in {self._echo_ttl(self._items[key]) for key in keys}:
+                    matching = [key for key in keys if self._echo_ttl(self._items[key]) == ttl]
+                    self._store.complete_reply_echoes(
+                        matching,
+                        expires_at=now + ttl,
+                        now=now,
+                    )
+            for key in keys:
                 expected = self._items.get(key)
-                if expected is None or not expected.matchable:
+                if expected is None or not expected.matchable or expected.matched:
                     continue
-                self._items[key] = replace(expected, expires_at=now + self._ttl)
+                self._items[key] = replace(expected, expires_at=now + self._echo_ttl(expected))
                 self._items.move_to_end(key)
+
+    def _echo_ttl(self, expected: ExpectedReplyEcho) -> float:
+        return self._text_ttl if expected.kind in {ReplyKind.TEXT, ReplyKind.QUOTE} else self._ttl
+
+    @staticmethod
+    def _normalize_echo_text(value: str) -> str:
+        return " ".join(str(value or "").split())
+
+    @staticmethod
+    def _same_identity(left: ExpectedReplyEcho, right: ExpectedReplyEcho) -> bool:
+        return (
+            left.action_id == right.action_id
+            and left.conversation == right.conversation
+            and left.chat_type == right.chat_type
+            and left.kind == right.kind
+            and left.content == right.content
+            and left.confirmable == right.confirmable
+            and left.message_types == right.message_types
+            and left.at == right.at
+        )
+
+    def _mark_matched_locked(
+        self,
+        action_id: str,
+        expected: ExpectedReplyEcho,
+        now: float,
+    ) -> ExpectedReplyEcho | None:
+        if expected.matched:
+            return expected
+        if self._store is not None and not self._store.mark_reply_echo_matched(
+            action_id,
+            expires_at=now + self._echo_ttl(expected),
+            now=now,
+        ):
+            self._items.pop(action_id, None)
+            return None
+        if self._store is None:
+            self._items.pop(action_id, None)
+            return expected
+        matched = replace(
+            expected,
+            expires_at=(
+                expected.expires_at
+                if expected.expires_at != float("inf")
+                else now + self._echo_ttl(expected)
+            ),
+            matched=True,
+        )
+        self._items[action_id] = matched
+        self._items.move_to_end(action_id)
+        return matched
 
     @staticmethod
     def _matches(expected: ExpectedReplyEcho, message_type: str, content: str) -> bool:
         if expected.message_types:
             return message_type in expected.message_types
         if expected.kind in {ReplyKind.TEXT, ReplyKind.QUOTE}:
-            return message_type in {"text", "quote"} and content == expected.content
+            if message_type not in {"text", "quote"}:
+                return False
+            actual = ReplyEchoTracker._normalize_echo_text(content)
+            expected_content = ReplyEchoTracker._normalize_echo_text(expected.content)
+            if actual == expected_content:
+                return True
+            if not expected.at:
+                return False
+            mentioned = ReplyEchoTracker._normalize_echo_text(
+                f"@{expected.at} {expected.content}"
+            )
+            return actual == mentioned
         if expected.kind == ReplyKind.VOICE:
             return message_type in {"voice", "audio"}
         return message_type in {"file", "image", "video"}
 
     def _prune_locked(self, now: float) -> None:
-        for action_id, expected in tuple(self._items.items()):
-            if expected.matchable and expected.expires_at < now:
-                self._items.pop(action_id, None)
+        expired = [
+            action_id
+            for action_id, expected in tuple(self._items.items())
+            if expected.matchable and expected.expires_at <= now
+        ]
+        if self._store is not None:
+            self._store.prune_reply_echoes(now=now)
+        for action_id in expired:
+            self._items.pop(action_id, None)
 
 
 class ReplyDeliveryStore(Protocol):

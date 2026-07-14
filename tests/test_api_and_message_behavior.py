@@ -15,10 +15,21 @@ from unittest import mock
 from core import wechat_ui_actions
 from core.api import API_ERROR_REPLY_TEXT, DusAPI, OpenAIAPI, build_api_config_snapshot
 from core.inbound_coordinator import InboundCoordinator
-from core.message_pipeline import ConversationRef, MessageEnvelope
+from core.message_pipeline import (
+    ConversationRef,
+    MessageEnvelope,
+    contains_group_mention,
+    strip_group_mention,
+)
 from core.message_store import MessageStore
 from core.prompting import build_current_turn_user_message, build_image_user_message
-from core.reply_delivery import ReplyAction, ReplyDeliveryCoordinator, ReplyEchoTracker
+from core.reply_delivery import (
+    DeliveryResult,
+    DeliveryStatus,
+    ReplyAction,
+    ReplyDeliveryCoordinator,
+    ReplyEchoTracker,
+)
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.reply_count_store import ReplyCountStore
 from core.vision_bridge import VisionNote
@@ -120,6 +131,62 @@ def persist_private_inbound(store, chat, message):
 
 
 class ApiBehaviorTests(unittest.TestCase):
+    def test_material_source_skip_terminalizes_persisted_inbound(self):
+        bot = WXBot.__new__(WXBot)
+        bot._test_message_store_tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(bot._test_message_store_tempdir.cleanup)
+        bot._message_store = MessageStore(bot._test_message_store_tempdir.name, "test-account")
+        bot.config = SimpleNamespace(
+            group=["素材群"],
+            group_image_recognition_switch=False,
+            group_voice_recognition_switch=False,
+        )
+        bot._handle_material_source_message = lambda *_args: True
+        bot._record_received_message = lambda: None
+        bot.process_message = lambda *_args: self.fail("素材源静默消息不应进入普通路由")
+        bot.last_msg_time = ""
+        bot.last_msg_sender = ""
+        message = MessageEnvelope(
+            id="material-text-1",
+            attr="friend",
+            sender="群友A",
+            type="text",
+            content="普通聊天",
+        )
+        now = time.time()
+        stored = bot._message_store.record_inbound({
+            "conversation": "素材群",
+            "chat_type": "group",
+            "direction": "friend",
+            "sender": "群友A",
+            "content": message.content,
+            "original_content": message.content,
+            "message_type": message.type,
+            "native_attr": message.attr,
+            "native_id": message.id,
+            "received_at": now,
+            "source": "test",
+            "source_batch": "material-source",
+            "source_order": 0,
+        })
+        message._wxbot_event_id = stored["event_id"]
+        message._wxbot_event_ids = (stored["event_id"],)
+        chat = SimpleNamespace(who="素材群", chat_type="group")
+
+        self.assertTrue(
+            message_routing.handle_friend_message_callback(
+                bot,
+                message,
+                chat,
+                text="素材群收到普通聊天",
+            )
+        )
+
+        self.assertEqual(
+            bot._message_store.get_event(stored["event_id"])["processing_state"],
+            "handled",
+        )
+
     def test_private_keyword_delivery_error_is_not_converted_to_api_error(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
@@ -583,7 +650,9 @@ class MessageBehaviorTests(unittest.TestCase):
             lambda chat_type, paths, **kwargs: generated.append((chat_type, list(paths), kwargs)) or [note]
         )
         bot._remember_visual_notes = (
-            lambda chat_name, paths, notes: remembered.append((chat_name, list(paths), list(notes))) or True
+            lambda chat_name, paths, notes, **kwargs: remembered.append(
+                (chat_name, list(paths), list(notes), kwargs["chat_type"])
+            ) or True
         )
         bot._reply_image_message = lambda **kwargs: captured.update(kwargs) or "图片回复"
         bot._get_chat_api = lambda _chat: SimpleNamespace()
@@ -598,23 +667,29 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(result, "图片回复")
         self.assertEqual(generated[0][0], "private")
         self.assertEqual(generated[0][1], [r"C:\tmp\selfie.png"])
-        self.assertEqual(remembered, [("张三", [r"C:\tmp\selfie.png"], [note])])
+        self.assertEqual(remembered, [("张三", [r"C:\tmp\selfie.png"], [note], "private")])
         self.assertEqual(captured["visual_notes"], [note])
 
     def test_private_pending_visual_context_clears_only_after_notes_exist(self):
         bot = WXBot.__new__(WXBot)
         bot._ensure_message_runtime_state()
-        bot._set_pending_visual_context("张三", [r"C:\tmp\selfie.png"], visual_notes=[""])
+        bot._set_pending_visual_context(
+            "张三",
+            [r"C:\tmp\selfie.png"],
+            chat_type="private",
+            visual_notes=[""],
+        )
 
-        self.assertFalse(bot._pending_visual_context_ready_to_clear("张三"))
+        self.assertFalse(bot._pending_visual_context_ready_to_clear("张三", chat_type="private"))
 
         bot._set_pending_visual_context(
             "张三",
             [r"C:\tmp\selfie.png"],
+            chat_type="private",
             visual_notes=["图片概览：一张自拍。\n可见文字：无。\n关键细节：戴着帽子。\n不确定项：无。"],
         )
 
-        self.assertTrue(bot._pending_visual_context_ready_to_clear("张三"))
+        self.assertTrue(bot._pending_visual_context_ready_to_clear("张三", chat_type="private"))
 
     def test_group_image_reply_generates_visual_note_before_final_reply(self):
         bot = WXBot.__new__(WXBot)
@@ -627,7 +702,9 @@ class MessageBehaviorTests(unittest.TestCase):
             lambda chat_type, paths, **kwargs: generated.append((chat_type, list(paths), kwargs)) or [note]
         )
         bot._remember_visual_notes = (
-            lambda chat_name, paths, notes: remembered.append((chat_name, list(paths), list(notes))) or True
+            lambda chat_name, paths, notes, **kwargs: remembered.append(
+                (chat_name, list(paths), list(notes), kwargs["chat_type"])
+            ) or True
         )
         bot._reply_image_message = lambda **kwargs: captured.update(kwargs) or "群图回复"
         bot._get_group_api = lambda _group: SimpleNamespace()
@@ -644,8 +721,9 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(result, "群图回复")
         self.assertEqual(generated[0][0], "group")
         self.assertEqual(generated[0][1], [r"C:\tmp\poster.png"])
-        self.assertEqual(remembered, [("测试群", [r"C:\tmp\poster.png"], [note])])
+        self.assertEqual(remembered, [("测试群", [r"C:\tmp\poster.png"], [note], "group")])
         self.assertEqual(captured["visual_notes"], [note])
+        self.assertEqual(captured["image_senders"], ["李四"])
 
     def test_friend_message_callback_still_dispatches_and_sends_reply(self):
         class FakeChat:
@@ -701,16 +779,22 @@ class MessageBehaviorTests(unittest.TestCase):
     def test_alllisten_timestamp_update_still_refreshes_runtime_entry(self):
         bot = SimpleNamespace(
             config=SimpleNamespace(AllListen_switch=True),
-            all_Mode_listen_list=[["张三", 1.0]],
+            all_Mode_listen_list=[
+                ["张三", 1.0],
+                ["张三", 2.0, "group"],
+            ],
         )
 
         with (
             mock.patch("feature.message_routing._bot_time_module", return_value=SimpleNamespace(time=lambda: 9.0)),
             mock.patch("feature.message_routing._bot_log"),
         ):
-            message_routing._update_alllisten_timestamp(bot, "张三")
+            message_routing._update_alllisten_timestamp(bot, "张三", "private")
 
-        self.assertEqual(bot.all_Mode_listen_list, [["张三", 9.0]])
+        self.assertEqual(
+            bot.all_Mode_listen_list,
+            [["张三", 9.0], ["张三", 2.0, "group"]],
+        )
 
     def test_private_ingress_advances_version_before_business_queue_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -755,6 +839,81 @@ class MessageBehaviorTests(unittest.TestCase):
             worker.join(1)
 
         self.assertEqual(processed, [("维护期间消息", "张三")])
+
+    def test_slow_group_business_does_not_block_private_ingress(self):
+        bot = WXBot.__new__(WXBot)
+        bot._ui_ingress_queue = queue.Queue()
+        bot._ui_ingress_stop = threading.Event()
+        bot._ui_owner = SimpleNamespace(wait_for_contact_idle=lambda: True)
+        bot._stop_requested = threading.Event()
+        bot._chat_merge_lock = threading.Lock()
+        bot._group_message_pipelines = {}
+        group_started = threading.Event()
+        release_group = threading.Event()
+        private_done = threading.Event()
+
+        def handle(message, chat):
+            if chat.chat_type == "group":
+                group_started.set()
+                release_group.wait()
+            else:
+                private_done.set()
+            return True
+
+        bot.message_handle_callback = handle
+        worker = threading.Thread(target=bot._run_ui_ingress)
+        worker.start()
+        bot._ui_ingress_queue.put((
+            ConversationRef("测试群", "group"),
+            MessageEnvelope(type="text", attr="group", sender="张三", content="慢回复"),
+        ))
+        bot._ui_ingress_queue.put((
+            ConversationRef("李四", "private"),
+            MessageEnvelope(type="text", attr="friend", sender="李四", content="你好"),
+        ))
+        try:
+            self.assertTrue(group_started.wait(1))
+            self.assertTrue(private_done.wait(1))
+        finally:
+            release_group.set()
+            bot._ui_ingress_stop.set()
+            worker.join(1)
+
+    def test_same_group_business_messages_remain_serial(self):
+        bot = WXBot.__new__(WXBot)
+        bot._ui_owner = object()
+        bot._stop_requested = threading.Event()
+        bot._chat_merge_lock = threading.Lock()
+        bot._group_message_pipelines = {}
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_done = threading.Event()
+        processed = []
+
+        def handle(message, _chat):
+            processed.append(message.content)
+            if message.content == "第一条":
+                first_started.set()
+                release_first.wait()
+            else:
+                second_done.set()
+            return True
+
+        bot.message_handle_callback = handle
+        conversation = ConversationRef("测试群", "group")
+        bot._enqueue_group_message_for_business(
+            conversation,
+            MessageEnvelope(content="第一条"),
+        )
+        self.assertTrue(first_started.wait(1))
+        bot._enqueue_group_message_for_business(
+            conversation,
+            MessageEnvelope(content="第二条"),
+        )
+        self.assertFalse(second_done.wait(0.05))
+        release_first.set()
+        self.assertTrue(second_done.wait(1))
+        self.assertEqual(processed, ["第一条", "第二条"])
 
     def test_duplicate_private_ingress_does_not_advance_version_twice(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -938,6 +1097,129 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertTrue(WXBot._finish_wxbot_stop(bot))
         self.assertTrue(bot.wx.stopped)
+
+    def test_finish_wxbot_stop_runs_full_cleanup_once_without_explicit_stop(self):
+        bot = WXBot.__new__(WXBot)
+        bot.run_flag = True
+        bot._stop_requested = threading.Event()
+        bot._stop_cleanup_lock = threading.Lock()
+        bot._stop_cleanup_done = False
+        bot._cancel_pending_private_message_timers = mock.Mock()
+        bot._clear_group_message_pipelines = mock.Mock()
+        bot._clear_chat_memory_background_state = mock.Mock()
+        bot._reply_delivery_coordinator = mock.Mock()
+        bot._message_store = mock.Mock()
+        bot._ui_owner = mock.Mock()
+        bot._ui_watchdog = mock.Mock()
+        bot._ui_ingress_stop = threading.Event()
+        bot.wx = None
+        owner = bot._ui_owner
+        watchdog = bot._ui_watchdog
+
+        with mock.patch("wxbot_core.log"):
+            self.assertTrue(bot._finish_wxbot_stop())
+            self.assertTrue(bot._finish_wxbot_stop())
+
+        self.assertFalse(bot.run_flag)
+        self.assertTrue(bot.is_stop_requested())
+        bot._cancel_pending_private_message_timers.assert_called_once_with()
+        bot._clear_group_message_pipelines.assert_called_once_with()
+        bot._clear_chat_memory_background_state.assert_called_once_with()
+        bot._reply_delivery_coordinator.stop.assert_called_once_with()
+        bot._message_store.cancel_unclaimed_on_shutdown.assert_called_once_with()
+        owner.cancel_pending.assert_called_once_with()
+        owner.call_shutdown.assert_called_once_with(wechat_ui_actions.UI_CALL_WAIT_TIMEOUT)
+        owner.stop.assert_called_once_with(cancel_pending=True)
+        watchdog.stop.assert_called_once_with()
+        self.assertTrue(bot._ui_ingress_stop.is_set())
+
+    def test_stop_cleanup_continues_after_one_step_fails(self):
+        bot = WXBot.__new__(WXBot)
+        bot.run_flag = True
+        bot._stop_requested = threading.Event()
+        bot._stop_cleanup_lock = threading.Lock()
+        bot._stop_cleanup_done = False
+        bot._cancel_pending_private_message_timers = mock.Mock(
+            side_effect=RuntimeError("timer cleanup failed")
+        )
+        bot._clear_group_message_pipelines = mock.Mock()
+        bot._clear_chat_memory_background_state = mock.Mock()
+        bot._reply_delivery_coordinator = mock.Mock()
+        bot._message_store = mock.Mock()
+        bot._ui_owner = mock.Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "timer cleanup failed"):
+            bot._request_wxbot_stop_cleanup()
+
+        self.assertTrue(bot.is_stop_requested())
+        bot._clear_group_message_pipelines.assert_called_once_with()
+        bot._clear_chat_memory_background_state.assert_called_once_with()
+        bot._reply_delivery_coordinator.stop.assert_called_once_with()
+        bot._message_store.cancel_unclaimed_on_shutdown.assert_called_once_with()
+        bot._ui_owner.cancel_pending.assert_called_once_with()
+        self.assertFalse(bot._stop_cleanup_done)
+
+    def test_main_always_finishes_after_runtime_exception(self):
+        bot = WXBot.__new__(WXBot)
+        bot._run_wxbot_main = mock.Mock(side_effect=RuntimeError("main loop failed"))
+        bot._finish_wxbot_stop = mock.Mock()
+        bot.wx = SimpleNamespace(nickname="bot")
+        bot.is_err = mock.Mock()
+
+        with mock.patch("wxbot_core.log"):
+            with self.assertRaisesRegex(RuntimeError, "main loop failed"):
+                bot.main()
+
+        bot._finish_wxbot_stop.assert_called_once_with()
+        bot.is_err.assert_not_called()
+
+    def test_main_always_finishes_after_startup_early_return(self):
+        bot = WXBot.__new__(WXBot)
+        bot._stop_requested = threading.Event()
+        bot._stop_requested.set()
+        bot.wxautox_activate_check = mock.Mock(return_value=True)
+        bot.init_wx_listeners = mock.Mock()
+        bot._notify_startup_status = mock.Mock()
+        bot._finish_wxbot_stop = mock.Mock()
+        bot.wx = mock.Mock()
+        bot.is_err = mock.Mock()
+
+        with mock.patch("wxbot_core.log"):
+            self.assertFalse(bot.main())
+
+        bot.wx.StopListening.assert_not_called()
+        bot._finish_wxbot_stop.assert_called_once_with()
+        bot.is_err.assert_not_called()
+
+    def test_callback_failure_exits_through_unified_stop_cleanup(self):
+        bot = WXBot.__new__(WXBot)
+        bot._stop_requested = threading.Event()
+        bot.wxautox_activate_check = mock.Mock(return_value=True)
+        bot.init_wx_listeners = mock.Mock()
+        bot._notify_startup_status = mock.Mock()
+        bot._finish_wxbot_stop = mock.Mock()
+        bot.wx = mock.Mock(nickname="bot")
+        bot.callback_is_die = True
+        bot.config = SimpleNamespace(new_friend_switch=False, AllListen_switch=False)
+        bot._process_listener_auto_recovery = mock.Mock(return_value=None)
+        bot._maybe_reconcile_listener_subwindows = mock.Mock()
+        bot._process_pending_runtime_task_reload = mock.Mock()
+        bot._process_unified_runtime_tasks = mock.Mock()
+        bot._process_material_outreach_preface_queue = mock.Mock()
+        bot._process_ai_material_outreach_queue = mock.Mock()
+        bot._process_ai_material_outreach_detection_scan = mock.Mock()
+        bot._check_relationship_auto_scan = mock.Mock()
+        bot._check_friend_request_auto_run = mock.Mock()
+        bot._contact_directory_auto_maintenance_enabled = mock.Mock(return_value=False)
+        bot._wait_or_stop_requested = mock.Mock(return_value=False)
+        bot.is_err = mock.Mock()
+
+        with mock.patch("wxbot_core.log"):
+            self.assertIsNone(bot.main())
+
+        bot.wx.StopListening.assert_not_called()
+        bot._finish_wxbot_stop.assert_called_once_with()
+        bot.is_err.assert_not_called()
 
     def test_private_message_pipeline_uses_idle_and_max_wait_timers(self):
         class FakeTimer:
@@ -1325,6 +1607,32 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertEqual(bot.reply_count_store.get_user("group:测试群:李四")["count"], 1)
             self.assertEqual(bot.reply_count_store.get_user("group:另一个群:张三")["count"], 1)
 
+    def test_group_text_reply_limit_treats_stale_as_handled(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(group_reply_quote=False, group_reply_at_msg=False)
+        bot._deliver_reply_actions = lambda *_args, **_kwargs: DeliveryResult(
+            DeliveryStatus.STALE,
+            completed=0,
+        )
+
+        sent, handled = bot._send_text_reply_limit_parts(
+            SimpleNamespace(who="测试群", chat_type="group"),
+            SimpleNamespace(sender="张三"),
+            ["本轮先聊到这里"],
+            chat_type="group",
+        )
+
+        self.assertFalse(sent)
+        self.assertTrue(handled)
+
+    def test_group_mention_is_removed_as_literal_text(self):
+        self.assertEqual(
+            strip_group_mention("@研发[一组]+ 请回复", "@研发[一组]+"),
+            "请回复",
+        )
+        self.assertTrue(contains_group_mention("@小帅\u2005请回复", "@小帅"))
+        self.assertFalse(contains_group_mention("@小帅哥 请回复", "@小帅"))
+
     def test_voice_reply_limit_logs_warning_and_falls_back_to_text(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
@@ -1355,6 +1663,23 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertTrue(any(level == "WARNING" and "语音回复触发上限" in message for level, message in logs))
+
+    def test_group_tts_override_uses_group_binding_and_falls_back_to_default(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            tts_index=0,
+            tts_configs=[{"name": "默认语音"}, {"name": "群聊语音"}],
+            group_tts_map={"测试群": 1},
+        )
+
+        self.assertEqual(
+            bot._active_tts_config("测试群", chat_type="group")["name"],
+            "群聊语音",
+        )
+        self.assertEqual(
+            bot._active_tts_config("未配置群", chat_type="group")["name"],
+            "默认语音",
+        )
 
     def test_voice_reply_limit_warning_is_deduped_per_window(self):
         bot = WXBot.__new__(WXBot)
@@ -2810,6 +3135,65 @@ class MessageBehaviorTests(unittest.TestCase):
         with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
             process_persisted_group_message(bot, chat, message)
 
+    def test_group_api_error_with_empty_notice_is_handled_silently(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AtMe="",
+            cmd="文件传输助手",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=False,
+            group_listen_only=False,
+            group_image_recognition_switch=False,
+            group_split_reply_switch=False,
+            group_split_max_count=4,
+            group_split_max_chars=100,
+            group_reply_at_msg=False,
+            group_reply_quote=False,
+            memory_switch=False,
+            memory_context_switch=False,
+            clean_ai_reply_switch=False,
+            reply_preprocess_fallback_reply="",
+            reply_preprocess_fallback_once=False,
+            api_error_reply="",
+            api_error_reply_once=False,
+            group_text_reply_limit_hours=24,
+            group_voice_reply_switch=False,
+            split_long_text=lambda text: [text],
+        )
+        bot.reply_count_store = ReplyCountStore("")
+        configure_group_reply_runtime(bot)
+        bot.memory_manager = None
+        bot._pause_group_reply = False
+        bot.is_stop_requested = lambda: False
+        bot._get_group_api = lambda _group: SimpleNamespace(
+            chat=lambda *_args, **_kwargs: API_ERROR_REPLY_TEXT
+        )
+        bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+        chat = SimpleNamespace(
+            who="测试群",
+            chat_type="group",
+            SendMsg=lambda *_args, **_kwargs: self.fail("静默错误回复不应发送"),
+        )
+        message = SimpleNamespace(
+            type="text",
+            attr="group",
+            sender="张三",
+            content="测试",
+        )
+
+        self.assertTrue(process_persisted_group_message(bot, chat, message))
+        self.assertEqual(
+            bot._message_store.get_reply_job(message._wxbot_reply_turn_id)["status"],
+            "cancelled",
+        )
+
     def test_group_preprocess_rewrite_api_error_skips_voice_reply(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
@@ -2945,6 +3329,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot.config = SimpleNamespace(
             AllListen_switch=False,
             listen_list=[],
+            group_switch=True,
             group=["测试群"],
             group_image_recognition_switch=False,
             group_voice_recognition_switch=True,
@@ -3005,6 +3390,7 @@ class MessageBehaviorTests(unittest.TestCase):
             group_reply_at=False,
             group_listen_only=False,
             group_image_recognition_switch=False,
+            group_voice_recognition_switch=True,
         )
         bot = SimpleNamespace(config=config, _pause_group_reply=False)
         chat = SimpleNamespace(who="测试群", chat_type="group")
@@ -3015,6 +3401,10 @@ class MessageBehaviorTests(unittest.TestCase):
         config.group_reply_at = True
         self.assertEqual(message_routing.route_process_message(bot, chat, message)["action"], "skip")
 
+        config.group_reply_at = False
+        config.group_voice_recognition_switch = False
+        self.assertEqual(message_routing.route_process_message(bot, chat, message)["action"], "skip")
+
     def test_pending_visual_context_reference_intent_is_bilingual(self):
         positives = [
             "看看这是啥意思",
@@ -3023,13 +3413,20 @@ class MessageBehaviorTests(unittest.TestCase):
             "这张图片里有什么",
             "这发票写的什么",
             "解释一下",
-            "刚才说到哪了",
+            "帮我看看",
             "what does this mean",
             "explain this",
+            "please explain",
             "read the screenshot above",
             "analyze this image",
         ]
         negatives = [
+            "你说呢",
+            "我看可以",
+            "刚才说到哪了",
+            "按照这个方案来",
+            "这个挺有意思",
+            "简单说一下",
             "this is a normal message",
             "what is the plan today",
             "give me more context",
@@ -3041,6 +3438,77 @@ class MessageBehaviorTests(unittest.TestCase):
         for text in negatives:
             with self.subTest(text=text):
                 self.assertFalse(WXBot._text_references_pending_visual_context(text))
+
+    def test_group_image_prompt_separates_image_owner_from_asker(self):
+        message = build_image_user_message(
+            "group",
+            sender="群友B",
+            attached_text="这是什么？",
+            image_count=1,
+            image_senders=["群友A"],
+            visual_notes=["图片概览：一辆红色汽车。"],
+        )
+
+        self.assertIn("群友A发来一张图片", message)
+        self.assertIn("群友B说：这是什么？", message)
+        self.assertNotIn("群友B发来一张图片", message)
+
+    def test_pending_visual_context_keeps_latest_images_and_conversation_scope(self):
+        bot = WXBot.__new__(WXBot)
+        bot._chat_merge_lock = threading.Lock()
+        bot._pending_visual_contexts = {}
+        for index in range(10):
+            bot._set_pending_visual_context(
+                "同名会话",
+                [f"{index}.png"],
+                chat_type="group",
+                senders=[f"群友{index}"],
+                append=True,
+            )
+        bot._set_pending_visual_context(
+            "同名会话",
+            ["private.png"],
+            chat_type="private",
+        )
+
+        group_context = bot._get_pending_visual_context("同名会话", chat_type="group")
+        private_context = bot._get_pending_visual_context("同名会话", chat_type="private")
+        self.assertEqual(group_context["image_paths"], [f"{index}.png" for index in range(1, 10)])
+        self.assertEqual(group_context["image_senders"], [f"群友{index}" for index in range(1, 10)])
+        self.assertEqual(private_context["image_paths"], ["private.png"])
+
+    def test_group_visual_context_lives_longer_and_new_batch_replaces_old_images(self):
+        bot = WXBot.__new__(WXBot)
+        bot._chat_merge_lock = threading.Lock()
+        bot._pending_visual_contexts = {}
+
+        with mock.patch("wxbot_core.time.time", return_value=100.0):
+            private_context = bot._set_pending_visual_context(
+                "同名会话",
+                ["private.png"],
+                chat_type="private",
+            )
+            group_context = bot._set_pending_visual_context(
+                "同名会话",
+                ["group-1.png"],
+                chat_type="group",
+                senders=["A"],
+                append=True,
+            )
+        self.assertEqual(private_context["expires_at"], 700.0)
+        self.assertEqual(group_context["expires_at"], 7300.0)
+
+        with mock.patch("wxbot_core.time.time", return_value=221.0):
+            bot._set_pending_visual_context(
+                "同名会话",
+                ["group-2.png"],
+                chat_type="group",
+                senders=["B"],
+                append=True,
+            )
+            latest = bot._get_pending_visual_context("同名会话", chat_type="group")
+        self.assertEqual(latest["image_paths"], ["group-2.png"])
+        self.assertEqual(latest["image_senders"], ["B"])
 
     def test_group_pending_image_context_can_be_used_by_later_sender(self):
         bot = WXBot.__new__(WXBot)
@@ -3082,12 +3550,21 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._record_replied_message_success = lambda *_args, **_kwargs: None
 
         image_reply_calls = []
-        def fake_group_image_reply(_chat, _message, _history, image_paths=None, attached_text=""):
+        def fake_group_image_reply(
+            _chat,
+            _message,
+            _history,
+            image_paths=None,
+            attached_text="",
+            image_senders=None,
+        ):
             paths = list(image_paths or [])
-            image_reply_calls.append((paths, attached_text))
+            image_reply_calls.append((paths, attached_text, list(image_senders or [])))
             bot._set_pending_visual_context(
                 "测试群",
                 paths,
+                chat_type="group",
+                senders=image_senders,
                 visual_notes=["图片概览：一张测试图。\n可见文字：无。\n关键细节：用于测试。\n不确定项：无。"],
             )
             return "图片答案"
@@ -3101,7 +3578,12 @@ class MessageBehaviorTests(unittest.TestCase):
             SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
         )
         sent = []
-        bot._set_pending_visual_context("测试群", [r"C:\tmp\a-image.png"])
+        bot._set_pending_visual_context(
+            "测试群",
+            [r"C:\tmp\a-image.png"],
+            chat_type="group",
+            senders=["A"],
+        )
         message = SimpleNamespace(
             type="text",
             attr="group",
@@ -3112,9 +3594,14 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertTrue(process_persisted_group_message(bot, chat, message))
 
-        self.assertEqual(image_reply_calls, [([r"C:\tmp\a-image.png"], "看看这是啥意思")])
+        self.assertEqual(
+            image_reply_calls,
+            [([r"C:\tmp\a-image.png"], "看看这是啥意思", ["A"])],
+        )
         self.assertEqual(sent, [("图片答案", None)])
-        self.assertIsNone(bot._get_pending_visual_context("测试群"))
+        remaining = bot._get_pending_visual_context("测试群", chat_type="group")
+        self.assertEqual(remaining["image_paths"], [r"C:\tmp\a-image.png"])
+        self.assertEqual(remaining["image_senders"], ["A"])
 
     def test_group_pending_image_context_ignores_unrelated_at_message(self):
         bot = WXBot.__new__(WXBot)
@@ -3162,7 +3649,12 @@ class MessageBehaviorTests(unittest.TestCase):
             chat_type="group",
             SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
         )
-        bot._set_pending_visual_context("测试群", [r"C:\tmp\a-image.png"])
+        bot._set_pending_visual_context(
+            "测试群",
+            [r"C:\tmp\a-image.png"],
+            chat_type="group",
+            senders=["A"],
+        )
         message = SimpleNamespace(
             type="text",
             attr="group",
@@ -3175,9 +3667,34 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertEqual(sent, [("普通回答", None)])
         self.assertEqual(
-            bot._get_pending_visual_context("测试群")["image_paths"],
+            bot._get_pending_visual_context("测试群", chat_type="group")["image_paths"],
             [r"C:\tmp\a-image.png"],
         )
+
+        def answer_image(_chat, _message, _history, image_paths=None, attached_text="", image_senders=None):
+            bot._set_pending_visual_context(
+                "测试群",
+                image_paths,
+                chat_type="group",
+                senders=image_senders,
+                visual_notes=["图片概览：测试图片。"],
+            )
+            return "图片回答"
+
+        bot._reply_group_image_message = answer_image
+        message = SimpleNamespace(
+            type="text",
+            attr="group",
+            sender="C",
+            content="@机器人 刚才这张图是什么",
+            quote=lambda text, at=None: sent.append((text, at)) or True,
+        )
+
+        self.assertTrue(process_persisted_group_message(bot, chat, message))
+        self.assertEqual(sent, [("普通回答", None), ("图片回答", None)])
+        remaining = bot._get_pending_visual_context("测试群", chat_type="group")
+        self.assertEqual(remaining["image_paths"], [r"C:\tmp\a-image.png"])
+        self.assertEqual(remaining["image_senders"], ["A"])
 
     def test_group_image_message_only_sets_pending_context_when_not_at_only(self):
         bot = WXBot.__new__(WXBot)
@@ -3210,10 +3727,13 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertTrue(bot.process_message(chat, message))
         self.assertEqual(
-            bot._get_pending_visual_context("测试群")["image_paths"],
+            bot._get_pending_visual_context("测试群", chat_type="group")["image_paths"],
             [r"C:\tmp\group-image.png"],
         )
-        self.assertEqual(bot._get_pending_visual_context("测试群")["visual_notes"], [""])
+        self.assertEqual(
+            bot._get_pending_visual_context("测试群", chat_type="group")["visual_notes"],
+            [""],
+        )
 
     def test_group_consecutive_images_accumulate_pending_context(self):
         bot = WXBot.__new__(WXBot)
@@ -3252,8 +3772,239 @@ class MessageBehaviorTests(unittest.TestCase):
         )))
 
         self.assertEqual(
-            bot._get_pending_visual_context("测试群")["image_paths"],
+            bot._get_pending_visual_context("测试群", chat_type="group")["image_paths"],
             [r"C:\tmp\group-image-1.png", r"C:\tmp\group-image-2.png"],
+        )
+
+    def test_pending_group_voice_reread_replaces_group_fifo_head(self):
+        bot = WXBot.__new__(WXBot)
+        bot._test_message_store_tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(bot._test_message_store_tempdir.cleanup)
+        bot._message_store = MessageStore(bot._test_message_store_tempdir.name, "test-account")
+        bot._ui_ingress_queue = queue.Queue()
+        bot.config = SimpleNamespace(
+            memory_switch=False,
+            chat_message_merge_delay=20,
+            AllListen_switch=False,
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_image_recognition_switch=False,
+            group_voice_recognition_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=False,
+            group_listen_only=False,
+        )
+        bot._pause_group_reply = False
+        bot.is_stop_requested = lambda: False
+        bot._ensure_message_runtime_state()
+        bot._ui_owner = object()
+        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
+        bot._read_pending_voice_snapshot = lambda _name: [MessageEnvelope(
+            id="voice-fresh",
+            attr="friend",
+            sender="群友A",
+            type="voice",
+            content="识别后的群语音",
+        )]
+        dispatched = []
+        worker_wakeups = []
+
+        def process_group(chat, message):
+            dispatched.append((chat.chat_type, message.content, message._wxbot_event_id))
+            bot._message_store.mark_inbound_events((message._wxbot_event_id,), "handled")
+            return True
+
+        stored = bot._message_store.record_inbound({
+            "conversation": "测试群",
+            "chat_type": "group",
+            "direction": "friend",
+            "sender": "群友A",
+            "content": '语音2"秒',
+            "original_content": '语音2"秒',
+            "message_type": "voice",
+            "native_attr": "friend",
+            "native_id": "voice-original",
+            "received_at": time.time(),
+            "source": "test",
+            "source_batch": "group-voice",
+            "source_order": 0,
+        })
+        message = MessageEnvelope(
+            id="voice-original",
+            attr="friend",
+            sender="群友A",
+            type="voice",
+            content='语音2"秒',
+        )
+        message._wxbot_event_id = stored["event_id"]
+        message._wxbot_event_ids = (stored["event_id"],)
+        message._wxbot_event_version = stored["version"]
+        message._wxbot_reply_expires_at = time.time() + 900
+        chat = SimpleNamespace(who="测试群", chat_type="group")
+
+        self.assertTrue(bot._queue_pending_private_voice_transcription(chat, message))
+        self.assertNotIn("测试群", bot._private_message_pipelines)
+        message._skip_ai_reply = True
+        self.assertTrue(bot.process_message(chat, message))
+        self.assertEqual(
+            bot._message_store.get_event(stored["event_id"])["processing_state"],
+            "pending",
+        )
+        bot._group_message_pipelines["测试群"] = {
+            "conversation": ConversationRef("测试群", "group"),
+            "messages": deque([message]),
+            "worker_running": False,
+            "retry_timer": None,
+        }
+        bot._start_group_message_worker_locked = lambda _pipeline: worker_wakeups.append(True)
+        bot.process_message = process_group
+        self.assertTrue(bot._flush_pending_private_voice_transcription(chat))
+
+        self.assertEqual(dispatched, [])
+        self.assertTrue(bot._ui_ingress_queue.empty())
+        resolved = bot._group_message_pipelines["测试群"]["messages"][0]
+        self.assertTrue(resolved._wxbot_persisted)
+        self.assertEqual(worker_wakeups, [True])
+        process_group(chat, resolved)
+        self.assertEqual(dispatched, [("group", "识别后的群语音", stored["event_id"])])
+        self.assertNotIn("测试群", bot._private_message_pipelines)
+        event = bot._message_store.get_event(stored["event_id"])
+        self.assertEqual(event["content"], "识别后的群语音")
+        self.assertEqual(event["processing_state"], "handled")
+
+    def test_group_voice_sqlite_busy_keeps_fifo_head_and_cached_transcription(self):
+        bot = WXBot.__new__(WXBot)
+        bot._test_message_store_tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(bot._test_message_store_tempdir.cleanup)
+        bot._message_store = MessageStore(bot._test_message_store_tempdir.name, "voice-busy")
+        bot.config = SimpleNamespace(chat_message_merge_delay=20)
+        bot.is_stop_requested = lambda: False
+        bot._ensure_message_runtime_state()
+        scheduled = []
+        bot._schedule_private_message_timer = lambda seconds, callback, chat: (
+            scheduled.append((seconds, callback, chat))
+            or SimpleNamespace(cancel=lambda: None)
+        )
+        bot._read_pending_voice_snapshot = lambda _chat: [MessageEnvelope(
+            id="voice-fresh",
+            attr="friend",
+            sender="群友A",
+            type="voice",
+            content="识别后的群语音",
+        )]
+        stored = bot._message_store.record_inbound({
+            "conversation": "测试群",
+            "chat_type": "group",
+            "direction": "friend",
+            "sender": "群友A",
+            "content": '语音2"秒',
+            "original_content": '语音2"秒',
+            "message_type": "voice",
+            "native_attr": "friend",
+            "native_id": "voice-busy-original",
+            "received_at": time.time(),
+            "source": "test",
+            "source_batch": "voice-busy",
+            "source_order": 0,
+        })
+        voice = MessageEnvelope(
+            id="voice-busy-original",
+            attr="friend",
+            sender="群友A",
+            type="voice",
+            content='语音2"秒',
+        )
+        voice._wxbot_event_id = stored["event_id"]
+        voice._wxbot_event_ids = (stored["event_id"],)
+        voice._wxbot_event_version = stored["version"]
+        voice._wxbot_reply_expires_at = time.time() + 900
+        chat = ConversationRef("测试群", "group")
+        self.assertTrue(bot._queue_pending_private_voice_transcription(chat, voice))
+        later_text = MessageEnvelope(type="text", attr="friend", sender="群友B", content="后来的文字")
+        bot._group_message_pipelines["测试群"] = {
+            "conversation": chat,
+            "messages": deque([voice, later_text]),
+            "worker_running": False,
+            "retry_timer": None,
+        }
+        wakeups = []
+        bot._start_group_message_worker_locked = lambda _pipeline: wakeups.append(True)
+
+        with mock.patch.object(
+            bot._message_store,
+            "update_inbound_content",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ):
+            self.assertTrue(bot._flush_pending_private_voice_transcription(chat))
+
+        pipeline = bot._group_message_pipelines["测试群"]
+        self.assertIs(pipeline["messages"][0], voice)
+        self.assertIs(pipeline["messages"][1], later_text)
+        self.assertEqual(wakeups, [])
+        self.assertIn(("group", "测试群"), bot._pending_private_voice_transcription)
+        pending_item = next(iter(
+            bot._pending_private_voice_transcription[("group", "测试群")]["items"].values()
+        ))
+        self.assertEqual(pending_item["message"].content, "识别后的群语音")
+
+        self.assertTrue(bot._flush_pending_private_voice_transcription(chat))
+
+        pipeline = bot._group_message_pipelines["测试群"]
+        self.assertEqual(
+            [message.content for message in pipeline["messages"]],
+            ["识别后的群语音", "后来的文字"],
+        )
+        self.assertEqual(wakeups, [True])
+
+    def test_group_worker_keeps_unresolved_voice_ahead_of_later_text(self):
+        bot = WXBot.__new__(WXBot)
+        bot._chat_merge_lock = threading.Lock()
+        bot._group_message_pipelines = {}
+        bot._ui_owner = object()
+        bot.is_stop_requested = lambda: False
+        conversation = ConversationRef("测试群", "group")
+        voice = MessageEnvelope(type="voice", attr="friend", sender="群友A", content='语音2"秒')
+        voice._wxbot_pending_voice_key = "voice:测试群:1"
+        voice._wxbot_pending_voice_resolved = False
+        later_text = MessageEnvelope(type="text", attr="friend", sender="群友B", content="后来的文字")
+        bot._group_message_pipelines["测试群"] = {
+            "conversation": conversation,
+            "messages": deque([voice, later_text]),
+            "worker_running": True,
+            "retry_timer": None,
+        }
+        processed = []
+        bot.message_handle_callback = lambda message, _chat: processed.append(message.content) or True
+
+        self.assertTrue(bot._run_group_message_pipeline_worker(conversation))
+        self.assertEqual(processed, ['语音2"秒'])
+        self.assertEqual(
+            [message.content for message in bot._group_message_pipelines["测试群"]["messages"]],
+            ['语音2"秒', "后来的文字"],
+        )
+
+        voice._wxbot_pending_voice_resolved = True
+        bot._group_message_pipelines["测试群"]["worker_running"] = True
+        self.assertTrue(bot._run_group_message_pipeline_worker(conversation))
+        self.assertEqual(processed, ['语音2"秒', '语音2"秒', "后来的文字"])
+        self.assertNotIn("测试群", bot._group_message_pipelines)
+
+    def test_expected_delivery_cancellation_is_handled_without_system_error(self):
+        for status in (
+            DeliveryStatus.DONE,
+            DeliveryStatus.STALE,
+            DeliveryStatus.CANCELLED,
+            DeliveryStatus.EXPIRED,
+        ):
+            with self.subTest(status=status):
+                self.assertTrue(WXBot._delivery_result_is_handled(DeliveryResult(status, 1)))
+        self.assertFalse(
+            WXBot._delivery_result_is_handled(
+                DeliveryResult(DeliveryStatus.UNCERTAIN, 1)
+            )
         )
 
     def test_private_message_pipeline_merges_batch_without_version_cancelling_reply(self):
@@ -3393,7 +4144,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._ensure_message_runtime_state()
         self.assertTrue(bot._enqueue_private_message_for_ai(chat, image_msg))
 
-        pending = bot._get_pending_visual_context("张三")
+        pending = bot._get_pending_visual_context("张三", chat_type="private")
         self.assertEqual(pending["image_paths"], [r"C:\tmp\logo.png"])
 
     def test_private_repeated_image_sends_with_distinct_ids_are_both_queued(self):

@@ -2098,6 +2098,7 @@ def dashboard():
 
     # —— 新增字段默认值（关键）——
     config.setdefault('group_api_map', {})                   # 群组专属接口映射
+    config.setdefault('group_tts_map', {})                   # 群组专属语音接口映射
     config.setdefault('chat_keyword_switch', False)          # 私聊关键词开关
     config.setdefault('group_keyword_switch', False)         # 群组关键词开关
     config.setdefault('group_keyword_at_only', False)        # 群聊关键词仅@时回复
@@ -3088,11 +3089,13 @@ def _coerce_dict_fields(merged_config):
         else:
             merged_config['chat_api_map'] = {}
 
-    if 'chat_tts_map' in merged_config:
-        ctm = merged_config['chat_tts_map']
-        if isinstance(ctm, dict):
+    for map_field in ('chat_tts_map', 'group_tts_map'):
+        if map_field not in merged_config:
+            continue
+        raw_map = merged_config[map_field]
+        if isinstance(raw_map, dict):
             clean = {}
-            for k, v in ctm.items():
+            for k, v in raw_map.items():
                 k = str(k).strip()
                 try:
                     vi = int(v)
@@ -3100,9 +3103,9 @@ def _coerce_dict_fields(merged_config):
                         clean[k] = vi
                 except (ValueError, TypeError):
                     pass
-            merged_config['chat_tts_map'] = clean
+            merged_config[map_field] = clean
         else:
-            merged_config['chat_tts_map'] = {}
+            merged_config[map_field] = {}
 
     if 'api_capability_map' in merged_config:
         merged_config['api_capability_map'] = sanitize_api_capability_map(
@@ -4876,7 +4879,11 @@ def _chat_memory_merge_incoming_memories(store, chat_name, wx_id, incoming_memor
 
 def _chat_memory_messages_for_user(wx_id, chat_name):
     wx_id = _validate_known_account_wx_id(wx_id, base_dir=MEMORY_BASE)
-    return _account_memory_manager(wx_id).get_messages(chat_name, sys.maxsize)
+    return _account_memory_manager(wx_id).get_messages(
+        chat_name,
+        sys.maxsize,
+        chat_type='private',
+    )
 
 
 def _chat_memory_wx_ids():
@@ -6398,12 +6405,19 @@ def memory_chats(wx_id):
     try:
         wx_id = _validate_known_account_wx_id(wx_id, base_dir=MEMORY_BASE)
         manager = _account_memory_manager(wx_id)
-        chats = [
-            {'name': name, 'storage_name': resolve_memory_storage_name(name)}
-            for name in manager.list_chat_names()
-        ]
+        chats = []
+        for chat_type in ('private', 'group'):
+            chats.extend(
+                {
+                    'name': name,
+                    'chat_type': chat_type,
+                    'storage_name': resolve_memory_storage_name(name),
+                }
+                for name in manager.list_chat_names(chat_type=chat_type)
+            )
         chats.sort(key=lambda item: (
             _wechat_name_sort_key(item.get('name')),
+            str(item.get('chat_type') or ''),
             str(item.get('storage_name') or ''),
         ))
         return jsonify({'status': 'success', 'chats': chats})
@@ -6416,7 +6430,14 @@ def memory_data(wx_id, chat_name):
     """返回指定窗口的记忆数据（JSON 列表）"""
     try:
         wx_id = _validate_known_account_wx_id(wx_id, base_dir=MEMORY_BASE)
-        messages = _account_memory_manager(wx_id).get_messages(chat_name, sys.maxsize)
+        chat_type = str(request.args.get('chat_type') or '').strip().lower()
+        if chat_type not in {'private', 'group'}:
+            raise ValueError('chat_type 必须是 private 或 group')
+        messages = _account_memory_manager(wx_id).get_messages(
+            chat_name,
+            sys.maxsize,
+            chat_type=chat_type,
+        )
         visible_messages = []
         for item in messages:
             if isinstance(item, dict):
@@ -6448,7 +6469,13 @@ def memory_delete_chat(wx_id, chat_name):
     """删除指定窗口的聊天记录"""
     try:
         wx_id = _validate_known_account_wx_id(wx_id, base_dir=MEMORY_BASE)
-        _account_memory_manager(wx_id).clear_messages(chat_name)
+        chat_type = str(request.args.get('chat_type') or '').strip().lower()
+        if chat_type not in {'private', 'group'}:
+            raise ValueError('chat_type 必须是 private 或 group')
+        _account_memory_manager(wx_id).clear_messages(
+            chat_name,
+            chat_type=chat_type,
+        )
         log('SUCCESS', f'已删除 {wx_id}/{chat_name} 的记忆')
         return jsonify({'status': 'success', 'message': '已删除'})
     except ValueError as e:
@@ -6650,6 +6677,7 @@ def main():
                 "global_blacklist": [],
                 "group": [],
                 "group_api_map": {},
+                "group_tts_map": {},
                 "group_switch": False,
                 "group_listen_only": False,
                 "group_reply_at": False,

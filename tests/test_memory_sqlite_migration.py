@@ -43,7 +43,7 @@ class MemorySQLiteMigrationTests(unittest.TestCase):
             )
 
             first = MemoryManager("wxid", tmp)
-            self.assertEqual(first.get_messages("张三", 10), [])
+            self.assertEqual(first.get_messages("张三", 10, chat_type="private"), [])
             self.assertTrue(path.exists())
 
     def test_new_history_and_visual_notes_only_use_sqlite(self):
@@ -65,10 +65,15 @@ class MemorySQLiteMigrationTests(unittest.TestCase):
                 "metadata": {"image_paths": [image_path]},
             }])
             self.assertTrue(
-                manager.attach_visual_notes("张三", [image_path], ["一张照片"])
+                manager.attach_visual_notes(
+                    "张三",
+                    [image_path],
+                    ["一张照片"],
+                    chat_type="private",
+                )
             )
 
-            history = manager.get_messages("张三", 10)
+            history = manager.get_messages("张三", 10, chat_type="private")
             self.assertEqual(history[0]["content"], "[图片]")
             self.assertEqual(history[0]["visual_note"], "一张照片")
             self.assertFalse((Path(tmp) / "accounts" / "wxid" / "memory").exists())

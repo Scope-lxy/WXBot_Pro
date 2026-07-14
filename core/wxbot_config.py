@@ -74,6 +74,7 @@ class WXBotConfig:
         # ---------- 群聊配置 ----------
         self.group = []                 # 监听的群聊列表
         self.group_api_map = {}         # 群聊专属接口映射 {群名: api_index}
+        self.group_tts_map = {}         # 群聊专属 TTS 接口映射 {群名: tts_index}
         self.group_switch = False       # 群机器人总开关
         self.group_listen_only = False   # 群聊只监听不 AI 回复
         self.group_reply_at = False     # 群聊是否仅在被 @ 时才回复
@@ -210,6 +211,7 @@ class WXBotConfig:
                     "global_blacklist": [],
                     "group": [],
                     "group_api_map": {},
+                    "group_tts_map": {},
                     "group_switch": False,
                     "group_listen_only": False,
                     "group_reply_at": False,
@@ -712,6 +714,9 @@ class WXBotConfig:
         # 群聊配置
         self.group                = self.config.get('group', [])
         self.group_api_map        = self.config.get('group_api_map', {})
+        self.group_tts_map        = self._normalize_tts_map(
+            self.config.get('group_tts_map', {})
+        )
         self.group_switch         = self.config.get('group_switch')
         self.group_listen_only    = bool(self.config.get('group_listen_only', False))
         self.group_reply_at       = self.config.get('group_reply_at')
@@ -827,7 +832,7 @@ class WXBotConfig:
         self.default_prompt   = self.config.get('default_prompt', '默认')
         self.chat_prompt_map  = self.config.get('chat_prompt_map', {})
         self.chat_api_map     = self.config.get('chat_api_map', {})
-        self.chat_tts_map     = self._normalize_chat_tts_map(
+        self.chat_tts_map     = self._normalize_tts_map(
             self.config.get('chat_tts_map', {})
         )
         self.group_prompt_map = self.config.get('group_prompt_map', {})
@@ -1026,8 +1031,8 @@ class WXBotConfig:
         return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
     @staticmethod
-    def _normalize_chat_tts_map(raw_map):
-        """清洗私聊白名单用户的专属 TTS 接口索引配置"""
+    def _normalize_tts_map(raw_map):
+        """清洗会话的专属 TTS 接口索引配置"""
         if not isinstance(raw_map, dict):
             return {}
         clean = {}

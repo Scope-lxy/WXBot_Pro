@@ -10,11 +10,22 @@ from datetime import datetime
 from core import wechat_ui_actions
 from core.logger import log
 from core.message_pipeline import (
+    contains_group_mention,
     is_failed_voice_transcription_text,
     is_unrecognized_voice_placeholder,
     voice_message_body,
 )
 from feature.keyword_reply import normalize_keyword_reply_actions, plan_group_keyword_reply
+
+
+def _chat_identity(chat):
+    chat_name = str(getattr(chat, "who", "") or "").strip()
+    chat_type = str(getattr(chat, "chat_type", "") or "").strip().lower()
+    if not chat_name:
+        raise ValueError("chat.who must not be empty")
+    if chat_type not in {"private", "group"}:
+        raise ValueError("chat.chat_type must be private or group")
+    return chat_name, chat_type
 
 
 def _bot_log(bot, *args, **kwargs) -> None:
@@ -58,15 +69,20 @@ def _recognition_switches_for_chat(bot, chat):
     config = getattr(bot, "config", None)
     if config is None:
         return False, False
-    is_group = chat.who in getattr(config, "group", [])
-    if is_group:
+    chat_name, chat_type = _chat_identity(chat)
+    if chat_type == "group":
+        if not (
+            getattr(config, "group_switch", False)
+            and chat_name in getattr(config, "group", [])
+        ):
+            return False, False
         return (
             bool(getattr(config, "group_image_recognition_switch", False)),
             bool(getattr(config, "group_voice_recognition_switch", False)),
         )
     if (
         not getattr(config, "AllListen_switch", False)
-        and chat.who in getattr(config, "listen_list", [])
+        and chat_name in getattr(config, "listen_list", [])
     ):
         return (
             bool(getattr(config, "chat_image_recognition_switch", False)),
@@ -74,8 +90,7 @@ def _recognition_switches_for_chat(bot, chat):
         )
     if (
         getattr(config, "AllListen_switch", False)
-        and chat.who not in getattr(config, "global_blacklist", [])
-        and getattr(chat, "chat_type", "") != "group"
+        and chat_name not in getattr(config, "global_blacklist", [])
     ):
         return (
             bool(getattr(config, "chat_image_recognition_switch", False)),
@@ -151,12 +166,17 @@ def mark_failed_voice_silent_ignore(bot, msg) -> None:
     _bot_log(bot, "INFO", "语音识别失败，未得到有效文字，已静默忽略")
 
 
-def _update_alllisten_timestamp(bot, chat_name: str) -> None:
+def _update_alllisten_timestamp(bot, chat_name: str, chat_type: str) -> None:
     if not getattr(bot.config, "AllListen_switch", False):
         return
     now_ts = _bot_time_module(bot).time()
     for listen_chat in getattr(bot, "all_Mode_listen_list", []):
-        if listen_chat[0] == chat_name:
+        entry_type = (
+            str(listen_chat[2] or "private").strip().lower()
+            if len(listen_chat) >= 3
+            else "private"
+        )
+        if listen_chat[0] == chat_name and entry_type == chat_type:
             listen_chat[1] = now_ts
             break
 
@@ -215,9 +235,11 @@ def handle_friend_message_callback(bot, msg, chat, *, text: str):
         bot.msg_received_count += 1
     bot.last_msg_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     bot.last_msg_sender = msg.sender
-    _update_alllisten_timestamp(bot, chat.who)
+    _chat_name, chat_type = _chat_identity(chat)
+    _update_alllisten_timestamp(bot, chat.who, chat_type)
 
     if bot._handle_material_source_message(chat, msg):
+        bot._mark_inbound_no_reply(msg)
         return True
 
     result = bot.process_message(chat, msg)
@@ -230,27 +252,34 @@ def handle_friend_message_callback(bot, msg, chat, *, text: str):
 
 
 def _is_monitored_chat(bot, chat) -> bool:
-    return (
-        (
-            getattr(bot.config, "AllListen_switch", False)
-            and chat.who not in getattr(bot.config, "global_blacklist", [])
+    chat_name, chat_type = _chat_identity(chat)
+    if chat_type == "group":
+        return bool(
+            getattr(bot.config, "group_switch", False)
+            and chat_name in getattr(bot.config, "group", [])
         )
-        or (
-            not getattr(bot.config, "AllListen_switch", False)
-            and chat.who in getattr(bot.config, "listen_list", [])
-        )
-        or (
-            chat.who in getattr(bot.config, "group", [])
-            and getattr(bot.config, "group_switch", False)
-        )
-    )
+    if getattr(bot.config, "AllListen_switch", False):
+        return chat_name not in getattr(bot.config, "global_blacklist", [])
+    return chat_name in getattr(bot.config, "listen_list", [])
 
 
 def _route_group_message(bot, chat, message):
-    if chat.who in getattr(bot.config, "group", []) and not getattr(bot.config, "group_switch", False):
+    chat_name, chat_type = _chat_identity(chat)
+    if chat_type != "group":
+        raise ValueError("group routing requires chat_type=group")
+    if not (
+        getattr(bot.config, "group_switch", False)
+        and chat_name in getattr(bot.config, "group", [])
+    ):
         return {"action": "skip"}
     if getattr(message, "_skip_ai_reply", False):
         _bot_log(bot, message=f"群组 {chat.who} 消息已标记跳过 AI 回复：" + str(getattr(message, "content", "")))
+        return {"action": "skip"}
+    if (
+        str(getattr(message, "type", "") or "").strip().lower() == "voice"
+        and not getattr(bot.config, "group_voice_recognition_switch", False)
+    ):
+        _bot_log(bot, message=f"群组 {chat.who} 语音识别已关闭，跳过语音消息")
         return {"action": "skip"}
     if (
         not getattr(bot.config, "group_image_recognition_switch", False)
@@ -268,7 +297,13 @@ def _route_group_message(bot, chat, message):
     ):
         set_pending_visual_context = getattr(bot, "_set_pending_visual_context", None)
         if callable(set_pending_visual_context):
-            set_pending_visual_context(chat.who, [getattr(message, "content", "")], append=True)
+            set_pending_visual_context(
+                chat.who,
+                [getattr(message, "content", "")],
+                chat_type="group",
+                senders=[getattr(message, "sender", "")],
+                append=True,
+            )
         return {"action": "skip"}
 
     keyword_plan = plan_group_keyword_reply(
@@ -286,7 +321,10 @@ def _route_group_message(bot, chat, message):
 
     at_marker = getattr(bot.config, "AtMe", "")
     if not (
-        (at_marker and at_marker in getattr(message, "content", "") and getattr(bot.config, "group_reply_at", False))
+        (
+            contains_group_mention(getattr(message, "content", ""), at_marker)
+            and getattr(bot.config, "group_reply_at", False)
+        )
         or not getattr(bot.config, "group_reply_at", False)
     ):
         return {"action": "skip"}
@@ -298,19 +336,11 @@ def _route_group_message(bot, chat, message):
 
 
 def route_process_message(bot, chat, message):
+    _chat_name, chat_type = _chat_identity(chat)
     if not _is_monitored_chat(bot, chat):
         return {"action": "skip"}
 
-    if chat.who in getattr(bot.config, "group", []):
+    if chat_type == "group":
         return _route_group_message(bot, chat, message)
-
-    if (
-        getattr(bot.config, "AllListen_switch", False)
-        and (
-            chat.who in getattr(bot.config, "global_blacklist", [])
-            or getattr(chat, "chat_type", "") == "group"
-        )
-    ):
-        return {"action": "skip"}
 
     return {"action": "private_ai"}

@@ -128,6 +128,31 @@ def listen_add_error(result):
     return str(result)
 
 
+def listen_remove_succeeded(result):
+    """Only discard listener state when removal is confirmed or already complete."""
+    if result is None or result is True:
+        return True
+    if result is False:
+        return False
+    text = listen_add_error(result).strip()
+    missing = any(
+        marker in text
+        for marker in ("未找到监听对象", "未找到监听", "监听对象不存在", "未监听")
+    )
+    if isinstance(result, dict):
+        status = str(result.get("status") or "").strip().lower()
+        if status in {"success", "ok", "true", "成功"}:
+            return True
+        if status in {"error", "fail", "failed", "false", "失败", "错误"}:
+            return missing
+        if result.get("success") is True or result.get("code") == 0:
+            return True
+        if result.get("success") is False:
+            return missing
+        return missing
+    return text.lower() in {"ok", "success", "true"} or text in {"成功", "已成功"} or missing
+
+
 def listen_add_action_label(label):
     label = str(label or "").strip()
     if not label:
@@ -144,48 +169,79 @@ def subwindow_who(chat):
         return ""
 
 
-def is_target_chat(chat, nickname):
-    name = str(nickname or "").strip()
+def _conversation_ref(value, chat_type=None):
+    if isinstance(value, ConversationRef):
+        if chat_type is not None and ConversationRef(value.who, chat_type) != value:
+            raise ValueError("conversation chat_type does not match")
+        return value
+    return ConversationRef(str(value or "").strip(), chat_type or "private")
+
+
+def is_target_chat(chat, nickname, chat_type=None):
+    expected = _conversation_ref(nickname, chat_type)
+    actual = ConversationRef.from_wx_chat(chat) if chat and not isinstance(chat, dict) else None
     return bool(
-        name
+        expected.who
         and chat
         and not isinstance(chat, dict)
-        and subwindow_who(chat) == name
+        and actual == expected
         and callable(getattr(chat, "SendMsg", None))
     )
 
 
-def get_verified_subwindow(bot, nickname):
+def get_verified_subwindow(bot, nickname, *, chat_type=None):
+    conversation = _conversation_ref(nickname, chat_type)
     try:
-        chat = bot.wx.GetSubWindow(nickname=nickname)
+        chat = bot.wx.GetSubWindow(
+            nickname=conversation.who,
+            chat_type=conversation.chat_type,
+        )
     except Exception as exc:
-        _bot_log(bot, level="WARNING", message=f"监听管理 {nickname}：获取监听子窗口失败，详情：{exc}")
+        _bot_log(bot, level="WARNING", message=f"监听管理 {conversation.who}：获取监听子窗口失败，详情：{exc}")
         return None
-    if chat and subwindow_who(chat) == str(nickname).strip():
-        return chat
-    return None
+    return chat if is_target_chat(chat, conversation) else None
 
 
-def get_verified_subwindow_with_retry(bot, nickname, retry_count=3, interval=LISTENER_WINDOW_RECOVERY_VERIFY_INTERVAL_SECONDS):
+def get_verified_subwindow_with_retry(
+    bot,
+    nickname,
+    retry_count=3,
+    interval=LISTENER_WINDOW_RECOVERY_VERIFY_INTERVAL_SECONDS,
+    *,
+    chat_type=None,
+):
+    conversation = _conversation_ref(nickname, chat_type)
     attempts = max(1, int(retry_count or 1))
     for attempt in range(1, attempts + 1):
-        sub_chat = get_verified_subwindow(bot, nickname)
+        sub_chat = get_verified_subwindow(bot, conversation)
         if sub_chat:
             if attempt > 1:
-                _bot_log(bot, level="DEBUG", message=f"监听管理 {nickname}：第 {attempt} 次验证获取到监听子窗口")
+                _bot_log(bot, level="DEBUG", message=f"监听管理 {conversation.who}：第 {attempt} 次验证获取到监听子窗口")
             return sub_chat
         if attempt < attempts:
             _bot_sleep(bot, interval)
     return None
 
 
-def try_get_all_subwindow_names(bot):
+def try_get_all_subwindow_refs(bot):
     try:
         chats = bot.wx.GetAllSubWindow()
     except Exception as exc:
         _bot_log(bot, level="ERROR", message=f"获取全部监听子窗口失败: {exc}")
         return None
-    return {who for who in (subwindow_who(chat) for chat in (chats or [])) if who}
+    return {
+        (conversation.chat_type, conversation.who)
+        for conversation in (
+            ConversationRef.from_wx_chat(chat)
+            for chat in (chats or [])
+        )
+        if conversation.who
+    }
+
+
+def try_get_all_subwindow_names(bot):
+    refs = try_get_all_subwindow_refs(bot)
+    return None if refs is None else {name for _chat_type, name in refs}
 
 
 def _dynamic_listener_entry_name(entry):
@@ -194,64 +250,80 @@ def _dynamic_listener_entry_name(entry):
     return str(entry or "").strip()
 
 
-def has_dynamic_listener_entry(bot, nickname):
-    nickname = str(nickname or "").strip()
-    if not nickname:
+def _dynamic_listener_entry_ref(entry):
+    name = _dynamic_listener_entry_name(entry)
+    if not name:
+        return None
+    chat_type = entry[2] if isinstance(entry, (list, tuple)) and len(entry) >= 3 else "private"
+    return ConversationRef(name, chat_type)
+
+
+def has_dynamic_listener_entry(bot, nickname, *, chat_type=None):
+    conversation = _conversation_ref(nickname, chat_type)
+    if not conversation.who:
         return False
     return any(
-        _dynamic_listener_entry_name(item) == nickname
+        _dynamic_listener_entry_ref(item) == conversation
         for item in (getattr(bot, "all_Mode_listen_list", []) or [])
     )
 
 
-def remove_dynamic_listener_entries(bot, nickname):
-    nickname = str(nickname or "").strip()
+def remove_dynamic_listener_entries(bot, nickname, *, chat_type=None):
+    conversation = _conversation_ref(nickname, chat_type)
     runtime_list = getattr(bot, "all_Mode_listen_list", None)
-    if not nickname or not isinstance(runtime_list, list):
+    if not conversation.who or not isinstance(runtime_list, list):
         return False
-    kept = [item for item in runtime_list if _dynamic_listener_entry_name(item) != nickname]
+    kept = [item for item in runtime_list if _dynamic_listener_entry_ref(item) != conversation]
     removed = len(kept) != len(runtime_list)
     if removed:
         runtime_list[:] = kept
     return removed
 
 
-def touch_dynamic_listener_entry(bot, nickname, timestamp=None):
-    nickname = str(nickname or "").strip()
-    if not nickname:
+def touch_dynamic_listener_entry(bot, nickname, timestamp=None, *, chat_type=None):
+    conversation = _conversation_ref(nickname, chat_type)
+    if not conversation.who:
         return False
     runtime_list = getattr(bot, "all_Mode_listen_list", None)
     if not isinstance(runtime_list, list):
         return False
     now_ts = time.time() if timestamp is None else float(timestamp)
     for item in runtime_list:
-        if _dynamic_listener_entry_name(item) != nickname:
+        if _dynamic_listener_entry_ref(item) != conversation:
             continue
         if isinstance(item, list):
             if len(item) >= 2:
                 item[1] = now_ts
             else:
                 item.append(now_ts)
+            if len(item) >= 3:
+                item[2] = conversation.chat_type
+            else:
+                item.append(conversation.chat_type)
         elif isinstance(item, tuple):
             index = runtime_list.index(item)
-            runtime_list[index] = [nickname, now_ts]
+            runtime_list[index] = [conversation.who, now_ts, conversation.chat_type]
         else:
             index = runtime_list.index(item)
-            runtime_list[index] = [nickname, now_ts]
+            runtime_list[index] = [conversation.who, now_ts, conversation.chat_type]
         return True
-    runtime_list.append([nickname, now_ts])
+    runtime_list.append([conversation.who, now_ts, conversation.chat_type])
     return True
 
 
-def _forget_runtime_listener_caches(bot, nickname):
-    runtime_chat_state.remove_listen_chat(bot, nickname)
+def _forget_runtime_listener_caches(bot, nickname, *, chat_type=None):
+    runtime_chat_state.remove_listen_chat(bot, nickname, chat_type=chat_type)
 
 
-def _call_remove_listen_chat(bot, nickname):
+def _call_remove_listen_chat(bot, nickname, *, chat_type=None):
+    conversation = _conversation_ref(nickname, chat_type)
     remove_listen_chat = getattr(getattr(bot, "wx", None), "RemoveListenChat", None)
     if not callable(remove_listen_chat):
         raise RuntimeError("当前微信客户端不支持删除监听")
-    return remove_listen_chat(nickname, close_window=True)
+    return remove_listen_chat(
+        nickname=conversation.who,
+        chat_type=conversation.chat_type,
+    )
 
 
 def close_dynamic_listener_subwindows(bot, nicknames):
@@ -266,24 +338,33 @@ def close_dynamic_listener_subwindows(bot, nicknames):
         if not nickname or nickname in seen:
             continue
         seen.add(nickname)
-        if not has_dynamic_listener_entry(bot, nickname):
+        if not has_dynamic_listener_entry(bot, nickname, chat_type="private"):
             continue
         remove_fn = getattr(bot, "_remove_listen_chat_verified", None)
-        removed = remove_fn(nickname) if callable(remove_fn) else remove_listen_chat_verified(bot, nickname)
+        removed = (
+            remove_fn(nickname, chat_type="private")
+            if callable(remove_fn)
+            else remove_listen_chat_verified(bot, nickname, chat_type="private")
+        )
         if removed:
-            remove_dynamic_listener_entries(bot, nickname)
+            remove_dynamic_listener_entries(bot, nickname, chat_type="private")
             closed_names.append(nickname)
     return closed_names
 
 
-def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
+def add_listen_chat_once(bot, nickname, label, *, chat_type=None, allow_rebind=False):
+    conversation = _conversation_ref(nickname, chat_type)
+    nickname = conversation.who
     quiet_labels = {"动态监听", "监听窗口恢复"}
     label_text = str(label or "").strip()
     log_level = "WARNING" if label_text in quiet_labels else "ERROR"
 
     def add_action():
         with warn_slow_wechat_ui_action(f"AddListenChat({nickname})"):
-            return bot.wx.AddListenChat(nickname=nickname)
+            return bot.wx.AddListenChat(
+                nickname=nickname,
+                chat_type=conversation.chat_type,
+            )
 
     try:
         if allow_rebind:
@@ -319,9 +400,18 @@ def is_stale_listen_registration_error(result):
     return "已监听" in listen_add_error(result)
 
 
-def _set_last_dynamic_add_result(bot, chat_name, result=None, *, stale=False):
+def _set_last_dynamic_add_result(
+    bot,
+    chat_name,
+    result=None,
+    *,
+    chat_type=None,
+    stale=False,
+):
+    conversation = _conversation_ref(chat_name, chat_type)
     bot._last_dynamic_add_result = {
-        "chat": str(chat_name or "").strip(),
+        "chat": conversation.who,
+        "chat_type": conversation.chat_type,
         "result": result,
         "stale": bool(stale),
         "error": listen_add_error(result),
@@ -329,10 +419,13 @@ def _set_last_dynamic_add_result(bot, chat_name, result=None, *, stale=False):
     }
 
 
-def _consume_last_dynamic_add_result(bot, chat_name):
-    name = str(chat_name or "").strip()
+def _consume_last_dynamic_add_result(bot, chat_name, *, chat_type=None):
+    conversation = _conversation_ref(chat_name, chat_type)
     info = getattr(bot, "_last_dynamic_add_result", None)
-    if not isinstance(info, dict) or str(info.get("chat") or "").strip() != name:
+    if not isinstance(info, dict) or (
+        str(info.get("chat") or "").strip(),
+        str(info.get("chat_type") or "private").strip().lower(),
+    ) != (conversation.who, conversation.chat_type):
         return {}
     bot._last_dynamic_add_result = None
     return info
@@ -364,19 +457,22 @@ def _queue_listener_window_recovery(
     bot,
     chat_name,
     *,
+    chat_type=None,
     reason="",
     allow_rebuild=False,
     now=None,
 ):
     """Schedule window repair without retaining message data."""
-    name = str(chat_name or "").strip()
+    conversation = _conversation_ref(chat_name, chat_type)
+    name = conversation.who
     if not name:
         return False
     supervisor = ensure_listener_window_recovery_state(bot)
     now_ts = time.time() if now is None else float(now)
-    if supervisor.contains(name):
+    if supervisor.contains(name, chat_type=conversation.chat_type):
         supervisor.request(
             name,
+            chat_type=conversation.chat_type,
             error=str(reason or "").strip(),
             allow_rebuild=allow_rebuild,
             now=now_ts,
@@ -385,6 +481,7 @@ def _queue_listener_window_recovery(
         supervisor.failed(
             name,
             str(reason or "").strip(),
+            chat_type=conversation.chat_type,
             allow_rebuild=allow_rebuild,
             now=now_ts,
         )
@@ -401,40 +498,67 @@ def _is_bot_stop_requested(bot):
     return False
 
 
-def get_runtime_cached_subwindow(bot, nickname):
-    name = str(nickname or "").strip()
+def get_runtime_cached_subwindow(bot, nickname, *, chat_type=None):
+    conversation = _conversation_ref(nickname, chat_type)
+    name = conversation.who
     if not name:
         return None
-    cached = runtime_chat_state.get_listen_chat(bot, name)
-    if is_target_chat(cached, name):
+    cached = runtime_chat_state.get_listen_chat(
+        bot,
+        name,
+        chat_type=conversation.chat_type,
+    )
+    if is_target_chat(cached, conversation):
         return cached
     if cached:
-        runtime_chat_state.remove_listen_chat(bot, name)
+        runtime_chat_state.remove_listen_chat(
+            bot,
+            name,
+            chat_type=conversation.chat_type,
+        )
     return None
 
 
-def _rebuild_listener_window(bot, chat_name):
-    name = str(chat_name or "").strip()
+def _rebuild_listener_window(bot, chat_name, *, chat_type=None):
+    conversation = _conversation_ref(chat_name, chat_type)
+    name = conversation.who
     if not name:
         return None
-    existing = get_cached_or_verified_subwindow(bot, name)
+    existing = get_cached_or_verified_subwindow(
+        bot,
+        name,
+        chat_type=conversation.chat_type,
+    )
     if existing:
         return existing
-    _remove_listen_chat_verified_locked(bot, name, log_success=False)
+    if not _remove_listen_chat_verified_locked(
+        bot,
+        name,
+        chat_type=conversation.chat_type,
+        log_success=False,
+    ):
+        return None
     try:
         with warn_slow_wechat_ui_action(f"AddListenChat({name})"):
-            result = bot.wx.AddListenChat(nickname=name)
+            result = bot.wx.AddListenChat(
+                nickname=name,
+                chat_type=conversation.chat_type,
+            )
     except Exception as exc:
         _bot_log(bot, level="WARNING", message=f"全局监听 {name}：监听窗口重建异常，稍后继续等待，详情：{exc}")
         return None
-    if is_target_chat(result, name):
-        runtime_chat_state.remember_listen_chat(bot, name, result)
-        touch_dynamic_listener_entry(bot, name)
+    if is_target_chat(result, conversation):
+        runtime_chat_state.remember_listen_chat(bot, conversation, result)
+        touch_dynamic_listener_entry(bot, conversation)
         return result
-    sub_chat = get_verified_subwindow_with_retry(bot, name, retry_count=3)
+    sub_chat = get_verified_subwindow_with_retry(
+        bot,
+        conversation,
+        retry_count=3,
+    )
     if sub_chat:
-        runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
-        touch_dynamic_listener_entry(bot, name)
+        runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
+        touch_dynamic_listener_entry(bot, conversation)
         return sub_chat
     _bot_log(bot, level="WARNING", message=f"全局监听 {name}：监听窗口重建失败，稍后继续等待，详情：{listen_add_error(result)}")
     return None
@@ -453,25 +577,30 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
     handled = False
     for item in due_items:
         name = item["conversation"]
-        sub_chat = get_runtime_cached_subwindow(bot, name)
+        chat_type = item["chat_type"]
+        sub_chat = get_runtime_cached_subwindow(bot, name, chat_type=chat_type)
         if not sub_chat:
-            sub_chat = get_cached_or_verified_subwindow(bot, name)
+            sub_chat = get_cached_or_verified_subwindow(bot, name, chat_type=chat_type)
             if not sub_chat:
-                if item["allow_rebuild"] and supervisor.consume_rebuild(name):
-                    sub_chat = _rebuild_listener_window(bot, name)
+                if item["allow_rebuild"] and supervisor.consume_rebuild(
+                    name,
+                    chat_type=chat_type,
+                ):
+                    sub_chat = _rebuild_listener_window(bot, name, chat_type=chat_type)
                 else:
-                    sub_chat = add_chat_to_listen(bot, name)
+                    sub_chat = add_chat_to_listen(bot, name, chat_type=chat_type)
         handled = True
         if sub_chat:
-            supervisor.succeeded(name)
-            touch_dynamic_listener_entry(bot, name)
+            supervisor.succeeded(name, chat_type=chat_type)
+            touch_dynamic_listener_entry(bot, name, chat_type=chat_type)
             _bot_log(bot, level="INFO", message=f"全局监听 {name}：监听窗口已恢复")
             continue
 
-        add_result = _consume_last_dynamic_add_result(bot, name)
+        add_result = _consume_last_dynamic_add_result(bot, name, chat_type=chat_type)
         state = supervisor.failed(
             name,
             add_result.get("error", ""),
+            chat_type=chat_type,
             allow_rebuild=bool(add_result.get("stale")),
             now=now_ts,
         )
@@ -491,90 +620,115 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
     return handled
 
 
-def get_cached_or_verified_subwindow(bot, nickname):
-    name = str(nickname or "").strip()
+def get_cached_or_verified_subwindow(bot, nickname, *, chat_type=None):
+    conversation = _conversation_ref(nickname, chat_type)
+    name = conversation.who
     if not name:
         return None
-    cached = runtime_chat_state.get_listen_chat(bot, name)
-    if cached and not isinstance(cached, dict) and subwindow_who(cached) == name:
+    cached = runtime_chat_state.get_listen_chat(
+        bot,
+        name,
+        chat_type=conversation.chat_type,
+    )
+    if cached and is_target_chat(cached, conversation):
         return cached
     if cached:
-        runtime_chat_state.remove_listen_chat(bot, name)
-    sub_chat = get_verified_subwindow(bot, name)
+        runtime_chat_state.remove_listen_chat(
+            bot,
+            name,
+            chat_type=conversation.chat_type,
+        )
+    sub_chat = get_verified_subwindow(bot, conversation)
     if sub_chat:
-        runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
+        runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
         return sub_chat
     return None
 
 
-def add_and_verify_subwindow(bot, nickname, retry_count=3):
-    name = str(nickname or "").strip()
+def add_and_verify_subwindow(bot, nickname, retry_count=3, *, chat_type=None):
+    conversation = _conversation_ref(nickname, chat_type)
+    name = conversation.who
     if not name:
         return None
-    _set_last_dynamic_add_result(bot, name, None, stale=False)
-    sub_chat = get_cached_or_verified_subwindow(bot, name)
+    _set_last_dynamic_add_result(
+        bot,
+        name,
+        None,
+        chat_type=conversation.chat_type,
+        stale=False,
+    )
+    sub_chat = get_cached_or_verified_subwindow(bot, conversation)
     if sub_chat:
         return sub_chat
-    result = add_listen_chat_once(bot, name, "动态监听")
-    if is_target_chat(result, name):
-        runtime_chat_state.remember_listen_chat(bot, name, result)
+    result = add_listen_chat_once(
+        bot,
+        name,
+        "动态监听",
+        chat_type=conversation.chat_type,
+    )
+    if is_target_chat(result, conversation):
+        runtime_chat_state.remember_listen_chat(bot, conversation, result)
         _bot_log(bot, level="DEBUG", message=f"监听管理 {name}：AddListenChat 返回可用子窗口，已直接接管")
         return result
-    sub_chat = get_verified_subwindow_with_retry(bot, name, retry_count=retry_count)
+    sub_chat = get_verified_subwindow_with_retry(
+        bot,
+        conversation,
+        retry_count=retry_count,
+    )
     if sub_chat:
-        runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
+        runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
         return sub_chat
     if is_stale_listen_registration_error(result):
         _bot_log(bot, level="WARNING", message=f"{name} 已存在监听登记但未获取到可用子窗口，本次不删除重建")
-        _set_last_dynamic_add_result(bot, name, result, stale=True)
+        _set_last_dynamic_add_result(
+            bot,
+            name,
+            result,
+            chat_type=conversation.chat_type,
+            stale=True,
+        )
     else:
-        _set_last_dynamic_add_result(bot, name, result, stale=False)
+        _set_last_dynamic_add_result(
+            bot,
+            name,
+            result,
+            chat_type=conversation.chat_type,
+            stale=False,
+        )
     return None
 
 
 def expected_listener_names(bot):
-    expected = []
-    if not getattr(bot.config, "AllListen_switch", False):
-        expected.extend(str(item or "").strip() for item in (getattr(bot.config, "listen_list", []) or []))
-    if getattr(bot.config, "group_switch", False):
-        expected.extend(str(item or "").strip() for item in (getattr(bot.config, "group", []) or []))
-    material_source_runtime_enabled = getattr(bot, "_material_source_runtime_enabled", None)
-    if callable(material_source_runtime_enabled) and material_source_runtime_enabled():
-        expected.extend(
-            iter_material_outreach_listen_sources(
-                getattr(bot.config, "material_source_list", []),
-                listen_list=getattr(bot.config, "listen_list", []),
-                groups=getattr(bot.config, "group", []),
-                group_switch=getattr(bot.config, "group_switch", False),
-            )
-        )
+    return list(dict.fromkeys(ref.who for ref in expected_listener_refs(bot)))
 
-    names = []
-    seen = set()
-    for item in expected:
-        name = str(item or "").strip()
-        if name and name not in seen:
-            seen.add(name)
-            names.append(name)
-    return names
+
+def expected_listener_refs(bot):
+    return [
+        conversation
+        for label, conversation in listener_registration_specs(bot)
+        if label != "动态监听"
+    ]
 
 
 def listener_registration_specs(bot):
     specs = []
     if not getattr(bot.config, "AllListen_switch", False):
         specs.extend(
-            ("用户", str(item or "").strip())
+            ("用户", ConversationRef(str(item or "").strip(), "private"))
             for item in (getattr(bot.config, "listen_list", []) or [])
         )
     if getattr(bot.config, "group_switch", False):
         specs.extend(
-            ("群组", str(item or "").strip())
+            ("群组", ConversationRef(str(item or "").strip(), "group"))
             for item in (getattr(bot.config, "group", []) or [])
         )
     material_source_runtime_enabled = getattr(bot, "_material_source_runtime_enabled", None)
     if callable(material_source_runtime_enabled) and material_source_runtime_enabled():
         specs.extend(
-            ("素材投喂监听源", str(source or "").strip())
+            (
+                "素材投喂监听源",
+                ConversationRef(str(source or "").strip(), "private"),
+            )
             for source in iter_material_outreach_listen_sources(
                 getattr(bot.config, "material_source_list", []),
                 listen_list=getattr(bot.config, "listen_list", []),
@@ -583,20 +737,18 @@ def listener_registration_specs(bot):
             )
         )
     for item in getattr(bot, "all_Mode_listen_list", []) or []:
-        name = ""
-        if isinstance(item, (list, tuple)) and item:
-            name = str(item[0] or "").strip()
-        else:
-            name = str(item or "").strip()
-        specs.append(("动态监听", name))
+        conversation = _dynamic_listener_entry_ref(item)
+        if conversation is not None:
+            specs.append(("动态监听", conversation))
 
     unique_specs = []
     seen = set()
-    for label, name in specs:
-        if not name or name in seen:
+    for label, conversation in specs:
+        key = (conversation.chat_type, conversation.who)
+        if not conversation.who or key in seen:
             continue
-        seen.add(name)
-        unique_specs.append((label, name))
+        seen.add(key)
+        unique_specs.append((label, conversation))
     return unique_specs
 
 
@@ -633,17 +785,25 @@ def rebuild_listener_runtime(
 
     result = None
     expected_listeners = []
-    for label, name in listener_registration_specs(bot):
+    for label, conversation in listener_registration_specs(bot):
         _bot_sleep(bot, 0.5)
-        result = add_listen_chat_once(bot, name, label, allow_rebind=True)
-        expected_listeners.append(name)
-        if is_target_chat(result, name):
-            runtime_chat_state.remember_listen_chat(bot, name, result)
+        result = add_listen_chat_once(
+            bot,
+            conversation,
+            label,
+            allow_rebind=True,
+        )
+        expected_listeners.append(conversation)
+        if is_target_chat(result, conversation):
+            runtime_chat_state.remember_listen_chat(bot, conversation, result)
 
     verify_initial_listeners(bot, expected_listeners, retry_count=verify_retry_count)
     bot._listener_reconcile_last_at = time.time()
     _bot_log(bot, level="INFO", message=finish_message)
-    return all(runtime_chat_state.get_listen_chat(bot, name) for name in expected_listeners)
+    return all(
+        runtime_chat_state.get_listen_chat(bot, conversation)
+        for conversation in expected_listeners
+    )
 
 
 def process_listener_auto_recovery(bot):
@@ -741,16 +901,21 @@ def listener_recovery_snapshot(bot) -> dict[str, str | bool]:
     }
 
 
-def ensure_listener_subwindow(bot, nickname, retry_count=3):
-    name = str(nickname or "").strip()
+def ensure_listener_subwindow(bot, nickname, retry_count=3, *, chat_type=None):
+    conversation = _conversation_ref(nickname, chat_type)
+    name = conversation.who
     if not name:
         return None
-    sub_chat = get_verified_subwindow(bot, name)
+    sub_chat = get_verified_subwindow(bot, conversation)
     if sub_chat:
-        runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
+        runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
         return sub_chat
-    runtime_chat_state.remove_listen_chat(bot, name)
-    sub_chat = add_and_verify_subwindow(bot, name, retry_count=retry_count)
+    runtime_chat_state.remove_listen_chat(bot, conversation)
+    sub_chat = add_and_verify_subwindow(
+        bot,
+        conversation,
+        retry_count=retry_count,
+    )
     if sub_chat:
         _bot_log(bot, message=f"{name} 监听子窗口已自动恢复")
     return sub_chat
@@ -760,21 +925,26 @@ def reconcile_listener_subwindows(bot, retry_count=3):
     if not getattr(bot, "wx", None):
         return []
 
-    expected = expected_listener_names(bot)
+    expected = expected_listener_refs(bot)
     if not expected:
         return []
 
-    listened_names = try_get_all_subwindow_names(bot)
+    listened_refs = try_get_all_subwindow_refs(bot)
     reopened = []
-    for name in expected:
-        if listened_names is not None and name in listened_names:
-            sub_chat = get_verified_subwindow(bot, name)
+    for conversation in expected:
+        key = (conversation.chat_type, conversation.who)
+        if listened_refs is not None and key in listened_refs:
+            sub_chat = get_verified_subwindow(bot, conversation)
             if sub_chat:
-                runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
+                runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
                 continue
-        sub_chat = ensure_listener_subwindow(bot, name, retry_count=retry_count)
+        sub_chat = ensure_listener_subwindow(
+            bot,
+            conversation,
+            retry_count=retry_count,
+        )
         if sub_chat:
-            reopened.append(name)
+            reopened.append(conversation.who)
     return reopened
 
 
@@ -797,23 +967,55 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
     return reopened
 
 
-def remove_listen_chat_verified(bot, nickname, *, log_success=True):
-    return _remove_listen_chat_verified_locked(bot, nickname, log_success=log_success)
+def remove_listen_chat_verified(bot, nickname, *, chat_type=None, log_success=True):
+    return _remove_listen_chat_verified_locked(
+        bot,
+        nickname,
+        chat_type=chat_type,
+        log_success=log_success,
+    )
 
 
-def _remove_listen_chat_verified_locked(bot, nickname, *, log_success=True):
-    name = str(nickname or "").strip()
+def _remove_listen_chat_verified_locked(
+    bot,
+    nickname,
+    *,
+    chat_type=None,
+    log_success=True,
+):
+    conversation = _conversation_ref(nickname, chat_type)
+    name = conversation.who
     try:
         with warn_slow_wechat_ui_action(f"RemoveListenChat({name})"):
-            remove_result = _call_remove_listen_chat(bot, name)
+            remove_result = _call_remove_listen_chat(bot, conversation)
         remove_result_text = str(listen_add_error(remove_result)).strip()
-        if log_success and not (remove_result_text.lower() in {"ok", "success", "true"} or remove_result_text in {"成功", "已成功"}):
-            _bot_log(bot, message=f"监听管理 {name}：删除监听结果：{remove_result_text}")
     except Exception as exc:
-        _bot_log(bot, level="WARNING", message=f"监听管理 {name}：删除监听调用异常，已清理运行缓存，详情：{exc}")
+        _bot_log(bot, level="WARNING", message=f"监听管理 {name}：删除监听调用异常，已保留运行状态等待重试，详情：{exc}")
+        return False
 
-    _forget_runtime_listener_caches(bot, name)
-    remove_dynamic_listener_entries(bot, name)
+    if not listen_remove_succeeded(remove_result):
+        _bot_log(
+            bot,
+            level="WARNING",
+            message=f"监听管理 {name}：删除监听失败，已保留运行状态等待重试，详情：{remove_result_text}",
+        )
+        return False
+    if log_success and not (
+        remove_result_text.lower() in {"ok", "success", "true"}
+        or remove_result_text in {"成功", "已成功"}
+    ):
+        _bot_log(bot, message=f"监听管理 {name}：删除监听结果：{remove_result_text}")
+
+    _forget_runtime_listener_caches(
+        bot,
+        name,
+        chat_type=conversation.chat_type,
+    )
+    remove_dynamic_listener_entries(
+        bot,
+        name,
+        chat_type=conversation.chat_type,
+    )
     if log_success:
         _bot_log(bot, message=f"监听管理 {name}：删除监听完成，已清理运行缓存")
     return True
@@ -823,34 +1025,47 @@ def verify_initial_listeners(bot, expected_chats, retry_count=3):
     expected = []
     seen = set()
     for item in expected_chats or []:
-        name = str(item or "").strip()
-        if name and name not in seen:
-            seen.add(name)
-            expected.append(name)
+        conversation = _conversation_ref(item)
+        key = (conversation.chat_type, conversation.who)
+        if conversation.who and key not in seen:
+            seen.add(key)
+            expected.append(conversation)
     if not expected:
         return
 
-    listened_names = try_get_all_subwindow_names(bot)
-    missing = list(expected) if listened_names is None else [name for name in expected if name not in listened_names]
-    for name in expected:
-        if name not in missing:
-            sub_chat = get_verified_subwindow(bot, name)
+    listened_refs = try_get_all_subwindow_refs(bot)
+    missing = (
+        list(expected)
+        if listened_refs is None
+        else [
+            conversation
+            for conversation in expected
+            if (conversation.chat_type, conversation.who) not in listened_refs
+        ]
+    )
+    for conversation in expected:
+        if conversation not in missing:
+            sub_chat = get_verified_subwindow(bot, conversation)
             if sub_chat:
-                runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
+                runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
     if not missing:
         _bot_log(bot, level="DEBUG", message="监听管理：初始化监听子窗口校验通过")
         return
 
-    for name in missing:
-        sub_chat = add_and_verify_subwindow(bot, name, retry_count=retry_count)
+    for conversation in missing:
+        sub_chat = add_and_verify_subwindow(
+            bot,
+            conversation,
+            retry_count=retry_count,
+        )
         if not sub_chat:
-            _bot_log(bot, level="ERROR", message=f"{name} 初始化监听子窗口重试失败，已跳过运行缓存")
+            _bot_log(bot, level="ERROR", message=f"{conversation.who} 初始化监听子窗口重试失败，已跳过运行缓存")
 
 
 def init_wx_listeners(bot):
     """Initialize WeChat client and listener registrations."""
     specs = listener_registration_specs(bot)
-    listener_names = [name for _label, name in specs]
+    listener_refs = [conversation for _label, conversation in specs]
     identity = bot._bootstrap_ui_owner([])
     bot.config.AtMe = "@" + str(identity.get("nickname") or "")
     _bot_log(bot, level="DEBUG", message="绑定微信：" + bot.config.AtMe)
@@ -868,12 +1083,17 @@ def init_wx_listeners(bot):
     bot._set_material_outreach_namespace(wx_id)
     bot._initialize_message_runtime(wx_id)
     bot._init_prompt_system(str(account_area_dir(bot.config.DATA_DIR, wx_id, "chat_memory", create=True)))
-    bot._register_ui_listener_names(listener_names)
-    bot._listen_chats = {}
-    for _label, name in specs:
-        chat = OwnedChat(bot._ui_owner, name)
-        runtime_chat_state.remember_listen_chat(bot, name, chat)
     bot._drain_message_recovery()
+    bot._register_ui_listener_names(listener_refs)
+    bot._listen_chats = {}
+    for _label, conversation in specs:
+        chat = OwnedChat(
+            bot._ui_owner,
+            conversation.who,
+            conversation.chat_type,
+        )
+        runtime_chat_state.remember_listen_chat(bot, conversation, chat)
+    bot._ui_ingress_ready.set()
     bot._register_runtime_task_schedules()
     _bot_log(bot, level="DEBUG", message="监听器初始化完成")
     return True
@@ -891,6 +1111,9 @@ def find_new_group_friend(msg, flag):
 def send_group_welcome_msg(bot, chat, message):
     result = True
     _bot_log(bot, message=f"{chat.who} 系统消息:" + message.content)
+    welcome_text = str(getattr(bot.config, "group_welcome_msg", "") or "").strip()
+    if not welcome_text:
+        return True
 
     def send_welcome(new_friend):
         _bot_sleep(bot, 5)
@@ -903,12 +1126,23 @@ def send_group_welcome_msg(bot, chat, message):
             str(getattr(message, "content", "") or ""),
             str(new_friend or ""),
         ])
+        delivery_id = f"group-welcome:{uuid.uuid5(uuid.NAMESPACE_URL, seed)}"
+        action = {"type": "text", "text": welcome_text, "at": new_friend}
         try:
-            return chat.SendActions(
-                [{"type": "text", "text": str(bot.config.group_welcome_msg or ""), "at": new_friend}],
-                task_key=task_key,
-                task_version=task_version,
-                delivery_id=f"group-welcome:{uuid.uuid5(uuid.NAMESPACE_URL, seed)}",
+            return bot._send_tracked_outbound(
+                chat.who,
+                action,
+                lambda echo_id: chat.SendActions(
+                    [action],
+                    task_key=task_key,
+                    task_version=task_version,
+                    delivery_id=delivery_id,
+                    echo_delivery_ids=(echo_id,),
+                ),
+                source="group_welcome",
+                chat_type="group",
+                delivery_id=delivery_id,
+                at=new_friend,
             )
         except wechat_ui_actions.IntentCancelled:
             _bot_log(bot, message=f"群欢迎设置已更新或关闭，已取消向 {new_friend} 发送旧欢迎语")
@@ -1011,6 +1245,7 @@ def pass_new_friends(bot):
                     wechat_ui_actions.UIIntentKind.SEND_ACTIONS,
                     {
                         "conversation": send_name,
+                        "chat_type": "private",
                         "task_key": task_key,
                         "delivery_id": f"new-friend-welcome:{uuid.uuid4()}:{index}",
                         "actions": [prepared_action],
@@ -1060,51 +1295,79 @@ def new_msg_get_plus(chat_records):
     return filtered
 
 
-def add_chat_to_listen(bot, chat):
+def add_chat_to_listen(bot, chat, *, chat_type=None):
+    conversation = _conversation_ref(chat, chat_type)
     add_verify_fn = getattr(bot, "_add_and_verify_subwindow", None)
     if callable(add_verify_fn):
-        sub_chat = add_verify_fn(chat)
+        sub_chat = add_verify_fn(
+            conversation.who,
+            chat_type=conversation.chat_type,
+        )
     else:
-        sub_chat = add_and_verify_subwindow(bot, chat)
+        sub_chat = add_and_verify_subwindow(bot, conversation)
     if not sub_chat:
         return None
     is_listened_fn = getattr(bot, "is_chat_listened", None)
-    if callable(is_listened_fn) and is_listened_fn(chat):
-        touch_dynamic_listener_entry(bot, chat)
+    if callable(is_listened_fn) and is_listened_fn(
+        conversation.who,
+        chat_type=conversation.chat_type,
+    ):
+        touch_dynamic_listener_entry(bot, conversation)
         return sub_chat
-    touch_dynamic_listener_entry(bot, chat)
-    _bot_log(bot, message=f"全局监听 {chat}：已加入监听")
+    touch_dynamic_listener_entry(bot, conversation)
+    _bot_log(bot, message=f"全局监听 {conversation.who}：已加入监听")
     return sub_chat
 
 
-def is_chat_listened(bot, chat):
-    chat = str(chat or "").strip()
-    return any(_dynamic_listener_entry_name(listen_chat) == chat for listen_chat in bot.all_Mode_listen_list)
+def is_chat_listened(bot, chat, *, chat_type=None):
+    return has_dynamic_listener_entry(bot, chat, chat_type=chat_type)
 
 
 def alllisten_mode(bot, last_time, timeout=10):
     flush_listener_window_recovery_tasks(bot)
 
     def remove_timeout_listen(chat_time_out=600):
-        protected_listeners = set(expected_listener_names(bot))
+        protected_listeners = {
+            (conversation.chat_type, conversation.who)
+            for conversation in expected_listener_refs(bot)
+        }
         for listen_chat in bot.all_Mode_listen_list[:]:
             if time.time() - listen_chat[1] >= chat_time_out:
-                listen_name = listen_chat[0]
-                if listen_name in protected_listeners:
+                conversation = _dynamic_listener_entry_ref(listen_chat)
+                if conversation is None:
+                    continue
+                listen_name = conversation.who
+                if (conversation.chat_type, listen_name) in protected_listeners:
                     continue
                 remove_fn = getattr(bot, "_remove_listen_chat_verified", None)
                 if callable(remove_fn):
-                    removed = remove_fn(listen_name, log_success=False)
+                    removed = remove_fn(
+                        listen_name,
+                        chat_type=conversation.chat_type,
+                        log_success=False,
+                    )
                 else:
-                    removed = remove_listen_chat_verified(bot, listen_name, log_success=False)
+                    removed = remove_listen_chat_verified(
+                        bot,
+                        listen_name,
+                        chat_type=conversation.chat_type,
+                        log_success=False,
+                    )
                 if removed:
-                    remove_dynamic_listener_entries(bot, listen_name)
+                    remove_dynamic_listener_entries(
+                        bot,
+                        listen_name,
+                        chat_type=conversation.chat_type,
+                    )
                     _bot_log(bot, message=f"全局监听 {listen_name}：对话超时，已停止监听")
 
     def get_next_new_message():
         messages_new = bot.wx.GetNextNewMessage(
             filter_mute=bot.config.AllListen_filter_mute,
-            download_media=bool(getattr(bot.config, "chat_image_recognition_switch", False)),
+            download_media=bool(
+                getattr(bot.config, "chat_image_recognition_switch", False)
+                or getattr(bot.config, "group_image_recognition_switch", False)
+            ),
         )
         chat = messages_new.get("chat_name")
         chat_type = messages_new.get("chat_type")
@@ -1126,7 +1389,16 @@ def alllisten_mode(bot, last_time, timeout=10):
                 )
             else:
                 message._wxbot_ingress_source = "global"
-            if message.type == "voice" and not getattr(bot.config, "chat_voice_recognition_switch", False):
+            voice_recognition_enabled = bool(
+                getattr(
+                    bot.config,
+                    "group_voice_recognition_switch"
+                    if conversation.chat_type == "group"
+                    else "chat_voice_recognition_switch",
+                    False,
+                )
+            )
+            if message.type == "voice" and not voice_recognition_enabled:
                 message._skip_ai_reply = True
             bot._enqueue_ui_message(conversation, message)
             envelopes.append(message)
@@ -1136,28 +1408,48 @@ def alllisten_mode(bot, last_time, timeout=10):
             return
 
         supervisor = ensure_listener_window_recovery_state(bot)
-        if supervisor.contains(chat):
+        if supervisor.contains(
+            conversation.who,
+            chat_type=conversation.chat_type,
+        ):
             return
 
         is_listened_fn = getattr(bot, "is_chat_listened", None)
         sub_chat = None
-        if chat_type != "group" and callable(is_listened_fn) and is_listened_fn(chat):
-            sub_chat = get_cached_or_verified_subwindow(bot, chat)
+        if callable(is_listened_fn) and is_listened_fn(
+            conversation.who,
+            chat_type=conversation.chat_type,
+        ):
+            sub_chat = get_cached_or_verified_subwindow(bot, conversation)
             if sub_chat:
-                touch_dynamic_listener_entry(bot, chat)
+                touch_dynamic_listener_entry(bot, conversation)
         if not sub_chat:
             add_chat_fn = getattr(bot, "add_chat_to_listen", None)
-            sub_chat = add_chat_fn(chat) if callable(add_chat_fn) else add_chat_to_listen(bot, chat)
+            sub_chat = (
+                add_chat_fn(
+                    conversation.who,
+                    chat_type=conversation.chat_type,
+                )
+                if callable(add_chat_fn)
+                else add_chat_to_listen(bot, conversation)
+            )
         if sub_chat:
-            supervisor.succeeded(chat)
+            supervisor.succeeded(
+                conversation.who,
+                chat_type=conversation.chat_type,
+            )
             return
 
-        _forget_runtime_listener_caches(bot, chat)
-        remove_dynamic_listener_entries(bot, chat)
-        add_result = _consume_last_dynamic_add_result(bot, chat)
+        _forget_runtime_listener_caches(
+            bot,
+            conversation.who,
+            chat_type=conversation.chat_type,
+        )
+        remove_dynamic_listener_entries(bot, conversation)
+        add_result = _consume_last_dynamic_add_result(bot, conversation)
         _queue_listener_window_recovery(
             bot,
-            chat,
+            conversation,
             reason=add_result.get("error", ""),
             allow_rebuild=bool(add_result.get("stale")),
         )

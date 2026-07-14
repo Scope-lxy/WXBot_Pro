@@ -2,6 +2,8 @@
 
 import re
 
+from core.message_pipeline import contains_group_mention
+
 MAX_KEYWORD_REPLY_FILES = 9
 KEYWORD_TERM_SPLIT_RE = re.compile(r"[\r\n,，;；]+")
 
@@ -105,6 +107,6 @@ def plan_group_keyword_reply(enabled, keyword_dict, content, *, at_only=False, a
     if not enabled:
         return None
     content = str(content or "")
-    if at_only and at_marker not in content:
+    if at_only and not contains_group_mention(content, at_marker):
         return None
     return find_keyword_reply(keyword_dict, content)

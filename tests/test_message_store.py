@@ -92,12 +92,16 @@ class MessageStoreTests(unittest.TestCase):
             columns = {
                 str(row[1]) for row in connection.execute("PRAGMA table_info(reply_jobs)")
             }
+            echo_table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'reply_echo_expectations'"
+            ).fetchone()
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
         finally:
             connection.close()
 
         self.assertIn("route_source", columns)
-        self.assertEqual(version, 3)
+        self.assertIsNotNone(echo_table)
+        self.assertEqual(version, 4)
 
     def register(self, turn_id, event_ids, *, version, expires_at=1000.0, count=1):
         return self.store.register_reply_turn(
@@ -225,6 +229,44 @@ class MessageStoreTests(unittest.TestCase):
         history = self.store.history("Alice", 10)
 
         self.assertEqual([item["content"] for item in history], ["older", "current"])
+
+    def test_history_strictly_stops_before_the_earliest_boundary_event(self):
+        for chat_type, conversation in (("private", "Direct"), ("group", "Team")):
+            with self.subTest(chat_type=chat_type):
+                def append(native_id, content, received_at, source_order):
+                    payload = inbound(
+                        native_id,
+                        content=content,
+                        received_at=received_at,
+                        source_order=source_order,
+                    )
+                    payload.update(
+                        conversation=conversation,
+                        chat_type=chat_type,
+                        sender="Member" if chat_type == "group" else conversation,
+                    )
+                    return self.store.record_inbound(payload)
+
+                earlier = append(f"{chat_type}-1", "earlier fact", 300, 1)
+                current = append(f"{chat_type}-2", "current fact", 200, 2)
+                later = append(f"{chat_type}-3", "later event with older clock", 100, 3)
+                current_seq = self.store.get_event(current["event_id"])["event_seq"]
+
+                by_sequence = self.store.history(
+                    conversation,
+                    20,
+                    chat_type=chat_type,
+                    before_event_seq=current_seq,
+                )
+                by_event_ids = self.store.history(
+                    conversation,
+                    20,
+                    chat_type=chat_type,
+                    before_event_ids=(later["event_id"], current["event_id"]),
+                )
+
+                self.assertEqual([item["event_id"] for item in by_sequence], [earlier["event_id"]])
+                self.assertEqual([item["event_id"] for item in by_event_ids], [earlier["event_id"]])
 
     def test_pending_inbound_recovery_expires_stale_and_returns_fresh_fifo(self):
         stale = self.store.append_inbound_once(
@@ -638,6 +680,38 @@ class MessageStoreTests(unittest.TestCase):
         self.assertEqual(
             self.store.get_event(callback["event_id"])["metadata"],
             {"source": "material_outreach", "callback_source": "callback"},
+        )
+
+    def test_late_echo_keeps_the_confirmed_send_time_and_history_order(self):
+        confirmed = self.store.append_confirmed_outbound_once(
+            "delivery-before-manual",
+            "Alice",
+            content="registered answer",
+            sent_at=101,
+            now=101,
+        )
+        manual = self.record(
+            "manual-after-send",
+            direction="manual_self",
+            content="manual follow-up",
+            received_at=101.5,
+            source_order=1,
+        )
+
+        self.store.record_inbound(inbound(
+            "late-native-echo",
+            direction="bot_echo",
+            content="native answer",
+            received_at=102,
+            source_order=2,
+            related_delivery_id="delivery-before-manual",
+        ))
+
+        outbound = self.store.get_event(confirmed["event_id"])
+        self.assertEqual(outbound["received_at"], 101)
+        self.assertEqual(
+            [item["event_id"] for item in self.store.history("Alice", 10)],
+            [confirmed["event_id"], manual["event_id"]],
         )
 
     def test_late_voice_callback_keeps_tts_semantic_text(self):

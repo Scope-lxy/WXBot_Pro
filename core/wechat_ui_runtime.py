@@ -28,16 +28,48 @@ from core.wechat_ui_actions import (
 )
 
 
+def _required_internal_chat_type(chat_type):
+    value = str(chat_type or "").strip().lower()
+    if value not in {"private", "group"}:
+        raise ValueError("chat_type must be private or group")
+    return value
+
+
+def _internal_conversation(who, chat_type):
+    name = str(who or "").strip()
+    if not name:
+        raise ValueError("conversation must not be empty")
+    return ConversationRef(name, _required_internal_chat_type(chat_type))
+
+
+def _conversation_payload(conversation):
+    return {
+        "conversation": conversation.who,
+        "chat_type": conversation.chat_type,
+    }
+
+
+class MessageLocateError(RuntimeError):
+    """The source message was not located before any send was attempted."""
+
+
 class OwnedChat:
     """Conversation identity whose operations are always submitted to the UI owner."""
 
     def __init__(self, owner, who, chat_type="private"):
+        conversation = _internal_conversation(who, chat_type)
         self._owner = owner
-        self.who = str(who or "").strip()
-        self.chat_type = str(chat_type or "private").strip() or "private"
+        self.who = conversation.who
+        self.chat_type = conversation.chat_type
 
     def GetAllMessage(self):
-        return self._owner.call(UIIntent(UIIntentKind.GET_MESSAGES, {"conversation": self.who}), UI_CALL_WAIT_TIMEOUT)
+        return self._owner.call(
+            UIIntent(
+                UIIntentKind.GET_MESSAGES,
+                {"conversation": self.who, "chat_type": self.chat_type},
+            ),
+            UI_CALL_WAIT_TIMEOUT,
+        )
 
     def SendMsg(self, msg="", at=None, **kwargs):
         text = kwargs.get("message", msg)
@@ -140,22 +172,42 @@ class UIClientFacade:
     def SwitchToChat(self):
         return self._main("switch_to_chat")
 
-    def GetSubWindow(self, nickname):
+    def GetSubWindow(self, nickname, chat_type=None):
         name = str(nickname or "").strip()
-        exists = self._main("has_subwindow", conversation=name)
-        return OwnedChat(self._owner, name) if exists else None
+        payload = {"conversation": name}
+        if chat_type is not None:
+            payload["chat_type"] = _required_internal_chat_type(chat_type)
+        identity = self._main("subwindow_identity", **payload)
+        if not identity:
+            return None
+        return OwnedChat(self._owner, identity["name"], identity["chat_type"])
 
     def GetAllSubWindow(self):
-        return [OwnedChat(self._owner, name) for name in self._main("all_subwindows")]
+        return [
+            OwnedChat(self._owner, item["name"], item["chat_type"])
+            for item in self._main("all_subwindows")
+        ]
 
-    def AddListenChat(self, nickname):
+    def AddListenChat(self, nickname, chat_type=None):
         name = str(nickname or "").strip()
-        self._owner.call(UIIntent(UIIntentKind.ADD_LISTEN, {"conversation": name}), UI_CALL_WAIT_TIMEOUT)
-        return OwnedChat(self._owner, name)
+        payload = {"conversation": name}
+        if chat_type is not None:
+            payload["chat_type"] = _required_internal_chat_type(chat_type)
+        identity = self._owner.call(
+            UIIntent(UIIntentKind.ADD_LISTEN, payload),
+            UI_CALL_WAIT_TIMEOUT,
+        )
+        return OwnedChat(self._owner, identity["name"], identity["chat_type"])
 
-    def RemoveListenChat(self, nickname=None, who=None):
+    def RemoveListenChat(self, nickname=None, who=None, chat_type=None):
         name = str(nickname or who or "").strip()
-        return self._owner.call(UIIntent(UIIntentKind.REMOVE_LISTEN, {"conversation": name}), UI_CALL_WAIT_TIMEOUT)
+        payload = {"conversation": name}
+        if chat_type is not None:
+            payload["chat_type"] = _required_internal_chat_type(chat_type)
+        return self._owner.call(
+            UIIntent(UIIntentKind.REMOVE_LISTEN, payload),
+            UI_CALL_WAIT_TIMEOUT,
+        )
 
     def poll_listen_messages(self):
         return self._owner.call(
@@ -235,7 +287,7 @@ class WeChatUIRuntime:
 
     def _callback(self, message, chat):
         conversation = ConversationRef.from_wx_chat(chat)
-        suppression_key = (conversation.who, get_ident())
+        suppression_key = (conversation.chat_type, conversation.who, get_ident())
         with self._callback_suppression_lock:
             if self._callback_suppression.get(suppression_key, 0) > 0:
                 return True
@@ -258,6 +310,7 @@ class WeChatUIRuntime:
                 path = str(owner.run_callback_action(
                     UIIntent(UIIntentKind.DOWNLOAD_MEDIA, {
                         "conversation": conversation.who,
+                        "chat_type": conversation.chat_type,
                         "callback_bound_message": True,
                     }),
                     method,
@@ -281,11 +334,13 @@ class WeChatUIRuntime:
 
     @contextmanager
     def _suppress_callbacks_for(self, conversation):
-        name = str(conversation or "").strip()
-        if not name:
-            yield
-            return
-        suppression_key = (name, get_ident())
+        if not isinstance(conversation, ConversationRef):
+            raise TypeError("conversation must be a ConversationRef")
+        suppression_key = (
+            conversation.chat_type,
+            conversation.who,
+            get_ident(),
+        )
         with self._callback_suppression_lock:
             self._callback_suppression[suppression_key] = self._callback_suppression.get(suppression_key, 0) + 1
         try:
@@ -333,47 +388,137 @@ class WeChatUIRuntime:
         raise RuntimeError("未能初始化微信客户端")
 
     @staticmethod
-    def _verified_chat(chat, name):
-        return chat if chat is not None and str(getattr(chat, "who", "") or "").strip() == name else None
+    def _chat_conversation(chat):
+        return ConversationRef.from_wx_chat(chat)
 
-    def _find_chat(self, name):
-        name = str(name or "").strip()
-        cached = self._verified_chat(self._listen_chats.get(name), name)
-        if cached is not None:
-            return cached
-        self._listen_chats.pop(name, None)
-        getter = getattr(self._client, "GetSubWindow", None)
+    @staticmethod
+    def _chat_key(conversation):
+        return conversation.chat_type, conversation.who
+
+    @staticmethod
+    def _payload_conversation(payload):
+        return _internal_conversation(
+            payload.get("conversation"),
+            payload.get("chat_type"),
+        )
+
+    def _subwindows(self):
+        getter = getattr(self._client, "GetAllSubWindow", None)
         if callable(getter):
-            chat = self._verified_chat(getter(nickname=name), name)
-            if chat is not None:
-                self._listen_chats[name] = chat
-                return chat
-        return None
+            return list(getter() or [])
+        unique = []
+        seen = set()
+        for chat in self._listen_chats.values():
+            marker = id(chat)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            unique.append(chat)
+        return unique
 
-    def _add_chat(self, name):
+    def _matching_subwindows(self, *, name, chat_type=None):
+        matches = []
+        for chat in self._subwindows():
+            conversation = self._chat_conversation(chat)
+            if conversation.who != name:
+                continue
+            if chat_type is not None and conversation.chat_type != chat_type:
+                continue
+            matches.append((conversation, chat))
+        return matches
+
+    def _cache_chat(self, conversation, chat):
+        self._listen_chats[self._chat_key(conversation)] = chat
+        return chat
+
+    def _find_unique_named_chat(self, name):
+        name = str(name or "").strip()
+        if not name:
+            raise ValueError("微信 UI 意图缺少会话名称")
+        matches = self._matching_subwindows(name=name)
+        if len(matches) > 1:
+            raise RuntimeError(f"存在多个同名微信窗口，已拒绝猜测目标：{name}")
+        if len(matches) == 1:
+            conversation, chat = matches[0]
+            return conversation, self._cache_chat(conversation, chat)
+        getter = getattr(self._client, "GetSubWindow", None)
+        chat = getter(nickname=name) if callable(getter) else None
+        if chat is None:
+            return None, None
+        conversation = self._chat_conversation(chat)
+        if conversation.who != name:
+            return None, None
+        return conversation, self._cache_chat(conversation, chat)
+
+    def _find_chat(self, conversation):
+        if not isinstance(conversation, ConversationRef):
+            raise TypeError("conversation must be a ConversationRef")
+        matches = self._matching_subwindows(
+            name=conversation.who,
+            chat_type=conversation.chat_type,
+        )
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"存在多个无法区分的同名{conversation.chat_type}窗口，已拒绝猜测目标："
+                f"{conversation.who}"
+            )
+        if len(matches) == 1:
+            _actual, chat = matches[0]
+            return self._cache_chat(conversation, chat)
+
+        key = self._chat_key(conversation)
+        cached = self._listen_chats.get(key)
+        if cached is not None:
+            try:
+                if self._chat_conversation(cached) == conversation:
+                    return cached
+            except Exception:
+                pass
+            self._listen_chats.pop(key, None)
+
+        getter = getattr(self._client, "GetSubWindow", None)
+        chat = getter(nickname=conversation.who) if callable(getter) else None
+        if chat is None:
+            return None
+        actual = self._chat_conversation(chat)
+        if actual != conversation:
+            return None
+        return self._cache_chat(conversation, chat)
+
+    def _add_chat(self, name, chat_type=None):
+        name = str(name or "").strip()
+        requested = (
+            _internal_conversation(name, chat_type)
+            if chat_type is not None
+            else None
+        )
         add = getattr(self._client, "AddListenChat", None)
         if not callable(add):
             raise RuntimeError("当前微信内核不支持添加监听")
-        chat = self._verified_chat(add(nickname=name, callback=self._callback), name)
-        if chat is None:
-            chat = self._find_chat(name)
+        chat = add(nickname=name, callback=self._callback)
+        if requested is None:
+            discovered, chat = self._find_unique_named_chat(name)
+            if discovered is None or chat is None:
+                raise RuntimeError(f"未能建立监听子窗口：{name}")
+            return chat
+
+        actual = self._chat_conversation(chat) if chat is not None else None
+        if actual != requested:
+            chat = self._find_chat(requested)
         if chat is None:
             raise RuntimeError(f"未能建立监听子窗口：{name}")
-        self._listen_chats[name] = chat
-        return chat
+        return self._cache_chat(requested, chat)
 
     def _chat_for_payload(self, payload, *, allow_add):
         if self._client is None:
             raise RuntimeError("微信 UI owner 尚未初始化")
-        name = str(payload.get("conversation") or "").strip()
-        if not name:
-            raise ValueError("微信 UI 意图缺少会话名称")
-        chat = self._find_chat(name)
+        conversation = self._payload_conversation(payload)
+        chat = self._find_chat(conversation)
         if chat is not None:
             return chat
         if not allow_add:
             raise IntentNeedsExclusive()
-        return self._add_chat(name)
+        return self._add_chat(conversation.who, conversation.chat_type)
 
     def bootstrap(self, payload):
         self._client = self._create_client()
@@ -392,22 +537,46 @@ class WeChatUIRuntime:
         registered = []
         for raw in payload.get("listeners") or ():
             name = str(raw.get("name") if isinstance(raw, Mapping) else raw or "").strip()
-            if not name or name in registered:
+            chat_type = raw.get("chat_type") if isinstance(raw, Mapping) else None
+            listener_key = (
+                _required_internal_chat_type(chat_type),
+                name,
+            ) if chat_type is not None else ("", name)
+            if not name or listener_key in registered:
                 continue
-            self._add_chat(name)
-            registered.append(name)
+            self._add_chat(name, chat_type)
+            registered.append(listener_key)
         return {
             "nickname": nickname,
             "wx_id": str(info.get("id") or nickname),
-            "listeners": registered,
+            "listeners": [name for _chat_type, name in registered],
+            "listener_refs": [
+                {"name": name, "chat_type": chat_type}
+                for chat_type, name in self._listen_chats
+            ],
         }
 
     def rebind(self, payload):
         listeners = []
-        for raw in payload.get("listeners") or tuple(self._listen_chats):
+        source = payload.get("listeners") or [
+            {"name": name, "chat_type": chat_type}
+            for chat_type, name in self._listen_chats
+        ]
+        seen = set()
+        for raw in source:
             name = str(raw.get("name") if isinstance(raw, Mapping) else raw or "").strip()
-            if name and name not in listeners:
-                listeners.append(name)
+            chat_type = raw.get("chat_type") if isinstance(raw, Mapping) else None
+            key = (
+                _required_internal_chat_type(chat_type),
+                name,
+            ) if chat_type is not None else ("", name)
+            if name and key not in seen:
+                seen.add(key)
+                listeners.append(
+                    {"name": name, "chat_type": key[0]}
+                    if key[0]
+                    else name
+                )
         old_client = self._client
         if old_client is not None:
             stop = getattr(old_client, "StopListening", None)
@@ -429,18 +598,37 @@ class WeChatUIRuntime:
         return True
 
     def add_listen(self, payload):
-        return bool(self._add_chat(str(payload.get("conversation") or "").strip()))
+        chat = self._add_chat(
+            str(payload.get("conversation") or "").strip(),
+            payload.get("chat_type"),
+        )
+        return {
+            "name": self._chat_conversation(chat).who,
+            "chat_type": self._chat_conversation(chat).chat_type,
+        }
 
     def remove_listen(self, payload):
         name = str(payload.get("conversation") or "").strip()
+        chat_type = payload.get("chat_type")
+        if chat_type is None:
+            conversation, chat = self._find_unique_named_chat(name)
+        else:
+            conversation = _internal_conversation(name, chat_type)
+            chat = self._find_chat(conversation)
+        if conversation is None or chat is None:
+            return None
+        same_name = self._matching_subwindows(name=name)
+        if len(same_name) > 1:
+            raise RuntimeError(f"存在多个同名微信窗口，无法安全删除监听：{name}")
         remove = getattr(self._client, "RemoveListenChat", None)
         result = remove(nickname=name) if callable(remove) else None
-        self._listen_chats.pop(name, None)
+        self._listen_chats.pop(self._chat_key(conversation), None)
         return result
 
     def get_messages(self, payload):
+        conversation = self._payload_conversation(payload)
         chat = self._chat_for_payload(payload, allow_add=bool(payload.get("_exclusive_retry")))
-        with self._suppress_callbacks_for(getattr(chat, "who", "")):
+        with self._suppress_callbacks_for(conversation):
             messages = list(chat.GetAllMessage() or [])
         return [
             self._snapshot_envelope(message, ingress_source="window_snapshot", window_order=index)
@@ -576,45 +764,74 @@ class WeChatUIRuntime:
         if operation == "switch_to_chat":
             switch = getattr(self._client, "SwitchToChat", None)
             return switch() if callable(switch) else True
-        if operation == "has_subwindow":
-            return self._find_chat(str(payload.get("conversation") or "")) is not None
+        if operation in {"has_subwindow", "subwindow_identity"}:
+            name = str(payload.get("conversation") or "").strip()
+            chat_type = payload.get("chat_type")
+            if chat_type is None:
+                conversation, chat = self._find_unique_named_chat(name)
+            else:
+                conversation = _internal_conversation(name, chat_type)
+                chat = self._find_chat(conversation)
+            if operation == "has_subwindow":
+                return chat is not None
+            if chat is None or conversation is None:
+                return None
+            return {"name": conversation.who, "chat_type": conversation.chat_type}
         if operation == "all_subwindows":
-            getter = getattr(self._client, "GetAllSubWindow", None)
-            chats = list(getter() or []) if callable(getter) else list(self._listen_chats.values())
-            names = []
+            chats = self._subwindows()
+            identities = []
             current = {}
             for chat in chats:
-                name = str(getattr(chat, "who", "") or "").strip()
-                if name and name not in names:
-                    current[name] = chat
-                    names.append(name)
+                conversation = self._chat_conversation(chat)
+                key = self._chat_key(conversation)
+                if key in current:
+                    raise RuntimeError(
+                        f"存在多个无法区分的同名{conversation.chat_type}窗口："
+                        f"{conversation.who}"
+                    )
+                current[key] = chat
+                identities.append({
+                    "name": conversation.who,
+                    "chat_type": conversation.chat_type,
+                })
             self._listen_chats = current
-            return names
+            return identities
         raise ValueError(f"未登记的主窗口操作：{operation}")
 
     def _locate_message(self, payload):
+        conversation = self._payload_conversation(payload)
         chat = self._chat_for_payload(payload, allow_add=True)
-        with self._suppress_callbacks_for(getattr(chat, "who", "")):
+        with self._suppress_callbacks_for(conversation):
             messages = list(chat.GetAllMessage() or [])
             located = self._locate_message_in_snapshot(messages, payload, allow_window_order=True)
             if located is not None:
                 return located
 
             if not bool(payload.get("allow_history_fallback", True)):
-                raise RuntimeError("当前可见窗口未找到原消息，已停止历史翻页定位")
+                raise MessageLocateError("当前可见窗口未找到原消息，已停止历史翻页定位")
 
             history_reader = getattr(chat, "GetHistoryMessage", None)
             if not callable(history_reader):
                 chat_with = getattr(self._client, "ChatWith", None)
                 history_reader = getattr(self._client, "GetHistoryMessage", None)
                 if callable(chat_with) and callable(history_reader):
-                    chat_with(who=str(payload.get("conversation") or ""), exact=True)
+                    chat_with(who=conversation.who, exact=True)
+                    chat_info = getattr(self._client, "ChatInfo", None)
+                    if not callable(chat_info):
+                        raise MessageLocateError("主窗口无法验证聊天类型，已停止历史定位")
+                    info = dict(chat_info() or {})
+                    actual = _internal_conversation(
+                        info.get("chat_name") or conversation.who,
+                        "private" if info.get("chat_type") == "friend" else info.get("chat_type"),
+                    )
+                    if actual != conversation:
+                        raise MessageLocateError("主窗口聊天类型与目标不一致，已停止历史定位")
             if callable(history_reader):
                 history = list(history_reader(50, interval=0.2, speed=5, goback=True) or [])
                 located = self._locate_message_in_snapshot(history, payload, allow_window_order=False)
                 if located is not None:
                     return located
-        raise RuntimeError("当前窗口和近期历史均未找到原消息")
+        raise MessageLocateError("当前窗口和近期历史均未找到原消息")
 
     @staticmethod
     def _locate_message_in_snapshot(messages, payload, *, allow_window_order):
@@ -657,7 +874,7 @@ class WeChatUIRuntime:
                 return exact[0]
         if len(candidates) == 1:
             return candidates[0][1]
-        raise RuntimeError("当前窗口存在多条相同消息，已拒绝猜测原消息")
+        raise MessageLocateError("当前窗口存在多条相同消息，已拒绝猜测原消息")
 
     def download_media(self, payload):
         message = self._locate_message(payload)
@@ -680,7 +897,10 @@ class WeChatUIRuntime:
         message = self._locate_message(payload)
         roll_into_view = getattr(message, "roll_into_view", None)
         if callable(roll_into_view):
-            roll_into_view()
+            try:
+                roll_into_view()
+            except Exception as exc:
+                raise MessageLocateError(f"原消息无法滚动到可引用位置：{exc}") from exc
         return message.quote(str(payload.get("text") or ""), at=str(payload.get("at") or "") or None)
 
     def read_material_messages(self, payload):
@@ -689,12 +909,13 @@ class WeChatUIRuntime:
         from wxautox4.param import WxParam
 
         source = str(payload.get("conversation") or "").strip()
+        conversation = self._payload_conversation(payload)
         limit = max(1, int(payload.get("limit") or 1))
         target_signature = str(payload.get("target_signature") or "").strip()
         goback = bool(payload.get("goback", True))
         require_forwardable = bool(payload.get("require_forwardable", True))
-        with self._suppress_callbacks_for(source):
-            chat = self._chat_for_payload({"conversation": source}, allow_add=True)
+        with self._suppress_callbacks_for(conversation):
+            chat = self._chat_for_payload(payload, allow_add=True)
         readers = []
         chat_box = getattr(chat, "ChatBox", None)
         internal = getattr(chat_box, "get_msgs_from_history", None)
@@ -721,7 +942,7 @@ class WeChatUIRuntime:
                     return stop_sign
                 return None
 
-            with self._suppress_callbacks_for(source):
+            with self._suppress_callbacks_for(conversation):
                 return list(reader(
                     limit,
                     callback=stop_after_enough,
@@ -764,8 +985,18 @@ class WeChatUIRuntime:
             if callable(chat_with) and callable(main_history):
                 strategy = "主窗口公开 GetHistoryMessage"
                 try:
-                    with self._suppress_callbacks_for(source):
+                    with self._suppress_callbacks_for(conversation):
                         chat_with(who=source, exact=True)
+                    chat_info = getattr(self._client, "ChatInfo", None)
+                    if not callable(chat_info):
+                        raise RuntimeError("主窗口无法验证素材源聊天类型")
+                    info = dict(chat_info() or {})
+                    actual = ConversationRef(
+                        str(info.get("chat_name") or source).strip(),
+                        info.get("chat_type") or "private",
+                    )
+                    if actual != conversation:
+                        raise RuntimeError("主窗口素材源聊天类型与目标不一致")
                     messages = read_history(main_history)
                     last_messages = messages
                     last_strategy = strategy
@@ -789,7 +1020,7 @@ class WeChatUIRuntime:
         if last_messages is None or not messages_are_usable(last_messages):
             getter = getattr(chat, "GetAllMessage", None)
             if callable(getter):
-                with self._suppress_callbacks_for(source):
+                with self._suppress_callbacks_for(conversation):
                     last_messages = list(getter() or [])[-limit:]
                 last_strategy = "子窗口可见 GetAllMessage"
             elif last_messages is None:
@@ -988,7 +1219,9 @@ class WeChatUIRuntime:
 
         sender = ConversationVerifySender(assert_owner_thread=self._heartbeat)
         target = str(payload.get("target") or "")
-        with self._suppress_callbacks_for(target):
+        with self._suppress_callbacks_for(
+            _internal_conversation(target, "private")
+        ):
             return sender.send(
                 SimpleNamespace(wx=self._client),
                 target,

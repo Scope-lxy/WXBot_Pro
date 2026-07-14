@@ -86,7 +86,7 @@ from core.account_storage import (
     resolve_account_id,
 )
 from core import wechat_ui_actions
-from core.wechat_ui_runtime import OwnedChat, UIClientFacade, WeChatUIRuntime
+from core.wechat_ui_runtime import MessageLocateError, OwnedChat, UIClientFacade, WeChatUIRuntime
 from core.inbound_coordinator import InboundCoordinator, InboundEvent
 from core.message_store import (
     DEFAULT_REPLY_TTL_SECONDS,
@@ -96,6 +96,7 @@ from core.message_store import (
 )
 from core.reply_delivery import (
     DeliveryNotStarted,
+    DeliveryResult,
     DeliveryStatus,
     ReplyAction,
     ReplyDeliveryCoordinator,
@@ -147,6 +148,7 @@ from core.message_pipeline import (
     message_content_fingerprint,
     message_unique_id,
     split_quoted_image_message,
+    strip_group_mention,
     strip_message_shell,
     strip_voice_duration_metadata,
 )
@@ -194,10 +196,15 @@ from core.contact_profiles import (
 from feature import contacts, friend_request, listening, message_routing, relationship_scan
 
 
-PENDING_VISUAL_CONTEXT_TTL_SECONDS = 600
+PRIVATE_PENDING_VISUAL_CONTEXT_TTL_SECONDS = 600
+GROUP_PENDING_VISUAL_CONTEXT_TTL_SECONDS = 7200
+GROUP_VISUAL_BATCH_GAP_SECONDS = 120
 PENDING_VISUAL_DIRECT_REFERENCE_RE = re.compile(
     r"("
-    r"图|照|相|截|屏|画|码|表情|菜单|票|单|"
+    r"图片|图像|图表|地图|照片|相片|截图|截屏|屏幕截图|画面|画作|"
+    r"表情包?|二维码|条形码|海报|菜单|票据|发票|单据|账单|收据|"
+    r"(?:这|那|哪|一|两|几|每|上|下|前|后|看|识|张|幅)图|"
+    r"图(?:里|中|上|下|呢|吗|是|有|写|显示)|(?:这|那|张)票|"
     r"\b(?:image|picture|photo|photograph|screenshot|screen\s*shot|pic|img|meme|poster|"
     r"qr\s*code|barcode)\b"
     r")",
@@ -205,25 +212,28 @@ PENDING_VISUAL_DIRECT_REFERENCE_RE = re.compile(
 )
 PENDING_VISUAL_CONTEXT_REFERENCE_RE = re.compile(
     r"("
-    r"这|那|刚|东西|张|上|前|后|"
+    r"这(?:个|些|张|幅)?|那(?:个|些|张|幅)?|哪(?:个|些|张|幅)?|"
+    r"刚才(?:的|那个|那张)?|上面|下面|前面|后面|上一张|下一张|"
     r"\b(?:this|this\s+one|that|that\s+one|it|above|below|previous|last\s+one|next|the\s+one\s+above)\b"
     r")",
     re.IGNORECASE,
 )
 PENDING_VISUAL_ACTION_RE = re.compile(
     r"("
-    r"看|听|说|读|写|什么|识别|解释|意思|含义|翻译|描述|分析|提取|"
+    r"看看|看一下|看下|读一下|读下|识别|解释|翻译|描述|分析|提取|"
+    r"是什么|是啥|有什么|有啥|写着|写的|显示|什么意思|啥意思|什么含义|啥含义|"
     r"\b(?:ocr|read|describe|analy[sz]e|recognize|identify|transcribe|extract|translate|"
     r"explain|caption|what(?:'s| is)|what does|mean|say|says|text)\b"
     r")",
     re.IGNORECASE,
 )
 PENDING_VISUAL_STANDALONE_ACTION_RE = re.compile(
-    r"("
-    r"看|听|说|读|写|识别|解释|意思|含义|翻译|描述|分析|提取|"
-    r"\b(?:ocr|read|describe|analy[sz]e|recognize|identify|transcribe|extract|translate|"
-    r"explain|caption|mean|say|says|text)\b"
-    r")",
+    r"^\s*(?:(?:请|帮我|麻烦|能不能|可以)\s*)?(?:"
+    r"看看|看一下|看下|读一下|读下|识别(?:一下|下)?|解释(?:一下|下)?|"
+    r"翻译(?:一下|下)?|描述(?:一下|下)?|分析(?:一下|下)?|提取(?:一下|下)?|"
+    r"(?:please\s+)?(?:ocr|read|describe|analy[sz]e|recognize|identify|transcribe|"
+    r"extract|translate|explain|caption)(?:\s+(?:it|this|that))?"
+    r")(?:\s*(?:可以吗|行吗|谢谢|please))?[？?！!。.]*\s*$",
     re.IGNORECASE,
 )
 CHAT_MEMORY_BACKGROUND_INTERVAL_SECONDS = 30
@@ -459,11 +469,16 @@ class WXBot:
         self._ui_identity = {}
         self._ui_ingress_queue = Queue()
         self._ui_ingress_stop = threading.Event()
+        self._ui_ingress_ready = threading.Event()
         self._ui_ingress_thread = None
+        self._stop_cleanup_lock = threading.Lock()
+        self._stop_cleanup_done = False
         self._message_store = None
         self._inbound_coordinator = None
         self._reply_delivery_coordinator = None
-        self._reply_echo_tracker = ReplyEchoTracker()
+        self._reply_echo_tracker = ReplyEchoTracker(
+            text_ttl=DEFAULT_REPLY_TTL_SECONDS,
+        )
         self._pending_message_recovery = []
         self._voice_reply_state = load_voice_reply_state(self._voice_reply_state_path())
         self._text_reply_limit_warning_keys = set()
@@ -522,6 +537,7 @@ class WXBot:
         self._material_source_read_locks_guard = threading.Lock()
         self._last_incoming_message_at = 0.0
         self._private_message_pipelines = {}
+        self._group_message_pipelines = {}
         self._memory_context_repair_startup_done = set()
         self._memory_context_repair_restore_pending = set()
         self._memory_context_repair_last_at = {}
@@ -553,7 +569,10 @@ class WXBot:
             self._ui_owner.set_delivery_journal(ui_journal)
         self._message_store = store
         self._inbound_coordinator = InboundCoordinator(store)
-        self._reply_echo_tracker = ReplyEchoTracker()
+        self._reply_echo_tracker = ReplyEchoTracker(
+            store=store,
+            text_ttl=DEFAULT_REPLY_TTL_SECONDS,
+        )
         self._reply_delivery_coordinator = ReplyDeliveryCoordinator(
             store=store,
             version_provider=lambda conversation, chat_type="private": store.conversation_version(
@@ -637,17 +656,28 @@ class WXBot:
         if owner is None:
             return []
         registered = []
-        for name in dict.fromkeys(str(item or "").strip() for item in (names or [])):
-            if not name:
+        seen = set()
+        for item in names or []:
+            conversation = (
+                item
+                if isinstance(item, ConversationRef)
+                else ConversationRef(str(item or "").strip(), "private")
+            )
+            key = (conversation.chat_type, conversation.who)
+            if not conversation.who or key in seen:
                 continue
+            seen.add(key)
             owner.call(
                 wechat_ui_actions.UIIntent(
                     wechat_ui_actions.UIIntentKind.ADD_LISTEN,
-                    {"conversation": name},
+                    {
+                        "conversation": conversation.who,
+                        "chat_type": conversation.chat_type,
+                    },
                 ),
                 wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
             )
-            registered.append(name)
+            registered.append(conversation)
         return registered
 
     @staticmethod
@@ -692,6 +722,9 @@ class WXBot:
             message,
             chat_type=conversation.chat_type,
         )
+        if echo is not None:
+            stored_content = echo.content
+            original_content = echo.content
         related_delivery_id = echo.action_id if echo is not None else ""
         if echo is not None and echo.confirmable and self._message_store is not None:
             try:
@@ -854,7 +887,10 @@ class WXBot:
         coordinator = getattr(self, "_inbound_coordinator", None)
         if coordinator is None:
             raise RuntimeError("消息事实库尚未初始化")
-        accepted = coordinator.accept(self._build_inbound_event(conversation, message))
+        event = self._build_inbound_event(conversation, message)
+        accepted = coordinator.accept(event)
+        if event.related_delivery_id:
+            self._reply_echo_tracker.acknowledge(event.related_delivery_id)
         message._wxbot_event_id = accepted.event_id
         message._wxbot_event_ids = (accepted.event_id,)
         message._wxbot_event_version = accepted.version
@@ -912,6 +948,9 @@ class WXBot:
 
     def _run_ui_ingress(self):
         while not self._ui_ingress_stop.is_set():
+            ready = getattr(self, "_ui_ingress_ready", None)
+            if ready is not None and not ready.wait(timeout=0.2):
+                continue
             try:
                 conversation, message = self._ui_ingress_queue.get(timeout=0.2)
             except Empty:
@@ -919,8 +958,11 @@ class WXBot:
             try:
                 if not self._ui_owner.wait_for_contact_idle():
                     continue
-                chat = OwnedChat(self._ui_owner, conversation.who, conversation.chat_type)
-                self.message_handle_callback(message, chat)
+                if conversation.chat_type == "group":
+                    self._enqueue_group_message_for_business(conversation, message)
+                else:
+                    chat = OwnedChat(self._ui_owner, conversation.who, conversation.chat_type)
+                    self.message_handle_callback(message, chat)
             except Exception as exc:
                 retry_delay = self._reply_retry_delay(message, exc)
                 if retry_delay is not None:
@@ -935,6 +977,105 @@ class WXBot:
                     )
             finally:
                 self._ui_ingress_queue.task_done()
+
+    def _enqueue_group_message_for_business(self, conversation, message):
+        self._ensure_message_runtime_state()
+        if not isinstance(conversation, ConversationRef) or conversation.chat_type != "group":
+            raise ValueError("group business queue requires a group ConversationRef")
+        if self.is_stop_requested():
+            self._cancel_failed_reply_attempt(message, "robot stopped before group message processing")
+            return True
+        with self._chat_merge_lock:
+            pipeline = self._group_message_pipelines.get(conversation.who)
+            if pipeline is None:
+                pipeline = {
+                    "conversation": conversation,
+                    "messages": deque(),
+                    "worker_running": False,
+                    "retry_timer": None,
+                }
+                self._group_message_pipelines[conversation.who] = pipeline
+            pipeline["messages"].append(message)
+            self._start_group_message_worker_locked(pipeline)
+        return True
+
+    def _start_group_message_worker_locked(self, pipeline):
+        if pipeline.get("worker_running") or pipeline.get("retry_timer") is not None:
+            return
+        pipeline["worker_running"] = True
+        conversation = pipeline["conversation"]
+        threading.Thread(
+            target=self._run_group_message_pipeline_worker,
+            args=(conversation,),
+            name=f"group-message-{conversation.who}",
+            daemon=True,
+        ).start()
+
+    def _run_group_message_pipeline_worker(self, conversation):
+        while not self.is_stop_requested():
+            with self._chat_merge_lock:
+                pipeline = self._group_message_pipelines.get(conversation.who)
+                if not pipeline or not pipeline["messages"]:
+                    self._group_message_pipelines.pop(conversation.who, None)
+                    return True
+                message = pipeline["messages"][0]
+            chat = OwnedChat(self._ui_owner, conversation.who, "group")
+            try:
+                self.message_handle_callback(message, chat)
+            except Exception as exc:
+                retry_delay = self._reply_retry_delay(message, exc)
+                if retry_delay is not None:
+                    log(level="WARNING", message=f"群聊消息库暂时繁忙，稍后重试：{exc}")
+                    with self._chat_merge_lock:
+                        pipeline = self._group_message_pipelines.get(conversation.who)
+                        if pipeline:
+                            pipeline["worker_running"] = False
+                            timer = threading.Timer(
+                                retry_delay,
+                                self._resume_group_message_pipeline,
+                                args=(conversation,),
+                            )
+                            timer.daemon = True
+                            pipeline["retry_timer"] = timer
+                            timer.start()
+                    return True
+                cleanup_error = self._cancel_failed_reply_attempt(message, str(exc))
+                suffix = f"；取消失败：{cleanup_error}" if cleanup_error else ""
+                log(
+                    level="ERROR",
+                    message=f"群聊消息处理失败：{exc}{suffix}\n{traceback.format_exc()}",
+                )
+            with self._chat_merge_lock:
+                pipeline = self._group_message_pipelines.get(conversation.who)
+                if pipeline and pipeline["messages"] and pipeline["messages"][0] is message:
+                    if self._is_unresolved_pending_voice_message(message):
+                        pipeline["worker_running"] = False
+                        return True
+                    pipeline["messages"].popleft()
+        return True
+
+    def _resume_group_message_pipeline(self, conversation):
+        with self._chat_merge_lock:
+            pipeline = self._group_message_pipelines.get(conversation.who)
+            if not pipeline:
+                return
+            pipeline["retry_timer"] = None
+            if self.is_stop_requested():
+                self._group_message_pipelines.pop(conversation.who, None)
+                return
+            self._start_group_message_worker_locked(pipeline)
+
+    def _clear_group_message_pipelines(self):
+        self._ensure_message_runtime_state()
+        with self._chat_merge_lock:
+            timers = [
+                pipeline.get("retry_timer")
+                for pipeline in self._group_message_pipelines.values()
+                if pipeline.get("retry_timer") is not None
+            ]
+            self._group_message_pipelines.clear()
+        for timer in timers:
+            timer.cancel()
 
     def _schedule_ui_ingress_retry(self, conversation, message, delay):
         def requeue():
@@ -990,6 +1131,11 @@ class WXBot:
         if orphan_cleanup.get("terminated"):
             log(level="WARNING", message=f"已清理遗留通讯录采集进程 PID {orphan_cleanup.get('pid')}")
         self._ui_ingress_stop.clear()
+        ready = getattr(self, "_ui_ingress_ready", None)
+        if ready is None:
+            ready = threading.Event()
+            self._ui_ingress_ready = ready
+        ready.clear()
         self._ui_ingress_thread = threading.Thread(
             target=self._run_ui_ingress,
             name="wechat-message-business",
@@ -1385,7 +1531,13 @@ class WXBot:
         threading.Thread(target=run_cleanup, name="wxauto-save-cache-cleanup", daemon=True).start()
 
     def _reset_stop_request(self):
-        self._ensure_stop_requested_event().clear()
+        lock = getattr(self, "_stop_cleanup_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._stop_cleanup_lock = lock
+        with lock:
+            self._ensure_stop_requested_event().clear()
+            self._stop_cleanup_done = False
 
     def is_stop_requested(self):
         return self._ensure_stop_requested_event().is_set()
@@ -1698,7 +1850,17 @@ class WXBot:
                 self._material_source_read_locks[source] = lock
             return lock
 
-    def _send_tracked_outbound(self, target, action, sender, *, source):
+    def _send_tracked_outbound(
+        self,
+        target,
+        action,
+        sender,
+        *,
+        source,
+        chat_type="private",
+        delivery_id="",
+        at="",
+    ):
         action = dict(action or {})
         kind = str(action.get("type") or "text").strip().lower()
         if kind in {"voice", "audio"}:
@@ -1715,7 +1877,7 @@ class WXBot:
                 ReplySource.AI,
             )
             history_type = "text"
-        delivery_id = f"ui_{uuid.uuid4().hex}"
+        delivery_id = str(delivery_id or f"ui_{uuid.uuid4().hex}").strip()
         tracker = getattr(self, "_reply_echo_tracker", None)
         if tracker is not None:
             tracker.reserve(
@@ -1723,7 +1885,8 @@ class WXBot:
                 target,
                 reply_action,
                 confirmable=False,
-                chat_type="private",
+                chat_type=chat_type,
+                at=at,
             )
         try:
             result = sender(delivery_id)
@@ -1738,6 +1901,7 @@ class WXBot:
                 target,
                 content=reply_action.content,
                 sent_at=time.time(),
+                chat_type=chat_type,
                 message_type=history_type,
                 metadata={"source": str(source or "")},
             )
@@ -1779,6 +1943,7 @@ class WXBot:
                     intent_kind,
                     {
                         "conversation": target,
+                        "chat_type": "private",
                         "contact_key": str(contact_key or ""),
                         "task_key": str(task_key or ""),
                         "require_contact_key": bool(require_contact_key),
@@ -2695,23 +2860,42 @@ class WXBot:
     def _subwindow_who(self, chat):
         return listening.subwindow_who(chat)
 
-    def _get_verified_subwindow(self, nickname):
-        return listening.get_verified_subwindow(self, nickname)
+    def _get_verified_subwindow(self, nickname, *, chat_type=None):
+        return listening.get_verified_subwindow(
+            self,
+            nickname,
+            chat_type=chat_type,
+        )
 
     def _try_get_all_subwindow_names(self):
         return listening.try_get_all_subwindow_names(self)
 
-    def _add_listen_chat_once(self, nickname, label):
-        return listening.add_listen_chat_once(self, nickname, label)
+    def _add_listen_chat_once(self, nickname, label, *, chat_type=None):
+        return listening.add_listen_chat_once(
+            self,
+            nickname,
+            label,
+            chat_type=chat_type,
+        )
 
-    def _add_and_verify_subwindow(self, nickname, retry_count=3):
-        return listening.add_and_verify_subwindow(self, nickname, retry_count=retry_count)
+    def _add_and_verify_subwindow(self, nickname, retry_count=3, *, chat_type=None):
+        return listening.add_and_verify_subwindow(
+            self,
+            nickname,
+            retry_count=retry_count,
+            chat_type=chat_type,
+        )
 
     def _expected_listener_names(self):
         return listening.expected_listener_names(self)
 
-    def _ensure_listener_subwindow(self, nickname, retry_count=3):
-        return listening.ensure_listener_subwindow(self, nickname, retry_count=retry_count)
+    def _ensure_listener_subwindow(self, nickname, retry_count=3, *, chat_type=None):
+        return listening.ensure_listener_subwindow(
+            self,
+            nickname,
+            retry_count=retry_count,
+            chat_type=chat_type,
+        )
 
     def _reconcile_listener_subwindows(self, retry_count=3):
         return listening.reconcile_listener_subwindows(self, retry_count=retry_count)
@@ -2719,8 +2903,19 @@ class WXBot:
     def _maybe_reconcile_listener_subwindows(self, force=False, retry_count=3):
         return listening.maybe_reconcile_listener_subwindows(self, force=force, retry_count=retry_count)
 
-    def _remove_listen_chat_verified(self, nickname, *, log_success=True):
-        return listening.remove_listen_chat_verified(self, nickname, log_success=log_success)
+    def _remove_listen_chat_verified(
+        self,
+        nickname,
+        *,
+        chat_type=None,
+        log_success=True,
+    ):
+        return listening.remove_listen_chat_verified(
+            self,
+            nickname,
+            chat_type=chat_type,
+            log_success=log_success,
+        )
 
     def _close_dynamic_listener_subwindows(self, nicknames):
         return listening.close_dynamic_listener_subwindows(self, nicknames)
@@ -3341,14 +3536,34 @@ class WXBot:
     def _rebuild_material_pool_for_source(self, source, *, goback=True):
         return self._rebuild_material_runtime_pool_for_source(source, goback=goback)
 
-    def _read_material_source_messages(self, source, limit, *, goback=True, target_signature="", require_forwardable=True):
+    def _material_source_chat_type(self, source):
         source = str(source or "").strip()
+        return (
+            "group"
+            if getattr(self.config, "group_switch", False)
+            and source in (getattr(self.config, "group", []) or [])
+            else "private"
+        )
+
+    def _read_material_source_messages(
+        self,
+        source,
+        limit,
+        *,
+        chat_type=None,
+        goback=True,
+        target_signature="",
+        require_forwardable=True,
+    ):
+        source = str(source or "").strip()
+        chat_type = str(chat_type or self._material_source_chat_type(source))
         limit = max(1, int(limit or 1))
         result = self._ui_owner.call(
             wechat_ui_actions.UIIntent(
                 wechat_ui_actions.UIIntentKind.MATERIAL_READ,
                 {
                     "conversation": source,
+                    "chat_type": chat_type,
                     "limit": limit,
                     "goback": bool(goback),
                     "target_signature": str(target_signature or ""),
@@ -3618,7 +3833,11 @@ class WXBot:
         try:
             with warn_slow_wechat_ui_action(f"message.forward({target_label or 'unknown'})"):
                 result = self._ui_forward_message(
-                    OwnedChat(self._ui_owner, material_source),
+                    OwnedChat(
+                        self._ui_owner,
+                        material_source,
+                        self._material_source_chat_type(material_source),
+                    ),
                     message,
                     targets,
                     preface=preface,
@@ -4239,10 +4458,11 @@ class WXBot:
                 "video": "视频",
                 "file": "文件",
             }.get(str(getattr(msg, "type", "") or "").lower(), str(getattr(msg, "type", "") or "未知"))
-            is_private = getattr(msg, "attr", "") == "friend"
-            scene_label = "私聊" if is_private else "消息"
+            is_group = str(getattr(chat, "chat_type", "") or "").lower() == "group"
+            is_private = not is_group and getattr(msg, "attr", "") == "friend"
+            scene_label = "群聊" if is_group else "私聊" if is_private else "消息"
             text = f"{scene_label} {chat.who}：收到{msg_type_label}消息"
-            if not is_private:
+            if is_group or not is_private:
                 text += f"，发送人：{msg.sender}"
             if str(getattr(msg, "type", "") or "").lower() in {"text", "voice", "quote", "link"}:
                 content_preview = re.sub(r"\s+", " ", str(getattr(msg, "content", "") or "")).strip()
@@ -4268,7 +4488,12 @@ class WXBot:
                 not inbound_direction and msg.attr == "system"
             ):
                 # 系统消息：触发群新人欢迎语逻辑（仅限已配置群组，纯转发来源群组跳过）
-                if self.config.group_welcome and chat.who in self.config.group:
+                if (
+                    getattr(chat, "chat_type", "private") == "group"
+                    and self.config.group_switch
+                    and self.config.group_welcome
+                    and chat.who in self.config.group
+                ):
                     result = self.send_group_welcome_msg(chat, msg)
                     if not result:
                         self.is_err(
@@ -4408,9 +4633,11 @@ class WXBot:
             or getattr(message, "_wxbot_recovery_route_source", "")
             or ""
         ).strip()
-        expected_version = int(getattr(message, "_wxbot_event_version", 0) or 0)
-        if expected_version <= 0:
+        raw_expected_version = getattr(message, "_wxbot_event_version", None)
+        if raw_expected_version is None:
             expected_version = store.conversation_version(conversation, chat_type=chat_type)
+        else:
+            expected_version = int(raw_expected_version)
         expires_at = float(getattr(message, "_wxbot_reply_expires_at", 0.0) or 0.0)
         if expires_at <= 0:
             expires_at = self._received_timestamp(getattr(message, "_wxbot_received_at", 0.0)) + DEFAULT_REPLY_TTL_SECONDS
@@ -4447,6 +4674,9 @@ class WXBot:
             store.cancel_pending(turn_id, status, reason)
 
     def _reply_job_can_generate(self, chat, message, *, chat_type, route_source):
+        if self.is_stop_requested():
+            self._cancel_failed_reply_attempt(message, "robot stopped before reply generation")
+            return False
         turn_id = self._ensure_reply_job(
             chat,
             message,
@@ -4455,6 +4685,9 @@ class WXBot:
         )
         if not turn_id:
             return True
+        if self.is_stop_requested():
+            self._cancel_unfinished_reply_job(message, "robot stopped before reply generation")
+            return False
         return self._message_store.mark_reply_job_generating(turn_id) == "generating"
 
     def _reply_retry_delay(self, message, exc):
@@ -4489,10 +4722,7 @@ class WXBot:
         event_ids = self._reply_event_ids(message)
         store = getattr(self, "_message_store", None)
         if store is not None and event_ids:
-            try:
-                store.mark_inbound_events(event_ids, "handled")
-            except Exception:
-                pass
+            store.mark_inbound_events(event_ids, "handled")
 
     @staticmethod
     def _recovery_route_matches(message, route_source):
@@ -4637,25 +4867,40 @@ class WXBot:
                     if QUOTE_IMAGE_MARKER in message_content:
                         quoted_text, quoted_image_paths = split_quoted_image_message(message_content)
                 if self.config.chat_image_recognition_switch and message.type == 'image':
-                    self._set_pending_visual_context(chat.who, [message.content])
+                    self._set_pending_visual_context(
+                        chat.who,
+                        [message.content],
+                        chat_type="private",
+                    )
                     reply = self._reply_private_image_message(
                         chat, history, [message.content]
                     )
                     image_reply_context_used = True
                 elif self.config.chat_image_recognition_switch and quoted_image_paths:
-                    self._set_pending_visual_context(chat.who, quoted_image_paths)
+                    self._set_pending_visual_context(
+                        chat.who,
+                        quoted_image_paths,
+                        chat_type="private",
+                    )
                     reply = self._reply_private_image_message(
                         chat, history, quoted_image_paths, quoted_text
                     )
                     image_reply_context_used = True
                 elif fallback_image_path:
-                    self._set_pending_visual_context(chat.who, [fallback_image_path])
+                    self._set_pending_visual_context(
+                        chat.who,
+                        [fallback_image_path],
+                        chat_type="private",
+                    )
                     reply = self._reply_private_image_message(
                         chat, history, [fallback_image_path]
                     )
                     image_reply_context_used = True
                 elif self.config.chat_image_recognition_switch:
-                    pending_visual_context = self._get_pending_visual_context(chat.who)
+                    pending_visual_context = self._get_pending_visual_context(
+                        chat.who,
+                        chat_type="private",
+                    )
                     if pending_visual_context:
                         reply = self._reply_private_image_message(
                             chat,
@@ -4769,7 +5014,7 @@ class WXBot:
                     return True
                 if voice_sent:
                     if image_reply_context_used:
-                        self._clear_pending_visual_context(chat.who)
+                        self._clear_pending_visual_context(chat.who, chat_type="private")
                     self._save_voice_reply_state()
                     if getattr(self.config, "chat_text_reply_limit_switch", False) and user_key:
                         self.reply_count_store.increment_ai_count(
@@ -4796,8 +5041,8 @@ class WXBot:
             self._log_reply_contents("私聊", chat.who, sent_reply_items)
 
         if image_reply_context_used and send_success and not api_error_reply:
-            if self._pending_visual_context_ready_to_clear(chat.who):
-                self._clear_pending_visual_context(chat.who)
+            if self._pending_visual_context_ready_to_clear(chat.who, chat_type="private"):
+                self._clear_pending_visual_context(chat.who, chat_type="private")
             else:
                 log(message=f"私聊 {chat.who}：图片摘要尚未回写，暂保留最近图片上下文")
 
@@ -4827,8 +5072,8 @@ class WXBot:
             return None
         if getattr(message, 'attr', '') != 'friend':
             return None
-        chat_type = getattr(chat, 'chat_type', 'private')
-        if chat_type == 'group' or chat.who in getattr(self.config, 'group', []):
+        chat_type = str(getattr(chat, 'chat_type', '') or '').strip().lower()
+        if chat_type != 'private':
             return None
         system = getattr(self, 'prompt_system', None)
         if system is None:
@@ -4838,7 +5083,8 @@ class WXBot:
         try:
             messages = self.memory_manager.get_messages(
                 str(getattr(chat, "who", "") or "").strip(),
-                getattr(self.config, 'memory_max_count', 5000)
+                getattr(self.config, 'memory_max_count', 5000),
+                chat_type='private',
             )
             api = self._get_other_api(self._get_chat_api_index(chat.who))
             updated = system.update_memory(
@@ -4876,8 +5122,8 @@ class WXBot:
         chat_name = str(getattr(chat, 'who', '') or '').strip()
         if not chat_name:
             return False
-        chat_type = getattr(chat, 'chat_type', 'private')
-        if chat_type == 'group' or chat_name in getattr(self.config, 'group', []):
+        chat_type = str(getattr(chat, 'chat_type', '') or '').strip().lower()
+        if chat_type != 'private':
             return False
         self._ensure_chat_memory_background_state()
         with self._chat_memory_dirty_lock:
@@ -4898,7 +5144,7 @@ class WXBot:
         if not callable(list_chat_names):
             return 0
         try:
-            chat_names = list_chat_names()
+            chat_names = list_chat_names(chat_type='private')
         except Exception as exc:
             log(level="WARNING", message=f"会话记忆启动补偿扫描失败：{exc}")
             return 0
@@ -4906,8 +5152,6 @@ class WXBot:
         for chat_name in chat_names:
             chat_name = str(chat_name or "").strip()
             if not chat_name:
-                continue
-            if chat_name in getattr(self.config, 'group', []):
                 continue
             message = SimpleNamespace(attr='friend')
             chat = SimpleNamespace(who=chat_name, chat_type='private')
@@ -4968,6 +5212,8 @@ class WXBot:
         if action == "skip":
             if getattr(message, "_wxbot_recovery_route_source", ""):
                 self._cancel_unfinished_reply_job(message, "reply route is no longer available")
+            elif self._is_unresolved_pending_voice_message(message):
+                return True
             else:
                 self._mark_inbound_no_reply(message)
             return True
@@ -5028,8 +5274,10 @@ class WXBot:
             self._cancel_unfinished_reply_job(message, "keyword routing completed without delivery")
             return result
         if action == "group_ai":
-            group_image_reply_context_used = False
-            content_without_at = re.sub(self.config.AtMe, "", message.content).strip()
+            content_without_at = strip_group_mention(
+                message.content,
+                getattr(self.config, "AtMe", ""),
+            )
             log(level="DEBUG", message=f"群组 {chat.who}：触发 AI 回复，内容：{content_without_at}")
             content_with_sender = f"{message.sender}: {format_model_message_text({'type': getattr(message, 'type', ''), 'content': content_without_at})}"
             model_group_user_message = build_current_turn_user_message(content_with_sender)
@@ -5070,7 +5318,10 @@ class WXBot:
                     self.config.group_image_recognition_switch
                     and self._text_references_pending_visual_context(content_without_at)
                 ):
-                    pending_visual_context = self._get_pending_visual_context(chat.who)
+                    pending_visual_context = self._get_pending_visual_context(
+                        chat.who,
+                        chat_type="group",
+                    )
                     if pending_visual_context:
                         reply = self._reply_group_image_message(
                             chat,
@@ -5078,8 +5329,8 @@ class WXBot:
                             history,
                             pending_visual_context.get("image_paths", []),
                             content_without_at,
+                            image_senders=pending_visual_context.get("image_senders", []),
                         )
-                        group_image_reply_context_used = True
                     else:
                         group_api = self._get_group_api(chat.who)
                         reply = group_api.chat(model_group_user_message, prompt=_effective_group_prompt, history=history)
@@ -5197,6 +5448,9 @@ class WXBot:
             sent_reply_items = []
             source = ReplySource.ERROR if group_api_error_reply else ReplySource.AI
             reply_actions = list(self._reply_actions_from_text(parts, source=source))
+            if group_api_error_reply and not reply_actions:
+                self._cancel_unfinished_reply_job(message, "API error notice is configured as silent")
+                return True
             if _quote and reply_actions:
                 first = reply_actions[0]
                 reply_actions[0] = ReplyAction(ReplyKind.QUOTE, first.content, first.source)
@@ -5209,14 +5463,9 @@ class WXBot:
                 sent_items=sent_reply_items,
             )
             sent_any = bool(delivery and delivery.completed)
-            result = bool(delivery and delivery.status == DeliveryStatus.DONE)
+            result = self._delivery_result_is_handled(delivery)
 
             if sent_any:
-                if group_image_reply_context_used and not group_api_error_reply:
-                    if self._pending_visual_context_ready_to_clear(chat.who):
-                        self._clear_pending_visual_context(chat.who)
-                    else:
-                        log(message=f"群聊 {chat.who}：图片摘要尚未回写，暂保留最近图片上下文")
                 if group_api_error_should_mark:
                     group_user_key = self._get_group_reply_once_key(chat, message)
                     if group_user_key:
@@ -5635,13 +5884,22 @@ class WXBot:
             {},
         ).strip()
 
-    def _build_image_user_message(self, chat_type="private", sender="", attached_text="", image_count=1, visual_notes=None):
+    def _build_image_user_message(
+        self,
+        chat_type="private",
+        sender="",
+        attached_text="",
+        image_count=1,
+        visual_notes=None,
+        image_senders=None,
+    ):
         return build_image_user_message(
             chat_type,
             sender=sender,
             attached_text=attached_text,
             image_count=image_count,
             visual_notes=visual_notes,
+            image_senders=image_senders,
         )
 
     def _build_image_description_prompt(self, chat_type="private", sender="", attached_text=""):
@@ -5684,6 +5942,7 @@ class WXBot:
         image_paths=None,
         attached_text="",
         sender="",
+        image_senders=None,
         visual_notes=None,
     ):
         self._record_image_api_request()
@@ -5706,8 +5965,14 @@ class WXBot:
             final_api_supports_vision=final_api_supports_vision,
             image_path=image_path,
             image_paths=image_paths,
+            image_senders=image_senders,
             visual_notes=visual_notes,
-            on_visual_notes=lambda paths, notes: self._remember_visual_notes(chat_name, paths, notes),
+            on_visual_notes=lambda paths, notes: self._remember_visual_notes(
+                chat_name,
+                paths,
+                notes,
+                chat_type=chat_type,
+            ),
             final_api_index=(
                 self._get_chat_api_index(chat_name)
                 if chat_type == 'private'
@@ -5731,7 +5996,12 @@ class WXBot:
                     sender=getattr(chat, "who", ""),
                     attached_text="",
                 )
-                self._remember_visual_notes(chat.who, normalized_paths, normalized_notes)
+                self._remember_visual_notes(
+                    chat.who,
+                    normalized_paths,
+                    normalized_notes,
+                    chat_type="private",
+                )
             except Exception as exc:
                 log(level="WARNING", message=f"生成私聊图片摘要失败：{exc}")
                 normalized_notes = []
@@ -5760,7 +6030,15 @@ class WXBot:
             request_type="chat",
         )
 
-    def _generate_visual_notes_for_image_paths(self, chat_type, image_paths, *, sender="", attached_text=""):
+    def _generate_visual_notes_for_image_paths(
+        self,
+        chat_type,
+        image_paths,
+        *,
+        sender="",
+        senders=None,
+        attached_text="",
+    ):
         normalized_paths = [
             str(path or "").strip()
             for path in (image_paths or [])
@@ -5770,12 +6048,13 @@ class WXBot:
             return []
         notes = []
         recognition_api = self._get_image_recognition_api_for_chat(chat_type)
-        for image_path in normalized_paths:
+        normalized_senders = self._normalize_visual_sender_slots(normalized_paths, senders)
+        for index, image_path in enumerate(normalized_paths):
             note = self._get_vision_bridge().analyze(
                 image_path=image_path,
                 recognition_api=recognition_api,
                 chat_type=chat_type,
-                sender=sender,
+                sender=normalized_senders[index] or sender,
                 attached_text=attached_text,
             )
             notes.append(note.render())
@@ -5797,11 +6076,24 @@ class WXBot:
         _text_part, image_paths = split_quoted_image_message(content)
         return [path for path in image_paths if str(path or "").strip()]
 
-    def _reply_group_image_message(self, chat, message, history, image_paths=None, attached_text=""):
+    def _reply_group_image_message(
+        self,
+        chat,
+        message,
+        history,
+        image_paths=None,
+        attached_text="",
+        image_senders=None,
+    ):
         normalized_paths = (
             [str(path or "").strip() for path in image_paths if str(path or "").strip()]
             if isinstance(image_paths, (list, tuple))
             else [str(image_paths or "").strip()] if str(image_paths or "").strip() else []
+        )
+        normalized_senders = self._normalize_visual_sender_slots(
+            normalized_paths,
+            image_senders,
+            fallback=getattr(message, "sender", ""),
         )
         normalized_notes = self._normalize_visual_note_slots(normalized_paths, None)
         if normalized_paths:
@@ -5809,10 +6101,15 @@ class WXBot:
                 normalized_notes = self._generate_visual_notes_for_image_paths(
                     "group",
                     normalized_paths,
-                    sender=getattr(message, "sender", ""),
+                    senders=normalized_senders,
                     attached_text="",
                 )
-                self._remember_visual_notes(chat.who, normalized_paths, normalized_notes)
+                self._remember_visual_notes(
+                    chat.who,
+                    normalized_paths,
+                    normalized_notes,
+                    chat_type="group",
+                )
             except Exception as exc:
                 log(level="WARNING", message=f"生成群聊图片摘要失败：{exc}")
                 normalized_notes = []
@@ -5827,6 +6124,7 @@ class WXBot:
             image_paths=normalized_paths,
             attached_text=attached_text,
             sender=getattr(message, 'sender', ''),
+            image_senders=normalized_senders,
             visual_notes=normalized_notes,
         )
 
@@ -5835,6 +6133,8 @@ class WXBot:
             self._chat_merge_lock = threading.Lock()
         if not hasattr(self, '_private_message_pipelines'):
             self._private_message_pipelines = {}
+        if not hasattr(self, '_group_message_pipelines'):
+            self._group_message_pipelines = {}
         if not hasattr(self, '_pending_private_voice_transcription'):
             self._pending_private_voice_transcription = {}
         if not hasattr(self, '_pending_private_voice_sequence'):
@@ -5877,6 +6177,13 @@ class WXBot:
             self._pending_private_voice_transcription = {}
         if not hasattr(self, "_pending_private_voice_sequence") or self._pending_private_voice_sequence is None:
             self._pending_private_voice_sequence = {}
+
+    @staticmethod
+    def _pending_voice_task_key(chat):
+        chat_ref = ConversationRef.from_wx_chat(chat)
+        if chat_ref.chat_type == "group":
+            return ("group", chat_ref.who)
+        return chat_ref.who
 
     @staticmethod
     def _pending_voice_item_expired(item):
@@ -5978,6 +6285,43 @@ class WXBot:
             pipeline["open_kind"] = "text"
         return True
 
+    def _replace_pending_group_voice_placeholder_locked(self, name, key, resolved):
+        pipeline = self._group_message_pipelines.get(name)
+        if not isinstance(pipeline, dict):
+            return False
+        messages = pipeline.get("messages")
+        if not isinstance(messages, deque):
+            return False
+        for index, message in enumerate(messages):
+            if getattr(message, "_wxbot_pending_voice_key", "") != key:
+                continue
+            resolved._wxbot_pending_voice_key = key
+            resolved._wxbot_pending_voice_resolved = True
+            resolved._wxbot_media_prepared = True
+            resolved._wxbot_persisted = True
+            messages[index] = resolved
+            self._start_group_message_worker_locked(pipeline)
+            return True
+        return False
+
+    def _drop_pending_group_voice_placeholder_locked(self, name, key):
+        pipeline = self._group_message_pipelines.get(name)
+        if not isinstance(pipeline, dict):
+            return False
+        messages = pipeline.get("messages")
+        if not isinstance(messages, deque):
+            return False
+        kept = deque(
+            message
+            for message in messages
+            if getattr(message, "_wxbot_pending_voice_key", "") != key
+        )
+        if len(kept) == len(messages):
+            return False
+        pipeline["messages"] = kept
+        self._start_group_message_worker_locked(pipeline)
+        return True
+
     def _wake_private_batch_if_pending_voice_unblocked_locked(self, name, chat):
         pipeline = self._private_message_pipelines.get(name)
         if not isinstance(pipeline, dict):
@@ -6013,12 +6357,13 @@ class WXBot:
         name = str(getattr(chat, "who", "") or "").strip()
         if not name or not items or self.is_stop_requested():
             return True
+        task_key = self._pending_voice_task_key(chat)
         self._ensure_pending_private_voice_transcription_state()
         with self._chat_merge_lock:
-            task = self._pending_private_voice_transcription.get(name)
+            task = self._pending_private_voice_transcription.get(task_key)
             if not isinstance(task, dict):
                 task = {"chat": chat, "items": {}, "timer": None}
-                self._pending_private_voice_transcription[name] = task
+                self._pending_private_voice_transcription[task_key] = task
             task["chat"] = chat
             for item in items:
                 key = item.get("key")
@@ -6043,6 +6388,8 @@ class WXBot:
         self._ensure_pending_private_voice_transcription_state()
         source_key = message_unique_id(name, message)
         chat_ref = ConversationRef.from_wx_chat(chat)
+        task_key = self._pending_voice_task_key(chat_ref)
+        is_group = chat_ref.chat_type == "group"
         event_id = str(getattr(message, "_wxbot_event_id", "") or "").strip()
         item = {
             "key": "",
@@ -6063,27 +6410,32 @@ class WXBot:
             "event_id": event_id,
             "event_version": int(getattr(message, "_wxbot_event_version", 0) or 0),
             "reply_expires_at": float(getattr(message, "_wxbot_reply_expires_at", 0.0) or 0.0),
+            "chat_type": chat_ref.chat_type,
         }
         created_task = False
         with self._chat_merge_lock:
-            task = self._pending_private_voice_transcription.get(name)
+            task = self._pending_private_voice_transcription.get(task_key)
             if not isinstance(task, dict):
                 task = {"chat": chat_ref, "items": {}, "source_keys": set(), "timer": None}
-                self._pending_private_voice_transcription[name] = task
+                self._pending_private_voice_transcription[task_key] = task
             task.setdefault("source_keys", set())
             already_pending = bool(source_key and source_key in task["source_keys"])
             if already_pending:
                 task["chat"] = chat_ref
                 return True
-            sequence = self._pending_private_voice_sequence.get(name, 0) + 1
-            self._pending_private_voice_sequence[name] = sequence
+            sequence = self._pending_private_voice_sequence.get(task_key, 0) + 1
+            self._pending_private_voice_sequence[task_key] = sequence
             key = f"voice:{name}:{sequence}"
             item["key"] = key
             task["chat"] = chat_ref
             if source_key:
                 task["source_keys"].add(source_key)
             task["items"][key] = item
-            self._insert_pending_private_voice_placeholder_locked(name, chat, message, key)
+            if is_group:
+                setattr(message, "_wxbot_pending_voice_key", key)
+                setattr(message, "_wxbot_pending_voice_resolved", False)
+            else:
+                self._insert_pending_private_voice_placeholder_locked(name, chat, message, key)
             if not task.get("timer"):
                 task["timer"] = self._schedule_private_message_timer(
                     VOICE_TRANSCRIPTION_RETRY_DELAY_SECONDS,
@@ -6093,14 +6445,18 @@ class WXBot:
                 created_task = True
         return True
 
-    def _read_pending_voice_snapshot(self, chat_name):
-        name = str(chat_name or "").strip()
+    def _read_pending_voice_snapshot(self, chat):
+        conversation = ConversationRef.from_wx_chat(chat)
+        name = conversation.who
         if not name:
             return []
         get_subwindow = getattr(getattr(self, "wx", None), "GetSubWindow", None)
         if not callable(get_subwindow):
             return []
-        current_chat = get_subwindow(nickname=name)
+        current_chat = get_subwindow(
+            nickname=name,
+            chat_type=conversation.chat_type,
+        )
         if current_chat is None:
             return []
         get_messages = getattr(current_chat, "GetAllMessage", None)
@@ -6116,9 +6472,13 @@ class WXBot:
         name = str(getattr(chat, "who", "") or "").strip()
         if not name:
             return True
+        chat_ref = ConversationRef.from_wx_chat(chat)
+        task_key = self._pending_voice_task_key(chat_ref)
+        is_group = chat_ref.chat_type == "group"
+        scene_label = "群聊" if is_group else "私聊"
         self._ensure_pending_private_voice_transcription_state()
         with self._chat_merge_lock:
-            task = self._pending_private_voice_transcription.pop(name, None)
+            task = self._pending_private_voice_transcription.pop(task_key, None)
             if isinstance(task, dict):
                 task["timer"] = None
         if not isinstance(task, dict):
@@ -6127,14 +6487,22 @@ class WXBot:
         if not items or self.is_stop_requested():
             return True
         try:
-            for item in items:
+            reread_items = [
+                item
+                for item in items
+                if message_routing.voice_content_state(
+                    getattr(item.get("message"), "content", "")
+                ) != "valid"
+            ]
+            for item in reread_items:
                 item["reread_attempts"] = int(item.get("reread_attempts") or 0) + 1
-            snapshot = self._read_pending_voice_snapshot(name)
-            matched = message_routing.match_pending_voice_snapshot(items, snapshot)
-            for item in items:
-                resolved = matched.get(item.get("key"))
-                if resolved is not None:
-                    item["message"] = resolved
+            if reread_items:
+                snapshot = self._read_pending_voice_snapshot(chat_ref)
+                matched = message_routing.match_pending_voice_snapshot(reread_items, snapshot)
+                for item in reread_items:
+                    resolved = matched.get(item.get("key"))
+                    if resolved is not None:
+                        item["message"] = resolved
         except Exception as exc:
             expired = [
                 item for item in items
@@ -6149,10 +6517,14 @@ class WXBot:
                     for item in expired:
                         item_key = item.get("key")
                         if item_key:
-                            self._drop_pending_private_voice_placeholder_locked(name, item_key)
-                    self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                            if is_group:
+                                self._drop_pending_group_voice_placeholder_locked(name, item_key)
+                            else:
+                                self._drop_pending_private_voice_placeholder_locked(name, item_key)
+                    if not is_group:
+                        self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
                 log(message=(
-                    f"私聊 {name}：{len(expired)} 条语音重读仍未得到有效文字；"
+                    f"{scene_label} {name}：{len(expired)} 条语音重读仍未得到有效文字；"
                     f"{terminalized} 条已达到恢复上限并结束，最后一次重读失败：{exc}"
                 ))
             return True
@@ -6166,23 +6538,57 @@ class WXBot:
                     expired_items.append(item)
                     if item_key:
                         with self._chat_merge_lock:
-                            self._drop_pending_private_voice_placeholder_locked(name, item_key)
-                            self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                            if is_group:
+                                self._drop_pending_group_voice_placeholder_locked(name, item_key)
+                            else:
+                                self._drop_pending_private_voice_placeholder_locked(name, item_key)
+                                self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
                 else:
                     pending_items.append(item)
                 continue
             state = message_routing.voice_content_state(getattr(resolved, "content", ""))
             if state == "valid":
                 event_id = str(item.get("event_id") or "").strip()
-                if event_id and self._message_store is not None:
-                    self._message_store.update_inbound_content(
-                        event_id,
-                        strip_voice_duration_metadata(getattr(resolved, "content", "")),
-                    )
                 resolved._wxbot_event_id = event_id
                 resolved._wxbot_event_ids = (event_id,) if event_id else ()
                 resolved._wxbot_event_version = int(item.get("event_version", 0) or 0)
                 resolved._wxbot_reply_expires_at = float(item.get("reply_expires_at", 0.0) or 0.0)
+                resolved._wxbot_media_prepared = True
+                resolved._wxbot_pending_voice_resolved = True
+                if event_id and self._message_store is not None:
+                    try:
+                        self._message_store.update_inbound_content(
+                            event_id,
+                            strip_voice_duration_metadata(getattr(resolved, "content", "")),
+                        )
+                    except Exception as exc:
+                        retry_delay = self._reply_retry_delay(resolved, exc)
+                        if retry_delay is not None:
+                            pending_items.append(item)
+                            log(level="WARNING", message=f"{scene_label} {name}：语音转写写库繁忙，稍后重试：{exc}")
+                            continue
+                        cleanup_error = self._cancel_failed_reply_attempt(resolved, str(exc))
+                        suffix = f"；取消失败：{cleanup_error}" if cleanup_error else ""
+                        if item_key:
+                            with self._chat_merge_lock:
+                                if is_group:
+                                    self._drop_pending_group_voice_placeholder_locked(name, item_key)
+                                else:
+                                    self._drop_pending_private_voice_placeholder_locked(name, item_key)
+                                    self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                        log(level="ERROR", message=f"{scene_label} {name}：语音转写写库失败：{exc}{suffix}")
+                        continue
+                if is_group:
+                    with self._chat_merge_lock:
+                        replaced = self._replace_pending_group_voice_placeholder_locked(
+                            name,
+                            item_key,
+                            resolved,
+                        )
+                    if not replaced:
+                        self._terminalize_exhausted_voice_recovery([item])
+                        log(message=f"群聊 {name}：语音识别结果已过期，已静默忽略")
+                    continue
                 if str((item.get("signature") or {}).get("attr") or "") != "friend":
                     log(message=f"私聊 {name}：self 语音识别结果已补入历史")
                     continue
@@ -6198,16 +6604,22 @@ class WXBot:
             elif state == "failed":
                 if item_key:
                     with self._chat_merge_lock:
-                        self._drop_pending_private_voice_placeholder_locked(name, item_key)
-                        self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                        if is_group:
+                            self._drop_pending_group_voice_placeholder_locked(name, item_key)
+                        else:
+                            self._drop_pending_private_voice_placeholder_locked(name, item_key)
+                            self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
                 self._terminalize_exhausted_voice_recovery([item])
-                log(message=f"私聊 {name}：语音识别明确失败，未触发回复")
+                log(message=f"{scene_label} {name}：语音识别明确失败，未触发回复")
             elif self._pending_voice_item_expired(item) or self._pending_voice_item_deadline_reached(item):
                 expired_items.append(item)
                 if item_key:
                     with self._chat_merge_lock:
-                        self._drop_pending_private_voice_placeholder_locked(name, item_key)
-                        self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
+                        if is_group:
+                            self._drop_pending_group_voice_placeholder_locked(name, item_key)
+                        else:
+                            self._drop_pending_private_voice_placeholder_locked(name, item_key)
+                            self._wake_private_batch_if_pending_voice_unblocked_locked(name, chat)
             else:
                 pending_items.append(item)
         if pending_items:
@@ -6215,7 +6627,7 @@ class WXBot:
         if expired_items:
             terminalized = self._terminalize_exhausted_voice_recovery(expired_items)
             log(message=(
-                f"私聊 {name}：{len(expired_items)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字；"
+                f"{scene_label} {name}：{len(expired_items)} 条语音重读 {VOICE_TRANSCRIPTION_MAX_REREAD_ATTEMPTS} 次仍未得到有效文字；"
                 f"{terminalized} 条已达到恢复上限并结束，其他记录留待下次启动补历史"
             ))
         return True
@@ -6237,7 +6649,7 @@ class WXBot:
             self._memory_context_repair_restore_pending.add(chat_name)
         return True
 
-    def _context_repair_reasons(self, chat, message, memory_chat_name):
+    def _context_repair_reasons(self, chat, message, memory_chat_name, *, chat_type):
         chat_name = str(getattr(chat, "who", "") or "").strip()
         if not chat_name:
             return []
@@ -6250,7 +6662,15 @@ class WXBot:
                 reasons.append("restore_first_reply")
 
         try:
-            tail = self.memory_manager.get_messages(memory_chat_name, 8) if self.memory_manager else []
+            tail = (
+                self.memory_manager.get_messages(
+                    memory_chat_name,
+                    8,
+                    chat_type=chat_type,
+                )
+                if self.memory_manager
+                else []
+            )
             if not current_message_found_near_tail(tail, message, tail_count=8):
                 reasons.append("current_message_missing_from_memory_tail")
         except Exception:
@@ -6313,7 +6733,7 @@ class WXBot:
         level = "DEBUG" if added == 0 and not suffix else "INFO"
         log(level=level, message=f"{label}：{action_text}完成，补入 {added} 条{suffix_text}")
 
-    def _append_context_repair_messages(self, memory_chat_name, entries, *, chat_type="private"):
+    def _append_context_repair_messages(self, memory_chat_name, entries, *, chat_type):
         if not entries or not self.memory_manager:
             return {"added": 0, "total": 0}
         result = self.memory_manager.append_missing_messages(
@@ -6334,10 +6754,7 @@ class WXBot:
 
     def _repair_group_context_before_ai(self, chat, message):
         chat_name = str(getattr(chat, "who", "") or "").strip()
-        if not (
-            getattr(chat, "chat_type", "private") == "group"
-            or chat_name in getattr(self.config, "group", [])
-        ):
+        if str(getattr(chat, "chat_type", "") or "").strip().lower() != "group":
             return False
         if not (
             getattr(getattr(self, "config", None), "memory_switch", False)
@@ -6353,7 +6770,11 @@ class WXBot:
             return False
 
         try:
-            local_history = self.memory_manager.get_messages(chat_name, cfg["local_history_limit"]) or []
+            local_history = self.memory_manager.get_messages(
+                chat_name,
+                cfg["local_history_limit"],
+                chat_type="group",
+            ) or []
             visible_messages = self._read_visible_context_messages(chat, cfg["visible_limit"])
             visible_messages = snapshot_messages_through_current(visible_messages, message)
             visible_entries = normalize_wechat_snapshot(
@@ -6384,7 +6805,7 @@ class WXBot:
 
     def _repair_private_context_before_ai(self, chat, message):
         chat_name = str(getattr(chat, "who", "") or "").strip()
-        if getattr(chat, "chat_type", "private") == "group" or chat_name in getattr(self.config, "group", []):
+        if str(getattr(chat, "chat_type", "") or "").strip().lower() != "private":
             return False
         if not (
             getattr(getattr(self, "config", None), "memory_switch", False)
@@ -6397,14 +6818,23 @@ class WXBot:
             return False
         memory_chat_name = str(chat_name or "").strip()
         repair_key = f"private:{chat_name}"
-        reasons = self._context_repair_reasons(chat, message, memory_chat_name)
+        reasons = self._context_repair_reasons(
+            chat,
+            message,
+            memory_chat_name,
+            chat_type="private",
+        )
         if not reasons:
             return False
         if not self._context_repair_success_ttl_allows(repair_key, cfg["cooldown"]):
             return False
 
         try:
-            local_history = self.memory_manager.get_messages(memory_chat_name, cfg["local_history_limit"]) or []
+            local_history = self.memory_manager.get_messages(
+                memory_chat_name,
+                cfg["local_history_limit"],
+                chat_type="private",
+            ) or []
             visible_messages = self._read_visible_context_messages(chat, cfg["visible_limit"])
         except Exception as exc:
             log(level="WARNING", message=f"私聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")
@@ -6420,7 +6850,11 @@ class WXBot:
                     or getattr(message, "_wxbot_received_at", "")
                 ),
             )
-            result = self._append_context_repair_messages(memory_chat_name, visible_entries)
+            result = self._append_context_repair_messages(
+                memory_chat_name,
+                visible_entries,
+                chat_type="private",
+            )
             added = int(result.get("added", 0) or 0)
             anchor_found = bool(result.get("anchor_found"))
             self._log_context_repair_result(
@@ -6778,7 +7212,11 @@ class WXBot:
             delay = self._private_message_effective_merge_delay(pipeline, base_delay)
             self._schedule_private_message_pipeline_locked(chat, pipeline, delay, max_wait_base_delay=base_delay)
         if pending_image_paths:
-            self._set_pending_visual_context(chat.who, pending_image_paths)
+            self._set_pending_visual_context(
+                chat.who,
+                pending_image_paths,
+                chat_type="private",
+            )
         return True
 
     @staticmethod
@@ -6850,7 +7288,7 @@ class WXBot:
             str(path or "").strip()
             for path in (image_paths or [])
             if str(path or "").strip()
-        ][:MAX_MERGED_PRIVATE_IMAGES]
+        ]
 
     @staticmethod
     def _normalize_visual_note_slots(image_paths, visual_notes):
@@ -6859,6 +7297,22 @@ class WXBot:
             notes[index] if index < len(notes) else ""
             for index, _path in enumerate(image_paths or [])
         ]
+
+    @staticmethod
+    def _normalize_visual_sender_slots(image_paths, senders, *, fallback=""):
+        values = [str(sender or "").strip() for sender in (senders or [])]
+        fallback = str(fallback or "").strip()
+        return [
+            values[index] if index < len(values) and values[index] else fallback
+            for index, _path in enumerate(image_paths or [])
+        ]
+
+    @staticmethod
+    def _visual_context_key(chat_name, chat_type):
+        conversation = ConversationRef(chat_name, chat_type)
+        if not conversation.who:
+            raise ValueError("visual context conversation must not be empty")
+        return conversation.chat_type, conversation.who
 
     @staticmethod
     def _text_references_pending_visual_context(text):
@@ -6872,69 +7326,186 @@ class WXBot:
             )
         )
 
-    def _set_pending_visual_context(self, chat_name, image_paths, *, visual_notes=None, append=False):
+    def _set_pending_visual_context(
+        self,
+        chat_name,
+        image_paths,
+        *,
+        chat_type,
+        senders=None,
+        visual_notes=None,
+        append=False,
+        observed_at=None,
+    ):
         self._ensure_message_runtime_state()
+        key = self._visual_context_key(chat_name, chat_type)
         normalized_paths = self._normalize_visual_image_paths(image_paths)
         if not normalized_paths:
-            self._clear_pending_visual_context(chat_name)
+            self._clear_pending_visual_context(chat_name, chat_type=chat_type)
             return None
         normalized_notes = self._normalize_visual_note_slots(normalized_paths, visual_notes)
+        normalized_senders = self._normalize_visual_sender_slots(normalized_paths, senders)
+        now = time.time() if observed_at is None else float(observed_at)
         if append:
-            existing = self._get_pending_visual_context(chat_name)
+            with self._chat_merge_lock:
+                existing = dict(self._pending_visual_contexts.get(key) or {})
+                if existing and float(existing.get("expires_at", 0.0) or 0.0) < time.time():
+                    self._pending_visual_contexts.pop(key, None)
+                    existing = None
             if existing:
                 existing_paths = self._normalize_visual_image_paths(existing.get("image_paths"))
                 existing_notes = self._normalize_visual_note_slots(existing_paths, existing.get("visual_notes"))
-                normalized_paths = self._normalize_visual_image_paths(existing_paths + normalized_paths)
-                normalized_notes = self._normalize_visual_note_slots(
-                    normalized_paths,
-                    existing_notes + normalized_notes,
+                existing_senders = self._normalize_visual_sender_slots(
+                    existing_paths,
+                    existing.get("image_senders"),
                 )
+                same_group_batch = (
+                    key[0] != "group"
+                    or (
+                        not any(existing_notes)
+                        and now - float(existing.get("last_image_at", 0.0) or 0.0)
+                        <= GROUP_VISUAL_BATCH_GAP_SECONDS
+                    )
+                )
+                if same_group_batch:
+                    combined = list(zip(
+                        existing_paths + normalized_paths,
+                        existing_senders + normalized_senders,
+                        existing_notes + normalized_notes,
+                    ))[-MAX_MERGED_PRIVATE_IMAGES:]
+                    normalized_paths = [item[0] for item in combined]
+                    normalized_senders = [item[1] for item in combined]
+                    normalized_notes = [item[2] for item in combined]
+        else:
+            normalized_paths = normalized_paths[-MAX_MERGED_PRIVATE_IMAGES:]
+            normalized_senders = normalized_senders[-MAX_MERGED_PRIVATE_IMAGES:]
+            normalized_notes = normalized_notes[-MAX_MERGED_PRIVATE_IMAGES:]
         context = {
             "image_paths": normalized_paths,
+            "image_senders": normalized_senders,
             "visual_notes": normalized_notes,
-            "expires_at": time.time() + PENDING_VISUAL_CONTEXT_TTL_SECONDS,
-            "resolved": False,
+            "last_image_at": now,
+            "expires_at": now + (
+                GROUP_PENDING_VISUAL_CONTEXT_TTL_SECONDS
+                if key[0] == "group"
+                else PRIVATE_PENDING_VISUAL_CONTEXT_TTL_SECONDS
+            ),
         }
         with self._chat_merge_lock:
-            self._pending_visual_contexts[chat_name] = context
+            self._pending_visual_contexts[key] = context
         return dict(context)
 
-    def _get_pending_visual_context(self, chat_name):
+    def _restore_group_pending_visual_context(self, chat_name):
+        store = getattr(self, "_message_store", None)
+        recent_images = getattr(store, "recent_image_events", None)
+        if not callable(recent_images):
+            return None
+        now = time.time()
+        events = recent_images(
+            chat_name,
+            chat_type="group",
+            since=now - GROUP_PENDING_VISUAL_CONTEXT_TTL_SECONDS,
+            limit=MAX_MERGED_PRIVATE_IMAGES,
+        )
+        if not events:
+            return None
+
+        latest_metadata = (
+            events[-1].get("metadata")
+            if isinstance(events[-1].get("metadata"), dict)
+            else {}
+        )
+        latest_paths = self._normalize_visual_image_paths(latest_metadata.get("image_paths"))
+        if not any(os.path.isfile(path) for path in latest_paths):
+            return None
+
+        batch = [events[-1]]
+        latest_notes = self._normalize_visual_note_slots(
+            latest_paths,
+            latest_metadata.get("visual_notes"),
+        )
+        next_received_at = float(events[-1].get("received_at", 0.0) or 0.0)
+        for event in reversed(events[:-1]):
+            received_at = float(event.get("received_at", 0.0) or 0.0)
+            if next_received_at - received_at > GROUP_VISUAL_BATCH_GAP_SECONDS:
+                break
+            metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+            event_paths = self._normalize_visual_image_paths(metadata.get("image_paths"))
+            event_notes = self._normalize_visual_note_slots(event_paths, metadata.get("visual_notes"))
+            if not any(latest_notes) and any(event_notes):
+                break
+            batch.append(event)
+            next_received_at = received_at
+        batch.reverse()
+
+        image_paths = []
+        image_senders = []
+        visual_notes = []
+        for event in batch:
+            metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+            event_paths = self._normalize_visual_image_paths(metadata.get("image_paths"))
+            event_notes = self._normalize_visual_note_slots(event_paths, metadata.get("visual_notes"))
+            for index, path in enumerate(event_paths):
+                if not os.path.isfile(path):
+                    continue
+                image_paths.append(path)
+                image_senders.append(str(event.get("sender", "") or "").strip())
+                visual_notes.append(event_notes[index])
+        if not image_paths:
+            return None
+        return self._set_pending_visual_context(
+            chat_name,
+            image_paths,
+            chat_type="group",
+            senders=image_senders,
+            visual_notes=visual_notes,
+            observed_at=float(batch[-1].get("received_at", now) or now),
+        )
+
+    def _get_pending_visual_context(self, chat_name, *, chat_type):
         self._ensure_message_runtime_state()
+        key = self._visual_context_key(chat_name, chat_type)
         with self._chat_merge_lock:
-            context = dict(self._pending_visual_contexts.get(chat_name) or {})
+            context = dict(self._pending_visual_contexts.get(key) or {})
             if not context:
-                return None
-            if context.get("resolved"):
-                self._pending_visual_contexts.pop(chat_name, None)
-                return None
+                context = None
+        if context is None and key[0] == "group":
+            context = self._restore_group_pending_visual_context(chat_name)
+        if not context:
+            return None
+        with self._chat_merge_lock:
             if float(context.get("expires_at", 0) or 0) < time.time():
-                self._pending_visual_contexts.pop(chat_name, None)
+                self._pending_visual_contexts.pop(key, None)
                 return None
             context["image_paths"] = self._normalize_visual_image_paths(context.get("image_paths"))
             if not context["image_paths"]:
-                self._pending_visual_contexts.pop(chat_name, None)
+                self._pending_visual_contexts.pop(key, None)
                 return None
+            context["image_senders"] = self._normalize_visual_sender_slots(
+                context["image_paths"],
+                context.get("image_senders"),
+            )
             context["visual_notes"] = self._normalize_visual_note_slots(
                 context["image_paths"],
                 context.get("visual_notes"),
             )
             return context
 
-    def _clear_pending_visual_context(self, chat_name):
+    def _clear_pending_visual_context(self, chat_name, *, chat_type):
         self._ensure_message_runtime_state()
+        key = self._visual_context_key(chat_name, chat_type)
         with self._chat_merge_lock:
-            self._pending_visual_contexts.pop(chat_name, None)
+            self._pending_visual_contexts.pop(key, None)
 
-    def _pending_visual_context_ready_to_clear(self, chat_name):
-        context = self._get_pending_visual_context(chat_name)
+    def _pending_visual_context_ready_to_clear(self, chat_name, *, chat_type):
+        context = self._get_pending_visual_context(chat_name, chat_type=chat_type)
         if not context:
             return True
         image_paths = self._normalize_visual_image_paths(context.get("image_paths"))
         visual_notes = self._normalize_visual_note_slots(image_paths, context.get("visual_notes"))
         return bool(visual_notes and any(visual_notes))
 
-    def _remember_visual_notes(self, chat_name, image_paths, visual_notes):
+    def _remember_visual_notes(self, chat_name, image_paths, visual_notes, *, chat_type):
         normalized_paths = self._normalize_visual_image_paths(image_paths)
         normalized_notes = self._normalize_visual_note_slots(normalized_paths, visual_notes)
         if not normalized_paths or not any(normalized_notes):
@@ -6944,18 +7515,24 @@ class WXBot:
         attach_notes = getattr(memory_manager, "attach_visual_notes", None)
         if callable(attach_notes):
             try:
-                updated = bool(attach_notes(chat_name, normalized_paths, normalized_notes)) or updated
+                updated = bool(attach_notes(
+                    chat_name,
+                    normalized_paths,
+                    normalized_notes,
+                    chat_type=chat_type,
+                )) or updated
             except Exception as exc:
                 log(level="WARNING", message=f"回写图片摘要到聊天记录失败: {exc}")
         self._ensure_message_runtime_state()
+        key = self._visual_context_key(chat_name, chat_type)
         with self._chat_merge_lock:
-            context = dict(getattr(self, "_pending_visual_contexts", {}).get(chat_name) or {})
+            context = dict(getattr(self, "_pending_visual_contexts", {}).get(key) or {})
             context_paths = self._normalize_visual_image_paths(context.get("image_paths"))
             if context_paths and context_paths == normalized_paths:
                 existing_notes = self._normalize_visual_note_slots(context_paths, context.get("visual_notes"))
                 if existing_notes != normalized_notes:
                     context["visual_notes"] = list(normalized_notes)
-                    self._pending_visual_contexts[chat_name] = context
+                    self._pending_visual_contexts[key] = context
                     updated = True
         return updated
 
@@ -7073,15 +7650,18 @@ class WXBot:
             raw, _image_paths = split_quoted_image_message(raw)
         return build_tts_context_text(raw)
 
-    def _active_tts_config(self, user_name=""):
+    def _active_tts_config(self, conversation_name="", *, chat_type="private"):
         tts_index = getattr(self.config, 'tts_index', 0)
-        if user_name and self._is_private_whitelist_user(user_name):
-            chat_tts_map = getattr(self.config, 'chat_tts_map', {}) or {}
-            if isinstance(chat_tts_map, dict) and user_name in chat_tts_map:
-                try:
-                    tts_index = int(chat_tts_map.get(user_name))
-                except (TypeError, ValueError):
-                    tts_index = getattr(self.config, 'tts_index', 0)
+        tts_map = {}
+        if chat_type == "group":
+            tts_map = getattr(self.config, 'group_tts_map', {}) or {}
+        elif conversation_name and self._is_private_whitelist_user(conversation_name):
+            tts_map = getattr(self.config, 'chat_tts_map', {}) or {}
+        if isinstance(tts_map, dict) and conversation_name in tts_map:
+            try:
+                tts_index = int(tts_map.get(conversation_name))
+            except (TypeError, ValueError):
+                tts_index = getattr(self.config, 'tts_index', 0)
         return select_tts_config(
             getattr(self.config, 'tts_configs', []) or [],
             tts_index,
@@ -7206,20 +7786,31 @@ class WXBot:
                 turn.conversation,
                 action,
                 chat_type=turn.chat_type,
+                at=at,
             )
         conversation_version = turn.expected_version
         try:
             if action.kind == ReplyKind.QUOTE:
-                result = self._ui_quote_message(
-                    chat,
-                    context.get("message"),
-                    action.content,
-                    at=at,
-                    journal=False,
-                    conversation_version=conversation_version,
-                    echo_delivery_ids=(action_id,),
-                    expires_at=turn.expires_at,
-                )
+                try:
+                    result = self._ui_quote_message(
+                        chat,
+                        context.get("message"),
+                        action.content,
+                        at=at,
+                        journal=False,
+                        conversation_version=conversation_version,
+                        echo_delivery_ids=(action_id,),
+                        expires_at=turn.expires_at,
+                    )
+                except MessageLocateError as exc:
+                    log(level="WARNING", message=f"引用原消息失败，已降级普通文本：{exc}")
+                    result = chat.SendMsg(
+                        msg=action.content,
+                        at=at or None,
+                        conversation_version=conversation_version,
+                        echo_delivery_ids=(action_id,),
+                        expires_at=turn.expires_at,
+                    )
             elif action.kind == ReplyKind.VOICE:
                 result = chat.SendAudio(
                     filepath=action.send_value,
@@ -7262,6 +7853,18 @@ class WXBot:
             raise DeliveryNotStarted(status, str(exc)) from exc
         return ReplyCountStore.was_send_success(result)
 
+    @staticmethod
+    def _delivery_result_is_handled(delivery):
+        return bool(
+            delivery
+            and delivery.status in {
+                DeliveryStatus.DONE,
+                DeliveryStatus.STALE,
+                DeliveryStatus.CANCELLED,
+                DeliveryStatus.EXPIRED,
+            }
+        )
+
     def _deliver_reply_actions(
         self,
         chat,
@@ -7276,6 +7879,9 @@ class WXBot:
         if not actions:
             self._cancel_unfinished_reply_job(message, "reply contains no deliverable actions")
             return None
+        if self.is_stop_requested():
+            self._cancel_failed_reply_attempt(message, "robot stopped before reply delivery")
+            return DeliveryResult(DeliveryStatus.CANCELLED)
         coordinator = getattr(self, "_reply_delivery_coordinator", None)
         turn = self._reply_turn(chat, message, actions, chat_type=chat_type)
         if coordinator is None or turn is None:
@@ -7360,8 +7966,10 @@ class WXBot:
             return False
         audio_path = ""
         try:
+            chat_type = "private" if str(state_key or "").startswith("private:") else "group"
             tts_cfg = self._active_tts_config(
-                getattr(chat, "who", "") if str(state_key or "").startswith("private:") else ""
+                getattr(chat, "who", ""),
+                chat_type=chat_type,
             )
             if not tts_cfg:
                 return False
@@ -7388,7 +7996,6 @@ class WXBot:
                     ReplySource.AI,
                     send_value=str(audio_path),
                 )
-                chat_type = "private" if str(state_key or "").startswith("private:") else "group"
                 delivery = self._deliver_reply_actions(
                     chat,
                     message,
@@ -7437,7 +8044,7 @@ class WXBot:
                 sent_items=sent_items,
             )
             if delivery is not None:
-                return delivery.completed > 0, delivery.status == DeliveryStatus.DONE
+                return delivery.completed > 0, self._delivery_result_is_handled(delivery)
         return False, False
 
     def _send_keyword_reply_actions(
@@ -7485,7 +8092,7 @@ class WXBot:
                 success = delivery.completed > 0
                 if success:
                     log(level="INFO", message=f"关键词回复成功：{chat.who}，发送 {delivery.completed} 条")
-                return success, delivery.status == DeliveryStatus.DONE
+                return success, self._delivery_result_is_handled(delivery)
         return False, False
 
     def _get_reply_count_key(self, chat, message=None):
@@ -7528,11 +8135,15 @@ class WXBot:
                 chat_who,
                 raw_limit,
                 chat_type=chat_type,
-                exclude_event_ids=event_ids,
+                before_event_ids=event_ids,
             )
             return [MemoryManager._history_message(event) for event in events]
         if self.memory_manager:
-            return self.memory_manager.get_messages(chat_who, raw_limit) or []
+            return self.memory_manager.get_messages(
+                chat_who,
+                raw_limit,
+                chat_type=chat_type,
+            ) or []
         return []
 
     def _get_model_context_history(self, chat_who, *, event_ids=(), chat_type="private"):
@@ -7634,7 +8245,7 @@ class WXBot:
         )
         if delivery is None:
             return False, False
-        return delivery.completed > 0, delivery.status == DeliveryStatus.DONE
+        return delivery.completed > 0, self._delivery_result_is_handled(delivery)
 
     def _should_log_text_reply_limit_warning(self, user_key, user_data, *, limit_count, limit_hours):
         warning_keys = getattr(self, "_text_reply_limit_warning_keys", None)
@@ -7750,10 +8361,16 @@ class WXBot:
         ]
         return bool(sources)
 
-    def _is_material_source_chat(self, chat_who):
+    def _is_material_source_chat(self, chat):
+        conversation = ConversationRef.from_wx_chat(chat)
         return bool(
             self._material_source_runtime_enabled()
-            and is_material_source(getattr(self.config, 'material_source_list', []), chat_who)
+            and is_material_source(
+                getattr(self.config, 'material_source_list', []),
+                conversation.who,
+            )
+            and conversation.chat_type
+            == self._material_source_chat_type(conversation.who)
         )
 
     def _current_ai_material_outreach_config(self):
@@ -7967,7 +8584,11 @@ class WXBot:
             try:
                 count = max(0, int(getattr(self.config, "memory_context_count", 20) or 0))
                 raw_limit = self._memory_context_raw_limit(count)
-                raw_history = list(memory_manager.get_messages(target, raw_limit) or [])
+                raw_history = list(memory_manager.get_messages(
+                    target,
+                    raw_limit,
+                    chat_type="private",
+                ) or [])
                 history = build_model_visible_history(
                     raw_history,
                     message_limit=count,
@@ -8137,7 +8758,11 @@ class WXBot:
             try:
                 count = max(0, int(getattr(self.config, "memory_context_count", 20) or 0))
                 raw_limit = self._memory_context_raw_limit(count)
-                raw_history = list(memory_manager.get_messages(target, raw_limit) or [])
+                raw_history = list(memory_manager.get_messages(
+                    target,
+                    raw_limit,
+                    chat_type="private",
+                ) or [])
                 history = build_model_visible_history(
                     raw_history,
                     message_limit=count,
@@ -8379,7 +9004,7 @@ class WXBot:
             return changed
 
     def _handle_material_source_message(self, chat, message):
-        if not self._is_material_source_chat(chat.who):
+        if not self._is_material_source_chat(chat):
             return False
         materials, entry, material_id = collect_material_source_message(
             self._load_material_outreach_materials(),
@@ -8479,11 +9104,11 @@ class WXBot:
     def new_msg_get_plus(self, chat_records):
         return listening.new_msg_get_plus(chat_records)
 
-    def add_chat_to_listen(self, chat):
-        return listening.add_chat_to_listen(self, chat)
+    def add_chat_to_listen(self, chat, *, chat_type=None):
+        return listening.add_chat_to_listen(self, chat, chat_type=chat_type)
 
-    def is_chat_listened(self, chat):
-        return listening.is_chat_listened(self, chat)
+    def is_chat_listened(self, chat, *, chat_type=None):
+        return listening.is_chat_listened(self, chat, chat_type=chat_type)
 
     def ALLListen_mode(self, last_time, timeout=10):
         if not isinstance(self.wx, UIClientFacade):
@@ -8586,22 +9211,46 @@ class WXBot:
             **listening.listener_recovery_snapshot(self),
         }
 
+    def _request_wxbot_stop_cleanup(self):
+        lock = getattr(self, "_stop_cleanup_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._stop_cleanup_lock = lock
+        with lock:
+            if bool(getattr(self, "_stop_cleanup_done", False)):
+                return True
+            self._ensure_stop_requested_event().set()
+            self.run_flag = False
+            cleanup_steps = [
+                ("取消私聊与语音定时器", self._cancel_pending_private_message_timers),
+                ("清理群聊业务队列", self._clear_group_message_pipelines),
+                ("停止会话记忆后台任务", self._clear_chat_memory_background_state),
+            ]
+            coordinator = getattr(self, "_reply_delivery_coordinator", None)
+            if coordinator is not None:
+                cleanup_steps.append(("停止回复投递", coordinator.stop))
+            store = getattr(self, "_message_store", None)
+            if store is not None:
+                cleanup_steps.append(("取消未提交回复", store.cancel_unclaimed_on_shutdown))
+            owner = getattr(self, "_ui_owner", None)
+            if owner is not None:
+                cleanup_steps.append(("取消待执行微信动作", owner.cancel_pending))
+
+            errors = []
+            for label, cleanup in cleanup_steps:
+                try:
+                    cleanup()
+                except Exception as exc:
+                    errors.append(f"{label}: {exc}")
+            if errors:
+                raise RuntimeError("；".join(errors))
+            self._stop_cleanup_done = True
+            return True
+
     def stop_wxbot(self):
         """Request a stop without waiting for a potentially stuck UI call."""
         try:
-            self._ensure_stop_requested_event().set()
-            self.run_flag = False
-            self._cancel_pending_private_message_timers()
-            self._clear_chat_memory_background_state()
-            coordinator = getattr(self, "_reply_delivery_coordinator", None)
-            if coordinator is not None:
-                coordinator.stop()
-            store = getattr(self, "_message_store", None)
-            if store is not None:
-                store.cancel_unclaimed_on_shutdown()
-            owner = getattr(self, "_ui_owner", None)
-            if owner is not None:
-                owner.cancel_pending()
+            self._request_wxbot_stop_cleanup()
             log(level="WARNING", message='siver_wxbot正在停止！！')
             return True
         except Exception as e:
@@ -8611,6 +9260,10 @@ class WXBot:
 
     def _finish_wxbot_stop(self):
         """Run the real listener shutdown on the robot thread after its loop exits."""
+        try:
+            self._request_wxbot_stop_cleanup()
+        except Exception as exc:
+            log(level="ERROR", message=f"机器人停止前清理未完全成功：{exc}")
         owner = getattr(self, "_ui_owner", None)
         if owner is not None:
             try:
@@ -8630,7 +9283,7 @@ class WXBot:
         log(level="WARNING", message='siver_wxbot安全退出！！')
         return True
 
-    def main(self):
+    def _run_wxbot_main(self):
         """
         机器人主运行函数：
         - 校验 wxautox 授权
@@ -8661,11 +9314,6 @@ class WXBot:
             log(level="SUCCESS", message='启动阶段：监听器已就绪，开始接收消息')
             if self.is_stop_requested():
                 log(level="WARNING", message="启动过程中收到停止请求，已停止进入监听")
-                try:
-                    if self.wx and hasattr(self.wx, "StopListening"):
-                        self.wx.StopListening()
-                except Exception as stop_exc:
-                    log(level="WARNING", message=f"启动中停止监听失败：{stop_exc}")
                 self.run_flag = False
                 self._notify_startup_status(False, "机器人启动过程中已被停止")
                 return False
@@ -8707,9 +9355,7 @@ class WXBot:
                 if check_counter >= check_interval:
                     try:
                         if self.callback_is_die:
-                            # 回调函数已出错，停止所有监听并退出主循环
-                            self.wx.StopListening()
-                            log(level="ERROR", message="检测到回调函数出错!!已停止所有监听并跳出主线程!!")
+                            log(level="ERROR", message="检测到回调函数出错，主线程即将统一停止")
                             break
                         if not self.check_wechat_window():
                             # 微信离线，阻塞等待人工处理
@@ -8820,12 +9466,16 @@ class WXBot:
 
             self._wait_or_stop_requested(wait_time)
 
-        log(level="WARNING", message='siver_wxbot主线程安全退出，正在退出监听...')
+    def main(self):
         try:
-            self._finish_wxbot_stop()
-        except Exception as e:
-            nickname = getattr(getattr(self, "wx", None), "nickname", "wxbot")
-            self.is_err(nickname + ' wxbot停止监听失败！！', e)
+            return self._run_wxbot_main()
+        finally:
+            log(level="WARNING", message='siver_wxbot主线程安全退出，正在退出监听...')
+            try:
+                self._finish_wxbot_stop()
+            except Exception as e:
+                nickname = getattr(getattr(self, "wx", None), "nickname", "wxbot")
+                self.is_err(nickname + ' wxbot停止监听失败！！', e)
 
     def run(self):
         """启动机器人（对外暴露的入口函数）"""

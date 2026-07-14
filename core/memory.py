@@ -28,6 +28,13 @@ def normalize_memory_chat_name(chat_name):
     return str(chat_name or "").strip()
 
 
+def require_memory_chat_type(chat_type):
+    value = str(chat_type or "").strip().lower()
+    if value not in {"private", "group"}:
+        raise ValueError("chat_type must be private or group")
+    return value
+
+
 def is_windows_reserved_storage_name(name):
     stem = str(name or "").split(".", 1)[0].upper()
     return stem in WINDOWS_RESERVED_NAMES
@@ -81,7 +88,10 @@ class MemoryManager:
         self.chat_name_resolver = chat_name_resolver
         self.message_store = message_store or MessageStore(base_path, wx_id)
 
-    def resolve_chat_name(self, chat_name):
+    def resolve_chat_name(self, chat_name, *, chat_type):
+        chat_type = require_memory_chat_type(chat_type)
+        if chat_type == "group":
+            return normalize_memory_chat_name(chat_name)
         resolver = self.chat_name_resolver
         if callable(resolver):
             try:
@@ -226,10 +236,11 @@ class MemoryManager:
         *,
         reconcile_visible_snapshot=False,
         require_anchor=False,
-        chat_type="private",
+        chat_type,
         anchor_recent_count=5,
     ):
-        conversation = self.resolve_chat_name(chat_name)
+        chat_type = require_memory_chat_type(chat_type)
+        conversation = self.resolve_chat_name(chat_name, chat_type=chat_type)
         normalized_entries = []
         for entry in entries or []:
             if not isinstance(entry, dict):
@@ -239,7 +250,7 @@ class MemoryManager:
                 normalized_entries.append(normalized)
 
         history_limit = self._positive_count(max_count, fallback=5000)
-        messages = self.get_messages(conversation, history_limit)
+        messages = self.get_messages(conversation, history_limit, chat_type=chat_type)
         if not normalized_entries:
             return {"added": 0, "total": len(messages)}
 
@@ -287,7 +298,7 @@ class MemoryManager:
         added = self.message_store.append_history(to_append)
         result = {
             "added": added,
-            "total": len(self.get_messages(conversation, history_limit)),
+            "total": len(self.get_messages(conversation, history_limit, chat_type=chat_type)),
         }
         if repair_plan is not None:
             result.update(
@@ -296,9 +307,15 @@ class MemoryManager:
             )
         return result
 
-    def attach_visual_notes(self, chat_name, image_paths, visual_notes):
-        conversation = self.resolve_chat_name(chat_name)
-        return self.message_store.attach_visual_notes(conversation, image_paths, visual_notes)
+    def attach_visual_notes(self, chat_name, image_paths, visual_notes, *, chat_type):
+        chat_type = require_memory_chat_type(chat_type)
+        conversation = self.resolve_chat_name(chat_name, chat_type=chat_type)
+        return self.message_store.attach_visual_notes(
+            conversation,
+            image_paths,
+            visual_notes,
+            chat_type=chat_type,
+        )
 
     @staticmethod
     def _positive_count(value, *, fallback=0):
@@ -332,24 +349,33 @@ class MemoryManager:
                 item[key] = metadata[key]
         return item
 
-    def get_messages(self, chat_name, count):
+    def get_messages(self, chat_name, count, *, chat_type):
+        chat_type = require_memory_chat_type(chat_type)
         count = self._positive_count(count)
         if not count:
             return []
         events = self.message_store.history(
-            self.resolve_chat_name(chat_name),
+            self.resolve_chat_name(chat_name, chat_type=chat_type),
             count,
-            chat_type=None,
+            chat_type=chat_type,
         )
         return [self._history_message(event) for event in events]
 
-    def list_chat_names(self):
-        return self.message_store.list_conversations()
+    def list_chat_names(self, *, chat_type):
+        chat_type = require_memory_chat_type(chat_type)
+        return self.message_store.list_conversations(chat_type=chat_type)
 
-    def clear_messages(self, chat_name):
-        self.message_store.delete_conversation(self.resolve_chat_name(chat_name))
+    def clear_messages(self, chat_name, *, chat_type):
+        chat_type = require_memory_chat_type(chat_type)
+        self.message_store.delete_conversation(
+            self.resolve_chat_name(chat_name, chat_type=chat_type),
+            chat_type=chat_type,
+        )
 
     def clear_all_messages(self):
-        count = len(self.list_chat_names())
+        count = sum(
+            len(self.list_chat_names(chat_type=chat_type))
+            for chat_type in ("private", "group")
+        )
         self.message_store.clear_history()
         return count

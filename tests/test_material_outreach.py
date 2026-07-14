@@ -545,6 +545,7 @@ class MaterialOutreachPoolTests(unittest.TestCase):
                         forwarded,
                         ["张三"],
                         preface="附加文案",
+                        material_source="素材源",
                         material_type="file",
                         material_title="素材标题",
                     )
@@ -585,6 +586,7 @@ class MaterialOutreachPoolTests(unittest.TestCase):
             success, error = bot._forward_material_message_unlocked(
                 ForwardMessage(),
                 ["张三"],
+                material_source="素材源",
                 material_type="file",
                 material_title="素材标题",
             )
@@ -633,6 +635,7 @@ class MaterialOutreachPoolTests(unittest.TestCase):
                     success, error = bot._forward_material_message_unlocked(
                         ForwardMessage(),
                         ["张三"],
+                        material_source="素材源",
                         material_type=message_type,
                         material_title=callback.content,
                     )
@@ -658,6 +661,7 @@ class MaterialOutreachPoolTests(unittest.TestCase):
             success, error = bot._forward_material_message_unlocked(
                 ForwardMessage(),
                 ["张三"],
+                material_source="素材源",
                 material_type="file",
                 material_title="素材标题",
             )
