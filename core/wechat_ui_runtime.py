@@ -523,7 +523,10 @@ class WeChatUIRuntime:
         result = getter(filter_mute=bool(payload.get("filter_mute")), callback=capture)
         result = result if isinstance(result, dict) else {}
         chat_name = str(result.get("chat_name") or "").strip()
-        chat_type = str(result.get("chat_type") or getattr(self._client, "chat_type", "private") or "private")
+        conversation = ConversationRef(
+            chat_name,
+            result.get("chat_type") or getattr(self._client, "chat_type", "private"),
+        )
         raw_messages = list(result.get("msg") or captured)
         envelopes = []
         source_batch = f"global:{time.time_ns()}"
@@ -538,10 +541,10 @@ class WeChatUIRuntime:
             is_new = True
             if callable(self._persist_message):
                 is_new = bool(self._persist_message(
-                    ConversationRef(chat_name, chat_type),
+                    conversation,
                     envelope,
                 ))
-            if is_new and payload.get("download_media") and chat_type != "group":
+            if is_new and payload.get("download_media") and conversation.chat_type != "group":
                 method_name = "download_quote_image" if envelope.type == "quote" else "download"
                 if envelope.type in {"image", "quote"}:
                     method = getattr(message, method_name, None)
@@ -554,9 +557,13 @@ class WeChatUIRuntime:
                         )
                         envelope._wxbot_media_prepared = True
             if is_new and callable(self._enrich_message):
-                self._enrich_message(ConversationRef(chat_name, chat_type), envelope)
+                self._enrich_message(conversation, envelope)
             envelopes.append(envelope)
-        return {"chat_name": chat_name, "chat_type": chat_type, "msg": envelopes}
+        return {
+            "chat_name": chat_name,
+            "chat_type": conversation.chat_type,
+            "msg": envelopes,
+        }
 
     def main_window(self, payload):
         operation = str(payload.get("operation") or "")
@@ -988,7 +995,6 @@ class WeChatUIRuntime:
                 addmsg=str(payload.get("addmsg") or ""),
                 remark=str(payload.get("remark") or ""),
                 tags=list(payload.get("tags") or []),
-                permission=str(payload.get("permission") or "不设置"),
                 max_attempts=max(1, int(payload.get("max_attempts") or 2)),
             )
 

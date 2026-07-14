@@ -195,7 +195,6 @@ class ConversationVerifySender:
         addmsg: str = "",
         remark: str = "",
         tags: list[str] | None = None,
-        permission: str = "不设置",
         max_attempts: int = 2,
     ) -> dict[str, Any]:
         if not callable(self._assert_owner_thread):
@@ -235,8 +234,6 @@ class ConversationVerifySender:
                     "remark": _clean_text(remark) or target_name,
                     "tags": tags,
                 }
-                if permission and permission != "不设置":
-                    send_kwargs["permission"] = permission
                 try:
                     wnd.send(**send_kwargs)
                 except Exception as exc:
@@ -247,7 +244,6 @@ class ConversationVerifySender:
                             "target": target_name,
                             "addmsg": _clean_text(addmsg),
                             "remark": _clean_text(remark) or target_name,
-                            "permission": permission or "不设置",
                             "attempt": attempt,
                             "phase": "submit",
                             "click": click_meta,
@@ -260,7 +256,6 @@ class ConversationVerifySender:
                         "target": target_name,
                         "addmsg": _clean_text(addmsg),
                         "remark": _clean_text(remark) or target_name,
-                        "permission": permission or "不设置",
                         "attempt": attempt,
                         "click": click_meta,
                     },

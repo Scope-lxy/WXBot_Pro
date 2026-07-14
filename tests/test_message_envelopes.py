@@ -6,6 +6,25 @@ from feature.message_routing import match_pending_voice_snapshot
 
 
 class MessageEnvelopeTests(unittest.TestCase):
+    def test_conversation_ref_normalizes_wxautox_friend_type(self):
+        direct = ConversationRef(who="张三", chat_type="friend")
+        callback = ConversationRef.from_wx_chat(
+            SimpleNamespace(who="张三", chat_type="friend")
+        )
+
+        self.assertEqual(direct.chat_type, "private")
+        self.assertEqual(callback.chat_type, "private")
+
+    def test_conversation_ref_keeps_canonical_types_and_defaults_empty(self):
+        self.assertEqual(ConversationRef("张三", "private").chat_type, "private")
+        self.assertEqual(ConversationRef("群聊", "group").chat_type, "group")
+        self.assertEqual(ConversationRef("张三", "").chat_type, "private")
+        self.assertEqual(ConversationRef("张三", None).chat_type, "private")
+
+    def test_conversation_ref_rejects_unknown_nonempty_type(self):
+        with self.assertRaisesRegex(ValueError, "unsupported conversation chat_type"):
+            ConversationRef("张三", "official")
+
     def test_callback_objects_are_copied_to_pure_records(self):
         chat = SimpleNamespace(who="张三", chat_type="private", SendMsg=lambda _text: None)
         message = SimpleNamespace(
@@ -30,6 +49,7 @@ class MessageEnvelopeTests(unittest.TestCase):
 
         self.assertEqual(conversation, ConversationRef(who="张三", chat_type="private"))
         self.assertEqual(envelope.content, "你好")
+        self.assertEqual(envelope.attr, "friend")
         self.assertEqual(envelope.id, 12)
         self.assertEqual(envelope.hash_text, "hash-text-1")
         self.assertEqual(envelope.window_order, 2)

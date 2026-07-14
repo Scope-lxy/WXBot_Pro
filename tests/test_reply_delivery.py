@@ -1,3 +1,4 @@
+import sqlite3
 import threading
 import unittest
 from dataclasses import FrozenInstanceError
@@ -128,7 +129,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         self.assertEqual(store.register_payloads[0]["event_ids"], ("event-1", "event-2"))
         self.assertEqual(store.confirm_calls[0][2]["content"], "private generated reply")
 
-    def test_prepare_failure_is_retryable_and_never_claims_or_sends(self):
+    def test_prepare_false_cancels_before_claim(self):
         store = FakeStore()
         sent = []
         result = make_coordinator(
@@ -137,21 +138,89 @@ class ReplyDeliveryTests(unittest.TestCase):
             sender=lambda *_args: sent.append(True),
         ).deliver(make_turn())
 
-        self.assertEqual(result.status, DeliveryStatus.RETRY)
-        self.assertEqual(store.actions["turn-1:0"], "pending")
+        self.assertEqual(result.status, DeliveryStatus.CANCELLED)
+        self.assertEqual(store.actions["turn-1:0"], "cancelled")
         self.assertEqual(store.claim_calls, [])
         self.assertEqual(sent, [])
 
-    def test_prepare_exception_is_retryable(self):
+    def test_prepare_exception_propagates_instead_of_becoming_retry(self):
         store = FakeStore()
 
         def fail(*_args):
             raise RuntimeError("window busy")
 
-        result = make_coordinator(store, prepare=fail).deliver(make_turn())
+        with self.assertRaisesRegex(RuntimeError, "window busy"):
+            make_coordinator(store, prepare=fail).deliver(make_turn())
+
+        self.assertEqual(store.actions["turn-1:0"], "pending")
+
+    def test_version_provider_exception_propagates_instead_of_becoming_retry(self):
+        store = FakeStore()
+        coordinator = ReplyDeliveryCoordinator(
+            store=store,
+            version_provider=lambda *_args: (_ for _ in ()).throw(
+                ValueError("invalid conversation type")
+            ),
+            prepare=lambda *_args: True,
+            sender=lambda *_args: True,
+            clock=lambda: 100.0,
+        )
+
+        with self.assertRaisesRegex(ValueError, "invalid conversation type"):
+            coordinator.deliver(make_turn())
+
+        self.assertEqual(store.actions["turn-1:0"], "pending")
+
+    def test_claim_exception_propagates_before_sender_runs(self):
+        store = FakeStore()
+        sent = []
+        store.conditional_claim = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("claim contract failed")
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "claim contract failed"):
+            make_coordinator(store, sender=lambda *_args: sent.append(True)).deliver(make_turn())
+
+        self.assertEqual(store.actions["turn-1:0"], "pending")
+        self.assertEqual(sent, [])
+
+    def test_sqlite_busy_during_registration_is_retryable(self):
+        store = FakeStore()
+        store.register_reply_turn = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")
+        )
+
+        result = make_coordinator(store).deliver(make_turn())
 
         self.assertEqual(result.status, DeliveryStatus.RETRY)
-        self.assertEqual(result.error, "window busy")
+        self.assertEqual(result.action_id, "turn-1:0")
+
+    def test_sqlite_locked_during_version_check_is_retryable(self):
+        store = FakeStore()
+        coordinator = ReplyDeliveryCoordinator(
+            store=store,
+            version_provider=lambda *_args: (_ for _ in ()).throw(
+                sqlite3.OperationalError("database table is locked")
+            ),
+            prepare=lambda *_args: True,
+            sender=lambda *_args: True,
+            clock=lambda: 100.0,
+        )
+
+        result = coordinator.deliver(make_turn())
+
+        self.assertEqual(result.status, DeliveryStatus.RETRY)
+        self.assertEqual(store.actions["turn-1:0"], "pending")
+
+    def test_sqlite_busy_during_claim_is_retryable(self):
+        store = FakeStore()
+        store.conditional_claim = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is busy")
+        )
+
+        result = make_coordinator(store).deliver(make_turn())
+
+        self.assertEqual(result.status, DeliveryStatus.RETRY)
         self.assertEqual(store.actions["turn-1:0"], "pending")
 
     def test_version_is_checked_again_after_window_preparation(self):
@@ -235,17 +304,20 @@ class ReplyDeliveryTests(unittest.TestCase):
         self.assertEqual(result.error, "result unreadable")
         self.assertEqual(store.actions["turn-1:0"], "uncertain")
 
-    def test_preclaim_retry_can_resume_after_an_already_done_bubble(self):
+    def test_sqlite_busy_can_resume_after_an_already_done_bubble(self):
         store = FakeStore()
         attempts = {"second": 0}
+        claim = store.conditional_claim
 
-        def prepare(_turn, action, _action_id, _context):
-            if action.content == "second":
+        def conditional_claim(action_id, **conditions):
+            if action_id == "turn-1:1":
                 attempts["second"] += 1
-                return attempts["second"] > 1
-            return True
+                if attempts["second"] == 1:
+                    raise sqlite3.OperationalError("database is locked")
+            return claim(action_id, **conditions)
 
-        coordinator = make_coordinator(store, prepare=prepare)
+        store.conditional_claim = conditional_claim
+        coordinator = make_coordinator(store)
         turn = make_turn(ReplyAction("text", "first"), ReplyAction("text", "second"))
 
         first = coordinator.deliver(turn)
@@ -400,14 +472,14 @@ class ReplyDeliveryTests(unittest.TestCase):
             tracker.match("同名会话", "text", "reply", chat_type="group")
         )
 
-    def test_stop_cancels_a_turn_waiting_for_preclaim_retry(self):
+    def test_stop_preserves_a_turn_cancelled_during_prepare(self):
         store = FakeStore()
         coordinator = make_coordinator(store, prepare=lambda *_args: False)
 
         result = coordinator.deliver(make_turn())
         coordinator.stop()
 
-        self.assertEqual(result.status, DeliveryStatus.RETRY)
+        self.assertEqual(result.status, DeliveryStatus.CANCELLED)
         self.assertEqual(store.actions["turn-1:0"], "cancelled")
 
     def test_stop_can_cancel_an_active_turn_from_another_thread(self):

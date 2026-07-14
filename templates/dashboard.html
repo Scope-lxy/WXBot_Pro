@@ -1022,13 +1022,13 @@ html.icons-pref-local [class*=" bi-"]::before {
                   <div class="cfg-inline-combo__field">
                     <span class="cfg-inline-combo__prefix">每</span>
                     <input type="number" class="form-control cfg-inline-combo__input" id="chat_text_reply_limit_hours" min="0" max="720"
-                           value="{{ config.get('chat_text_reply_limit_hours', 24) }}" placeholder="24">
+                           value="{{ config.get('chat_text_reply_limit_hours', 5) }}" placeholder="5">
                     <span class="cfg-inline-combo__suffix">小时</span>
                   </div>
                   <span class="cfg-inline-combo__separator">最多</span>
                   <div class="cfg-inline-combo__field">
                     <input type="number" class="form-control cfg-inline-combo__input" id="chat_text_reply_limit_count" min="0" max="99999"
-                           value="{{ config.get('chat_text_reply_limit_count', 99) }}" placeholder="99">
+                           value="{{ config.get('chat_text_reply_limit_count', 50) }}" placeholder="50">
                     <span class="cfg-inline-combo__suffix">次</span>
                   </div>
                 </div>
@@ -1113,12 +1113,12 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <div class="cfg-inline-combo cfg-inline-combo--reply-limit">
                   <div class="cfg-inline-combo__field">
                     <span class="cfg-inline-combo__prefix">每</span>
-                    <input type="number" class="form-control cfg-inline-combo__input" id="chat_voice_reply_limit_hours" min="0" max="720" value="{{ config.get('chat_voice_reply_limit_hours', 24) }}">
+                    <input type="number" class="form-control cfg-inline-combo__input" id="chat_voice_reply_limit_hours" min="0" max="720" value="{{ config.get('chat_voice_reply_limit_hours', 5) }}">
                     <span class="cfg-inline-combo__suffix">小时</span>
                   </div>
                   <span class="cfg-inline-combo__separator">最多</span>
                   <div class="cfg-inline-combo__field">
-                    <input type="number" class="form-control cfg-inline-combo__input" id="chat_voice_reply_limit_count" min="0" max="99" value="{{ config.get('chat_voice_reply_limit_count', 50) }}">
+                    <input type="number" class="form-control cfg-inline-combo__input" id="chat_voice_reply_limit_count" min="0" max="99" value="{{ config.get('chat_voice_reply_limit_count', 5) }}">
                     <span class="cfg-inline-combo__suffix">条</span>
                   </div>
                 </div>
@@ -1325,13 +1325,13 @@ html.icons-pref-local [class*=" bi-"]::before {
                   <div class="cfg-inline-combo__field">
                     <span class="cfg-inline-combo__prefix">每</span>
                     <input type="number" class="form-control cfg-inline-combo__input" id="group_text_reply_limit_hours" min="0" max="720"
-                           value="{{ config.get('group_text_reply_limit_hours', 24) }}" placeholder="24">
+                           value="{{ config.get('group_text_reply_limit_hours', 5) }}" placeholder="5">
                     <span class="cfg-inline-combo__suffix">小时</span>
                   </div>
                   <span class="cfg-inline-combo__separator">最多</span>
                   <div class="cfg-inline-combo__field">
                     <input type="number" class="form-control cfg-inline-combo__input" id="group_text_reply_limit_count" min="0" max="99999"
-                           value="{{ config.get('group_text_reply_limit_count', 99) }}" placeholder="99">
+                           value="{{ config.get('group_text_reply_limit_count', 50) }}" placeholder="50">
                     <span class="cfg-inline-combo__suffix">次</span>
                   </div>
                 </div>
@@ -1415,12 +1415,12 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <div class="cfg-inline-combo cfg-inline-combo--reply-limit">
                   <div class="cfg-inline-combo__field">
                     <span class="cfg-inline-combo__prefix">每</span>
-                    <input type="number" class="form-control cfg-inline-combo__input" id="group_voice_reply_limit_hours" min="0" max="720" value="{{ config.get('group_voice_reply_limit_hours', 24) }}">
+                    <input type="number" class="form-control cfg-inline-combo__input" id="group_voice_reply_limit_hours" min="0" max="720" value="{{ config.get('group_voice_reply_limit_hours', 5) }}">
                     <span class="cfg-inline-combo__suffix">小时</span>
                   </div>
                   <span class="cfg-inline-combo__separator">最多</span>
                   <div class="cfg-inline-combo__field">
-                    <input type="number" class="form-control cfg-inline-combo__input" id="group_voice_reply_limit_count" min="0" max="99" value="{{ config.get('group_voice_reply_limit_count', 99) }}">
+                    <input type="number" class="form-control cfg-inline-combo__input" id="group_voice_reply_limit_count" min="0" max="99" value="{{ config.get('group_voice_reply_limit_count', 5) }}">
                     <span class="cfg-inline-combo__suffix">次</span>
                   </div>
                 </div>
@@ -1481,7 +1481,7 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div class="new-friend-block">
             <div class="ui-head ui-head--section">
               <div class="ui-head__main">
-                <h5>自动通过</h5>
+                <h5>自动通过好友申请</h5>
               </div>
               <div class="ui-head__actions">
                 <label class="ui-switch ui-switch--l2 ui-head-switch" for="new_friend_switch" title="自动通过新好友申请">
@@ -1518,7 +1518,7 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
         </div>
 
-        <div class="new-friend-block">
+        <div class="new-friend-block new-friend-archive-block">
           <div class="ui-head ui-head--section">
             <div class="ui-head__main">
               <h5>自动修改备注和标签</h5>
@@ -1530,54 +1530,38 @@ html.icons-pref-local [class*=" bi-"]::before {
               </label>
             </div>
           </div>
-          <div class="new-friend-l3-group new-friend-remark-group">
-            <div class="new-friend-field-grid">
-              <div>
-                <label class="cfg-label" for="new_friend_remark_prefix">备注前缀</label>
-                <div class="inline-check-field">
-                  <input type="text" class="form-control" id="new_friend_remark_prefix" name="new_friend_remark_prefix" placeholder="（留空）" value="{{ config.new_friend_remark_prefix|default('') }}">
-                  <label class="inline-check-suffix" for="new_friend_remark_prefix_timestamp">
-                    <input class="form-check-input" type="checkbox" id="new_friend_remark_prefix_timestamp" name="new_friend_remark_prefix_timestamp" {% if config.get('new_friend_remark_prefix_timestamp', False) %}checked{% endif %}>
-                    加时间戳
-                  </label>
-                </div>
-              </div>
-              <div>
-                <label class="cfg-label" for="new_friend_remark_suffix">备注后缀</label>
-                <div class="inline-check-field">
-                  <input type="text" class="form-control" id="new_friend_remark_suffix" name="new_friend_remark_suffix" placeholder="_机器人备注" value="{{ config.new_friend_remark_suffix|default('_机器人备注') }}">
-                  <label class="inline-check-suffix" for="new_friend_remark_suffix_timestamp">
-                    <input class="form-check-input" type="checkbox" id="new_friend_remark_suffix_timestamp" name="new_friend_remark_suffix_timestamp" {% if config.get('new_friend_remark_suffix_timestamp', False) %}checked{% endif %}>
-                    加时间戳
-                  </label>
-                </div>
+          <div class="new-friend-archive-grid">
+            <div>
+              <label class="cfg-label" for="new_friend_remark_prefix">备注前缀</label>
+              <div class="inline-check-field">
+                <input type="text" class="form-control" id="new_friend_remark_prefix" name="new_friend_remark_prefix" placeholder="（留空）" value="{{ config.new_friend_remark_prefix|default('') }}">
+                <label class="inline-check-suffix" for="new_friend_remark_prefix_timestamp">
+                  <input class="form-check-input" type="checkbox" id="new_friend_remark_prefix_timestamp" name="new_friend_remark_prefix_timestamp" {% if config.get('new_friend_remark_prefix_timestamp', False) %}checked{% endif %}>
+                  加时间戳
+                </label>
               </div>
             </div>
-            <div class="cfg-hint">备注格式：前缀时间戳 + 前缀 + 新好友昵称 + 后缀 + 后缀时间戳；超出微信备注长度会自动裁剪</div>
+            <div>
+              <label class="cfg-label" for="new_friend_remark_suffix">备注后缀</label>
+              <div class="inline-check-field">
+                <input type="text" class="form-control" id="new_friend_remark_suffix" name="new_friend_remark_suffix" placeholder="_机器人备注" value="{{ config.new_friend_remark_suffix|default('_机器人备注') }}">
+                <label class="inline-check-suffix" for="new_friend_remark_suffix_timestamp">
+                  <input class="form-check-input" type="checkbox" id="new_friend_remark_suffix_timestamp" name="new_friend_remark_suffix_timestamp" {% if config.get('new_friend_remark_suffix_timestamp', False) %}checked{% endif %}>
+                  加时间戳
+                </label>
+              </div>
+            </div>
+            <div>
+              <label class="cfg-label" for="new_friend_tag">标签</label>
+              <input type="text" class="form-control" id="new_friend_tag" name="new_friend_tags" value="{{ config.new_friend_tags[0] if config.new_friend_tags else '' }}" placeholder="填写微信中已存在的标签">
+            </div>
           </div>
-          <div class="new-friend-l3-group new-friend-tag-group">
-            <div class="new-friend-tag-head">
-              <label class="cfg-label">自动打标签</label>
-              <span class="cfg-hint">只能填写微信中已存在的标签</span>
-            </div>
-            <div id="new_friend_tags_container" class="new-friend-list">
-              {% for tag in config.new_friend_tags %}
-              <div class="list-item">
-                <input type="text" class="form-control" name="new_friend_tags" value="{{ tag }}" placeholder="标签名">
-                <button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>
-              </div>
-              {% endfor %}
-            </div>
-            <button type="button" class="ui-btn ui-btn--add ui-btn--l3 ui-btn--spaced-sm js-add-field" data-target="#new_friend_tags_container" data-name="new_friend_tags"><i class="bi bi-plus-circle"></i> 添加标签</button>
-          </div>
+          <div class="cfg-hint new-friend-archive-note">备注格式：前缀时间戳 + 前缀 + 新好友昵称 + 后缀 + 后缀时间戳；超出微信备注长度会自动裁剪</div>
         </div>
       </div>
     </div>
     {% set friend_request_settings = friend_request_seed.get('settings', {}) if friend_request_seed else {} %}
     {% set friend_request_summary = friend_request_seed.get('summary', {}) if friend_request_seed else {} %}
-    {% set friend_request_time_range = (friend_request_settings.get('allowed_time_ranges', ['09:00-22:00'])[0] if friend_request_settings.get('allowed_time_ranges') else '09:00-22:00') %}
-    {% set friend_request_time_start = friend_request_time_range.split('-')[0] if '-' in friend_request_time_range else '09:00' %}
-    {% set friend_request_time_end = friend_request_time_range.split('-')[1] if '-' in friend_request_time_range else '22:00' %}
     <div class="cfg-card friend-request-card">
       <div class="ui-head ui-head--page">
         <i class="bi bi-person-plus-fill"></i>
@@ -1627,7 +1611,7 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <label class="cfg-label" for="friend_request_add_object">添加对象</label>
                 <select class="form-select" id="friend_request_add_object">
                   {% for option in friend_request_seed.get('add_object_options', [{'value':'deleted_me','label':'删除我的人'}]) %}
-                  <option value="{{ option.value }}" {% if friend_request_settings.get('add_object', 'deleted_me') == option.value %}selected{% endif %}>{{ option.label }}</option>
+                  <option value="{{ option.value }}" {% if friend_request_settings.get('add_object', 'deleted_me') == option.value %}selected{% endif %} {% if option.enabled is defined and not option.enabled %}disabled{% endif %}>{{ option.label }}</option>
                   {% endfor %}
                 </select>
               </div>
@@ -1656,21 +1640,6 @@ html.icons-pref-local [class*=" bi-"]::before {
                 </select>
               </div>
               <div>
-                <label class="cfg-label">可申请时间段</label>
-                <div class="task-workbench-time-window">
-                  <input type="time" class="form-control task-workbench-control" id="friend_request_time_start" value="{{ friend_request_time_start }}">
-                  <span class="task-workbench-time-separator">-</span>
-                  <input type="time" class="form-control task-workbench-control" id="friend_request_time_end" value="{{ friend_request_time_end }}">
-                </div>
-              </div>
-              <div>
-                <label class="cfg-label" for="friend_request_permission">朋友圈权限</label>
-                <select class="form-select" id="friend_request_permission">
-                  <option value="不设置" {% if friend_request_settings.get('permission', '不设置') == '不设置' %}selected{% endif %}>不设置</option>
-                  <option value="仅聊天" {% if friend_request_settings.get('permission') == '仅聊天' %}selected{% endif %}>仅聊天</option>
-                </select>
-              </div>
-              <div>
                 <label class="cfg-label">添加后的标签</label>
                 <div id="friend_request_success_tags_slot"></div>
               </div>
@@ -1691,28 +1660,27 @@ html.icons-pref-local [class*=" bi-"]::before {
     <div class="cfg-card friend-request-runtime-card" id="friend-request-runtime-card">
       <div class="ui-head ui-head--page">
         <i class="bi bi-list-check ui-head__icon"></i>
-        <h5 class="ui-head__title">自动加好友队列和记录</h5>
-        <span class="desc ui-head__desc">查看待执行的好友申请队列，以及已经结束的申请结果</span>
+        <h5 class="ui-head__title">任务队列与执行记录</h5>
+        <span class="desc ui-head__desc">查看等待申请的好友，以及已经结束的申请结果</span>
       </div>
       <div class="task-runtime-grid">
         <section class="task-runtime-block friend-request-runtime-block" data-friend-request-runtime-card="queue">
           <div class="task-workbench-pane-head ui-head ui-head--section">
             <div class="task-workbench-pane-title ui-head__main">
-              <h5 class="ui-head__title">待执行</h5>
-              <span class="desc" id="friend-request-candidate-desc">共 {{ friend_request_summary.get('candidate_count', 0) }} 人</span>
+              <h5 class="ui-head__title">等待申请</h5>
+              <span class="desc">查看下一批按申请设置自动添加的好友</span>
             </div>
-            <div class="ui-head__actions">
-              <button type="button" class="ui-btn ui-btn--secondary ui-btn--l4" id="btn-friend-request-refresh"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
-            </div>
+            <span class="task-workbench-chip ui-pill" id="friend-request-runtime-pending-count">{{ friend_request_summary.get('pending_count', 0) }} 条</span>
           </div>
           <div class="task-runtime-list friend-request-candidate-list" id="friend-request-candidate-list"></div>
         </section>
         <section class="task-runtime-block friend-request-runtime-block" data-friend-request-runtime-card="executions">
           <div class="task-workbench-pane-head ui-head ui-head--section">
             <div class="task-workbench-pane-title ui-head__main">
-              <h5 class="ui-head__title">已执行</h5>
-              <span class="desc" id="friend-request-execution-desc">最近 30 条执行结果</span>
+              <h5 class="ui-head__title">申请记录</h5>
+              <span class="desc">查看已经结束的申请结果</span>
             </div>
+            <button type="button" class="ui-btn ui-btn--secondary ui-btn--l4 task-runtime-clear-button" id="btn-friend-request-clear-executions">清空</button>
           </div>
           <div class="task-runtime-list friend-request-execution-list" id="friend-request-execution-list"></div>
         </section>
@@ -1829,6 +1797,36 @@ html.icons-pref-local [class*=" bi-"]::before {
         </span>
       </div>
       <div class="contact-maintenance-body">
+        <div class="new-friend-block contact-maintenance-auto-block">
+          <div class="ui-head ui-head--section">
+            <div class="ui-head__main">
+              <h5>自动维护</h5>
+              <span class="desc">自动维护时会在每批开始前短暂拉起微信窗口</span>
+            </div>
+            <div class="ui-head__actions">
+              <label class="ui-switch ui-switch--l2 ui-head-switch" for="contact_directory_auto_maintenance_switch" title="开启自动维护">
+                <input class="form-check-input" type="checkbox" id="contact_directory_auto_maintenance_switch" {% if config.get('contact_directory_auto_maintenance_switch', False) %}checked{% endif %}>
+                <span class="ui-switch-knob"></span>
+              </label>
+            </div>
+          </div>
+          <div class="contact-maintenance-auto-grid contact-maintenance-auto-grid--stacked">
+            <div>
+              <label class="cfg-label">维护时间段</label>
+              <div class="task-workbench-time-window">
+                <input type="time" class="form-control task-workbench-control" id="contact_directory_auto_maintenance_window_start" value="{{ config.get('contact_directory_auto_maintenance_window_start', '00:00') }}">
+                <span class="task-workbench-time-separator">-</span>
+                <input type="time" class="form-control task-workbench-control" id="contact_directory_auto_maintenance_window_end" value="{{ config.get('contact_directory_auto_maintenance_window_end', '23:59') }}">
+              </div>
+              <div class="cfg-hint">只有在这个时间段内，才会尝试自动维护；支持跨天，例如 22:00 - 07:00</div>
+            </div>
+            <div>
+              <label class="cfg-label" for="contact_directory_auto_maintenance_interval_minutes">每批维护间隔</label>
+              <input type="number" class="form-control" id="contact_directory_auto_maintenance_interval_minutes" min="5" max="1440" value="{{ config.get('contact_directory_auto_maintenance_interval_minutes', 20) }}">
+              <div class="cfg-hint">单位：分钟，这是最低间隔；如果机器人一直没空，实际间隔可能更久</div>
+            </div>
+          </div>
+        </div>
         <div class="new-friend-block contact-maintenance-manual-block">
           <div class="ui-head ui-head--section">
             <div class="ui-head__main">
@@ -1862,44 +1860,16 @@ html.icons-pref-local [class*=" bi-"]::before {
               </div>
             </div>
             <div class="relationship-scan-table identity-calibration-table" id="identity-calibration-card">
-              <div class="relationship-scan-row relationship-scan-row--head identity-calibration-row">
-                <span>新资料</span><span>原资料</span><span>依据</span><span>操作</span>
-              </div>
-              <div id="identity-calibration-list" class="relationship-scan-record-list ui-workbench-scroll-body is-empty">
-                <div class="relationship-scan-empty">暂无待确认项</div>
+              <div class="relationship-scan-scroll ui-workbench-scroll-body">
+                <div class="relationship-scan-row relationship-scan-row--head identity-calibration-row">
+                  <span>新资料</span><span>原资料</span><span>依据</span><span>操作</span>
+                </div>
+                <div id="identity-calibration-list" class="relationship-scan-record-list is-empty">
+                  <div class="relationship-scan-empty">暂无待确认项</div>
+                </div>
               </div>
             </div>
             <div id="identity-calibration-msg" class="cfg-feedback" style="display:none;"></div>
-          </div>
-        </div>
-        <div class="new-friend-block contact-maintenance-auto-block">
-          <div class="ui-head ui-head--section">
-            <div class="ui-head__main">
-              <h5>自动维护</h5>
-              <span class="desc">自动维护时会在每批开始前短暂拉起微信窗口</span>
-            </div>
-            <div class="ui-head__actions">
-              <label class="ui-switch ui-switch--l2 ui-head-switch" for="contact_directory_auto_maintenance_switch" title="开启自动维护">
-                <input class="form-check-input" type="checkbox" id="contact_directory_auto_maintenance_switch" {% if config.get('contact_directory_auto_maintenance_switch', False) %}checked{% endif %}>
-                <span class="ui-switch-knob"></span>
-              </label>
-            </div>
-          </div>
-          <div class="contact-maintenance-auto-grid contact-maintenance-auto-grid--stacked">
-            <div>
-              <label class="cfg-label" for="contact_directory_auto_maintenance_interval_minutes">每批维护间隔</label>
-              <input type="number" class="form-control" id="contact_directory_auto_maintenance_interval_minutes" min="5" max="1440" value="{{ config.get('contact_directory_auto_maintenance_interval_minutes', 20) }}">
-              <div class="cfg-hint">单位：分钟，这是最低间隔；如果机器人一直没空，实际间隔可能更久</div>
-            </div>
-            <div>
-              <label class="cfg-label">维护时间段</label>
-              <div class="task-workbench-time-window">
-                <input type="time" class="form-control task-workbench-control" id="contact_directory_auto_maintenance_window_start" value="{{ config.get('contact_directory_auto_maintenance_window_start', '00:00') }}">
-                <span class="task-workbench-time-separator">-</span>
-                <input type="time" class="form-control task-workbench-control" id="contact_directory_auto_maintenance_window_end" value="{{ config.get('contact_directory_auto_maintenance_window_end', '23:59') }}">
-              </div>
-              <div class="cfg-hint">只有在这个时间段内，才会尝试自动维护；支持跨天，例如 22:00 - 07:00</div>
-            </div>
           </div>
         </div>
       </div>
@@ -1935,43 +1905,6 @@ html.icons-pref-local [class*=" bi-"]::before {
         </span>
       </div>
       <div class="contact-maintenance-body relationship-scan-body">
-        <div class="new-friend-block relationship-scan-result-block">
-          <div class="ui-head ui-head--section">
-            <div class="ui-head__main">
-              <h5>扫描结果</h5>
-              <span class="desc" id="relationship-scan-result-desc">最近{{ relationship_scan_source_label }}扫描 {{ relationship_summary.get('last_scan_count', 0) }} 个会话</span>
-            </div>
-            <div class="ui-head__actions">
-              <span class="cfg-hint" id="relationship-scan-last-time">最近扫描 {{ relationship_summary.get('last_scan_at') or '未扫描' }}</span>
-            </div>
-          </div>
-          <div class="cfg-flow">
-            <div id="relationship-scan-msg" class="cfg-feedback" style="display:none;"></div>
-            <div class="contact-maintenance-actions">
-              <button type="button" id="btn-relationship-scan-now" class="ui-btn ui-btn--primary ui-btn--l2">
-                <i class="bi bi-search"></i> 立即扫描
-              </button>
-              <button type="button" id="btn-relationship-scan-full" class="ui-btn ui-btn--secondary ui-btn--l2">
-                <i class="bi bi-arrow-down-up"></i> 全量扫描
-              </button>
-              <button type="button" id="btn-relationship-scan-clear" class="ui-btn ui-btn--danger ui-btn--l2">
-                <i class="bi bi-trash3"></i> 清空结果
-              </button>
-            </div>
-            <div class="page-inline-notice page-inline-notice--danger">
-              <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
-              <div class="page-inline-notice__content">立即扫描只读取当前会话列表；手动全量扫描会连续滚动到末尾，完成前不会插入其他微信界面操作</div>
-            </div>
-            <div class="relationship-scan-table">
-              <div class="relationship-scan-row relationship-scan-row--head">
-                <span>联系人</span><span>状态</span><span>会话预览</span><span>变化时间</span><span>自动同步</span>
-              </div>
-              <div id="relationship-scan-record-list" class="relationship-scan-record-list ui-workbench-scroll-body is-empty">
-                <div class="relationship-scan-empty">暂无关系扫描记录</div>
-              </div>
-            </div>
-          </div>
-        </div>
         <div class="new-friend-block relationship-scan-settings-block">
           <div class="ui-head ui-head--section">
             <div class="ui-head__main">
@@ -2001,6 +1934,45 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
           </div>
         </div>
+        <div class="new-friend-block relationship-scan-result-block">
+          <div class="ui-head ui-head--section">
+            <div class="ui-head__main">
+              <h5>扫描结果</h5>
+              <span class="desc" id="relationship-scan-result-desc">最近{{ relationship_scan_source_label }}扫描 {{ relationship_summary.get('last_scan_count', 0) }} 个会话</span>
+            </div>
+            <div class="ui-head__actions">
+              <span class="cfg-hint" id="relationship-scan-last-time">最近扫描 {{ relationship_summary.get('last_scan_at') or '未扫描' }}</span>
+            </div>
+          </div>
+          <div class="cfg-flow">
+            <div id="relationship-scan-msg" class="cfg-feedback" style="display:none;"></div>
+            <div class="contact-maintenance-actions">
+              <button type="button" id="btn-relationship-scan-now" class="ui-btn ui-btn--primary ui-btn--l2">
+                <i class="bi bi-search"></i> 立即扫描
+              </button>
+              <button type="button" id="btn-relationship-scan-full" class="ui-btn ui-btn--secondary ui-btn--l2">
+                <i class="bi bi-arrow-down-up"></i> 全量扫描
+              </button>
+              <button type="button" id="btn-relationship-scan-clear" class="ui-btn ui-btn--danger ui-btn--l2">
+                <i class="bi bi-trash3"></i> 清空结果
+              </button>
+            </div>
+            <div class="page-inline-notice page-inline-notice--danger">
+              <i class="bi bi-exclamation-triangle-fill page-inline-notice__icon"></i>
+              <div class="page-inline-notice__content">立即扫描只读取当前会话列表；手动全量扫描会连续滚动到末尾，完成前不会插入其他微信界面操作</div>
+            </div>
+            <div class="relationship-scan-table">
+              <div class="relationship-scan-scroll ui-workbench-scroll-body">
+                <div class="relationship-scan-row relationship-scan-row--head">
+                  <span>联系人</span><span>状态</span><span>会话预览</span><span>变化时间</span><span>自动同步</span>
+                </div>
+                <div id="relationship-scan-record-list" class="relationship-scan-record-list is-empty">
+                  <div class="relationship-scan-empty">暂无关系扫描记录</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="cfg-card">
@@ -2024,6 +1996,11 @@ html.icons-pref-local [class*=" bi-"]::before {
           <div id="contact-directory-list-header" class="contact-directory-list-header">
             <span class="title" id="contact-directory-list-title">联系人列表</span>
             <span class="meta" id="contact-directory-list-meta">共 0 条</span>
+          </div>
+          <div class="contact-directory-column-header">
+            <span>备注</span>
+            <span>昵称</span>
+            <span>微信号</span>
           </div>
           <div id="contact-directory-contact-list" class="contact-directory-contact-list">
             <div class="contact-directory-list-empty">请选择微信号和标签</div>
@@ -2277,6 +2254,7 @@ html.icons-pref-local [class*=" bi-"]::before {
               <button type="button" class="ui-btn ui-btn--add ui-btn--l3 material-tab-action" id="btn-add-material-once-task"><i class="bi bi-plus-circle"></i> 单次任务</button>
               <button type="button" class="ui-btn ui-btn--add ui-btn--l3 material-tab-action" id="btn-add-material-recurring-task"><i class="bi bi-plus-circle"></i> 循环任务</button>
               <button type="button" class="ui-btn ui-btn--add ui-btn--l3 material-tab-action" id="btn-add-material-source" hidden><i class="bi bi-plus-circle"></i> 添加来源</button>
+              <button type="button" class="ui-btn ui-btn--danger ui-btn--l3 material-tab-action" id="btn-clear-materials" hidden {% if not material_outreach_status.materials %}disabled{% endif %}><i class="bi bi-trash3"></i> 清空素材</button>
             </div>
           </div>
           <div class="material-tab-body" id="material-task-tab">
@@ -4312,8 +4290,8 @@ $(function(){
     }
     return '' +
       '<div class="contact-directory-contact-item">' +
-        renderValue(contact.name) +
         renderValue(contact.remark) +
+        renderValue(contact.nickname) +
         renderValue(contact.wechat_id) +
       '</div>';
   }
@@ -4846,6 +4824,8 @@ $(function(){
     status = String(status || '').trim();
     if(status === 'sent') return '已提交';
     if(status === 'failed') return '失败';
+    if(status === 'uncertain') return '待核实';
+    if(status === 'cancelled') return '已取消';
     if(status === 'skipped') return '已跳过';
     if(status === 'accepted') return '已通过';
     if(status === 'archived') return '已归档';
@@ -4862,14 +4842,13 @@ $(function(){
     status = String(status || '').trim();
     if(status === 'sent' || status === 'accepted') return 'success';
     if(status === 'failed') return 'failed';
-    if(status === 'skipped' || status === 'archived') return 'warning';
+    if(status === 'uncertain' || status === 'cancelled' || status === 'skipped' || status === 'archived') return 'warning';
     return 'pending';
   }
   function friendRequestQueueCandidates(candidates){
     candidates = Array.isArray(candidates) ? candidates : [];
     return candidates.filter(function(candidate){
-      var status = String((candidate || {}).status || 'pending').trim();
-      return candidate && (candidate.can_run === true || status === 'pending' || status === 'failed');
+      return candidate && candidate.can_run === true;
     });
   }
   function friendRequestRuntimeTime(candidate){
@@ -4930,8 +4909,9 @@ $(function(){
       option = option || {};
       var value = String(option.value || '').trim();
       var label = String(option.label || value || '未命名对象').trim();
+      var disabled = option.enabled === false;
       if(!value) return '';
-      return '<option value="'+escapeHtml(value)+'" '+(value === selected ? 'selected' : '')+'>'+escapeHtml(label)+'</option>';
+      return '<option value="'+escapeHtml(value)+'" '+(value === selected ? 'selected' : '')+(disabled ? ' disabled' : '')+'>'+escapeHtml(label)+'</option>';
     }).join('');
   }
   function renderFriendRequestRule(rule){
@@ -4989,20 +4969,15 @@ $(function(){
       $('#friend_request_add_object').val(settings.add_object || 'deleted_me');
       $('#friend_request_daily_limit').val(settings.daily_limit || 20);
       $('#friend_request_interval_minutes').val(settings.base_interval_minutes || 30);
-      var timeRange = ((settings.allowed_time_ranges || ['09:00-22:00'])[0] || '09:00-22:00').split('-');
-      $('#friend_request_time_start').val(timeRange[0] || '09:00');
-      $('#friend_request_time_end').val(timeRange[1] || '22:00');
-      $('#friend_request_permission').val(settings.permission || '不设置');
       $('#friend_request_duplicate_strategy').val(String(settings.recent_duplicate_days || 7));
       renderFriendRequestTagControls(settings);
     }
     var candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
     var queueCandidates = friendRequestQueueCandidates(candidates);
-    $('#friend-request-candidate-desc').text('待执行 ' + String(queueCandidates.length) + ' · 全部 ' + String(summary.candidate_count || 0) + ' 人');
-    $('#friend-request-candidate-list').html(queueCandidates.length ? queueCandidates.map(renderFriendRequestCandidate).join('') : '<div class="relationship-scan-empty">暂无待执行队列。先刷新候选，或确认通讯录建档里有匹配标签。</div>');
+    $('#friend-request-runtime-pending-count').text(String(summary.pending_count || 0) + ' 条');
+    $('#friend-request-candidate-list').html(queueCandidates.length ? queueCandidates.map(renderFriendRequestCandidate).join('') : '<div class="task-workbench-empty task-runtime-empty-state">暂无等待申请的好友。</div>');
     var executions = Array.isArray(payload.executions) ? payload.executions : [];
-    $('#friend-request-execution-desc').text('最近 ' + String(executions.length || 0) + ' 条执行结果');
-    $('#friend-request-execution-list').html(executions.length ? executions.map(renderFriendRequestExecution).join('') : '<div class="relationship-scan-empty">暂无执行记录</div>');
+    $('#friend-request-execution-list').html(executions.length ? executions.map(renderFriendRequestExecution).join('') : '<div class="task-workbench-empty task-runtime-empty-state">暂无申请记录。</div>');
     if(!options.preserveControls){
       var rules = Array.isArray(payload.message_rules) ? payload.message_rules : [];
       $('#friend-request-rule-list').html(rules.length ? rules.map(renderFriendRequestRule).join('') : '<div class="relationship-scan-empty">暂无申请文案。未配置文案时会发送空验证消息。</div>');
@@ -5036,8 +5011,6 @@ $(function(){
         include_tags: selectedCompactMultiSelectValues($('#friend_request_include_tags_wrap')),
         daily_limit: Math.max(1, Math.min(200, parseInt($('#friend_request_daily_limit').val()) || 20)),
         base_interval_minutes: Math.max(5, Math.min(1440, parseInt($('#friend_request_interval_minutes').val()) || 30)),
-        allowed_time_ranges: [($('#friend_request_time_start').val() || '09:00') + '-' + ($('#friend_request_time_end').val() || '22:00')],
-        permission: $('#friend_request_permission').val() || '不设置',
         success_tags: selectedCompactMultiSelectValues($('#friend_request_success_tags_wrap')),
         recent_duplicate_days: Math.max(1, Math.min(30, parseInt($('#friend_request_duplicate_strategy').val()) || 7)),
         sender_kind: 'conversation_verify'
@@ -5165,6 +5138,7 @@ $(function(){
   function renderMaterialManagementList(materials, selectedId){
     materials = Array.isArray(materials) ? materials : [];
     MATERIAL_OPTIONS = materials;
+    $('#btn-clear-materials').prop('disabled', !materials.length);
     var $list = $('#material_management_list');
     var $details = $('#material_management_detail_container');
     var activeId = String(selectedId || $('#material_management_list .material-management-card.selected').data('material-id') || '');
@@ -7154,18 +7128,6 @@ $(function(){
     return $item;
   }
 
-  // ===== Add List Item =====
-  $(document).on('click','.js-add-field[data-target]',function(){
-    var target=$(this).data('target'), name=$(this).data('name');
-    var pickBtn=$(this).data('imgpick')?'<button type="button" class="btn-pick-img" title="点击选择本地图片，自动填入路径"><i class="bi bi-folder2-open"></i></button>':'';
-    insertListItemAtTop(target, '<div class="list-item">'+
-      '<input type="text" class="form-control" name="'+name+'">'+
-      pickBtn+
-      '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
-      '</div>'
-    );
-  });
-
   // ===== Prompt 辅助函数 =====
   function buildPromptOpts(selectedName) {
     var s = '<option value=""'+(selectedName===''||!selectedName?' selected':'')+'>跟随全局人设</option>';
@@ -8206,17 +8168,18 @@ $(function(){
     data = data || {};
     var items = Array.isArray(data.candidates) ? data.candidates : [];
     var rowsHtml = items.map(function(item){
-      return '<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:10px 0;border-top:1px solid #f0f0f0;">'+
-        '<div style="min-width:0;font-size:13px;color:var(--card-fg);word-break:break-all;">'+escapeHtml(item.before_display || '-')+'</div>'+
-        '<div style="min-width:0;font-size:13px;color:var(--card-fg);word-break:break-all;">'+escapeHtml(item.after_display || '-')+'</div>'+
+      return '<div class="remark-repair-preview-row">'+
+        '<div class="remark-repair-preview-cell">'+escapeHtml(item.before_display || '-')+'</div>'+
+        '<div class="remark-repair-preview-cell">'+escapeHtml(item.after_display || '-')+'</div>'+
       '</div>';
     }).join('');
     return ''+
-      '<div style="font-size:13px;color:var(--muted);margin-bottom:14px;">将修复以下联系人，已有备注不会被覆盖</div>'+
-      '<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;color:var(--muted);padding:0 0 8px 0;">'+
-        '<span>修复前</span><span>修复后</span>'+
-      '</div>'+
-      '<div style="max-height:42vh;overflow:auto;border:1px solid var(--border);border-radius:10px;padding:0 14px;background:#fff;">'+rowsHtml+'</div>';
+      '<div class="remark-repair-preview-intro">将修复以下联系人，已有备注不会被覆盖</div>'+
+      '<div class="remark-repair-preview-table">'+
+        '<div class="remark-repair-preview-row remark-repair-preview-head">'+
+          '<span>修复前</span><span>修复后</span>'+
+        '</div>'+rowsHtml+
+      '</div>';
   }
   function showRemarkRepairPreview(){
     $.ajax({
@@ -8292,10 +8255,24 @@ $(function(){
   $('#btn-friend-request-save').click(function(){
     saveFriendRequestSettings();
   });
-  $('#btn-friend-request-refresh').click(function(){
-    saveFriendRequestSettings({silent:true}).always(function(){
-      runFriendRequestAction('/friend_request/refresh_candidates', 'btn-friend-request-refresh', '刷新中...', '刷新候选');
-    });
+  $('#btn-friend-request-clear-executions').click(function(){
+    svModal.confirm('确定清空所有好友申请记录？重复申请保护不会受到影响。', function(){
+      $.ajax({
+        url:'/friend_request/executions',
+        type:'DELETE',
+        contentType:'application/json',
+        data:JSON.stringify({wx_id:String(_contactDirectoryBrowserState.wxId || (_friendRequestState.payload || {}).wx_id || '').trim()})
+      }).done(function(res){
+        if(res.status === 'success'){
+          renderFriendRequest(res.payload || {}, {preserveControls:true});
+          svModal.success(res.message || '已清空好友申请记录');
+        } else {
+          svModal.error(res.message || '清空好友申请记录失败');
+        }
+      }).fail(function(xhr){
+        svModal.error('清空好友申请记录失败：' + (xhr.responseText || xhr.status));
+      });
+    }, '清空确认', '确定清空', '返回');
   });
   $('#btn-friend-request-run-once').click(function(){
     svModal.confirm('确定现在执行一次好友申请？本次最多会向 1 个候选人真实提交验证申请。', function(){
@@ -8304,7 +8281,7 @@ $(function(){
       });
     }, '好友申请确认', '执行一次', '取消');
   });
-  $(document).on('change', '#friend_request_enabled,#friend_request_add_object,#friend_request_daily_limit,#friend_request_interval_minutes,#friend_request_time_start,#friend_request_time_end,#friend_request_duplicate_strategy,#friend_request_permission,#friend_request_include_tags_wrap .compact-multiselect-check,#friend_request_success_tags_wrap .compact-multiselect-check', function(){
+  $(document).on('change', '#friend_request_enabled,#friend_request_add_object,#friend_request_daily_limit,#friend_request_interval_minutes,#friend_request_duplicate_strategy,#friend_request_include_tags_wrap .compact-multiselect-check,#friend_request_success_tags_wrap .compact-multiselect-check', function(){
     saveFriendRequestSettings({silent:true});
   });
 
@@ -9525,6 +9502,7 @@ $(function(){
     $('#btn-add-material-once-task').prop('hidden', tabName !== 'tasks');
     $('#btn-add-material-recurring-task').prop('hidden', tabName !== 'tasks');
     $('#btn-add-material-source').prop('hidden', tabName !== 'sources');
+    $('#btn-clear-materials').prop('hidden', tabName !== 'materials');
     if(tabName === 'materials'){
       var activeId = $('#material_management_list .material-management-card.selected').data('material-id')
         || $('#material_management_list .material-management-card').first().data('material-id');
@@ -9578,6 +9556,42 @@ $(function(){
     var $editor = currentMaterialManagementEditor();
     if(!$editor.length) return;
     patchMaterialManagement($editor.data('material-id'), collectMaterialManagementPayload($editor), '素材信息已保存');
+  });
+  $(document).on('click','#btn-clear-materials',function(e){
+    e.preventDefault();
+    var materialCount = Array.isArray(MATERIAL_OPTIONS) ? MATERIAL_OPTIONS.length : 0;
+    if(!materialCount) return;
+    var $button = $(this);
+    var wxId = getTaskScopeWxId();
+    var accountLabel = wxId ? '（' + wxId + '）' : '';
+    svModal.confirm(
+      '确定清空当前微信号' + accountLabel + '的全部 ' + materialCount + ' 条素材？固定使用这些素材的任务将无法执行；任务配置和转发记录会保留。此操作不可恢复。',
+      function(){
+        $button.prop('disabled', true);
+        $.ajax({
+          url:'/material_outreach/materials',
+          method:'DELETE',
+          contentType:'application/json',
+          data:JSON.stringify(buildTaskScopePayload({}))
+        }).done(function(res){
+          if(!res || res.status !== 'success'){
+            showMsg('material-outreach-msg', (res && res.message) || '清空素材失败', false);
+            return;
+          }
+          applyMaterialManagementUpdate(res, '');
+          updateMaterialOutreachRecordStats(res.stats || {});
+          showMsg('material-outreach-msg', res.message || '素材已清空', true);
+        }).fail(function(xhr){
+          var res = xhr.responseJSON || {};
+          showMsg('material-outreach-msg', res.message || ('清空素材失败：' + (xhr.responseText || xhr.status)), false);
+        }).always(function(){
+          $button.prop('disabled', !Array.isArray(MATERIAL_OPTIONS) || !MATERIAL_OPTIONS.length);
+        });
+      },
+      '清空素材确认',
+      '确定清空',
+      '返回'
+    );
   });
   $(document).on('click','.btn-toggle-material-status',function(e){
     e.preventDefault();

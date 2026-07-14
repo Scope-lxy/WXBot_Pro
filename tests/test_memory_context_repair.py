@@ -284,6 +284,132 @@ class MemoryContextRepairCoreTests(unittest.TestCase):
         self.assertFalse(plan.anchor_found)
         self.assertEqual([item["content"] for item in plan.messages_to_append], ["下一条"])
 
+    def test_voice_duration_shell_matches_the_stored_transcription(self):
+        local = [
+            {
+                "time": "2026/07/14 23:20:25",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": "你在干嘛测试？",
+            },
+        ]
+        remote = [
+            {
+                "time": "2026/07/14 23:20:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": '语音2"秒你在干嘛测试？',
+            },
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5)
+
+        self.assertEqual(plan.messages_to_append, [])
+
+    def test_clean_voice_transcription_finds_its_duration_wrapped_snapshot(self):
+        voice = msg('语音2"秒你在干嘛测试？', msg_type="voice")
+        later = msg("稍后的消息", msg_type="text")
+        current = msg("你在干嘛测试？", msg_type="voice")
+
+        visible = snapshot_messages_through_current([voice, later], current)
+
+        self.assertEqual(visible, [voice])
+
+    def test_voice_transcription_that_looks_like_duration_metadata_is_not_stripped_twice(self):
+        local = [
+            {
+                "time": "2026/07/14 23:20:25",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": "语音2秒够了",
+            },
+        ]
+        remote = [
+            {
+                "time": "2026/07/14 23:20:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": '语音3"秒语音2秒够了',
+            },
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5)
+
+        self.assertEqual(plan.messages_to_append, [])
+
+    def test_distinct_duration_like_and_short_voice_transcriptions_are_not_merged(self):
+        local = [
+            {
+                "time": "2026/07/14 23:20:25",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": "语音2秒够了",
+            },
+        ]
+        remote = [
+            {
+                "time": "2026/07/14 23:20:30",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": '语音1"秒够了',
+            },
+        ]
+
+        plan = build_repair_plan(local, remote, anchor_recent_count=5)
+
+        self.assertEqual([item["content"] for item in plan.messages_to_append], ["够了"])
+
+    def test_missing_voice_strips_only_the_outer_duration_metadata_for_storage(self):
+        remote = [
+            {
+                "time": "2026/07/14 23:20:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": '语音3"秒语音2秒够了',
+            },
+        ]
+
+        plan = build_repair_plan([], remote, anchor_recent_count=5)
+
+        self.assertEqual([item["content"] for item in plan.messages_to_append], ["语音2秒够了"])
+
+    def test_duration_like_voice_transcription_finds_its_wrapped_snapshot(self):
+        voice = msg('语音3"秒语音2秒够了', msg_type="voice")
+        later = msg("稍后的消息", msg_type="text")
+        current = msg("语音2秒够了", msg_type="voice")
+
+        visible = snapshot_messages_through_current([voice, later], current)
+
+        self.assertEqual(visible, [voice])
+
+    def test_repeated_voice_transcriptions_preserve_their_actual_count(self):
+        remote = normalize_wechat_snapshot([
+            msg('语音2"秒同一句语音', msg_type="voice", time="2026/07/14 23:20:00"),
+            msg('语音2"秒同一句语音', msg_type="voice", time="2026/07/14 23:20:30"),
+        ])
+        one_local = [
+            {
+                "time": "2026/07/14 23:20:25",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "voice",
+                "content": "同一句语音",
+            },
+        ]
+
+        missing_one = build_repair_plan(one_local, remote, anchor_recent_count=5)
+        complete = build_repair_plan(one_local + [dict(one_local[0], time="2026/07/14 23:20:35")], remote, anchor_recent_count=5)
+
+        self.assertEqual([item["content"] for item in missing_one.messages_to_append], ["同一句语音"])
+        self.assertEqual(complete.messages_to_append, [])
+
     def test_runtime_native_message_id_is_not_used_as_persistent_identity(self):
         local = [
             {

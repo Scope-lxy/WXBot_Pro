@@ -6,7 +6,7 @@ import copy
 import json
 import random
 import uuid
-from datetime import datetime, time as datetime_time, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -37,8 +37,6 @@ DEFAULT_SETTINGS = {
     "include_tags": ["删除我的人"],
     "daily_limit": 20,
     "base_interval_minutes": 30,
-    "allowed_time_ranges": ["09:00-22:00"],
-    "permission": "不设置",
     "success_tags": [],
     "recent_duplicate_days": 7,
     "sender_kind": "conversation_verify",
@@ -50,9 +48,10 @@ ADD_OBJECT_PHONE = "phone"
 ADD_OBJECT_VALUES = {ADD_OBJECT_DELETED_ME, ADD_OBJECT_GROUP_MEMBER, ADD_OBJECT_PHONE}
 ADD_OBJECT_OPTIONS = [
     {"value": ADD_OBJECT_DELETED_ME, "label": "删除我的人", "enabled": True},
-    {"value": ADD_OBJECT_GROUP_MEMBER, "label": "群内成员", "enabled": False},
-    {"value": ADD_OBJECT_PHONE, "label": "手机号", "enabled": False},
+    {"value": ADD_OBJECT_GROUP_MEMBER, "label": "群内成员（暂不可用）", "enabled": False},
+    {"value": ADD_OBJECT_PHONE, "label": "手机号（暂不可用）", "enabled": False},
 ]
+ENABLED_ADD_OBJECT_VALUES = {item["value"] for item in ADD_OBJECT_OPTIONS if item["enabled"]}
 
 
 def _clean_text(value: Any) -> str:
@@ -111,37 +110,11 @@ def _clean_string_list(value: Any) -> list[str]:
     return result
 
 
-def normalize_time_ranges(value: Any) -> list[str]:
-    ranges = _clean_string_list(value)
-    result: list[str] = []
-    for item in ranges:
-        if "-" not in item:
-            continue
-        start, end = [part.strip() for part in item.split("-", 1)]
-        if _parse_clock(start) and _parse_clock(end) and start < end:
-            result.append(f"{start}-{end}")
-    return result or list(DEFAULT_SETTINGS["allowed_time_ranges"])
-
-
-def _parse_clock(value: Any) -> datetime_time | None:
-    text = _clean_text(value)
-    try:
-        hour, minute = [int(part) for part in text.split(":", 1)]
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return datetime_time(hour, minute)
-    except Exception:
-        return None
-    return None
-
-
 def normalize_settings(settings: Any) -> dict[str, Any]:
     raw = dict(settings or {}) if isinstance(settings, dict) else {}
     add_object = _clean_text(raw.get("add_object")) or DEFAULT_SETTINGS["add_object"]
-    if add_object not in ADD_OBJECT_VALUES:
+    if add_object not in ENABLED_ADD_OBJECT_VALUES:
         add_object = DEFAULT_SETTINGS["add_object"]
-    permission = _clean_text(raw.get("permission")) or DEFAULT_SETTINGS["permission"]
-    if permission not in {"不设置", "仅聊天"}:
-        permission = DEFAULT_SETTINGS["permission"]
     sender_kind = _clean_text(raw.get("sender_kind")) or "conversation_verify"
     if sender_kind not in {"conversation_verify"}:
         sender_kind = "conversation_verify"
@@ -151,8 +124,6 @@ def normalize_settings(settings: Any) -> dict[str, Any]:
         "include_tags": _clean_string_list(raw.get("include_tags")) or list(DEFAULT_SETTINGS["include_tags"]),
         "daily_limit": _coerce_int(raw.get("daily_limit"), DEFAULT_SETTINGS["daily_limit"], 1, 200),
         "base_interval_minutes": _coerce_int(raw.get("base_interval_minutes"), DEFAULT_SETTINGS["base_interval_minutes"], 5, 1440),
-        "allowed_time_ranges": normalize_time_ranges(raw.get("allowed_time_ranges", DEFAULT_SETTINGS["allowed_time_ranges"])),
-        "permission": permission,
         "success_tags": _clean_string_list(raw.get("success_tags")),
         "recent_duplicate_days": _coerce_int(raw.get("recent_duplicate_days"), DEFAULT_SETTINGS["recent_duplicate_days"], 0, 365),
         "sender_kind": sender_kind,
@@ -190,6 +161,8 @@ def normalize_state(state: Any, wx_id: str = "") -> dict[str, Any]:
     runtime = state.get("runtime")
     if isinstance(runtime, dict):
         normalized["runtime"].update(copy.deepcopy(runtime))
+    if not isinstance(normalized["runtime"].get("recent_sent_at_by_candidate"), dict):
+        normalized["runtime"]["recent_sent_at_by_candidate"] = {}
     normalized["candidates"] = [normalize_candidate(item) for item in (state.get("candidates") or []) if isinstance(item, dict)]
     normalized["executions"] = [dict(item) for item in (state.get("executions") or []) if isinstance(item, dict)]
     _reset_daily_runtime_if_needed(normalized)
@@ -211,6 +184,7 @@ def default_state(wx_id: str) -> dict[str, Any]:
             "last_sent_at": "",
             "next_run_at": "",
             "last_result": "",
+            "recent_sent_at_by_candidate": {},
         },
         "candidates": [],
         "executions": [],
@@ -349,18 +323,6 @@ def refresh_candidates(base_dir: str | Path, wx_id: str, *, contact_base_dir: st
     return save_state(base_dir, state)
 
 
-def _in_allowed_time(settings: dict[str, Any], *, now: Any = None) -> bool:
-    current = now if isinstance(now, datetime) else _parse_time(now) or datetime.now()
-    clock = current.time()
-    for item in settings["allowed_time_ranges"]:
-        start_text, end_text = item.split("-", 1)
-        start = _parse_clock(start_text)
-        end = _parse_clock(end_text)
-        if start and end and start <= clock <= end:
-            return True
-    return False
-
-
 def _next_interval_minutes(settings: dict[str, Any]) -> int:
     base = int(settings.get("base_interval_minutes", DEFAULT_SETTINGS["base_interval_minutes"]) or DEFAULT_SETTINGS["base_interval_minutes"])
     jitter = max(1, round(base * 0.1))
@@ -384,6 +346,13 @@ def _recent_duplicate(candidate: dict[str, Any], state: dict[str, Any], settings
         return False
     current = now if isinstance(now, datetime) else _parse_time(now) or datetime.now()
     candidate_id = candidate.get("candidate_id")
+    sent_at = _parse_time(candidate.get("sent_at"))
+    if sent_at and current - sent_at <= timedelta(days=days):
+        return True
+    recent_sent = (state.get("runtime") or {}).get("recent_sent_at_by_candidate")
+    indexed_sent_at = _parse_time((recent_sent or {}).get(candidate_id)) if isinstance(recent_sent, dict) else None
+    if indexed_sent_at and current - indexed_sent_at <= timedelta(days=days):
+        return True
     for item in state.get("executions") or []:
         if item.get("candidate_id") != candidate_id:
             continue
@@ -443,11 +412,8 @@ def next_pending_candidate(state: dict[str, Any], *, now: Any = None, ignore_sch
     runtime = state.setdefault("runtime", {})
     if int(runtime.get("today_sent", 0) or 0) >= settings["daily_limit"]:
         return None, "今日申请数已达到上限"
-    if not ignore_schedule:
-        if not _in_allowed_time(settings, now=now):
-            return None, "当前不在可发送时间段"
-        if not _interval_due(state, settings, now=now):
-            return None, "申请间隔未到"
+    if not ignore_schedule and not _interval_due(state, settings, now=now):
+        return None, "申请间隔未到"
     for candidate in state.get("candidates") or []:
         if not candidate_can_run(candidate, state, settings, now=now):
             continue
@@ -472,6 +438,11 @@ def record_execution(state: dict[str, Any], candidate: dict[str, Any], result: d
         runtime["today_sent"] = int(runtime.get("today_sent", 0) or 0) + 1
         runtime["today_success"] = int(runtime.get("today_success", 0) or 0) + 1
         runtime["last_sent_at"] = timestamp
+        recent_sent = runtime.setdefault("recent_sent_at_by_candidate", {})
+        if not isinstance(recent_sent, dict):
+            recent_sent = {}
+            runtime["recent_sent_at_by_candidate"] = recent_sent
+        recent_sent[candidate.get("candidate_id")] = timestamp
         current = _parse_time(timestamp) or datetime.now()
         runtime["next_run_at"] = (current + timedelta(minutes=_next_interval_minutes(normalize_settings(state.get("settings"))))).replace(microsecond=0).isoformat()
     elif status == "skipped":
@@ -517,6 +488,32 @@ def save_execution_state(base_dir: str | Path, state: dict[str, Any]) -> dict[st
         latest["runtime"] = copy.deepcopy(state.get("runtime") or {})
         latest["executions"] = copy.deepcopy(state.get("executions") or [])
         return save_state(base_dir, latest)
+
+
+def clear_execution_records(base_dir: str | Path, wx_id: str) -> dict[str, Any]:
+    path = state_path(base_dir, wx_id)
+    with file_lock_for_path(path):
+        state = load_state(base_dir, wx_id)
+        candidates = {item.get("candidate_id"): item for item in state.get("candidates") or []}
+        runtime = state.setdefault("runtime", {})
+        recent_sent = runtime.setdefault("recent_sent_at_by_candidate", {})
+        if not isinstance(recent_sent, dict):
+            recent_sent = {}
+            runtime["recent_sent_at_by_candidate"] = recent_sent
+        for execution in state.get("executions") or []:
+            if execution.get("status") != "sent":
+                continue
+            candidate_id = execution.get("candidate_id")
+            candidate = candidates.get(candidate_id)
+            executed_at = _parse_time(execution.get("at"))
+            current_sent_at = _parse_time((candidate or {}).get("sent_at"))
+            if candidate is not None and executed_at and (not current_sent_at or executed_at > current_sent_at):
+                candidate["sent_at"] = _iso_timestamp(executed_at)
+            indexed_sent_at = _parse_time(recent_sent.get(candidate_id))
+            if candidate_id and executed_at and (not indexed_sent_at or executed_at > indexed_sent_at):
+                recent_sent[candidate_id] = _iso_timestamp(executed_at)
+        state["executions"] = []
+        return save_state(base_dir, state)
 
 
 def ui_guard(state: dict[str, Any], candidate: dict[str, Any]) -> tuple[str, int]:
@@ -572,7 +569,6 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
                     "addmsg": addmsg,
                     "remark": _clean_text(candidate.get("remark") or candidate.get("name") or candidate.get("conversation_keyword")),
                     "tags": list(settings.get("success_tags") or []),
-                    "permission": _clean_text(settings.get("permission")) or "不设置",
                     "max_attempts": 2,
                 },
                 task_version=task_version,
@@ -667,16 +663,21 @@ def friend_request_payload(state: dict[str, Any]) -> dict[str, Any]:
     state = normalize_state(state, wx_id=_clean_text((state or {}).get("wx_id")))
     settings = normalize_settings(state.get("settings"))
     candidates = []
-    for candidate in state.get("candidates", [])[:100]:
+    for candidate in state.get("candidates", []):
+        can_run = candidate_can_run(candidate, state, settings)
+        if not can_run:
+            continue
         item = dict(candidate)
-        item["can_run"] = candidate_can_run(candidate, state, settings)
+        item["can_run"] = True
         candidates.append(item)
+        if len(candidates) >= 100:
+            break
     return {
         "settings": state.get("settings", {}),
-        "add_object_options": [dict(item) for item in ADD_OBJECT_OPTIONS if item.get("enabled")],
+        "add_object_options": [dict(item) for item in ADD_OBJECT_OPTIONS],
         "message_rules": state.get("message_rules", []),
         "runtime": state.get("runtime", {}),
         "summary": friend_request_summary(state),
         "candidates": candidates,
-        "executions": list(reversed(state.get("executions", [])[-30:])),
+        "executions": list(reversed(state.get("executions", [])[-50:])),
     }

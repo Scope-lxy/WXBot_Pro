@@ -326,8 +326,8 @@ def normalize_voice_reply_config(config):
     config['chat_voice_reply_request_keywords'] = _split_inline_keyword_list(
         config.get('chat_voice_reply_request_keywords', DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
     ) or list(DEFAULT_CHAT_VOICE_REPLY_KEYWORDS)
-    config.setdefault('chat_voice_reply_limit_count', 50)
-    config.setdefault('chat_voice_reply_limit_hours', 24)
+    config.setdefault('chat_voice_reply_limit_count', 5)
+    config.setdefault('chat_voice_reply_limit_hours', 5)
     config.setdefault('group_voice_reply_switch', False)
     config.setdefault('group_voice_recognition_switch', False)
     group_trigger_mode_source = config.get('group_voice_reply_trigger_modes')
@@ -346,8 +346,8 @@ def normalize_voice_reply_config(config):
     config['group_voice_reply_request_keywords'] = _split_inline_keyword_list(
         config.get('group_voice_reply_request_keywords', DEFAULT_GROUP_VOICE_REPLY_KEYWORDS)
     ) or list(DEFAULT_GROUP_VOICE_REPLY_KEYWORDS)
-    config.setdefault('group_voice_reply_limit_count', 99)
-    config.setdefault('group_voice_reply_limit_hours', 24)
+    config.setdefault('group_voice_reply_limit_count', 5)
+    config.setdefault('group_voice_reply_limit_hours', 5)
     return config
 
 # 启动时确保目录存在
@@ -2201,8 +2201,8 @@ def dashboard():
     config.setdefault('reply_preprocess_max_chars', 100)         # AI 回复发送前最长字数
     for scope in ('chat', 'group'):
         config.setdefault(f'{scope}_text_reply_limit_switch', False)
-        config.setdefault(f'{scope}_text_reply_limit_count', 99)
-        config.setdefault(f'{scope}_text_reply_limit_hours', 24)
+        config.setdefault(f'{scope}_text_reply_limit_count', 50)
+        config.setdefault(f'{scope}_text_reply_limit_hours', 5)
         config.setdefault(f'{scope}_text_reply_limit_reply', '')
         config.setdefault(f'{scope}_text_reply_limit_ai_reply', True)
         config.setdefault(f'{scope}_text_reply_limit_reply_once', False)
@@ -2426,11 +2426,11 @@ def _dashboard_config_status_snapshot(cfg):
         'group_split_reply_switch': bool(cfg.get('group_split_reply_switch', False)),
         'group_split_reply_delay_switch': bool(cfg.get('group_split_reply_delay_switch', True)),
         'chat_text_reply_limit_switch': bool(cfg.get('chat_text_reply_limit_switch', False)),
-        'chat_text_reply_limit_count': cfg.get('chat_text_reply_limit_count', 99),
-        'chat_text_reply_limit_hours': cfg.get('chat_text_reply_limit_hours', 24),
+        'chat_text_reply_limit_count': cfg.get('chat_text_reply_limit_count', 50),
+        'chat_text_reply_limit_hours': cfg.get('chat_text_reply_limit_hours', 5),
         'group_text_reply_limit_switch': bool(cfg.get('group_text_reply_limit_switch', False)),
-        'group_text_reply_limit_count': cfg.get('group_text_reply_limit_count', 99),
-        'group_text_reply_limit_hours': cfg.get('group_text_reply_limit_hours', 24),
+        'group_text_reply_limit_count': cfg.get('group_text_reply_limit_count', 50),
+        'group_text_reply_limit_hours': cfg.get('group_text_reply_limit_hours', 5),
         'new_friend_switch': bool(cfg.get('new_friend_switch', False)),
         'friend_request_enabled': bool(friend_request_settings.get('enabled', False)),
         'contact_directory_auto_maintenance_switch': bool(cfg.get('contact_directory_auto_maintenance_switch', False)),
@@ -2892,19 +2892,19 @@ def _coerce_int_range_fields(merged_config):
         'new_friend_check_max': (60, 3600, 300),
         'memory_max_count': (100, 5000, 5000),
         'memory_context_count': (1, 200, 50),
-        'chat_text_reply_limit_count': (0, 99999, 99),
-        'chat_text_reply_limit_hours': (0, 720, 24),
-        'group_text_reply_limit_count': (0, 99999, 99),
-        'group_text_reply_limit_hours': (0, 720, 24),
+        'chat_text_reply_limit_count': (0, 99999, 50),
+        'chat_text_reply_limit_hours': (0, 720, 5),
+        'group_text_reply_limit_count': (0, 99999, 50),
+        'group_text_reply_limit_hours': (0, 720, 5),
         'chat_memory_message_threshold': (10, 200, 100),
         'chat_memory_interval_hours': (1, 72, 12),
         'chat_message_merge_delay': (1, 60, 20),
         'contact_directory_auto_maintenance_interval_minutes': (5, 1440, 20),
         'backup_chat_api_failover_threshold': (1, 10, 3),
-        'chat_voice_reply_limit_count': (0, 99, 50),
-        'chat_voice_reply_limit_hours': (0, 720, 24),
-        'group_voice_reply_limit_count': (0, 99, 99),
-        'group_voice_reply_limit_hours': (0, 720, 24),
+        'chat_voice_reply_limit_count': (0, 99, 5),
+        'chat_voice_reply_limit_hours': (0, 720, 5),
+        'group_voice_reply_limit_count': (0, 99, 5),
+        'group_voice_reply_limit_hours': (0, 720, 5),
         'reply_preprocess_max_chars': (1, 10000, 100),
     }
     for field, (lo, hi, default) in int_range_fields.items():
@@ -5916,6 +5916,23 @@ def friend_request_settings_save():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+@app.route('/friend_request/executions', methods=['DELETE'])
+@login_required
+def friend_request_executions_clear():
+    try:
+        wx_id = _friend_request_wx_id_from_request()
+        state = friend_request.clear_execution_records(DATA_DIR, wx_id)
+        return jsonify({
+            'status': 'success',
+            'message': '已清空好友申请记录',
+            'payload': _friend_request_payload(state.get('wx_id') or wx_id),
+        })
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
 @app.route('/friend_request/refresh_candidates', methods=['POST'])
 @login_required
 def friend_request_refresh_candidates():
@@ -6021,6 +6038,33 @@ def material_outreach_material_patch(material_id):
 
         _save_material_outreach_materials(materials, wx_id)
         return jsonify(_material_management_response(wx_id, materials))
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/material_outreach/materials', methods=['DELETE'])
+@login_required
+def material_outreach_materials_clear():
+    """清空当前账号的素材池，不删除任务配置和历史转发记录。"""
+    try:
+        wx_id = _current_material_outreach_wx_id()
+        materials = _load_material_outreach_materials(wx_id)
+        removed_count = len(materials)
+        _save_material_outreach_materials([], wx_id)
+
+        if bot and str(getattr(bot, 'wx_id', '') or '').strip() == wx_id:
+            runtime_messages = getattr(bot, '_material_runtime_messages', None)
+            if isinstance(runtime_messages, dict):
+                runtime_messages.clear()
+            else:
+                bot._material_runtime_messages = {}
+
+        message = f'已清空 {removed_count} 条素材' if removed_count else '素材池已经是空的'
+        response = _material_management_response(wx_id, [], message=message)
+        response['removed_count'] = removed_count
+        return jsonify(response)
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
@@ -6667,14 +6711,14 @@ def main():
                 "reply_preprocess_fallback_once": False,
                 "reply_preprocess_max_chars": 100,
                 "chat_text_reply_limit_switch": False,
-                "chat_text_reply_limit_count": 99,
-                "chat_text_reply_limit_hours": 24,
+                "chat_text_reply_limit_count": 50,
+                "chat_text_reply_limit_hours": 5,
                 "chat_text_reply_limit_ai_reply": True,
                 "chat_text_reply_limit_reply": "",
                 "chat_text_reply_limit_reply_once": False,
                 "group_text_reply_limit_switch": False,
-                "group_text_reply_limit_count": 99,
-                "group_text_reply_limit_hours": 24,
+                "group_text_reply_limit_count": 50,
+                "group_text_reply_limit_hours": 5,
                 "group_text_reply_limit_ai_reply": True,
                 "group_text_reply_limit_reply": "",
                 "group_text_reply_limit_reply_once": False,

@@ -8,6 +8,24 @@ from core.prompt_system import PromptSystem
 
 
 class WXBotConfigLegacyPromptTests(unittest.TestCase):
+    def test_reply_limit_defaults_are_consistent_for_private_and_group_chat(self):
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.chdir(temp_dir)
+            try:
+                config = WXBotConfig()
+
+                self.assertEqual(config.chat_text_reply_limit_count, 50)
+                self.assertEqual(config.chat_text_reply_limit_hours, 5)
+                self.assertEqual(config.group_text_reply_limit_count, 50)
+                self.assertEqual(config.group_text_reply_limit_hours, 5)
+                self.assertEqual(config.chat_voice_reply_limit_count, 5)
+                self.assertEqual(config.chat_voice_reply_limit_hours, 5)
+                self.assertEqual(config.group_voice_reply_limit_count, 5)
+                self.assertEqual(config.group_voice_reply_limit_hours, 5)
+            finally:
+                os.chdir(original_cwd)
+
     def test_chat_memory_protects_the_same_count_as_recent_history(self):
         system = PromptSystem(
             {

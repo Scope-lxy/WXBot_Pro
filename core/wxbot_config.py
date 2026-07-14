@@ -271,14 +271,14 @@ class WXBotConfig:
                     "reply_preprocess_fallback_once": False,
                     "reply_preprocess_max_chars": 100,
                     "chat_text_reply_limit_switch": False,
-                    "chat_text_reply_limit_count": 99,
-                    "chat_text_reply_limit_hours": 24,
+                    "chat_text_reply_limit_count": 50,
+                    "chat_text_reply_limit_hours": 5,
                     "chat_text_reply_limit_ai_reply": True,
                     "chat_text_reply_limit_reply": "",
                     "chat_text_reply_limit_reply_once": False,
                     "group_text_reply_limit_switch": False,
-                    "group_text_reply_limit_count": 99,
-                    "group_text_reply_limit_hours": 24,
+                    "group_text_reply_limit_count": 50,
+                    "group_text_reply_limit_hours": 5,
                     "group_text_reply_limit_ai_reply": True,
                     "group_text_reply_limit_reply": "",
                     "group_text_reply_limit_reply_once": False,
@@ -295,13 +295,13 @@ class WXBotConfig:
                     "chat_voice_reply_switch": False,
                     "chat_voice_reply_trigger_modes": ["keyword"],
                     "chat_voice_reply_request_keywords": list(DEFAULT_CHAT_VOICE_REPLY_KEYWORDS),
-                    "chat_voice_reply_limit_count": 50,
-                    "chat_voice_reply_limit_hours": 24,
+                    "chat_voice_reply_limit_count": 5,
+                    "chat_voice_reply_limit_hours": 5,
                     "group_voice_reply_switch": False,
                     "group_voice_reply_trigger_modes": ["keyword"],
                     "group_voice_reply_request_keywords": list(DEFAULT_GROUP_VOICE_REPLY_KEYWORDS),
-                    "group_voice_reply_limit_count": 99,
-                    "group_voice_reply_limit_hours": 24,
+                    "group_voice_reply_limit_count": 5,
+                    "group_voice_reply_limit_hours": 5,
                     "siver_panel_enabled": False,
                     "siver_panel_activation_code": "",
                     "siver_panel_slug": "",
@@ -864,14 +864,14 @@ class WXBotConfig:
 
         # 私聊与群聊回复次数限制配置
         self.chat_text_reply_limit_switch = bool(self.config.get('chat_text_reply_limit_switch', False))
-        self.chat_text_reply_limit_count = self._coerce_int_range(self.config.get('chat_text_reply_limit_count', 99), 99, 0, 99999)
-        self.chat_text_reply_limit_hours = self._coerce_int_range(self.config.get('chat_text_reply_limit_hours', 24), 24, 0, 720)
+        self.chat_text_reply_limit_count = self._coerce_int_range(self.config.get('chat_text_reply_limit_count', 50), 50, 0, 99999)
+        self.chat_text_reply_limit_hours = self._coerce_int_range(self.config.get('chat_text_reply_limit_hours', 5), 5, 0, 720)
         self.chat_text_reply_limit_reply = self.config.get('chat_text_reply_limit_reply', '')
         self.chat_text_reply_limit_reply_once = bool(self.config.get('chat_text_reply_limit_reply_once', False))
         self.chat_text_reply_limit_ai_reply = bool(self.config.get('chat_text_reply_limit_ai_reply', True))
         self.group_text_reply_limit_switch = bool(self.config.get('group_text_reply_limit_switch', False))
-        self.group_text_reply_limit_count = self._coerce_int_range(self.config.get('group_text_reply_limit_count', 99), 99, 0, 99999)
-        self.group_text_reply_limit_hours = self._coerce_int_range(self.config.get('group_text_reply_limit_hours', 24), 24, 0, 720)
+        self.group_text_reply_limit_count = self._coerce_int_range(self.config.get('group_text_reply_limit_count', 50), 50, 0, 99999)
+        self.group_text_reply_limit_hours = self._coerce_int_range(self.config.get('group_text_reply_limit_hours', 5), 5, 0, 720)
         self.group_text_reply_limit_reply = self.config.get('group_text_reply_limit_reply', '')
         self.group_text_reply_limit_reply_once = bool(self.config.get('group_text_reply_limit_reply_once', False))
         self.group_text_reply_limit_ai_reply = bool(self.config.get('group_text_reply_limit_ai_reply', True))
@@ -896,10 +896,10 @@ class WXBotConfig:
         ]
         self.chat_voice_reply_request_keywords = self.config.get('chat_voice_reply_request_keywords', [])
         self.chat_voice_reply_limit_count = self._coerce_int_range(
-            self.config.get('chat_voice_reply_limit_count', 50), 50, 0, 99
+            self.config.get('chat_voice_reply_limit_count', 5), 5, 0, 99
         )
         self.chat_voice_reply_limit_hours = self._coerce_int_range(
-            self.config.get('chat_voice_reply_limit_hours', 24), 24, 0, 720
+            self.config.get('chat_voice_reply_limit_hours', 5), 5, 0, 720
         )
         self.group_voice_reply_switch = bool(self.config.get('group_voice_reply_switch', False))
         group_trigger_mode_source = self.config.get('group_voice_reply_trigger_modes', None)
@@ -909,10 +909,10 @@ class WXBotConfig:
         ]
         self.group_voice_reply_request_keywords = self.config.get('group_voice_reply_request_keywords', [])
         self.group_voice_reply_limit_count = self._coerce_int_range(
-            self.config.get('group_voice_reply_limit_count', 99), 99, 0, 99
+            self.config.get('group_voice_reply_limit_count', 5), 5, 0, 99
         )
         self.group_voice_reply_limit_hours = self._coerce_int_range(
-            self.config.get('group_voice_reply_limit_hours', 24), 24, 0, 720
+            self.config.get('group_voice_reply_limit_hours', 5), 5, 0, 720
         )
         _siver_panel_defaults = {
             'siver_panel_enabled': False,

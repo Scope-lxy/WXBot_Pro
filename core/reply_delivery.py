@@ -2,12 +2,31 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Protocol
+
+
+def is_retryable_sqlite_error(exc: BaseException) -> bool:
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    error_code = getattr(exc, "sqlite_errorcode", None)
+    if error_code is not None:
+        return (int(error_code) & 0xFF) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    message = str(exc).strip().lower()
+    return any(
+        marker in message
+        for marker in (
+            "database is locked",
+            "database table is locked",
+            "database schema is locked",
+            "database is busy",
+        )
+    )
 
 
 class ReplyKind(str, Enum):
@@ -343,18 +362,32 @@ class ReplyDeliveryCoordinator:
         self._known: set[str] = set()
 
     def deliver(self, turn: ReplyTurn, context: Any = None) -> DeliveryResult:
-        self._store.register_reply_turn(
-            turn.turn_id,
-            conversation=turn.conversation,
-            expected_version=turn.expected_version,
-            expires_at=turn.expires_at,
-            event_ids=turn.event_ids,
-            action_count=len(turn.actions),
-            chat_type=turn.chat_type,
-        )
+        try:
+            self._store.register_reply_turn(
+                turn.turn_id,
+                conversation=turn.conversation,
+                expected_version=turn.expected_version,
+                expires_at=turn.expires_at,
+                event_ids=turn.event_ids,
+                action_count=len(turn.actions),
+                chat_type=turn.chat_type,
+            )
+        except Exception as exc:
+            if is_retryable_sqlite_error(exc):
+                return DeliveryResult(
+                    DeliveryStatus.RETRY,
+                    action_id=turn.action_id(0),
+                    error=str(exc),
+                )
+            raise
         with self._lock:
             self._known.add(turn.turn_id)
-        result = self._deliver_registered(turn, context)
+        try:
+            result = self._deliver_registered(turn, context)
+        except Exception:
+            with self._lock:
+                self._known.discard(turn.turn_id)
+            raise
         if result.status not in {DeliveryStatus.RETRY, DeliveryStatus.BLOCKED}:
             with self._lock:
                 self._known.discard(turn.turn_id)
@@ -383,16 +416,15 @@ class ReplyDeliveryCoordinator:
             if preflight is not None:
                 return preflight
 
-            try:
-                prepared = self._prepare(turn, action, action_id, context)
-            except Exception as exc:
-                return DeliveryResult(DeliveryStatus.RETRY, completed, action_id, str(exc))
+            prepared = self._prepare(turn, action, action_id, context)
             if not prepared:
+                reason = "reply preparation stopped before delivery claim"
+                self._cancel_pending(turn.turn_id, DeliveryStatus.CANCELLED, reason)
                 return DeliveryResult(
-                    DeliveryStatus.RETRY,
+                    DeliveryStatus.CANCELLED,
                     completed,
                     action_id,
-                    "reply target is not ready",
+                    reason,
                 )
 
             preflight = self._preflight(turn, action, action_id, completed)
@@ -402,7 +434,9 @@ class ReplyDeliveryCoordinator:
             try:
                 claim = self._claim(turn, action_id)
             except Exception as exc:
-                return DeliveryResult(DeliveryStatus.RETRY, completed, action_id, str(exc))
+                if is_retryable_sqlite_error(exc):
+                    return DeliveryResult(DeliveryStatus.RETRY, completed, action_id, str(exc))
+                raise
             if claim == ClaimStatus.DONE:
                 completed += 1
                 continue
@@ -520,7 +554,9 @@ class ReplyDeliveryCoordinator:
         try:
             current_version = int(self._version_provider(turn.conversation, turn.chat_type))
         except Exception as exc:
-            return DeliveryResult(DeliveryStatus.RETRY, completed, action_id, str(exc))
+            if is_retryable_sqlite_error(exc):
+                return DeliveryResult(DeliveryStatus.RETRY, completed, action_id, str(exc))
+            raise
         if current_version != turn.expected_version:
             reason = "conversation version changed before delivery claim"
             self._cancel_pending(turn.turn_id, DeliveryStatus.STALE, reason)

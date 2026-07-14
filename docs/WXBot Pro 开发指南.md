@@ -63,6 +63,7 @@
 - 接口连通性测试和视觉能力测试，并写入 `api_capability_map`。
 - Prompt、人设近况、会话记忆、聊天记录、通讯录、素材转发、备份等页面 API。
 - 统一任务工作台 API：`/api/task-workbench/<module>` 与 `/api/task-workbench/<module>/runtime`。
+- 素材池管理 API：`DELETE /material_outreach/materials` 只清空当前所选微信号的 `materials.json` 和同账号运行时素材句柄，不删除任务配置、运行队列或历史转发记录。
 - 启动 / 停止机器人：`/start_bot` 后台创建 `WXBot` 并调用 `run()`；`/get_startup_status` 轮询真实启动结果；`/stop_bot` 立即返回 `stopping`，owner 先拒绝新意图并取消未开始队列，当前动作结束后由机器人线程执行 `StopListening()` 收尾。
 - UI 卡死恢复：watchdog 只用专用退出码 `86` 退出；`打开软件.bat` 只响应该退出码，滚动 30 分钟最多自动重启 3 次。用户主动停止不自动启动机器人。
 
@@ -98,6 +99,8 @@
 ```
 
 实时观察只有 native ID 相同时才做强去重；hash、正文和控件内容只作为原始事实或上下文补洞依据，不能删除两次真实出现的同文消息。global 与 subwindow 同时观察到同一个 native ID 时合并为一条；没有 native ID 的两次观察按两条事实保留。
+
+wxautox4 私聊窗口返回的 `chat_type='friend'` 只在 `ConversationRef` 入口转换一次；项目内部和 `message_store.sqlite3` 的会话类型固定为 `private / group`。消息自身的 `attr='friend'` 和入站方向 `direction='friend'` 仍表示“对方发来”，不能与会话类型混用，也不能全局替换。
 
 私聊 `self` 消息会先排除机器人自己回复的回显；确认是手动回复后，写入本地聊天记录、推进 SQLite 会话版本、清理旧 AI 回复，不主动触发 AI。下一条好友消息会重新进入 AI 流程，并在 history 中带上这条手动回复。
 
@@ -246,7 +249,7 @@ AI 回复发送前统一走回复预处理：先按 `clean_ai_reply_switch` 清�
 
 普通语音、文件、转发和 quote 由 `core/message_store.py::SQLiteUIDeliveryJournal` 在 owner 调用前写入同一数据库的 `ui_deliveries` 表；只有 handler 明确返回成功才写 `done`，返回 `False / None / 明确失败结果`、调用异常或启动时发现遗留 `inflight` 都收敛为 `uncertain`。handler 失败结果落库后必须向调用方抛出，阻止外层换新投递 ID 自动重试。投递 ID 不按条数截断，素材转发还必须记录 `request_id / run_id / batch_id / targets`，同一业务批次结果未知时外层立即停止，禁止换一个随机 ID 自动再试。关键词、定时任务、新好友欢迎、quote 后续文字和 AI 拆分气泡都逐项提交；每项开始前复核会话或任务版本，新消息、停止或配置变化可以取消尚未开始的剩余项。不得把已完成、结果未知和尚未开始的多项合并成一个模糊结果，更不得把根本未开始的后续项一并冻结。
 
-私聊和群聊恢复不再维护第二份待答 JSON。`chat_events` 保存入站事实和 15 分钟有效期，`reply_jobs` 绑定本轮事件、会话版本和最小 `route_source`（限流 / 关键词 / AI），`delivery_actions` 保存每个气泡的 claim 边界。启动时，同一私聊中相邻且尚未形成 job 的入站先按现有连续消息规则合并；仍在有效期且未 claim 的 `pending / generating` 任务只能按原 `route_source` 重新生成，当前配置无法重现原路由时安全取消，不得改走其他分支。任何遗留 `inflight` 动作转成 `uncertain`，同轮剩余气泡取消，禁止自动重发；已完成过部分气泡的剩余内容也不在重启后重建。明确跳过的图片、语音和暂停回复消息必须收敛为 `not_required`，不能留作下次启动待处理；仍等待微信转写的语音保持 `pending`。正常停止把未 claim 的任务和未路由入站明确取消，不留给下次启动突然发送。当前进程内的普通业务失败只重排仍有效、版本未变化且尚未生成发送动作的入站；尚未 claim 的协调器临时失败按 30s / 60s 低频尝试到 TTL。真实微信调用一旦开始，失败或结果不明都转为 `uncertain`，不再自动重发。
+私聊和群聊恢复不再维护第二份待答 JSON。`chat_events` 保存入站事实和 15 分钟有效期，`reply_jobs` 绑定本轮事件、会话版本和最小 `route_source`（限流 / 关键词 / AI），`delivery_actions` 保存每个气泡的 claim 边界。启动时，同一私聊中相邻且尚未形成 job 的入站先按现有连续消息规则合并；仍在有效期且未 claim 的 `pending / generating` 任务只能按原 `route_source` 重新生成，当前配置无法重现原路由时安全取消，不得改走其他分支。任何遗留 `inflight` 动作转成 `uncertain`，同轮剩余气泡取消，禁止自动重发；已完成过部分气泡的剩余内容也不在重启后重建。明确跳过的图片、语音和暂停回复消息必须收敛为 `not_required`，不能留作下次启动待处理；仍等待微信转写的语音保持 `pending`。正常停止把未 claim 的任务和未路由入站明确取消，不留给下次启动突然发送。当前进程内只有 SQLite 明确返回 `BUSY / LOCKED` 才自动恢复：业务入口按 `1 / 2 / 5 / 10 / 30 / 60s` 退避，协调器在 claim 前按 `30 / 60s` 低频尝试，均不超过原 15 分钟有效期；代码契约、数据冲突、状态跳转、结构损坏和其他数据库错误只失败一次并终结对应任务。真实微信调用一旦开始，失败或结果不明都转为 `uncertain`，不再自动重发。
 
 owner 在真实微信动作前通过 `task_version_provider` 复核配置或任务定义真源；关键词必须读取账号级 `rules.json`，不能从已移除规则字段的全局配置计算版本。联系人目标保存 `contact_key`，执行前解析当前发送名；已失效、无法唯一解析或通讯录选择项缺少 `contact_key` 时拒绝执行。只有明确的自由输入目标允许按精确名称执行。好友申请提交前 claim 若因版本校验取消，使用 claim token 恢复为 `pending`；候选刷新必须继承活动 claim token，只有已经进入真实提交且结果未知时才保留 `uncertain`。
 

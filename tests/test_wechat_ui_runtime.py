@@ -88,7 +88,7 @@ class FakeClient:
         )
         if callback:
             callback(message)
-        return {"chat_name": "张三", "chat_type": "private", "msg": [message]}
+        return {"chat_name": "张三", "chat_type": "friend", "msg": [message]}
 
     def ChatWith(self, who=None, exact=True):
         self.current_chat = who
@@ -132,9 +132,10 @@ class WeChatUIRuntimeTests(unittest.TestCase):
             download=lambda: downloads.append(True) or "C:/temp/exact.png",
         )
 
-        runtime._callback(original, SimpleNamespace(who="瑞东（私人号）", chat_type="private"))
+        runtime._callback(original, SimpleNamespace(who="瑞东（私人号）", chat_type="friend"))
 
         self.assertEqual(downloads, [True])
+        self.assertEqual(received[0][0].chat_type, "private")
         self.assertEqual(received[0][1].content, "C:/temp/exact.png")
         self.assertTrue(received[0][1]._wxbot_media_prepared)
         self.assertFalse(hasattr(received[0][1], "download"))
@@ -708,7 +709,6 @@ class WeChatUIRuntimeTests(unittest.TestCase):
                 "addmsg": "你好",
                 "remark": "张三",
                 "tags": ["客户"],
-                "permission": "不设置",
                 "max_attempts": 2,
             })
 

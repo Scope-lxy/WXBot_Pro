@@ -1261,7 +1261,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         def flaky_runtime_log(*_args, **kwargs):
             message = str(kwargs.get("message", ""))
             if "运行事件：" in message:
-                runtime_events.append(message)
+                runtime_events.append((kwargs.get("level"), message))
                 raise OSError("log unavailable")
 
         class FakeWeChat:
@@ -1302,7 +1302,9 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             )
 
         collector_calls = [call for call in calls if call[0] == "collector"]
-        self.assertEqual(runtime_events, [f"运行事件：通讯录批次完成 runtime_id={'a' * 32}"])
+        self.assertEqual(runtime_events, [
+            ("DEBUG", f"运行事件：通讯录批次完成 runtime_id={'a' * 32}"),
+        ])
         self.assertEqual(collector_calls[0][1], {
             "start_name": "阿英2",
             "start_identity": "",

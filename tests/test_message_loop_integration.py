@@ -1,4 +1,5 @@
 import queue
+import sqlite3
 import tempfile
 import threading
 import time
@@ -73,6 +74,54 @@ def enqueue_friend(bot, content, native_id):
 
 
 class MessageLoopIntegrationTests(unittest.TestCase):
+    def test_raw_friend_chat_reaches_private_reply_delivery_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            sent = []
+            received = []
+            results = []
+
+            def handle(conversation, message):
+                received.append((conversation, message))
+                results.append(bot._deliver_reply_actions(
+                    FakeChat(
+                        conversation.who,
+                        lambda msg=None, **_kwargs: sent.append(msg) or True,
+                    ),
+                    message,
+                    (ReplyAction("text", "answer"),),
+                    chat_type=conversation.chat_type,
+                ))
+
+            runtime = WeChatUIRuntime(
+                handle,
+                persist_message=bot._persist_ui_message,
+            )
+            runtime._callback(
+                SimpleNamespace(
+                    id="friend-raw-1",
+                    type="text",
+                    attr="friend",
+                    sender="Alice",
+                    content="question",
+                ),
+                SimpleNamespace(who="Alice", chat_type="friend"),
+            )
+
+            conversation, message = received[0]
+            stored = bot._message_store.get_event(message._wxbot_event_id)
+            self.assertEqual(conversation.chat_type, "private")
+            self.assertEqual(stored["chat_type"], "private")
+            self.assertEqual(stored["conversation_version"], 1)
+            self.assertEqual(results[0].status, DeliveryStatus.DONE)
+            self.assertEqual(sent, ["answer"])
+            self.assertEqual(
+                bot._message_store.delivery_action_status(
+                    f"{message._wxbot_reply_turn_id}:0"
+                ),
+                "done",
+            )
+
     def test_startup_recovery_merges_only_adjacent_unclaimed_private_events(self):
         items = [
             {"job": None, "events": [{"event_seq": 1, "conversation": "Alice", "chat_type": "private"}]},
@@ -209,19 +258,24 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             )
             self.assertTrue(bot._ui_ingress_queue.empty())
 
-    def test_failed_prepare_retries_in_process_and_sends_once_after_recovery(self):
+    def test_sqlite_busy_retries_in_process_and_sends_once_after_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_delivery_bot(tmp)
             inbound = enqueue_friend(bot, "question", "friend-1")
             clock = {"now": time.time()}
             inbound._wxbot_reply_expires_at = clock["now"] + 300
             waits = []
-            prepares = []
+            version_checks = []
             sends = []
 
-            def prepare(_turn, _action, _action_id, _context):
-                prepares.append(True)
-                return len(prepares) > 1
+            def current_version(conversation, chat_type="private"):
+                version_checks.append(True)
+                if len(version_checks) == 1:
+                    raise sqlite3.OperationalError("database is locked")
+                return bot._message_store.conversation_version(
+                    conversation,
+                    chat_type=chat_type,
+                )
 
             def wait(seconds):
                 waits.append(seconds)
@@ -231,13 +285,8 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             bot._wait_or_stop_requested = wait
             bot._reply_delivery_coordinator = ReplyDeliveryCoordinator(
                 store=bot._message_store,
-                version_provider=lambda conversation, chat_type="private": (
-                    bot._message_store.conversation_version(
-                        conversation,
-                        chat_type=chat_type,
-                    )
-                ),
-                prepare=prepare,
+                version_provider=current_version,
+                prepare=bot._prepare_reply_delivery,
                 sender=bot._send_reply_delivery,
                 clock=lambda: clock["now"],
             )
@@ -251,25 +300,20 @@ class MessageLoopIntegrationTests(unittest.TestCase):
 
             self.assertEqual(result.status, DeliveryStatus.DONE)
             self.assertEqual(waits, [30.0])
-            self.assertEqual(len(prepares), 2)
+            self.assertEqual(len(version_checks), 3)
             self.assertEqual(sends, ["answer"])
             self.assertEqual(
                 bot._message_store.delivery_action_status(f"{inbound._wxbot_reply_turn_id}:0"),
                 "done",
             )
 
-    def test_unprepared_turn_keeps_retrying_until_expired(self):
+    def test_sqlite_busy_keeps_retrying_only_until_expired(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_delivery_bot(tmp)
             inbound = enqueue_friend(bot, "question", "friend-1")
             clock = {"now": time.time()}
             inbound._wxbot_reply_expires_at = clock["now"] + 95
             waits = []
-            prepares = []
-
-            def prepare(*_args):
-                prepares.append(True)
-                return False
 
             def wait(seconds):
                 waits.append(seconds)
@@ -279,13 +323,12 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             bot._wait_or_stop_requested = wait
             bot._reply_delivery_coordinator = ReplyDeliveryCoordinator(
                 store=bot._message_store,
-                version_provider=lambda conversation, chat_type="private": (
-                    bot._message_store.conversation_version(
-                        conversation,
-                        chat_type=chat_type,
+                version_provider=lambda *_args: (
+                    (_ for _ in ()).throw(
+                        sqlite3.OperationalError("database is locked")
                     )
                 ),
-                prepare=prepare,
+                prepare=bot._prepare_reply_delivery,
                 sender=bot._send_reply_delivery,
                 clock=lambda: clock["now"],
             )
@@ -300,13 +343,192 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             turn_id = inbound._wxbot_reply_turn_id
             self.assertEqual(result.status, DeliveryStatus.EXPIRED)
             self.assertEqual(waits, [30.0, 60.0, 5.0])
-            self.assertEqual(len(prepares), 3)
             self.assertEqual(bot._message_store.get_reply_job(turn_id)["status"], "expired")
             self.assertEqual(bot._message_store.delivery_action_status(f"{turn_id}:0"), "expired")
             self.assertEqual(
                 bot._message_store.get_event(inbound._wxbot_event_id)["processing_state"],
                 "handled",
             )
+
+    def test_private_contract_failure_is_cancelled_without_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            inbound = enqueue_friend(bot, "question", "friend-1")
+            scheduled = []
+            bot._schedule_private_message_retry = (
+                lambda *_args: scheduled.append(True)
+            )
+            bot.wx_send_ai = lambda *_args: (_ for _ in ()).throw(
+                ValueError("invalid conversation type")
+            )
+            chat = SimpleNamespace(who="Alice")
+            bot._ensure_message_runtime_state()
+            with bot._chat_merge_lock:
+                pipeline = bot._private_message_pipeline("Alice")
+                pipeline["queued_batches"].append([inbound])
+                pipeline["worker_running"] = True
+
+            with mock.patch("wxbot_core.log") as log_mock:
+                self.assertTrue(bot._run_private_message_pipeline_worker(chat))
+
+            self.assertEqual(scheduled, [])
+            self.assertEqual(
+                bot._message_store.get_event(inbound._wxbot_event_id)["processing_state"],
+                "cancelled",
+            )
+            errors = [
+                call for call in log_mock.call_args_list
+                if call.kwargs.get("level") == "ERROR"
+            ]
+            self.assertEqual(len(errors), 1)
+
+    def test_private_sqlite_busy_failure_is_requeued(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            inbound = enqueue_friend(bot, "question", "friend-1")
+            turn_id = bot._ensure_reply_job(
+                FakeChat("Alice", lambda **_kwargs: True),
+                inbound,
+                route_source="private_ai",
+            )
+            scheduled = []
+            bot._schedule_private_message_retry = (
+                lambda chat, messages, delay: scheduled.append((chat, messages, delay))
+            )
+
+            def fail(_chat, merged):
+                merged._wxbot_reply_turn_id = turn_id
+                raise sqlite3.OperationalError("database is locked")
+
+            bot.wx_send_ai = fail
+            chat = SimpleNamespace(who="Alice")
+            bot._ensure_message_runtime_state()
+            with bot._chat_merge_lock:
+                pipeline = bot._private_message_pipeline("Alice")
+                pipeline["queued_batches"].append([inbound])
+                pipeline["worker_running"] = True
+
+            with (
+                mock.patch.object(
+                    bot._message_store,
+                    "get_reply_job",
+                    side_effect=sqlite3.OperationalError("database is locked"),
+                ),
+                mock.patch("wxbot_core.log") as log_mock,
+            ):
+                self.assertTrue(bot._run_private_message_pipeline_worker(chat))
+
+            self.assertEqual(len(scheduled), 1)
+            self.assertEqual(scheduled[0][1], [inbound])
+            self.assertEqual(scheduled[0][2], 1.0)
+            self.assertEqual(
+                bot._message_store.get_reply_job(turn_id)["status"],
+                "pending",
+            )
+            self.assertFalse(any(
+                call.kwargs.get("level") == "ERROR"
+                for call in log_mock.call_args_list
+            ))
+
+    def test_private_nonbusy_sqlite_error_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            inbound = enqueue_friend(bot, "question", "friend-1")
+            scheduled = []
+            bot._schedule_private_message_retry = (
+                lambda *_args: scheduled.append(True)
+            )
+            bot.wx_send_ai = lambda *_args: (_ for _ in ()).throw(
+                sqlite3.OperationalError("no such table: reply_jobs")
+            )
+            chat = SimpleNamespace(who="Alice")
+            bot._ensure_message_runtime_state()
+            with bot._chat_merge_lock:
+                pipeline = bot._private_message_pipeline("Alice")
+                pipeline["queued_batches"].append([inbound])
+                pipeline["worker_running"] = True
+
+            with mock.patch("wxbot_core.log"):
+                self.assertTrue(bot._run_private_message_pipeline_worker(chat))
+
+            self.assertEqual(scheduled, [])
+            self.assertEqual(
+                bot._message_store.get_event(inbound._wxbot_event_id)["processing_state"],
+                "cancelled",
+            )
+
+    def test_group_sqlite_busy_failure_uses_the_same_ingress_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            bot._ui_ingress_stop = threading.Event()
+            bot._ui_owner = SimpleNamespace(wait_for_contact_idle=lambda: True)
+            scheduled = []
+            cancelled = []
+            bot._schedule_ui_ingress_retry = (
+                lambda conversation, message, delay: scheduled.append(
+                    (conversation, message, delay)
+                )
+            )
+            bot._cancel_failed_reply_attempt = (
+                lambda *_args: cancelled.append(True) or ""
+            )
+            bot.message_handle_callback = lambda *_args: (_ for _ in ()).throw(
+                sqlite3.OperationalError("database is locked")
+            )
+            message = MessageEnvelope(
+                id="group-1",
+                type="text",
+                attr="group",
+                sender="Bob",
+                content="question",
+                _wxbot_received_at=time.time(),
+            )
+            conversation = ConversationRef("Team", "group")
+            bot._enqueue_ui_message(conversation, message)
+            worker = threading.Thread(target=bot._run_ui_ingress)
+            worker.start()
+            try:
+                bot._ui_ingress_queue.join()
+            finally:
+                bot._ui_ingress_stop.set()
+                worker.join(1)
+
+            self.assertEqual(len(scheduled), 1)
+            self.assertEqual(scheduled[0][0], conversation)
+            self.assertIs(scheduled[0][1], message)
+            self.assertEqual(scheduled[0][2], 1.0)
+            self.assertEqual(cancelled, [])
+
+    def test_empty_group_reply_is_silent_and_cancels_the_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            inbound = MessageEnvelope(
+                id="group-empty-1",
+                type="text",
+                attr="group",
+                sender="Bob",
+                content="question",
+                _wxbot_received_at=time.time(),
+            )
+            bot._enqueue_ui_message(ConversationRef("Team", "group"), inbound)
+            bot._ui_ingress_queue.get_nowait()
+            bot._ui_ingress_queue.task_done()
+            turn_id = bot._ensure_reply_job(
+                FakeChat("Team", lambda **_kwargs: self.fail("empty reply must not send")),
+                inbound,
+                chat_type="group",
+                route_source="group_ai",
+            )
+
+            result = bot._deliver_reply_actions(
+                FakeChat("Team", lambda **_kwargs: self.fail("empty reply must not send")),
+                inbound,
+                (),
+                chat_type="group",
+            )
+
+            self.assertIsNone(result)
+            self.assertEqual(bot._message_store.get_reply_job(turn_id)["status"], "cancelled")
 
     def test_sync_self_callback_confirms_once_before_send_returns(self):
         with tempfile.TemporaryDirectory() as tmp:

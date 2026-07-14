@@ -67,9 +67,9 @@ class ImageReplyPipeline:
         return normalized
 
     def _reply_with_direct_vision(self, request: ImageReplyRequest):
+        scene = "群聊" if request.chat_type == "group" else "私聊"
         self.log_info(
-            f"图片回复路径：直传，chat_type={request.chat_type}，chat_name={request.chat_name}，"
-            f"reply_api_index={request.final_api_index}，vision=true"
+            f"{scene} {request.chat_name}：AI 正在识别图片并生成回复"
         )
         image_paths = self._resolved_image_paths(request)
         message = self.user_message_builder(
@@ -97,10 +97,9 @@ class ImageReplyPipeline:
         )
 
     def _reply_with_two_stage_parse(self, request: ImageReplyRequest):
+        scene = "群聊" if request.chat_type == "group" else "私聊"
         self.log_info(
-            f"图片回复路径：转述，chat_type={request.chat_type}，chat_name={request.chat_name}，"
-            f"reply_api_index={request.final_api_index}，vision=false，"
-            f"recognition_api_index={request.recognition_api_index}"
+            f"{scene} {request.chat_name}：AI 正在先识别图片内容，再生成回复"
         )
         image_paths = self._resolved_image_paths(request)
         normalized_notes = self._normalize_visual_notes(request, image_paths)

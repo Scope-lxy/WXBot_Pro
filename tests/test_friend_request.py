@@ -63,19 +63,23 @@ class FriendRequestLogicTest(unittest.TestCase):
 
         self.assertEqual([item["name"] for item in candidates], ["可搜索好友"])
 
-    def test_next_pending_candidate_respects_limits_and_force(self):
+    def test_next_pending_candidate_respects_interval_limits_and_force(self):
         now = datetime(2026, 6, 11, 8, 0, 0)
         state = friend_request.default_state("wxid_test")
         state["settings"] = friend_request.normalize_settings({
             "daily_limit": 1,
-            "allowed_time_ranges": ["09:00-10:00"],
             "base_interval_minutes": 30,
         })
         state["candidates"] = [friend_request.normalize_candidate({"display_name": "瑞东", "send_name": "瑞东", "tags": ["删除我的人"]})]
 
         candidate, reason = friend_request.next_pending_candidate(state, now=now)
+        self.assertIsNotNone(candidate)
+        self.assertEqual(reason, "")
+
+        state["runtime"]["last_sent_at"] = now.isoformat()
+        candidate, reason = friend_request.next_pending_candidate(state, now=now)
         self.assertIsNone(candidate)
-        self.assertEqual(reason, "当前不在可发送时间段")
+        self.assertEqual(reason, "申请间隔未到")
 
         candidate, reason = friend_request.next_pending_candidate(state, now=now, ignore_schedule=True)
         self.assertIsNotNone(candidate)
@@ -170,6 +174,33 @@ class FriendRequestLogicTest(unittest.TestCase):
         self.assertEqual(result["status"], "uncertain")
         self.assertEqual([call[0] for call in calls], ["ChatWith", "submit"])
 
+    def test_sender_submits_only_supported_fields(self):
+        submitted = {}
+
+        class FakeWx:
+            def ChatWith(self, _target, exact=True):
+                self.exact = exact
+
+            def ChatInfo(self):
+                return {"chat_name": "瑞东"}
+
+        class SendingWindow:
+            def send(self, **kwargs):
+                submitted.update(kwargs)
+
+        sender = ConversationVerifySender(wait_after_front=0, assert_owner_thread=lambda: None)
+        sender._front = lambda: None
+        sender._find_verify_message = lambda _wx: object()
+        sender._click_verify_link = lambda _msg: {"click_point": (1, 2)}
+
+        with patch("wxautox4.ui.component.AddFriendsWnd", return_value=SendingWindow()), patch(
+            "feature.friend_request_senders.time.sleep", return_value=None
+        ):
+            result = sender.send(SimpleNamespace(wx=FakeWx()), "瑞东", addmsg="你好", remark="备注", tags=["客户"])
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(submitted, {"addmsg": "你好", "remark": "备注", "tags": ["客户"]})
+
     def test_sender_rejects_missing_owner_thread_assertion_before_ui(self):
         calls = []
         bot = SimpleNamespace(wx=SimpleNamespace(
@@ -205,6 +236,40 @@ class FriendRequestLogicTest(unittest.TestCase):
         next_candidate, reason = friend_request.next_pending_candidate(state, now=now, ignore_schedule=True)
         self.assertIs(next_candidate, candidate)
         self.assertEqual(reason, "")
+
+    def test_clear_execution_records_preserves_duplicate_guard(self):
+        now = datetime(2026, 6, 11, 9, 30, 0)
+        with tempfile.TemporaryDirectory() as data_dir:
+            state = friend_request.default_state("wxid_test")
+            candidate = friend_request.normalize_candidate({
+                "candidate_id": "contact-1",
+                "display_name": "瑞东",
+                "send_name": "瑞东",
+                "tags": ["删除我的人"],
+                "status": "sent",
+            })
+            state["candidates"] = [candidate]
+            state["executions"] = [{
+                "at": now.isoformat(),
+                "candidate_id": candidate["candidate_id"],
+                "status": "sent",
+            }]
+            friend_request.save_state(data_dir, state)
+
+            cleared = friend_request.clear_execution_records(data_dir, "wxid_test")
+
+            self.assertEqual(cleared["executions"], [])
+            self.assertEqual(cleared["candidates"][0]["sent_at"], now.isoformat())
+            self.assertEqual(
+                cleared["runtime"]["recent_sent_at_by_candidate"][candidate["candidate_id"]],
+                now.isoformat(),
+            )
+            next_candidate, _reason = friend_request.next_pending_candidate(
+                cleared,
+                now=now + timedelta(days=2),
+                ignore_schedule=True,
+            )
+            self.assertIsNone(next_candidate)
 
     def test_next_pending_candidate_skips_stale_tag_candidates(self):
         state = friend_request.default_state("wxid_test")
@@ -424,8 +489,45 @@ class FriendRequestLogicTest(unittest.TestCase):
     def test_payload_exposes_available_add_objects(self):
         payload = friend_request.friend_request_payload(friend_request.default_state("wxid_test"))
 
-        self.assertEqual(payload["add_object_options"], [{"value": "deleted_me", "label": "删除我的人", "enabled": True}])
+        self.assertEqual(payload["add_object_options"], [
+            {"value": "deleted_me", "label": "删除我的人", "enabled": True},
+            {"value": "group_member", "label": "群内成员（暂不可用）", "enabled": False},
+            {"value": "phone", "label": "手机号（暂不可用）", "enabled": False},
+        ])
         self.assertNotIn("default_messages", payload)
+
+    def test_disabled_add_objects_cannot_be_saved_as_current_target(self):
+        settings = friend_request.normalize_settings({"add_object": "group_member"})
+
+        self.assertEqual(settings["add_object"], "deleted_me")
+
+    def test_payload_exposes_only_waiting_candidates_and_last_50_records(self):
+        state = friend_request.default_state("wxid_test")
+        state["candidates"] = [
+            friend_request.normalize_candidate({
+                "candidate_id": "waiting",
+                "display_name": "等待申请",
+                "send_name": "等待申请",
+                "tags": ["删除我的人"],
+            }),
+            friend_request.normalize_candidate({
+                "candidate_id": "filtered",
+                "display_name": "其他标签",
+                "send_name": "其他标签",
+                "tags": ["普通好友"],
+            }),
+        ]
+        state["executions"] = [
+            {"at": f"2026-06-11T09:{index:02d}:00", "candidate_id": f"record-{index}", "status": "failed"}
+            for index in range(60)
+        ]
+
+        payload = friend_request.friend_request_payload(state)
+
+        self.assertEqual([item["candidate_id"] for item in payload["candidates"]], ["waiting"])
+        self.assertEqual(len(payload["executions"]), 50)
+        self.assertEqual(payload["executions"][0]["candidate_id"], "record-59")
+        self.assertEqual(payload["executions"][-1]["candidate_id"], "record-10")
 
     def test_blue_fragment_detection_handles_wrapped_link(self):
         image = Image.new("RGB", (140, 70), "white")

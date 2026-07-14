@@ -1,6 +1,7 @@
 import base64
 import os
 import queue
+import sqlite3
 import time
 import unittest
 import threading
@@ -119,6 +120,27 @@ def persist_private_inbound(store, chat, message):
 
 
 class ApiBehaviorTests(unittest.TestCase):
+    def test_private_keyword_delivery_error_is_not_converted_to_api_error(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            chat_text_reply_limit_switch=False,
+            api_error_reply_once=False,
+        )
+        bot._voice_reply_state = {"loaded": True}
+        bot._get_private_message_sequence = lambda _name: 0
+        bot._send_keyword_reply_actions = lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(ValueError("claim contract failed"))
+        )
+        message = SimpleNamespace(type="text", content="关键词")
+
+        with self.assertRaisesRegex(ValueError, "claim contract failed"):
+            bot._wx_send_ai_once(
+                SimpleNamespace(who="张三"),
+                message,
+                keyword_plan={"reply": "关键词回复"},
+                user_key="",
+            )
+
     def test_recovered_keyword_job_never_falls_through_to_ai(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
@@ -451,6 +473,7 @@ class MessageBehaviorTests(unittest.TestCase):
 
     def test_two_stage_image_reply_places_visual_note_in_current_user_message(self):
         captured = {}
+        logs = []
 
         class FakeFinalApi:
             def chat(self, message, **kwargs):
@@ -474,6 +497,7 @@ class MessageBehaviorTests(unittest.TestCase):
                     uncertainty="顶部部分字形略模糊。",
                 )
             ),
+            log_info=logs.append,
         )
 
         result = pipeline.reply(ImageReplyRequest(
@@ -496,9 +520,11 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertIn("消息内容：这里写的什么？", captured["message"])
         self.assertNotIn("图片概览：", captured["message"])
         self.assertEqual(captured["prompt_kwargs"]["image_parse_block"], "IMAGE_RULES")
+        self.assertEqual(logs, ["私聊 张三：AI 正在先识别图片内容，再生成回复"])
 
     def test_direct_image_reply_uses_prompt_builder_keyword_signature(self):
         captured = {}
+        logs = []
 
         class FakeFinalApi:
             def chat(self, message, **kwargs):
@@ -521,6 +547,7 @@ class MessageBehaviorTests(unittest.TestCase):
             image_parse_block_builder=lambda: "IMAGE_RULES",
             user_message_builder=build_image_user_message,
             vision_bridge=SimpleNamespace(),
+            log_info=logs.append,
         )
 
         result = pipeline.reply(ImageReplyRequest(
@@ -543,6 +570,7 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(captured["kwargs"]["prompt"], "prompt")
         self.assertEqual(captured["kwargs"]["history"], [{"content": "前文"}])
         self.assertEqual(captured["kwargs"]["image_path"], r"C:\tmp\photo.png")
+        self.assertEqual(logs, ["私聊 张三：AI 正在识别图片并生成回复"])
 
     def test_private_image_reply_generates_visual_note_before_final_reply(self):
         bot = WXBot.__new__(WXBot)
@@ -2725,6 +2753,62 @@ class MessageBehaviorTests(unittest.TestCase):
             bot._message_store.delivery_action_status(f"{message._wxbot_reply_turn_id}:0"),
             "done",
         )
+
+    def test_group_sqlite_busy_is_not_converted_to_api_error_reply(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            AtMe="",
+            cmd="文件传输助手",
+            AllListen_switch=False,
+            listen_list=[],
+            global_blacklist=[],
+            group=["测试群"],
+            group_switch=True,
+            group_keyword_switch=False,
+            group_keyword_at_only=False,
+            keyword_dict={},
+            group_reply_at=False,
+            group_listen_only=False,
+            group_image_recognition_switch=False,
+            group_split_reply_switch=False,
+            group_split_max_count=4,
+            group_split_max_chars=100,
+            group_reply_at_msg=False,
+            group_reply_quote=False,
+            memory_switch=False,
+            memory_context_switch=False,
+            clean_ai_reply_switch=False,
+            reply_preprocess_fallback_reply="",
+            reply_preprocess_fallback_once=False,
+            group_text_reply_limit_hours=24,
+            group_voice_reply_switch=False,
+            split_long_text=lambda text: [text],
+        )
+        bot.reply_count_store = ReplyCountStore("")
+        configure_group_reply_runtime(bot)
+        bot.memory_manager = None
+        bot._pause_group_reply = False
+        bot.is_stop_requested = lambda: False
+        bot._get_group_api = lambda _group: SimpleNamespace(
+            chat=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                sqlite3.OperationalError("database is locked")
+            )
+        )
+        bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
+        chat = SimpleNamespace(
+            who="测试群",
+            chat_type="group",
+            SendMsg=lambda *_args, **_kwargs: self.fail("数据库锁定时不得发送"),
+        )
+        message = SimpleNamespace(
+            type="text",
+            attr="group",
+            sender="张三",
+            content="测试",
+        )
+
+        with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
+            process_persisted_group_message(bot, chat, message)
 
     def test_group_preprocess_rewrite_api_error_skips_voice_reply(self):
         bot = WXBot.__new__(WXBot)

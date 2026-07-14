@@ -1713,7 +1713,7 @@ def refresh_contact_profiles_single_batch(
                     runtime_id = str(getattr(bot, "_runtime_instance_id", "") or "").strip().lower()
                     if len(runtime_id) == 32 and all(char in "0123456789abcdef" for char in runtime_id):
                         try:
-                            _bot_log(bot, message=f"运行事件：通讯录批次完成 runtime_id={runtime_id}")
+                            _bot_log(bot, level="DEBUG", message=f"运行事件：通讯录批次完成 runtime_id={runtime_id}")
                         except Exception:
                             pass
                 else:

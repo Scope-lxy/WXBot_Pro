@@ -62,11 +62,21 @@ class ConversationRef:
     who: str
     chat_type: str = "private"
 
+    def __post_init__(self):
+        chat_type = str(self.chat_type or "").strip().lower()
+        if not chat_type:
+            chat_type = "private"
+        elif chat_type == "friend":
+            chat_type = "private"
+        elif chat_type not in {"private", "group"}:
+            raise ValueError(f"unsupported conversation chat_type: {chat_type}")
+        self.chat_type = chat_type
+
     @classmethod
     def from_wx_chat(cls, chat: Any) -> "ConversationRef":
         return cls(
             who=str(getattr(chat, "who", "") or "").strip(),
-            chat_type=str(getattr(chat, "chat_type", "private") or "private").strip() or "private",
+            chat_type=getattr(chat, "chat_type", "private"),
         )
 
 

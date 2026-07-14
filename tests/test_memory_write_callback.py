@@ -261,8 +261,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
 
         log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
         self.assertFalse(any("已忽略机器人回显" in message for message in log_messages))
-        self.assertFalse(any("self 介入" in message for message in log_messages))
-        self.assertFalse(any("self 边界" in message for message in log_messages))
+        self.assertFalse(any("人工发送的消息" in message for message in log_messages))
         self.assertEqual(store.conversation_version("张三"), 0)
         self.assertIn("张三", bot._private_message_pipelines)
         self.assertEqual(store.get_event(msg._wxbot_event_id)["direction"], "bot_echo")
@@ -288,11 +287,15 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         timer_calls = []
         bot._schedule_private_message_timer = lambda seconds, callback, chat: timer_calls.append((seconds, callback, chat)) or SimpleNamespace(cancel=lambda: None)
         bot._ensure_message_runtime_state()
-        self._attach_message_store(bot)
+        store = self._attach_message_store(bot)
 
         chat = SimpleNamespace(who="张三", chat_type="private")
-        bot._enqueue_private_message_for_ai(chat, SimpleNamespace(id="a", attr="friend", sender="张三", content="aaa", type="text"))
-        bot._enqueue_private_message_for_ai(chat, SimpleNamespace(id="b", attr="friend", sender="张三", content="bbb", type="text"))
+        first = MessageEnvelope(id="a", attr="friend", sender="张三", content="aaa", type="text")
+        second = MessageEnvelope(id="b", attr="friend", sender="张三", content="bbb", type="text")
+        bot._persist_ui_message(ConversationRef("张三"), first)
+        bot._persist_ui_message(ConversationRef("张三"), second)
+        bot._enqueue_private_message_for_ai(chat, first)
+        bot._enqueue_private_message_for_ai(chat, second)
         self.assertEqual([msg.content for msg in bot._private_message_pipelines["张三"]["open_messages"]], ["aaa", "bbb"])
 
         self_msg = SimpleNamespace(attr="self", sender="self", content="ccc", type="text")
@@ -300,10 +303,16 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             bot.message_handle_callback(self_msg, chat)
 
         log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
-        self.assertTrue(any("self 边界" in message for message in log_messages))
-        self.assertTrue(any("人工介入已确认" in message for message in log_messages))
-        self.assertFalse(any("检测到手动 self" in message for message in log_messages))
+        self.assertTrue(any("已取消此前待回复内容" in message for message in log_messages))
+        runtime_calls = [
+            call for call in log_mock.call_args_list
+            if "运行事件：人工介入已确认" in str(call.kwargs.get("message", ""))
+        ]
+        self.assertEqual(len(runtime_calls), 1)
+        self.assertEqual(runtime_calls[0].kwargs.get("level"), "DEBUG")
         self.assertNotIn("张三", bot._private_message_pipelines)
+        self.assertEqual(store.get_event(first._wxbot_event_id)["processing_state"], "cancelled")
+        self.assertEqual(store.get_event(second._wxbot_event_id)["processing_state"], "cancelled")
 
     def test_private_self_without_pending_work_is_kept_as_history_not_interrupt(self):
         bot = WXBot.__new__(WXBot)
@@ -330,9 +339,8 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             bot.message_handle_callback(self_msg, chat)
 
         log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
-        self.assertTrue(any("作为历史记录保留" in message for message in log_messages))
+        self.assertTrue(any("已记入聊天记录" in message for message in log_messages))
         self.assertFalse(any("人工介入已确认" in message for message in log_messages))
-        self.assertFalse(any("检测到手动 self" in message for message in log_messages))
         self.assertNotIn("张三", bot._private_message_pipelines)
 
     def test_private_pending_voice_transcription_clears_after_self_boundary_invalidates_turn(self):
@@ -355,7 +363,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             ))
 
         log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
-        self.assertTrue(any("self 边界" in message for message in log_messages))
+        self.assertTrue(any("已取消此前待回复内容" in message for message in log_messages))
         self.assertNotIn("张三", bot._pending_private_voice_transcription)
 
     def test_private_self_boundary_keeps_later_friend_message_as_only_current_batch(self):

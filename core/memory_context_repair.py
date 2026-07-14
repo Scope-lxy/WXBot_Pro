@@ -46,6 +46,17 @@ def normalize_message_content(content, msg_type="") -> str:
     return text
 
 
+def message_content_candidates(content, msg_type="", *, allow_voice_shell=False) -> tuple[str, ...]:
+    msg_type = normalize_message_type(msg_type)
+    text = normalize_message_content(content, msg_type)
+    candidates = [text] if text else []
+    if msg_type == "voice" and allow_voice_shell:
+        body = voice_message_body(text)
+        if body and body != text:
+            candidates.append(body)
+    return tuple(candidates)
+
+
 def is_unrecognized_voice(item) -> bool:
     if not isinstance(item, dict):
         return False
@@ -66,22 +77,26 @@ def _anchor_direction(item) -> str:
     return "self" if attr == "self" or sender in {"self", "me"} else "other"
 
 
-def relaxed_duplicate_key(item, *, chat_type="private") -> str:
+def relaxed_duplicate_keys(item, *, chat_type="private", allow_voice_shell=False) -> set[str]:
     if not isinstance(item, dict):
-        return ""
+        return set()
     msg_type = normalize_message_type(item.get("type"))
-    content = normalize_message_content(item.get("content"), msg_type)
-    if not content:
-        return ""
     direction = _anchor_direction(item)
     parts = [direction]
     if clean_text(chat_type).lower() == "group" and direction != "self":
         sender = clean_text(item.get("sender"))
         if not sender:
-            return ""
+            return set()
         parts.append(sender)
-    parts.extend([msg_type, content])
-    return "|".join(parts)
+    parts.append(msg_type)
+    return {
+        "|".join(parts + [content])
+        for content in message_content_candidates(
+            item.get("content"),
+            msg_type,
+            allow_voice_shell=allow_voice_shell,
+        )
+    }
 
 
 def parse_message_time(value):
@@ -96,20 +111,31 @@ def parse_message_time(value):
     return None
 
 
-def message_fingerprint(item) -> str:
+def message_fingerprints(item, *, allow_voice_shell=False) -> tuple[str, ...]:
     if not isinstance(item, dict):
-        return ""
+        return ()
     msg_type = normalize_message_type(item.get("type"))
-    content = normalize_message_content(item.get("content"), msg_type)
-    if not content and msg_type not in {"image", "emotion", "voice", "video", "file"}:
-        return ""
+    contents = message_content_candidates(
+        item.get("content"),
+        msg_type,
+        allow_voice_shell=allow_voice_shell,
+    )
+    if not contents and msg_type in {"image", "emotion", "voice", "video", "file"}:
+        contents = ("",)
     parts = [
         clean_text(item.get("attr")).lower(),
         clean_text(item.get("sender")),
         msg_type,
-        content,
     ]
-    return "|".join(parts)
+    return tuple(
+        "|".join(parts + [content])
+        for content in contents
+    )
+
+
+def message_fingerprint(item) -> str:
+    fingerprints = message_fingerprints(item)
+    return fingerprints[0] if fingerprints else ""
 
 
 def repair_anchor_fingerprint(item, *, chat_type="private") -> str:
@@ -140,6 +166,27 @@ def unique_message_key(item) -> str:
         return ""
     message_time = clean_text(item.get("time"))
     return f"{message_time}|{fp}" if message_time else fp
+
+
+def unique_message_keys(item, *, allow_voice_shell=False) -> set[str]:
+    if not isinstance(item, dict):
+        return set()
+    message_time = clean_text(item.get("time"))
+    return {
+        f"{message_time}|{fingerprint}" if message_time else fingerprint
+        for fingerprint in message_fingerprints(
+            item,
+            allow_voice_shell=allow_voice_shell,
+        )
+    }
+
+
+def message_for_storage(item) -> dict:
+    entry = dict(item)
+    if normalize_message_type(entry.get("type")) == "voice":
+        content = clean_text(entry.get("content"))
+        entry["content"] = voice_message_body(content) or content
+    return entry
 
 
 def normalize_wechat_message(message, *, source="wechat_context_repair") -> dict:
@@ -206,7 +253,7 @@ def snapshot_messages_through_current(messages, current_message):
     current_id = clean_text(getattr(current_message, "id", ""))
     current_hash_text = clean_text(getattr(current_message, "hash_text", ""))
     current_entry = normalize_wechat_message(current_message, source="current_snapshot_tail")
-    current_fp = message_fingerprint(current_entry)
+    current_fps = set(message_fingerprints(current_entry))
     matched_raw_index = None
     for index, item in enumerate(source):
         if normalize_message_type(getattr(item, "type", "text")) == "time":
@@ -217,7 +264,13 @@ def snapshot_messages_through_current(messages, current_message):
         item_hash_text = clean_text(getattr(item, "hash_text", ""))
         if current_hash_text and item_hash_text and item_hash_text == current_hash_text:
             return source[:index + 1]
-        if current_fp and message_fingerprint(normalize_wechat_message(item)) == current_fp:
+        item_fps = set(
+            message_fingerprints(
+                normalize_wechat_message(item),
+                allow_voice_shell=True,
+            )
+        )
+        if current_fps and current_fps.intersection(item_fps):
             matched_raw_index = index
     if matched_raw_index is None:
         return source
@@ -323,12 +376,12 @@ def build_repair_plan(
     unmatched_local = set(range(len(local_messages)))
     messages_to_append = []
     for remote_item in remote:
-        exact_key = unique_message_key(remote_item)
+        exact_keys = unique_message_keys(remote_item, allow_voice_shell=True)
         exact_match = next(
             (
                 index
                 for index in unmatched_local
-                if exact_key and unique_message_key(local_messages[index]) == exact_key
+                if exact_keys.intersection(unique_message_keys(local_messages[index]))
             ),
             None,
         )
@@ -336,14 +389,19 @@ def build_repair_plan(
             unmatched_local.remove(exact_match)
             continue
 
-        relaxed_key = relaxed_duplicate_key(remote_item, chat_type=chat_type)
+        relaxed_keys = relaxed_duplicate_keys(
+            remote_item,
+            chat_type=chat_type,
+            allow_voice_shell=True,
+        )
         remote_time = parse_message_time(remote_item.get("time"))
         nearby_matches = []
-        if relaxed_key and remote_time:
+        if relaxed_keys and remote_time:
             for index in unmatched_local:
                 local_item = local_messages[index]
                 local_time = parse_message_time(local_item.get("time"))
-                if not local_time or relaxed_duplicate_key(local_item, chat_type=chat_type) != relaxed_key:
+                local_keys = relaxed_duplicate_keys(local_item, chat_type=chat_type)
+                if not local_time or not relaxed_keys.intersection(local_keys):
                     continue
                 delta = abs((remote_time - local_time).total_seconds())
                 if delta <= NEARBY_DUPLICATE_WINDOW_SECONDS:
@@ -352,19 +410,21 @@ def build_repair_plan(
             _, nearby_match = min(nearby_matches)
             unmatched_local.remove(nearby_match)
             continue
-        if remote_item.get("time_inferred") and relaxed_key:
+        if remote_item.get("time_inferred") and relaxed_keys:
             inferred_match = next(
                 (
                     index
                     for index in sorted(unmatched_local, reverse=True)
-                    if relaxed_duplicate_key(local_messages[index], chat_type=chat_type) == relaxed_key
+                    if relaxed_keys.intersection(
+                        relaxed_duplicate_keys(local_messages[index], chat_type=chat_type)
+                    )
                 ),
                 None,
             )
             if inferred_match is not None:
                 unmatched_local.remove(inferred_match)
                 continue
-        messages_to_append.append(dict(remote_item))
+        messages_to_append.append(message_for_storage(remote_item))
     return RepairPlan(
         anchor_index=anchor,
         messages_to_append=messages_to_append,
@@ -393,15 +453,15 @@ def current_message_found_near_tail(local_history, current_message, *, tail_coun
     tail = recent_effective_messages(local_history, max(tail_count, len(candidates)))
     unmatched_tail = set(range(len(tail)))
     for current_entry in candidates:
-        current_key = unique_message_key(current_entry)
-        current_fp = message_fingerprint(current_entry)
+        current_keys = unique_message_keys(current_entry)
+        current_fps = set(message_fingerprints(current_entry))
         matched_index = next(
             (
                 index
                 for index in unmatched_tail
                 if (
-                    (current_key and unique_message_key(tail[index]) == current_key)
-                    or message_fingerprint(tail[index]) == current_fp
+                    current_keys.intersection(unique_message_keys(tail[index]))
+                    or current_fps.intersection(message_fingerprints(tail[index]))
                 )
             ),
             None,

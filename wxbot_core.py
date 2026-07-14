@@ -21,6 +21,7 @@ import time
 import json
 import hashlib
 import random
+import sqlite3
 import threading
 from contextlib import nullcontext
 import traceback
@@ -102,6 +103,7 @@ from core.reply_delivery import (
     ReplyKind,
     ReplySource,
     ReplyTurn,
+    is_retryable_sqlite_error,
 )
 from core.chat_history_format import (
     build_model_visible_history,
@@ -920,12 +922,17 @@ class WXBot:
                 chat = OwnedChat(self._ui_owner, conversation.who, conversation.chat_type)
                 self.message_handle_callback(message, chat)
             except Exception as exc:
-                retry_delay = self._reply_business_retry_delay(message)
+                retry_delay = self._reply_retry_delay(message, exc)
                 if retry_delay is not None:
-                    log(level="WARNING", message=f"微信消息业务临时失败，稍后重试：{exc}")
+                    log(level="WARNING", message=f"消息库暂时繁忙，稍后重试：{exc}")
                     self._schedule_ui_ingress_retry(conversation, message, retry_delay)
                 else:
-                    log(level="ERROR", message=f"微信消息业务队列处理失败：{exc}")
+                    cleanup_error = self._cancel_failed_reply_attempt(message, str(exc))
+                    suffix = f"；取消失败：{cleanup_error}" if cleanup_error else ""
+                    log(
+                        level="ERROR",
+                        message=f"微信消息业务队列处理失败：{exc}{suffix}\n{traceback.format_exc()}",
+                    )
             finally:
                 self._ui_ingress_queue.task_done()
 
@@ -4300,7 +4307,14 @@ class WXBot:
         if not name:
             return {}
         sequence = self._get_private_message_sequence(name)
-        self._clear_private_message_pipeline(name)
+        pipeline = self._clear_private_message_pipeline(name)
+        discarded_messages = []
+        if isinstance(pipeline, dict):
+            discarded_messages.extend(pipeline.get("open_messages") or [])
+            for batch in pipeline.get("queued_batches") or ():
+                discarded_messages.extend(batch or [])
+        for message in discarded_messages:
+            self._cancel_failed_reply_attempt(message, "manual reply took over the conversation")
         with self._chat_merge_lock:
             cancelled_voice = self._cancel_pending_private_voice_transcription_locked(name)
         return {
@@ -4329,21 +4343,21 @@ class WXBot:
         if has_committed_batch:
             self._invalidate_private_ai_reply_turn(name)
             try:
-                log(message=f"运行事件：人工介入已确认 runtime_id={self._runtime_instance_id}")
+                log(level="DEBUG", message=f"运行事件：人工介入已确认 runtime_id={self._runtime_instance_id}")
             except Exception:
                 pass
-            log(message=f"私聊 {name}：检测到 self 介入，已停止当前 AI 回复")
+            log(message=f"私聊 {name}：检测到人工发送的消息，已停止当前 AI 回复")
             return True
 
         if has_open_batch or has_voice_transcription:
             self._invalidate_private_ai_reply_turn(name)
             try:
-                log(message=f"运行事件：人工介入已确认 runtime_id={self._runtime_instance_id}")
+                log(level="DEBUG", message=f"运行事件：人工介入已确认 runtime_id={self._runtime_instance_id}")
             except Exception:
                 pass
-            log(message=f"私聊 {name}：检测到 self 边界，已切分待回复批次")
+            log(message=f"私聊 {name}：检测到人工发送的消息，已取消此前待回复内容")
         else:
-            log(message=f"私聊 {name}：检测到 self 消息，当前无待回复任务，已作为历史记录保留")
+            log(message=f"私聊 {name}：检测到人工发送的消息，已记入聊天记录")
         return True
 
     def _private_reply_can_continue(self, chat, *, log_prefix="私聊", expected_sequence=None):
@@ -4443,44 +4457,33 @@ class WXBot:
             return True
         return self._message_store.mark_reply_job_generating(turn_id) == "generating"
 
-    def _reply_business_retry_delay(self, message):
+    def _reply_retry_delay(self, message, exc):
+        if not is_retryable_sqlite_error(exc):
+            return None
         if self.is_stop_requested():
             return None
         expires_at = float(getattr(message, "_wxbot_reply_expires_at", 0.0) or 0.0)
         attempts = int(getattr(message, "_wxbot_business_retry_count", 0) or 0)
-        store = getattr(self, "_message_store", None)
-        if store is None:
-            return None
-        turn_id = str(getattr(message, "_wxbot_reply_turn_id", "") or "").strip()
-        if turn_id:
-            job = store.get_reply_job(turn_id)
-            if not job or job.get("status") not in {"pending", "generating"}:
-                return None
-            if int(job.get("action_count", 0) or 0) != 0:
-                return None
-            if store.mark_reply_job_generating(turn_id) != "generating":
-                return None
-        else:
-            event_ids = self._reply_event_ids(message)
-            if not event_ids:
-                return None
-            events = [store.get_event(event_id) for event_id in event_ids]
-            if any(
-                not event or event.get("processing_state") != "pending"
-                for event in events
-            ):
-                return None
         remaining = expires_at - time.time()
         if expires_at <= 0 or remaining <= 0:
-            if not turn_id:
-                try:
-                    store.mark_inbound_events(event_ids, "expired")
-                except Exception:
-                    pass
             return None
         message._wxbot_business_retry_count = attempts + 1
         retry_delays = (1.0, 2.0, 5.0, 10.0, 30.0, 60.0)
         return min(retry_delays[min(attempts, len(retry_delays) - 1)], remaining)
+
+    def _cancel_failed_reply_attempt(self, message, reason):
+        try:
+            turn_id = str(getattr(message, "_wxbot_reply_turn_id", "") or "").strip()
+            if turn_id:
+                self._cancel_unfinished_reply_job(message, reason)
+                return ""
+            store = getattr(self, "_message_store", None)
+            event_ids = self._reply_event_ids(message)
+            if store is not None and event_ids:
+                store.mark_inbound_events(event_ids, "cancelled")
+            return ""
+        except Exception as exc:
+            return str(exc)
 
     def _mark_inbound_no_reply(self, message):
         event_ids = self._reply_event_ids(message)
@@ -4546,18 +4549,14 @@ class WXBot:
                 return True
             self._cancel_unfinished_reply_job(message, "reply limit routing completed without delivery")
             return result
-        try:
-            result = self._wx_send_ai_once(
-                chat,
-                message,
-                keyword_plan=keyword_plan,
-                user_key=user_key,
-            )
-        except BaseException:
-            raise
-        else:
-            self._cancel_unfinished_reply_job(message, "routing completed without a delivery")
-            return result
+        result = self._wx_send_ai_once(
+            chat,
+            message,
+            keyword_plan=keyword_plan,
+            user_key=user_key,
+        )
+        self._cancel_unfinished_reply_job(message, "routing completed without a delivery")
+        return result
 
     def _wx_send_ai_once(self, chat, message, *, keyword_plan, user_key):
         """私聊 AI 自动回复。连续消息按好友串行处理，安全状态变化会停止发送。"""
@@ -4589,7 +4588,7 @@ class WXBot:
                 if send_success and getattr(self.config, "chat_text_reply_limit_switch", False) and user_key:
                     self.reply_count_store.increment_ai_count(
                         user_key,
-                        limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 24),
+                        limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 5),
                     )
                 if send_success:
                     self._record_reply_metric_success(chat.who, chat_type="private")
@@ -4675,6 +4674,8 @@ class WXBot:
                         model_user_message, prompt=_effective_prompt, history=history
                     )
         except Exception as e:
+            if keyword_plan or isinstance(e, sqlite3.DatabaseError):
+                raise
             print(traceback.format_exc())
             log(level="ERROR", message=str(e) + f"\n{API_ERROR_REPLY_TEXT}")
             api_error_reply = True
@@ -4757,8 +4758,8 @@ class WXBot:
                         chat,
                         clean_reply,
                         state_key=f"private:{chat.who}",
-                        limit_count=getattr(self.config, 'chat_voice_reply_limit_count', 50),
-                        limit_hours=getattr(self.config, 'chat_voice_reply_limit_hours', 24),
+                        limit_count=getattr(self.config, 'chat_voice_reply_limit_count', 5),
+                        limit_hours=getattr(self.config, 'chat_voice_reply_limit_hours', 5),
                         context_text=context_text,
                         section_id=str(uuid.uuid4()),
                         expected_sequence=reply_message_sequence,
@@ -4773,7 +4774,7 @@ class WXBot:
                     if getattr(self.config, "chat_text_reply_limit_switch", False) and user_key:
                         self.reply_count_store.increment_ai_count(
                             user_key,
-                            limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 24),
+                            limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 5),
                         )
                     self._record_reply_metric_success(chat.who, chat_type="private")
                     self._log_reply_contents(
@@ -4809,7 +4810,7 @@ class WXBot:
         if send_success and getattr(self.config, "chat_text_reply_limit_switch", False) and user_key and not api_error_reply:
             self.reply_count_store.increment_ai_count(
                 user_key,
-                limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 24),
+                limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 5),
             )
 
         if send_success:
@@ -5019,7 +5020,7 @@ class WXBot:
                 if getattr(self.config, "group_text_reply_limit_switch", False) and group_user_key:
                     self.reply_count_store.increment_ai_count(
                         group_user_key,
-                        limit_hours=getattr(self.config, "group_text_reply_limit_hours", 24),
+                        limit_hours=getattr(self.config, "group_text_reply_limit_hours", 5),
                     )
                 self._record_reply_metric_success(chat.who, chat_type="group")
                 self._record_keyword_reply_success(chat.who, chat_type="group", action_count=len(reply_actions))
@@ -5086,6 +5087,8 @@ class WXBot:
                     group_api = self._get_group_api(chat.who)
                     reply = group_api.chat(model_group_user_message, prompt=_effective_group_prompt, history=history)
             except Exception as e:
+                if isinstance(e, sqlite3.DatabaseError):
+                    raise
                 print(traceback.format_exc())
                 log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
                 reply = API_ERROR_REPLY_TEXT
@@ -5167,8 +5170,8 @@ class WXBot:
                             chat,
                             clean_reply,
                             state_key=f"group:{chat.who}",
-                            limit_count=getattr(self.config, 'group_voice_reply_limit_count', 99),
-                            limit_hours=getattr(self.config, 'group_voice_reply_limit_hours', 24),
+                            limit_count=getattr(self.config, 'group_voice_reply_limit_count', 5),
+                            limit_hours=getattr(self.config, 'group_voice_reply_limit_hours', 5),
                             context_text=group_context_text,
                             message=message,
                         )
@@ -5179,7 +5182,7 @@ class WXBot:
                         if getattr(self.config, "group_text_reply_limit_switch", False) and group_user_key:
                             self.reply_count_store.increment_ai_count(
                                 group_user_key,
-                                limit_hours=getattr(self.config, "group_text_reply_limit_hours", 24),
+                                limit_hours=getattr(self.config, "group_text_reply_limit_hours", 5),
                             )
                         self._record_reply_metric_success(chat.who, chat_type="group")
                         self._log_reply_contents(
@@ -5229,7 +5232,7 @@ class WXBot:
                 ):
                     self.reply_count_store.increment_ai_count(
                         group_user_key,
-                        limit_hours=getattr(self.config, "group_text_reply_limit_hours", 24),
+                        limit_hours=getattr(self.config, "group_text_reply_limit_hours", 5),
                     )
                 self._record_reply_metric_success(chat.who, chat_type="group")
                 self._log_reply_contents("群聊", chat.who, sent_reply_items)
@@ -5866,7 +5869,7 @@ class WXBot:
 
     def _reply_once_user_data(self, user_key):
         scope = "group" if str(user_key or "").startswith("group:") else "chat"
-        limit_hours = getattr(self.config, f"{scope}_text_reply_limit_hours", 24)
+        limit_hours = getattr(self.config, f"{scope}_text_reply_limit_hours", 5)
         return self.reply_count_store.get_user(user_key, now=datetime.now(), limit_hours=limit_hours)
 
     def _ensure_pending_private_voice_transcription_state(self):
@@ -6660,13 +6663,14 @@ class WXBot:
         self._ensure_message_runtime_state()
         name = str(chat_name or "").strip()
         if not name:
-            return
+            return None
         with self._chat_merge_lock:
             pipeline = self._private_message_pipelines.pop(name, None)
         if not isinstance(pipeline, dict):
-            return
+            return None
         self._cancel_timer(pipeline.get("idle_timer"))
         self._cancel_timer(pipeline.get("max_timer"))
+        return pipeline
 
     def _run_private_message_pipeline_worker(self, chat):
         name = str(getattr(chat, "who", "") or "").strip()
@@ -6697,21 +6701,26 @@ class WXBot:
                 try:
                     self.wx_send_ai(chat, merged)
                 except Exception as exc:
-                    retry_delay = self._reply_business_retry_delay(merged)
+                    retry_delay = self._reply_retry_delay(merged, exc)
                     if retry_delay is not None:
                         retry_count = int(
                             getattr(merged, "_wxbot_business_retry_count", 0) or 0
                         )
                         for message in messages:
                             message._wxbot_business_retry_count = retry_count
-                        log(level="WARNING", message=f"私聊连续消息临时失败，稍后重试：{exc}")
+                        log(level="WARNING", message=f"私聊消息库暂时繁忙，稍后重试：{exc}")
                         with self._chat_merge_lock:
                             pipeline = self._private_message_pipelines.get(name)
                             if isinstance(pipeline, dict):
                                 pipeline["worker_running"] = False
                         self._schedule_private_message_retry(chat, messages, retry_delay)
                         return True
-                    log(level="ERROR", message=f"私聊连续消息处理失败：{exc}\n{traceback.format_exc()}")
+                    cleanup_error = self._cancel_failed_reply_attempt(merged, str(exc))
+                    suffix = f"；取消失败：{cleanup_error}" if cleanup_error else ""
+                    log(
+                        level="ERROR",
+                        message=f"私聊连续消息处理失败：{exc}{suffix}\n{traceback.format_exc()}",
+                    )
                     continue
             self._clear_private_message_pipeline(name)
             return True
@@ -7158,7 +7167,9 @@ class WXBot:
         )
 
     def _prepare_reply_delivery(self, turn, action, action_id, context):
-        if not isinstance(context, dict):
+        if not isinstance(context, dict) or context.get("chat") is None:
+            raise RuntimeError("reply delivery context is missing")
+        if self.is_stop_requested():
             return False
         delayed = context.setdefault("delayed_action_ids", set())
         index = int(str(action_id).rsplit(":", 1)[-1])
@@ -7180,9 +7191,7 @@ class WXBot:
                 delay_enabled=split_enabled and delay_enabled,
             )
             delayed.add(action_id)
-        if self.is_stop_requested():
-            return False
-        return context.get("chat") is not None
+        return not self.is_stop_requested()
 
     def _send_reply_delivery(self, turn, action, action_id, context):
         if not isinstance(context, dict):
@@ -7263,6 +7272,10 @@ class WXBot:
         at_first="",
         sent_items=None,
     ):
+        actions = tuple(actions or ())
+        if not actions:
+            self._cancel_unfinished_reply_job(message, "reply contains no deliverable actions")
+            return None
         coordinator = getattr(self, "_reply_delivery_coordinator", None)
         turn = self._reply_turn(chat, message, actions, chat_type=chat_type)
         if coordinator is None or turn is None:
@@ -7490,8 +7503,8 @@ class WXBot:
         scope = "group" if chat_type == "group" else "chat"
         return {
             "switch": bool(getattr(self.config, f"{scope}_text_reply_limit_switch", False)),
-            "count": getattr(self.config, f"{scope}_text_reply_limit_count", 99),
-            "hours": getattr(self.config, f"{scope}_text_reply_limit_hours", 24),
+            "count": getattr(self.config, f"{scope}_text_reply_limit_count", 50),
+            "hours": getattr(self.config, f"{scope}_text_reply_limit_hours", 5),
             "ai_reply": bool(getattr(self.config, f"{scope}_text_reply_limit_ai_reply", True)),
             "reply": str(getattr(self.config, f"{scope}_text_reply_limit_reply", "") or "").strip(),
             "reply_once": bool(getattr(self.config, f"{scope}_text_reply_limit_reply_once", False)),
@@ -8563,11 +8576,11 @@ class WXBot:
             "memory_context_switch": getattr(self.config, "memory_context_switch", True),
             "memory_context_count":  getattr(self.config, "memory_context_count", 50),
             "chat_text_reply_limit_switch": getattr(self.config, "chat_text_reply_limit_switch", False),
-            "chat_text_reply_limit_count": getattr(self.config, "chat_text_reply_limit_count", 99),
-            "chat_text_reply_limit_hours": getattr(self.config, "chat_text_reply_limit_hours", 24),
+            "chat_text_reply_limit_count": getattr(self.config, "chat_text_reply_limit_count", 50),
+            "chat_text_reply_limit_hours": getattr(self.config, "chat_text_reply_limit_hours", 5),
             "group_text_reply_limit_switch": getattr(self.config, "group_text_reply_limit_switch", False),
-            "group_text_reply_limit_count": getattr(self.config, "group_text_reply_limit_count", 99),
-            "group_text_reply_limit_hours": getattr(self.config, "group_text_reply_limit_hours", 24),
+            "group_text_reply_limit_count": getattr(self.config, "group_text_reply_limit_count", 50),
+            "group_text_reply_limit_hours": getattr(self.config, "group_text_reply_limit_hours", 5),
             "pause_chat_reply":      self._pause_chat_reply or getattr(self.config, "chat_listen_only", False),
             "pause_group_reply":     self._pause_group_reply or getattr(self.config, "group_listen_only", False),
             **listening.listener_recovery_snapshot(self),

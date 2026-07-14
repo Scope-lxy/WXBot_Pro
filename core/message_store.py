@@ -18,6 +18,7 @@ SCHEMA_VERSION = 3
 DEFAULT_REPLY_TTL_SECONDS = 15 * 60
 
 ACTION_STATES = {"pending", "inflight", "done", "uncertain", "cancelled", "stale", "expired"}
+CHAT_TYPES = {"private", "group"}
 
 
 class MessageStoreConflictError(RuntimeError):
@@ -37,6 +38,13 @@ def _required_text(value, name):
     if not text:
         raise ValueError(f"{name} is required")
     return text
+
+
+def _required_chat_type(value):
+    chat_type = _required_text(value, "chat_type")
+    if chat_type not in CHAT_TYPES:
+        raise ValueError(f"unsupported chat_type: {chat_type}")
+    return chat_type
 
 
 def _timestamp(value, name="timestamp"):
@@ -254,7 +262,7 @@ class MessageStore:
     @staticmethod
     def _logical_event_id(event):
         conversation = _required_text(_event_value(event, "conversation"), "conversation")
-        chat_type = _required_text(_event_value(event, "chat_type", "private"), "chat_type")
+        chat_type = _required_chat_type(_event_value(event, "chat_type", "private"))
         raw_native_id = _event_value(event, "native_id")
         value = "" if raw_native_id is None else str(raw_native_id).strip()
         if value:
@@ -440,7 +448,7 @@ class MessageStore:
         if direction not in {"friend", "manual_self", "bot_echo", "system", "unknown"}:
             raise ValueError(f"unsupported inbound direction: {direction}")
         conversation = _required_text(_event_value(event, "conversation"), "conversation")
-        chat_type = _required_text(_event_value(event, "chat_type", "private"), "chat_type")
+        chat_type = _required_chat_type(_event_value(event, "chat_type", "private"))
         received_at = _timestamp(_event_value(event, "received_at"), "received_at")
         stored_at = _now(_event_value(event, "stored_at", None))
         related_delivery_id = str(
@@ -623,7 +631,7 @@ class MessageStore:
 
         event_id = _required_text(event_id, "event_id")
         conversation = _required_text(conversation, "conversation")
-        chat_type = _required_text(chat_type, "chat_type")
+        chat_type = _required_chat_type(chat_type)
         received_at = _timestamp(received_at, "received_at")
         stored_at = _now(now)
         expires_at = (
@@ -686,7 +694,7 @@ class MessageStore:
     ):
         delivery_id = _required_text(delivery_id, "delivery_id")
         conversation = _required_text(conversation, "conversation")
-        chat_type = _required_text(chat_type, "chat_type")
+        chat_type = _required_chat_type(chat_type)
         sent_at = _timestamp(sent_at, "sent_at")
         event_id = cls._delivery_event_id(delivery_id)
         return {
@@ -787,7 +795,7 @@ class MessageStore:
     def _import_event_values(entry, stored_at):
         event_id = _required_text(_event_value(entry, "event_id"), "event_id")
         conversation = _required_text(_event_value(entry, "conversation"), "conversation")
-        chat_type = _required_text(_event_value(entry, "chat_type", "private"), "chat_type")
+        chat_type = _required_chat_type(_event_value(entry, "chat_type", "private"))
         received_at = _timestamp(_event_value(entry, "received_at"), "received_at")
         direction = _required_text(_event_value(entry, "direction"), "direction")
         return {
@@ -841,7 +849,7 @@ class MessageStore:
         chat_type_sql = ""
         if chat_type is not None:
             chat_type_sql = " AND chat_type = ?"
-            parameters.append(_required_text(chat_type, "chat_type"))
+            parameters.append(_required_chat_type(chat_type))
         with self._reader() as connection:
             rows = connection.execute(
                 f"""
@@ -876,7 +884,7 @@ class MessageStore:
         chat_type_sql = ""
         if chat_type is not None:
             chat_type_sql = " AND chat_type = ?"
-            parameters.append(_required_text(chat_type, "chat_type"))
+            parameters.append(_required_chat_type(chat_type))
         updated = False
         matched = set()
         with self._transaction() as connection:
@@ -974,7 +982,7 @@ class MessageStore:
 
     def delete_conversation(self, conversation, *, chat_type=None, now=None):
         conversation = _required_text(conversation, "conversation")
-        normalized_chat_type = None if chat_type is None else _required_text(chat_type, "chat_type")
+        normalized_chat_type = None if chat_type is None else _required_chat_type(chat_type)
         current = _now(now)
         clauses = ["conversation = ?", "history_visible = 1"]
         parameters = [conversation]
@@ -999,7 +1007,7 @@ class MessageStore:
             return cursor.rowcount
 
     def clear_history(self, *, chat_type=None, now=None):
-        normalized_chat_type = None if chat_type is None else _required_text(chat_type, "chat_type")
+        normalized_chat_type = None if chat_type is None else _required_chat_type(chat_type)
         current = _now(now)
         clauses = ["history_visible = 1"]
         parameters = []
@@ -1025,13 +1033,13 @@ class MessageStore:
 
     def conversation_version(self, conversation, *, chat_type="private"):
         conversation = _required_text(conversation, "conversation")
-        chat_type = _required_text(chat_type, "chat_type")
+        chat_type = _required_chat_type(chat_type)
         with self._reader() as connection:
             return self._current_version(connection, conversation, chat_type)
 
     def history(self, conversation, limit, *, chat_type="private", exclude_event_ids=()):
         conversation = _required_text(conversation, "conversation")
-        normalized_chat_type = None if chat_type is None else _required_text(chat_type, "chat_type")
+        normalized_chat_type = None if chat_type is None else _required_chat_type(chat_type)
         try:
             limit = int(limit)
         except (TypeError, ValueError) as exc:
@@ -1269,7 +1277,7 @@ class MessageStore:
     ):
         turn_id = _required_text(turn_id, "turn_id")
         conversation = _required_text(conversation, "conversation")
-        chat_type = _required_text(chat_type, "chat_type")
+        chat_type = _required_chat_type(chat_type)
         route_source = str(route_source or "").strip()
         expected_version = int(expected_version)
         if expected_version < 0:
@@ -1410,7 +1418,7 @@ class MessageStore:
 
         turn_id = _required_text(turn_id, "turn_id")
         conversation = _required_text(conversation, "conversation")
-        chat_type = _required_text(chat_type, "chat_type")
+        chat_type = _required_chat_type(chat_type)
         route_source = str(route_source or "").strip()
         expected_version = int(expected_version)
         if expected_version < 0:
@@ -1675,7 +1683,7 @@ class MessageStore:
 
         action_id = _required_text(action_id, "action_id")
         conversation = _required_text(conversation, "conversation")
-        chat_type = _required_text(chat_type, "chat_type")
+        chat_type = _required_chat_type(chat_type)
         current = _now(now)
         values = self._confirmed_outbound_values(
             action_id,
