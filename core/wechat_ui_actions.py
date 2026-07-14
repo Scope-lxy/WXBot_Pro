@@ -17,12 +17,16 @@ from types import MappingProxyType
 from typing import Any, Callable, Iterator, Mapping
 
 from core.logger import log
+from core.reply_count_store import ReplyCountStore
 
 
 ReleaseLock = Callable[[], None]
 IntentHandler = Callable[[Mapping[str, Any]], Any]
+ConversationVersionProvider = Callable[[str, str], int]
 IntentVersionProvider = Callable[[str], int]
 IntentPayloadPreparer = Callable[["UIIntent"], Mapping[str, Any]]
+IntentStartCallback = Callable[["UIIntent"], None]
+IntentFinishCallback = Callable[["UIIntent"], None]
 
 
 class UIIntentKind(str, Enum):
@@ -77,6 +81,12 @@ UI_STUCK_EXIT_CODE = 86
 UI_CALL_WAIT_TIMEOUT = None
 
 
+def _delivery_succeeded(result: Any) -> bool:
+    if isinstance(result, (list, tuple)):
+        return bool(result) and all(ReplyCountStore.was_send_success(item) for item in result)
+    return ReplyCountStore.was_send_success(result)
+
+
 def _log_runtime_event(message: str, runtime_id: str) -> None:
     runtime_id = str(runtime_id or "").strip().lower()
     if len(runtime_id) != 32 or any(char not in "0123456789abcdef" for char in runtime_id):
@@ -111,8 +121,9 @@ def _freeze(value: Any) -> Any:
 class UIIntent:
     kind: UIIntentKind
     payload: Mapping[str, Any] = field(default_factory=dict)
-    conversation_version: int = 0
+    conversation_version: int | None = None
     task_version: int = 0
+    expires_at: float | None = None
 
     def __post_init__(self) -> None:
         kind = self.kind if isinstance(self.kind, UIIntentKind) else UIIntentKind(self.kind)
@@ -121,12 +132,25 @@ class UIIntent:
             raise TypeError("微信 UI 意图只允许携带纯数据")
         object.__setattr__(self, "kind", kind)
         object.__setattr__(self, "payload", _freeze(payload))
-        object.__setattr__(self, "conversation_version", int(self.conversation_version or 0))
+        object.__setattr__(
+            self,
+            "conversation_version",
+            None if self.conversation_version is None else int(self.conversation_version),
+        )
         object.__setattr__(self, "task_version", int(self.task_version or 0))
+        object.__setattr__(
+            self,
+            "expires_at",
+            None if self.expires_at is None else float(self.expires_at),
+        )
 
 
 class IntentCancelled(RuntimeError):
     pass
+
+
+class DeliveryAlreadySubmitted(IntentCancelled):
+    """A durable delivery fence already exists for this non-idempotent action."""
 
 
 class IntentNeedsExclusive(RuntimeError):
@@ -220,9 +244,11 @@ class WeChatUIOwner:
         exclusive_timeout: float = 180.0,
         poll_interval: float = 0.05,
         thread_name: str = "wechat-ui-owner",
-        conversation_version_provider: IntentVersionProvider | None = None,
+        conversation_version_provider: ConversationVersionProvider | None = None,
         task_version_provider: IntentVersionProvider | None = None,
         payload_preparer: IntentPayloadPreparer | None = None,
+        intent_start_callback: IntentStartCallback | None = None,
+        intent_finish_callback: IntentFinishCallback | None = None,
         runtime_id: str = "",
     ):
         self._handlers = {
@@ -235,6 +261,8 @@ class WeChatUIOwner:
         self._conversation_version_provider = conversation_version_provider
         self._task_version_provider = task_version_provider
         self._payload_preparer = payload_preparer
+        self._intent_start_callback = intent_start_callback
+        self._intent_finish_callback = intent_finish_callback
         self._runtime_id = str(runtime_id or "").strip().lower()
         self._condition = threading.Condition()
         self._queue: deque[IntentTicket] = deque()
@@ -462,8 +490,12 @@ class WeChatUIOwner:
                 deadline_at=started_at + timeout,
             )
         try:
+            if callable(self._intent_start_callback):
+                self._intent_start_callback(intent)
             return handler(intent.payload)
         finally:
+            if callable(self._intent_finish_callback):
+                self._intent_finish_callback(intent)
             with self._condition:
                 self._current_action = CurrentActionSnapshot()
 
@@ -478,16 +510,6 @@ class WeChatUIOwner:
                 self._condition.notify_all()
         try:
             intent = ticket.intent
-            conversation = str(intent.payload.get("conversation") or "").strip()
-            if intent.conversation_version and conversation and callable(self._conversation_version_provider):
-                current = int(self._conversation_version_provider(conversation) or 0)
-                if current != intent.conversation_version:
-                    raise IntentCancelled("会话已有新消息，已取消过期微信操作")
-            task_key = str(intent.payload.get("task_key") or "").strip()
-            if intent.task_version and task_key and callable(self._task_version_provider):
-                current = int(self._task_version_provider(task_key) or 0)
-                if current != intent.task_version:
-                    raise IntentCancelled("任务已取消或更新，已取消过期微信操作")
             if callable(self._payload_preparer):
                 payload = dict(self._payload_preparer(intent) or {})
                 intent = UIIntent(
@@ -495,11 +517,29 @@ class WeChatUIOwner:
                     payload,
                     conversation_version=intent.conversation_version,
                     task_version=intent.task_version,
+                    expires_at=intent.expires_at,
                 )
+            if intent.expires_at is not None and time.time() >= intent.expires_at:
+                raise IntentCancelled("微信操作已超过有效期，已取消发送")
+            conversation = str(intent.payload.get("conversation") or "").strip()
+            if (
+                intent.conversation_version is not None
+                and conversation
+                and callable(self._conversation_version_provider)
+            ):
+                chat_type = str(intent.payload.get("chat_type") or "private").strip() or "private"
+                current = int(self._conversation_version_provider(conversation, chat_type) or 0)
+                if current != intent.conversation_version:
+                    raise IntentCancelled("会话已有新消息，已取消过期微信操作")
+            task_key = str(intent.payload.get("task_key") or "").strip()
+            if intent.task_version and task_key and callable(self._task_version_provider):
+                current = int(self._task_version_provider(task_key) or 0)
+                if current != intent.task_version:
+                    raise IntentCancelled("任务已取消或更新，已取消过期微信操作")
             delivery_id = str(intent.payload.get("delivery_id") or "").strip()
             journal = self._delivery_journal if intent.kind in JOURNALED_DELIVERY_INTENTS and delivery_id else None
             if journal is not None and not journal.begin(delivery_id, intent.kind.value, intent.payload):
-                raise IntentCancelled("该微信投递已提交过，禁止重复发送")
+                raise DeliveryAlreadySubmitted("该微信投递已提交过，结果需核实，禁止重复发送")
             if ticket.force_exclusive:
                 payload = dict(intent.payload)
                 payload["_exclusive_retry"] = True
@@ -508,6 +548,7 @@ class WeChatUIOwner:
                     payload,
                     conversation_version=intent.conversation_version,
                     task_version=intent.task_version,
+                    expires_at=intent.expires_at,
                 )
             if isinstance(ticket, CallbackActionTicket):
                 timeout = self._light_timeout if intent.kind in LIGHTWEIGHT_INTENTS else self._exclusive_timeout
@@ -554,7 +595,16 @@ class WeChatUIOwner:
                         journal.finish(delivery_id, "uncertain", str(exc), details=details)
                 raise
             if journal is not None:
-                journal.finish(delivery_id, "done")
+                if _delivery_succeeded(result):
+                    journal.finish(delivery_id, "done")
+                else:
+                    error = "WeChat handler returned an unsuccessful result"
+                    journal.finish(
+                        delivery_id,
+                        "uncertain",
+                        error,
+                    )
+                    raise RuntimeError(error)
             if ticket.intent.kind == UIIntentKind.CONTACT_START:
                 if not isinstance(result, ContactBatchHandle):
                     raise TypeError("通讯录启动处理器必须返回 ContactBatchHandle")

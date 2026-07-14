@@ -111,6 +111,46 @@ class InboundCoordinatorTests(unittest.TestCase):
         self.assertFalse(subwindow_first.is_new)
         self.assertFalse(subwindow_second.is_new)
 
+    def test_subwindow_observation_can_handoff_to_later_global_poll(self):
+        store = RecordingStore()
+        coordinator = InboundCoordinator(store)
+        subwindow = coordinator.accept(inbound_event(
+            source="subwindow",
+            source_batch="callback-1",
+            received_at=10.0,
+            native_time="10:00",
+        ))
+
+        global_poll = coordinator.accept(inbound_event(
+            source="global",
+            source_batch="poll-1",
+            received_at=11.0,
+            native_time="10:00",
+        ))
+
+        self.assertEqual(len(store.events), 1)
+        self.assertEqual(global_poll.event_id, subwindow.event_id)
+        self.assertTrue(global_poll.handoff)
+        self.assertFalse(global_poll.is_new)
+
+    def test_same_source_occurrences_never_handoff_each_other(self):
+        store = RecordingStore()
+        coordinator = InboundCoordinator(store)
+
+        first = coordinator.accept(inbound_event(
+            source="subwindow",
+            source_batch="callback-1",
+            received_at=10.0,
+        ))
+        second = coordinator.accept(inbound_event(
+            source="subwindow",
+            source_batch="callback-2",
+            received_at=11.0,
+        ))
+
+        self.assertEqual(len(store.events), 2)
+        self.assertNotEqual(first.event_id, second.event_id)
+
     def test_native_observation_is_recorded_once_per_runtime(self):
         store = RecordingStore()
         coordinator = InboundCoordinator(store)

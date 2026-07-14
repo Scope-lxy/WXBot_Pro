@@ -137,11 +137,10 @@ class InboundCoordinator:
             observation_keys = self._observation_keys(event)
             seen = self._find_seen(observation_keys)
             if seen is not None:
-                if event.source == "subwindow":
-                    self._consume_handoff(seen)
+                self._consume_handoff(seen, observed_source=event.source)
                 return self._duplicate(seen)
 
-            if event.source == "subwindow":
+            if event.source in {"global", "subwindow"}:
                 handed_off = self._take_handoff(event)
                 if handed_off is not None:
                     self._remember(observation_keys, handed_off)
@@ -166,7 +165,7 @@ class InboundCoordinator:
                 version=int(stored["version"]),
             )
             self._remember(observation_keys, result)
-            if event.source == "global":
+            if event.source in {"global", "subwindow"}:
                 self._remember_handoff(result)
             return result
 
@@ -234,6 +233,8 @@ class InboundCoordinator:
             if age > self._handoff_ttl:
                 stale_ids.append(handoff_id)
                 continue
+            if pending.result.event.source == event.source:
+                continue
             if pending.signature != signature:
                 continue
             global_time = str(pending.result.event.native_time or "")
@@ -246,9 +247,17 @@ class InboundCoordinator:
             self._handoffs.pop(handoff_id, None)
         return None
 
-    def _consume_handoff(self, result: InboundAcceptResult) -> None:
+    def _consume_handoff(
+        self,
+        result: InboundAcceptResult,
+        *,
+        observed_source: str,
+    ) -> None:
         for handoff_id, pending in self._handoffs.items():
-            if pending.result is result:
+            if (
+                pending.result is result
+                and pending.result.event.source != observed_source
+            ):
                 self._handoffs.pop(handoff_id)
                 return
 

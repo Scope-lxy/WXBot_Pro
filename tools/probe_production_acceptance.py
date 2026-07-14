@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import time
 import urllib.request
 from urllib.parse import urljoin
@@ -62,11 +63,17 @@ CRITICAL_JSON_PARTS = {
     "contact_profiles",
     "relationship_scan",
     "tasks",
-    "ui_delivery",
-    "unanswered_inbound",
     "friend_request",
     "chat_memory",
     "memory",
+}
+MESSAGE_STORE_TABLES = {
+    "conversation_state",
+    "chat_events",
+    "reply_jobs",
+    "reply_job_events",
+    "delivery_actions",
+    "ui_deliveries",
 }
 
 
@@ -94,15 +101,6 @@ def state_event_markers(relative_path: str, payload: Any, started_at: str) -> se
         if any(
             isinstance(item, dict) and _timestamp_at_or_after(item.get("last_sent_at"), started_at)
             for item in limits.values()
-        ):
-            events.add("voice_outbound")
-    if "/ui_delivery/" in normalized and isinstance(payload, list):
-        if any(
-            isinstance(item, dict)
-            and str(item.get("kind") or "") == "send_audio"
-            and str(item.get("status") or "") == "done"
-            and _timestamp_at_or_after(item.get("finished_at"), started_at)
-            for item in payload
         ):
             events.add("voice_outbound")
     if "/relationship_scan/" in normalized and isinstance(payload, dict):
@@ -154,7 +152,7 @@ def log_line_is_current(line: str, started_at: str) -> bool:
 def state_category(path: Path) -> str:
     parts = {part.lower() for part in path.parts}
     for category in (
-        "contact_profiles", "relationship_scan", "ui_delivery", "unanswered_inbound",
+        "contact_profiles", "relationship_scan",
         "friend_request", "chat_memory", "memory", "tasks", "config",
     ):
         if category in parts:
@@ -170,12 +168,6 @@ def state_schema_error(relative_path: str, payload: Any) -> str:
     elif "/relationship_scan/" in normalized:
         if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
             return "relationship_scan_schema"
-    elif "/ui_delivery/" in normalized:
-        if not isinstance(payload, list):
-            return "ui_delivery_schema"
-    elif "/unanswered_inbound/" in normalized:
-        if not isinstance(payload, list):
-            return "unanswered_inbound_schema"
     elif "/chat_memory/" in normalized:
         if not isinstance(payload, dict) or not isinstance(payload.get("memories"), list):
             return "chat_memory_schema"
@@ -204,6 +196,40 @@ def state_schema_error(relative_path: str, payload: Any) -> str:
         if not isinstance(payload, dict) or not isinstance(payload.get("hours"), dict):
             return "runtime_metrics_schema"
     return ""
+
+
+def message_store_state(path: Path, started_at: str) -> tuple[str, set[str]]:
+    """Validate one live account message store and return acceptance events."""
+    try:
+        started_timestamp = datetime.fromisoformat(
+            str(started_at or "").replace("Z", "+00:00")
+        ).replace(tzinfo=None).timestamp()
+        connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=3)
+        try:
+            integrity = str(connection.execute("PRAGMA quick_check").fetchone()[0])
+            if integrity.lower() != "ok":
+                return "message_store_integrity", set()
+            tables = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if not MESSAGE_STORE_TABLES.issubset(tables):
+                return "message_store_schema", set()
+            voice_sent = connection.execute(
+                """
+                SELECT 1 FROM ui_deliveries
+                WHERE kind = 'send_audio' AND status = 'done' AND finished_at >= ?
+                LIMIT 1
+                """,
+                (started_timestamp,),
+            ).fetchone()
+            return "", {"voice_outbound"} if voice_sent else set()
+        finally:
+            connection.close()
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        return f"message_store:{exc.__class__.__name__}", set()
 
 
 def metric_totals(path: Path) -> dict[str, int]:
@@ -237,7 +263,7 @@ def automatic_acceptance_status(
     failure_counts: dict[str, int],
     panel_failures: int,
     bot_unhealthy_samples: int,
-    json_errors: list[str],
+    state_errors: list[str],
     process_failures: int,
     max_panel_processes: int,
     max_collectors: int,
@@ -272,8 +298,8 @@ def automatic_acceptance_status(
         reasons.append("bot_not_continuously_running")
     if panel_zero_samples:
         reasons.append("panel_process_missing")
-    if json_errors:
-        reasons.append("json_validation_failed")
+    if state_errors:
+        reasons.append("state_validation_failed")
     if json_suspicious_changes:
         reasons.append("json_state_suspicious_change")
     if process_failures:
@@ -349,7 +375,7 @@ class AcceptanceObserver:
         self.max_collectors = 0
         self.final_collectors = 0
         self.max_test_processes = 0
-        self.json_errors: set[str] = set()
+        self.state_errors: set[str] = set()
         self.json_suspicious_changes: set[str] = set()
         self.state_evidence_seen: set[tuple[str, str]] = set()
         self.metrics_path = self.root / "data" / "config" / "runtime_metrics_v1.json"
@@ -357,6 +383,9 @@ class AcceptanceObserver:
         self.report_path = self._report_path()
         self._initialize_log_offsets()
         self.baseline_json_sizes = self._capture_json_baseline()
+        self.baseline_message_stores = set(self._iter_message_stores())
+        for path in self.baseline_message_stores:
+            self._read_and_validate_message_store(path, collect_events=False)
         self.started_wall = time.time()
         self.started_monotonic = time.monotonic()
         self.started_at = _iso_now()
@@ -548,7 +577,7 @@ class AcceptanceObserver:
             relative = str(path.relative_to(self.root))
             schema_error = state_schema_error(relative, payload)
             if schema_error:
-                self.json_errors.add(schema_error)
+                self.state_errors.add(schema_error)
             if collect_events:
                 for event in state_event_markers(relative, payload, self.started_at):
                     evidence_key = (event, category)
@@ -560,7 +589,7 @@ class AcceptanceObserver:
                         "state_source": f"{event}_state",
                     })
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            self.json_errors.add(f"{category}:{exc.__class__.__name__}")
+            self.state_errors.add(f"{category}:{exc.__class__.__name__}")
 
     def _capture_json_baseline(self) -> dict[Path, int]:
         baseline = {}
@@ -575,12 +604,12 @@ class AcceptanceObserver:
     def _validate_changed_json(self) -> None:
         current_paths = set(self._iter_monitored_json())
         for missing in set(self.baseline_json_sizes) - current_paths:
-            self.json_errors.add(f"{state_category(missing)}:deleted")
+            self.state_errors.add(f"{state_category(missing)}:deleted")
         for path in current_paths:
             try:
                 stat = path.stat()
             except OSError as exc:
-                self.json_errors.add(f"{state_category(path)}:{exc.__class__.__name__}")
+                self.state_errors.add(f"{state_category(path)}:{exc.__class__.__name__}")
                 continue
             old_size = self.baseline_json_sizes.get(path)
             if old_size and old_size >= 1024 and stat.st_size <= max(16, old_size // 10):
@@ -588,6 +617,34 @@ class AcceptanceObserver:
             if path in self.baseline_json_sizes and stat.st_mtime < self.started_wall:
                 continue
             self._read_and_validate_json(path, collect_events=True)
+        self._validate_message_stores()
+
+    def _iter_message_stores(self):
+        yield from (self.root / "data" / "accounts").glob("*/message_store.sqlite3")
+
+    def _read_and_validate_message_store(self, path: Path, *, collect_events: bool) -> None:
+        error, events = message_store_state(path, self.started_at)
+        if error:
+            self.state_errors.add(error)
+            return
+        if not collect_events:
+            return
+        for event in events:
+            evidence_key = (event, "message_store")
+            if evidence_key in self.state_evidence_seen:
+                continue
+            self.state_evidence_seen.add(evidence_key)
+            self._record_event(event, {
+                "timestamp": _iso_now(),
+                "state_source": f"{event}_state",
+            })
+
+    def _validate_message_stores(self) -> None:
+        current = set(self._iter_message_stores())
+        if self.baseline_message_stores and not current:
+            self.state_errors.add("message_store:deleted")
+        for path in current:
+            self._read_and_validate_message_store(path, collect_events=True)
 
     def _build_report(self, *, interrupted: bool = False) -> dict[str, Any]:
         duration = max(0.0, time.monotonic() - self.started_monotonic)
@@ -607,7 +664,7 @@ class AcceptanceObserver:
             failure_counts=dict(self.failure_counts),
             panel_failures=self.panel_failures,
             bot_unhealthy_samples=self.bot_unhealthy_samples,
-            json_errors=sorted(self.json_errors),
+            state_errors=sorted(self.state_errors),
             process_failures=self.process_failures,
             max_panel_processes=self.max_panel_processes,
             max_collectors=self.max_collectors,
@@ -656,7 +713,7 @@ class AcceptanceObserver:
             "activity_bucket_count": len(self.activity_buckets),
             "activity_buckets": sorted(self.activity_buckets),
             "failure_counts": dict(self.failure_counts),
-            "json_errors": sorted(self.json_errors),
+            "state_errors": sorted(self.state_errors),
             "json_suspicious_changes": sorted(self.json_suspicious_changes),
             "runtime_metric_delta": metrics_delta,
             "assessment": automatic,

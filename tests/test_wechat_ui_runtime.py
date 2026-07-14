@@ -414,6 +414,33 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(caught.exception.failed_index, 1)
         self.assertEqual(chat.sent, [("第一条", None)])
 
+    def test_send_actions_reports_explicit_false_at_the_exact_action(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "张三"}]})
+        chat = client.chats["张三"]
+
+        def send_msg(msg, at=None):
+            if msg == "第二条":
+                return False
+            chat.sent.append((msg, at))
+            return True
+
+        chat.SendMsg = send_msg
+        with self.assertRaises(ActionBatchInterrupted) as caught:
+            runtime.send_actions({
+                "conversation": "张三",
+                "actions": [
+                    {"type": "text", "text": "第一条"},
+                    {"type": "text", "text": "第二条"},
+                    {"type": "text", "text": "第三条"},
+                ],
+            })
+
+        self.assertEqual(caught.exception.completed_results, [True])
+        self.assertEqual(caught.exception.failed_index, 1)
+        self.assertEqual(chat.sent, [("第一条", None)])
+
     def test_quote_rolls_original_message_into_view_before_action(self):
         client = FakeClient()
         chat = client.chats.setdefault("测试群", FakeChat("测试群"))

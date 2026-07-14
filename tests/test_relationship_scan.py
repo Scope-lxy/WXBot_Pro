@@ -458,13 +458,13 @@ class RelationshipScanTests(unittest.TestCase):
         names = [record["name"] for record in pending_sync_records(state, now=now)]
         self.assertEqual(names, ["未尝试", "已尝试"])
 
-    def test_auto_wechat_tag_sync_waits_for_pending_private_outbound_echo(self):
+    def test_auto_wechat_tag_sync_waits_for_ui_owner_lock(self):
         calls = []
 
         class FakeLock:
             def acquire(self, blocking=True):
                 calls.append("lock_acquire")
-                return True
+                return False
 
             def release(self):
                 calls.append("lock_release")
@@ -488,13 +488,12 @@ class RelationshipScanTests(unittest.TestCase):
                 wx_id="wxid_test",
                 config=SimpleNamespace(DATA_DIR=tmp),
                 _get_wechat_action_lock=lambda: FakeLock(),
-                _has_pending_private_outbound_echoes=lambda: True,
             )
 
             result = process_pending_wechat_tag_sync(bot, now=now)
 
         self.assertEqual(result, {"processed": 0, "success": 0, "failed": 0})
-        self.assertEqual(calls, [])
+        self.assertEqual(calls, ["lock_acquire"])
 
     def test_same_status_scan_keeps_pending_retry_delay(self):
         state = {

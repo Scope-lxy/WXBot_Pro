@@ -113,7 +113,7 @@
     </section>
 
     <section class="rules" aria-label="全程约束">
-      <div class="rule"><strong>纯数据先入队</strong><br>业务层不传递 wxautox 对象；真实微信动作只交给唯一 UI owner。</div>
+      <div class="rule"><strong>消息事实先落库</strong><br>回调先写账号级 SQLite，再以纯数据进入业务队列；真实微信动作只交给唯一 UI owner。</div>
       <div class="rule"><strong>通讯录批次是全屏障</strong><br>维护期间新消息只按 FIFO 保存，不能抢占 AI、下载媒体或发送回复。</div>
       <div class="rule"><strong>不确定就不重发</strong><br>已经进入微信提交、但结果未知的发送会冻结为 <code>uncertain</code>。</div>
     </section>
@@ -122,11 +122,11 @@
       <section class="stage">
         <div class="stage-title"><span class="stage-number">01</span><h2>接收和安全入队</h2></div>
         <div class="flow-row">
-          <article class="node blue"><h3>微信监听回调</h3><p>私聊、群聊、自己账号或系统消息到达。先复制消息类型、发送者、稳定身份、时间和可用正文。</p></article>
+          <article class="node blue"><h3>微信监听回调</h3><p>私聊、群聊、自己账号或系统消息到达。先复制会话、方向、类型、发送者、原始观察身份、时间和可用正文。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="node blue"><h3>识别身份与去重</h3><p>优先用消息 <code>id</code>、<code>hash</code> 或控件标量身份；只有缺少稳定身份和时间时，才使用 2 秒内容兜底。</p></article>
+          <article class="node blue"><h3>识别方向与去重</h3><p>native ID 相同才做强去重；hash 或正文相同不能删除两次真实出现的消息。机器人回声关联到对应 delivery，人工 self 则推进会话版本。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="node violet"><h3>写入纯数据 FIFO</h3><p>通讯录批次、关系全量扫描等独占事务进行中时，只排队，不进入路由，也不抢占微信 UI。</p></article>
+          <article class="node violet"><h3>写 SQLite 后进入 FIFO</h3><p><code>chat_events</code> 是唯一事实源。图片也先保存占位事实再下载补充；独占事务进行中时只排队，不进入路由或抢占微信 UI。</p></article>
         </div>
         <div class="arrow down">v</div>
         <div class="two-column">
@@ -148,7 +148,7 @@
       <section class="stage">
         <div class="stage-title"><span class="stage-number">03</span><h2>生成前补全与回复组装</h2></div>
         <div class="flow-row">
-          <article class="node violet"><h3>建立待答记录</h3><p>AI 分支开始后，入站记录进入 <code>ai_started</code>。只有这个状态在进程中断后允许重放。</p></article>
+          <article class="node violet"><h3>建立回复任务</h3><p>需要回复时建立 <code>reply_job</code>，绑定入站事件、会话版本和 15 分钟有效期；每个气泡再建立独立 delivery action。</p></article>
           <div class="arrow">-&gt;</div>
           <article class="node blue"><h3>按需补齐当前可见上下文</h3><p>启动首答、窗口恢复或本地尾部缺消息时读取当前窗口一次，不滚动深历史；补入缺失的对方消息和手机手动回复。</p></article>
           <div class="arrow">-&gt;</div>
@@ -173,13 +173,13 @@
         <div class="outcome">
           <article class="node amber"><h3>版本已变化</h3><p>已开始的单个气泡可完成；尚未开始的剩余气泡取消。取消内容不记为“已回复”。</p></article>
           <article class="node red"><h3>已提交但结果未知</h3><p>标记 <code>uncertain</code>，保留证据并禁止自动重发，避免真实好友收到重复消息。</p></article>
-          <article class="node violet"><h3>进程中断</h3><p><code>ai_started</code> 记录重启后重放；<code>routing</code>、<code>send_started</code> 和未知提交结果均冻结，不猜测恢复。</p></article>
+          <article class="node violet"><h3>进程中断</h3><p>有效期内且未 claim 的任务可重新生成；遗留 <code>inflight</code> 转为 <code>uncertain</code>，同轮剩余气泡取消，绝不自动重发。</p></article>
         </div>
       </section>
     </div>
 
     <aside class="note"><strong>读图结论：</strong>“晚回复”通常是为了守住更重要的边界：先让独占维护安全结束、让上下文完整、让目标窗口确认正确，再发出仍属于当前会话的回复。</aside>
-    <p class="footer">对应代码入口以 <code>wxbot_core.py</code>、<code>feature/message_routing.py</code>、<code>core/wechat_ui_runtime.py</code> 与 <code>core/unanswered_inbound.py</code> 为准。更新流程时，请同时更新本图与开发指南。</p>
+    <p class="footer">对应代码入口以 <code>wxbot_core.py</code>、<code>feature/message_routing.py</code>、<code>core/wechat_ui_runtime.py</code>、<code>core/message_store.py</code> 与 <code>core/reply_delivery.py</code> 为准。更新流程时，请同时更新本图与开发指南。</p>
   </main>
 </body>
 </html>

@@ -14,7 +14,7 @@ from pathlib import Path
 from core.account_storage import account_file
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_REPLY_TTL_SECONDS = 15 * 60
 
 REPLY_STATES = {
@@ -119,7 +119,7 @@ class MessageStore:
         connection = self._connect()
         try:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, SCHEMA_VERSION}:
+            if version not in {0, 1, SCHEMA_VERSION}:
                 raise MessageStoreSchemaError(
                     f"unsupported message store schema {version}; expected {SCHEMA_VERSION}"
                 )
@@ -175,6 +175,7 @@ class MessageStore:
                     turn_id TEXT PRIMARY KEY,
                     conversation TEXT NOT NULL,
                     chat_type TEXT NOT NULL,
+                    route_source TEXT NOT NULL DEFAULT '',
                     expected_version INTEGER NOT NULL CHECK (expected_version >= 0),
                     expires_at REAL NOT NULL,
                     action_count INTEGER NOT NULL DEFAULT 0 CHECK (action_count >= 0),
@@ -207,6 +208,18 @@ class MessageStore:
                 CREATE INDEX IF NOT EXISTS idx_delivery_actions_turn
                     ON delivery_actions(turn_id, action_index);
 
+                CREATE TABLE IF NOT EXISTS ui_deliveries (
+                    delivery_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    conversation TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at REAL NOT NULL,
+                    finished_at REAL,
+                    error TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL,
+                    details_json TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS history_imports (
                     migration_key TEXT PRIMARY KEY,
                     imported_at REAL NOT NULL,
@@ -214,6 +227,13 @@ class MessageStore:
                 );
                 """
             )
+            reply_job_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(reply_jobs)")
+            }
+            if "route_source" not in reply_job_columns:
+                connection.execute(
+                    "ALTER TABLE reply_jobs ADD COLUMN route_source TEXT NOT NULL DEFAULT ''"
+                )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             integrity = str(connection.execute("PRAGMA quick_check").fetchone()[0])
             if integrity.lower() != "ok":
@@ -280,6 +300,13 @@ class MessageStore:
         return item
 
     @staticmethod
+    def _ui_delivery_row(row):
+        item = dict(row)
+        item["metadata"] = json.loads(item.pop("metadata_json"))
+        item["details"] = json.loads(item.pop("details_json"))
+        return item
+
+    @staticmethod
     def _job_event_ids(connection, turn_id):
         rows = connection.execute(
             """
@@ -332,7 +359,6 @@ class MessageStore:
             "chat_type",
             "direction",
             "sender",
-            "content",
             "message_type",
             "native_attr",
             "native_id",
@@ -340,7 +366,17 @@ class MessageStore:
             "identity_value",
             "delivery_id",
         )
-        return all(row[key] == values[key] for key in compared)
+        if not all(row[key] == values[key] for key in compared):
+            return False
+        if row["content"] == values["content"]:
+            return True
+        original = str(row["original_content"] or "")
+        return bool(
+            original
+            and original == values["original_content"]
+            and row["content"] != original
+            and values["content"] == values["original_content"]
+        )
 
     def _record_event_locked(self, connection, values, *, advances_version):
         existing = connection.execute(
@@ -348,6 +384,20 @@ class MessageStore:
             (values["event_id"],),
         ).fetchone()
         if existing is not None:
+            same_delivery = bool(
+                values.get("delivery_id")
+                and existing["delivery_id"] == values["delivery_id"]
+                and existing["conversation"] == values["conversation"]
+                and existing["chat_type"] == values["chat_type"]
+                and existing["direction"] == "bot_echo"
+                and values["direction"] == "bot_echo"
+            )
+            if same_delivery:
+                return {
+                    "event_id": values["event_id"],
+                    "is_new": False,
+                    "version": int(existing["conversation_version"]),
+                }
             if not self._same_event(existing, values):
                 raise MessageStoreConflictError(
                     f"event_id {values['event_id']} was reused for a different event"
@@ -402,6 +452,8 @@ class MessageStore:
             raise ValueError(f"unsupported inbound direction: {direction}")
         conversation = _required_text(_event_value(event, "conversation"), "conversation")
         chat_type = _required_text(_event_value(event, "chat_type", "private"), "chat_type")
+        received_at = _timestamp(_event_value(event, "received_at"), "received_at")
+        stored_at = _now(_event_value(event, "stored_at", None))
         related_delivery_id = str(
             _event_value(event, "related_delivery_id", "") or ""
         ).strip()
@@ -410,7 +462,7 @@ class MessageStore:
             with self._transaction() as connection:
                 version = self._current_version(connection, conversation, chat_type)
                 existing = connection.execute(
-                    "SELECT event_id, conversation, chat_type FROM chat_events WHERE delivery_id = ?",
+                    "SELECT * FROM chat_events WHERE delivery_id = ?",
                     (related_delivery_id,),
                 ).fetchone()
                 if existing is not None and (
@@ -421,11 +473,79 @@ class MessageStore:
                     raise MessageStoreConflictError(
                         f"delivery_id {related_delivery_id} belongs to a different event"
                     )
-                return {"event_id": event_id, "is_new": False, "version": version}
+                if existing is not None:
+                    callback_type = str(_event_value(event, "message_type", "text") or "text")
+                    callback_content = str(_event_value(event, "content", "") or "")
+                    callback_original = str(
+                        _event_value(event, "original_content", "") or callback_content
+                    )
+                    preserve_voice_text = callback_type.lower() in {"voice", "audio"}
+                    if not callback_content:
+                        callback_content = str(existing["content"] or "")
+                    if not callback_original:
+                        callback_original = str(existing["original_content"] or callback_content)
+                    metadata = json.loads(existing["metadata_json"])
+                    callback_source = str(_event_value(event, "source", "") or "")
+                    if callback_source:
+                        metadata["callback_source"] = callback_source
+                    connection.execute(
+                        """
+                        UPDATE chat_events SET
+                            sender = ?,
+                            content = ?,
+                            original_content = ?,
+                            message_type = ?,
+                            native_attr = ?,
+                            native_id = ?,
+                            native_hash = ?,
+                            native_hash_text = ?,
+                            native_time = ?,
+                            received_at = ?,
+                            metadata_json = ?,
+                            state_updated_at = ?
+                        WHERE delivery_id = ?
+                        """,
+                        (
+                            str(_event_value(event, "sender", "") or existing["sender"]),
+                            existing["content"] if preserve_voice_text else callback_content,
+                            existing["original_content"] if preserve_voice_text else callback_original,
+                            callback_type,
+                            str(_event_value(event, "native_attr", "self") or "self"),
+                            str(_event_value(event, "native_id", "") or ""),
+                            str(_event_value(event, "native_hash", "") or ""),
+                            str(_event_value(event, "native_hash_text", "") or ""),
+                            str(_event_value(event, "native_time", "") or ""),
+                            received_at,
+                            _json_object(metadata),
+                            stored_at,
+                            related_delivery_id,
+                        ),
+                    )
+                    return {"event_id": event_id, "is_new": False, "version": version}
+                values = self._confirmed_outbound_values(
+                    related_delivery_id,
+                    conversation,
+                    str(_event_value(event, "content", "") or ""),
+                    received_at,
+                    str(_event_value(event, "sender", "") or "self"),
+                    chat_type,
+                    str(_event_value(event, "message_type", "text") or "text"),
+                    str(_event_value(event, "native_attr", "self") or "self"),
+                    {"callback_source": str(_event_value(event, "source", "") or "")},
+                    stored_at,
+                )
+                recorded = self._record_event_locked(
+                    connection,
+                    values,
+                    advances_version=False,
+                )
+                return {
+                    "event_id": recorded["event_id"],
+                    "is_new": recorded["is_new"],
+                    "version": version,
+                }
 
         event_id, identity_kind, identity_value = self._logical_event_id(event)
-        received_at = _timestamp(_event_value(event, "received_at"), "received_at")
-        stored_at = _now(_event_value(event, "stored_at", None))
         expires_at = _event_value(event, "reply_expires_at", None)
         if direction == "friend":
             if expires_at is None:
@@ -489,7 +609,10 @@ class MessageStore:
         }
         return self._record_event(
             values,
-            advances_version=direction in {"friend", "manual_self"},
+            advances_version=(
+                direction == "manual_self"
+                or (chat_type == "private" and direction == "friend")
+            ),
         )
 
     def append_inbound_once(
@@ -636,8 +759,43 @@ class MessageStore:
             metadata,
             _now(now),
         )
-        result = self._record_event(values, advances_version=False)
+        with self._transaction() as connection:
+            result = self._record_event_locked(connection, values, advances_version=False)
+            self._merge_confirmed_event(connection, delivery_id, values, metadata)
         return {"event_id": result["event_id"], "is_new": result["is_new"]}
+
+    @staticmethod
+    def _merge_confirmed_event(connection, delivery_id, values, metadata):
+        row = connection.execute(
+            "SELECT metadata_json FROM chat_events WHERE delivery_id = ?",
+            (delivery_id,),
+        ).fetchone()
+        if row is None:
+            return
+        merged = json.loads(row["metadata_json"])
+        if metadata:
+            merged.update(dict(metadata))
+        preserve_semantic_voice_text = str(values.get("message_type") or "").lower() in {
+            "voice",
+            "audio",
+        }
+        connection.execute(
+            """
+            UPDATE chat_events SET
+                content = CASE WHEN ? THEN ? ELSE content END,
+                original_content = CASE WHEN ? THEN ? ELSE original_content END,
+                metadata_json = ?
+            WHERE delivery_id = ?
+            """,
+            (
+                preserve_semantic_voice_text,
+                values["content"],
+                preserve_semantic_voice_text,
+                values["original_content"],
+                _json_object(merged),
+                delivery_id,
+            ),
+        )
 
     @staticmethod
     def _import_event_values(entry, stored_at):
@@ -800,6 +958,41 @@ class MessageStore:
                     break
         return updated
 
+    def update_inbound_content(self, event_id, content, *, original_content=None, metadata=None, now=None):
+        """Attach a later wxautox transcription or media enrichment to one fact."""
+
+        event_id = _required_text(event_id, "event_id")
+        current = _now(now)
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT direction, original_content, metadata_json FROM chat_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            if row["direction"] not in {"friend", "manual_self"}:
+                raise MessageStoreTransitionError(f"event {event_id} cannot be enriched")
+            merged_metadata = json.loads(row["metadata_json"])
+            if metadata:
+                if not isinstance(metadata, dict):
+                    raise ValueError("metadata must be a dict")
+                merged_metadata.update(metadata)
+            connection.execute(
+                """
+                UPDATE chat_events SET
+                    content = ?, original_content = ?, metadata_json = ?, state_updated_at = ?
+                WHERE event_id = ?
+                """,
+                (
+                    str(content or ""),
+                    str(row["original_content"] if original_content is None else original_content),
+                    _json_object(merged_metadata),
+                    current,
+                    event_id,
+                ),
+            )
+            return True
+
     @staticmethod
     def _assert_no_active_jobs(connection, conversation=None, chat_type=None):
         clauses = ["status IN ('pending', 'generating', 'inflight')"]
@@ -930,7 +1123,7 @@ class MessageStore:
             ).fetchone()
             return self._event_row(row) if row else None
 
-    def recover_pending_inbound(self, *, now=None, limit=1000):
+    def recover_pending_inbound(self, *, now=None, limit=1000, after_event_seq=0):
         """Expire stale unhandled inbound and return fresh ones in FIFO order."""
 
         current = _now(now)
@@ -940,6 +1133,10 @@ class MessageStore:
             raise ValueError("limit must be an integer") from exc
         if limit <= 0:
             return []
+        try:
+            after_event_seq = max(0, int(after_event_seq))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("after_event_seq must be an integer") from exc
         with self._transaction() as connection:
             connection.execute(
                 """
@@ -959,10 +1156,11 @@ class MessageStore:
                 WHERE direction = 'friend'
                   AND processing_state = 'pending'
                   AND reply_expires_at > ?
-                ORDER BY received_at, event_seq
+                  AND event_seq > ?
+                ORDER BY event_seq
                 LIMIT ?
                 """,
-                (current, limit),
+                (current, after_event_seq, limit),
             ).fetchall()
             return [self._event_row(row) for row in rows]
 
@@ -1054,6 +1252,7 @@ class MessageStore:
         turn_id,
         conversation,
         chat_type,
+        route_source,
         expected_version,
         expires_at,
         event_ids,
@@ -1068,6 +1267,7 @@ class MessageStore:
             same = (
                 existing["conversation"] == conversation
                 and existing["chat_type"] == chat_type
+                and (not route_source or existing["route_source"] == route_source)
                 and int(existing["expected_version"]) == expected_version
                 and float(existing["expires_at"]) == expires_at
                 and existing_ids == event_ids
@@ -1082,11 +1282,20 @@ class MessageStore:
         connection.execute(
             """
             INSERT INTO reply_jobs(
-                turn_id, conversation, chat_type, expected_version, expires_at,
+                turn_id, conversation, chat_type, route_source, expected_version, expires_at,
                 action_count, status, created_at, updated_at, finished_at, error
-            ) VALUES (?, ?, ?, ?, ?, 0, 'pending', ?, ?, NULL, '')
+            ) VALUES (?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, NULL, '')
             """,
-            (turn_id, conversation, chat_type, expected_version, expires_at, current, current),
+            (
+                turn_id,
+                conversation,
+                chat_type,
+                route_source,
+                expected_version,
+                expires_at,
+                current,
+                current,
+            ),
         )
         connection.executemany(
             "INSERT INTO reply_job_events(turn_id, event_id, event_order) VALUES (?, ?, ?)",
@@ -1114,11 +1323,13 @@ class MessageStore:
         expires_at,
         event_ids,
         chat_type="private",
+        route_source="",
         now=None,
     ):
         turn_id = _required_text(turn_id, "turn_id")
         conversation = _required_text(conversation, "conversation")
         chat_type = _required_text(chat_type, "chat_type")
+        route_source = str(route_source or "").strip()
         expected_version = int(expected_version)
         if expected_version < 0:
             raise ValueError("expected_version must not be negative")
@@ -1131,6 +1342,7 @@ class MessageStore:
                 turn_id,
                 conversation,
                 chat_type,
+                route_source,
                 expected_version,
                 expires_at,
                 event_ids,
@@ -1142,20 +1354,43 @@ class MessageStore:
         current = _now(now)
         with self._transaction() as connection:
             row = connection.execute(
-                "SELECT status, action_count FROM reply_jobs WHERE turn_id = ?",
+                "SELECT * FROM reply_jobs WHERE turn_id = ?",
                 (turn_id,),
             ).fetchone()
             if row is None:
-                return False
-            if row["status"] == "generating":
-                return False
-            if row["status"] != "pending" or int(row["action_count"]) != 0:
+                return "cancelled"
+            if row["status"] not in {"pending", "generating"} or int(row["action_count"]) != 0:
                 raise MessageStoreTransitionError(f"reply job {turn_id} cannot start generating")
+            if float(row["expires_at"]) <= current:
+                self._cancel_pending_locked(
+                    connection,
+                    turn_id,
+                    "expired",
+                    "reply TTL expired before generation",
+                    current,
+                )
+                return "expired"
+            current_version = self._current_version(
+                connection,
+                str(row["conversation"]),
+                str(row["chat_type"]),
+            )
+            if current_version != int(row["expected_version"]):
+                self._cancel_pending_locked(
+                    connection,
+                    turn_id,
+                    "stale",
+                    "conversation version changed before generation",
+                    current,
+                )
+                return "stale"
+            if row["status"] == "generating":
+                return "generating"
             connection.execute(
                 "UPDATE reply_jobs SET status = 'generating', updated_at = ? WHERE turn_id = ?",
                 (current, turn_id),
             )
-            return True
+            return "generating"
 
     @staticmethod
     def _prepare_actions(connection, turn_id, action_count, current):
@@ -1227,6 +1462,7 @@ class MessageStore:
         event_ids,
         action_count,
         chat_type="private",
+        route_source="",
         now=None,
     ):
         """Compatibility one-shot API used after reply bubbles are generated."""
@@ -1234,6 +1470,7 @@ class MessageStore:
         turn_id = _required_text(turn_id, "turn_id")
         conversation = _required_text(conversation, "conversation")
         chat_type = _required_text(chat_type, "chat_type")
+        route_source = str(route_source or "").strip()
         expected_version = int(expected_version)
         if expected_version < 0:
             raise ValueError("expected_version must not be negative")
@@ -1252,6 +1489,7 @@ class MessageStore:
                 turn_id,
                 conversation,
                 chat_type,
+                route_source,
                 expected_version,
                 expires_at,
                 event_ids,
@@ -1309,7 +1547,7 @@ class MessageStore:
             (turn_id,),
         ).fetchone()
         if inflight is None:
-            connection.execute(
+            updated = connection.execute(
                 """
                 UPDATE reply_jobs SET
                     status = ?, updated_at = ?, finished_at = ?, error = ?
@@ -1317,7 +1555,8 @@ class MessageStore:
                 """,
                 (status, current, current, str(error or ""), turn_id),
             )
-            cls._set_job_event_reply_state(connection, turn_id, status, current)
+            if updated.rowcount:
+                cls._set_job_event_reply_state(connection, turn_id, status, current)
         return cursor.rowcount
 
     def conditional_claim(
@@ -1437,11 +1676,14 @@ class MessageStore:
         ).fetchone()
         if row is None:
             return False
-        if row["status"] == status:
+        current_status = str(row["status"])
+        if current_status == status:
             return False
-        if row["status"] != "inflight":
+        if current_status != "inflight" and not (
+            current_status == "uncertain" and status == "done"
+        ):
             raise MessageStoreTransitionError(
-                f"delivery action {action_id} is {row['status']}, not inflight"
+                f"delivery action {action_id} is {current_status}, not inflight"
             )
         turn_id = str(row["turn_id"])
         connection.execute(
@@ -1451,25 +1693,30 @@ class MessageStore:
             """,
             (status, current, str(error or ""), action_id),
         )
-        if status == "uncertain":
+        if status in {"uncertain", "cancelled", "stale", "expired"}:
+            remainder_status = "cancelled" if status == "uncertain" else status
+            remainder_error = (
+                "earlier delivery result is uncertain"
+                if status == "uncertain"
+                else str(error or "earlier delivery was not started")
+            )
             connection.execute(
                 """
                 UPDATE delivery_actions SET
-                    status = 'cancelled', finished_at = ?,
-                    error = 'earlier delivery result is uncertain'
+                    status = ?, finished_at = ?, error = ?
                 WHERE turn_id = ? AND status = 'pending'
                 """,
-                (current, turn_id),
+                (remainder_status, current, remainder_error, turn_id),
             )
             connection.execute(
                 """
                 UPDATE reply_jobs SET
-                    status = 'uncertain', updated_at = ?, finished_at = ?, error = ?
+                    status = ?, updated_at = ?, finished_at = ?, error = ?
                 WHERE turn_id = ?
                 """,
-                (current, current, str(error or ""), turn_id),
+                (status, current, current, str(error or ""), turn_id),
             )
-            cls._set_job_event_reply_state(connection, turn_id, "uncertain", current)
+            cls._set_job_event_reply_state(connection, turn_id, status, current)
             return True
 
         remaining = connection.execute(
@@ -1547,11 +1794,12 @@ class MessageStore:
                 raise MessageStoreConflictError(
                     f"delivery action {action_id} belongs to a different conversation"
                 )
-            if action["status"] not in {"inflight", "done"}:
+            if action["status"] not in {"inflight", "done", "uncertain"}:
                 raise MessageStoreTransitionError(
-                    f"delivery action {action_id} is {action['status']}, not inflight"
+                    f"delivery action {action_id} is {action['status']}, not confirmable"
                 )
             event = self._record_event_locked(connection, values, advances_version=False)
+            self._merge_confirmed_event(connection, action_id, values, metadata)
             finished = self._finish_action_locked(
                 connection,
                 action_id,
@@ -1566,21 +1814,31 @@ class MessageStore:
             }
 
     def finish(self, action_id, status="uncertain", error="", *, now=None):
-        """Freeze a claimed action whose WeChat delivery result is unknown."""
+        """Finish a claimed action without recording confirmed outbound history."""
 
         action_id = _required_text(action_id, "action_id")
         status = _required_text(status, "status")
-        if status != "uncertain":
-            raise ValueError("confirmed success must use confirm_outbound")
+        if status not in {"uncertain", "cancelled", "stale", "expired"}:
+            raise ValueError("status must be uncertain, cancelled, stale, or expired")
         current = _now(now)
         with self._transaction() as connection:
-            return self._finish_action_locked(
+            row = connection.execute(
+                "SELECT status FROM delivery_actions WHERE action_id = ?",
+                (action_id,),
+            ).fetchone()
+            if row is None:
+                return ""
+            current_status = str(row["status"])
+            if current_status in {"done", status}:
+                return current_status
+            self._finish_action_locked(
                 connection,
                 action_id,
-                "uncertain",
+                status,
                 error,
                 current,
             )
+            return status
 
     def cancel_pending(self, turn_id, status="cancelled", error="", *, now=None):
         turn_id = _required_text(turn_id, "turn_id")
@@ -1778,3 +2036,99 @@ class MessageStore:
             "cancelled_job_ids": cancelled_job_ids,
             "cancelled_pending_events": cursor.rowcount,
         }
+
+    def begin_ui_delivery(self, delivery_id, kind, payload, *, now=None):
+        delivery_id = _required_text(delivery_id, "delivery_id")
+        current = _now(now)
+        payload = payload if isinstance(payload, dict) else {}
+        metadata = {
+            key: payload[key]
+            for key in ("request_id", "run_id", "batch_id", "contact_key", "targets")
+            if key in payload
+        }
+        with self._transaction() as connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO ui_deliveries(
+                        delivery_id, kind, conversation, status, started_at,
+                        finished_at, error, metadata_json, details_json
+                    ) VALUES (?, ?, ?, 'inflight', ?, NULL, '', ?, '{}')
+                    """,
+                    (
+                        delivery_id,
+                        str(kind or ""),
+                        str(payload.get("conversation") or ""),
+                        current,
+                        _json_object(metadata),
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                return False
+            return True
+
+    def finish_ui_delivery(self, delivery_id, status, error="", details=None, *, now=None):
+        delivery_id = _required_text(delivery_id, "delivery_id")
+        current = _now(now)
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE ui_deliveries SET
+                    status = ?, finished_at = ?, error = ?, details_json = ?
+                WHERE delivery_id = ? AND status = 'inflight'
+                """,
+                (str(status or ""), current, str(error or ""), _json_object(details), delivery_id),
+            )
+            return cursor.rowcount == 1
+
+    def freeze_interrupted_ui_deliveries(self, *, now=None):
+        current = _now(now)
+        with self._transaction() as connection:
+            rows = connection.execute(
+                "SELECT * FROM ui_deliveries WHERE status = 'inflight' ORDER BY started_at"
+            ).fetchall()
+            connection.execute(
+                """
+                UPDATE ui_deliveries SET
+                    status = 'uncertain', finished_at = ?,
+                    error = 'process exited after UI delivery started'
+                WHERE status = 'inflight'
+                """,
+                (current,),
+            )
+            recovered = []
+            for row in rows:
+                item = dict(row)
+                item.update(
+                    status="uncertain",
+                    finished_at=current,
+                    error="process exited after UI delivery started",
+                )
+                recovered.append(self._ui_delivery_row(item))
+            return recovered
+
+    def ui_delivery_records(self):
+        with self._reader() as connection:
+            rows = connection.execute(
+                "SELECT * FROM ui_deliveries ORDER BY started_at, delivery_id"
+            ).fetchall()
+            return [self._ui_delivery_row(row) for row in rows]
+
+
+class SQLiteUIDeliveryJournal:
+    """UI-owner journal adapter backed by the account MessageStore."""
+
+    def __init__(self, store):
+        self.store = store
+
+    def begin(self, delivery_id, kind, payload):
+        return self.store.begin_ui_delivery(delivery_id, kind, payload)
+
+    def finish(self, delivery_id, status, error="", details=None):
+        return self.store.finish_ui_delivery(delivery_id, status, error, details)
+
+    def freeze_interrupted(self):
+        return self.store.freeze_interrupted_ui_deliveries()
+
+    def records(self):
+        return self.store.ui_delivery_records()

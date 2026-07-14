@@ -1289,31 +1289,6 @@ def contact_directory_auto_maintenance_time_window_allows(bot, now=None):
     )
 
 
-def has_pending_lightweight_send_queue(bot) -> bool:
-    ensure_queue = getattr(bot, "_ensure_lightweight_send_queue_state", None)
-    if callable(ensure_queue):
-        ensure_queue()
-    queue = getattr(bot, "_lightweight_send_queue", None)
-    queue_lock = getattr(bot, "_lightweight_send_queue_lock", None)
-    if queue_lock is None:
-        return bool(queue)
-    try:
-        with queue_lock:
-            return bool(getattr(bot, "_lightweight_send_queue", None))
-    except Exception:
-        return bool(queue)
-
-
-def has_pending_private_outbound_echoes(bot) -> bool:
-    pending_echoes = getattr(bot, "_has_pending_private_outbound_echoes", None)
-    if not callable(pending_echoes):
-        return False
-    try:
-        return bool(pending_echoes())
-    except Exception:
-        return False
-
-
 def is_contact_directory_auto_maintenance_idle(bot):
     return True
 
@@ -1343,8 +1318,9 @@ def has_active_contact_maintenance_conflict(bot, *, now_ts: float | None = None)
     if isinstance(pending_voice, dict) and pending_voice:
         return True
 
-    delayed_listen = getattr(bot, "_lightweight_delayed_listen_tasks", {}) or {}
-    return isinstance(delayed_listen, dict) and bool(delayed_listen)
+    supervisor = getattr(bot, "_listener_window_supervisor", None)
+    snapshot = getattr(supervisor, "snapshot", None)
+    return bool(snapshot()) if callable(snapshot) else False
 
 
 def contact_directory_auto_cycle_state(directory):
@@ -2142,19 +2118,6 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         return False
     if has_active_contact_maintenance_conflict(bot):
         return False
-    flush_lightweight = getattr(bot, "_flush_lightweight_send_queue", None)
-    if callable(flush_lightweight):
-        flush_lightweight()
-    pending_queue_fn = getattr(bot, "_has_pending_lightweight_send_queue", None)
-    if callable(pending_queue_fn):
-        has_pending_queue = pending_queue_fn()
-    else:
-        has_pending_queue = has_pending_lightweight_send_queue(bot)
-    if has_pending_queue:
-        return False
-    if has_pending_private_outbound_echoes(bot):
-        return False
-
     cycle_state_fn = getattr(bot, "_contact_directory_auto_cycle_state", None)
     if callable(cycle_state_fn):
         cycle = cycle_state_fn(directory)
@@ -2522,9 +2485,7 @@ def check_contact_directory_auto_maintenance(bot, now=None):
         )
         return True
     finally:
-        flush_lightweight = getattr(bot, "_flush_lightweight_send_queue", None)
-        if callable(flush_lightweight):
-            flush_lightweight()
+        pass
 
 
 def set_contact_profiles_paused(bot, paused=True):

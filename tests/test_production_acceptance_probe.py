@@ -8,12 +8,14 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from feature.message_routing import record_runtime_inbound_event
+from core.message_store import MessageStore, SQLiteUIDeliveryJournal
 
 from tools.probe_production_acceptance import (
     AcceptanceObserver,
     automatic_acceptance_status,
     classify_log_line,
     log_line_is_current,
+    message_store_state,
     metric_delta,
     metric_totals,
     parse_args,
@@ -114,7 +116,7 @@ class ProductionAcceptanceProbeTests(unittest.TestCase):
             failure_counts={},
             panel_failures=0,
             bot_unhealthy_samples=0,
-            json_errors=[],
+            state_errors=[],
             process_failures=0,
             max_panel_processes=1,
             max_collectors=1,
@@ -143,7 +145,7 @@ class ProductionAcceptanceProbeTests(unittest.TestCase):
             failure_counts={"ui_stuck": 1},
             panel_failures=1,
             bot_unhealthy_samples=1,
-            json_errors=["bad.json"],
+            state_errors=["bad.json"],
             process_failures=1,
             max_panel_processes=2,
             max_collectors=2,
@@ -171,7 +173,7 @@ class ProductionAcceptanceProbeTests(unittest.TestCase):
             "panel_unhealthy",
             "bot_not_continuously_running",
             "panel_process_missing",
-            "json_validation_failed",
+            "state_validation_failed",
             "json_state_suspicious_change",
             "process_snapshot_failed",
             "multiple_panel_processes",
@@ -225,16 +227,8 @@ class ProductionAcceptanceProbeTests(unittest.TestCase):
 
     def test_known_state_schemas_reject_wrong_root_shape(self):
         self.assertEqual(
-            state_schema_error("data/accounts/a/ui_delivery/journal.json", {}),
-            "ui_delivery_schema",
-        )
-        self.assertEqual(
             state_schema_error("data/accounts/a/contact_profiles/contacts.json", {"subjects": []}),
             "",
-        )
-        self.assertEqual(
-            state_schema_error("data/accounts/a/unanswered_inbound/records.json", {}),
-            "unanswered_inbound_schema",
         )
         self.assertEqual(
             state_schema_error("data/accounts/a/chat_memory/test.json", {}),
@@ -244,6 +238,25 @@ class ProductionAcceptanceProbeTests(unittest.TestCase):
             state_schema_error("data/config/voice_reply_state.json", {}),
             "voice_reply_state_schema",
         )
+
+    def test_message_store_state_validates_schema_and_voice_delivery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "wxid-test")
+            journal = SQLiteUIDeliveryJournal(store)
+            self.assertTrue(journal.begin(
+                "voice-delivery-1",
+                "send_audio",
+                {"conversation": "张三"},
+            ))
+            journal.finish("voice-delivery-1", "done")
+
+            error, events = message_store_state(
+                store.path,
+                "2000-01-01T00:00:00",
+            )
+
+        self.assertEqual(error, "")
+        self.assertEqual(events, {"voice_outbound"})
 
     def test_formal_short_run_is_rejected_and_smoke_is_explicit(self):
         with self.assertRaises(SystemExit):

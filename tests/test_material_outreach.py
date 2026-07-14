@@ -1,7 +1,6 @@
 import unittest
 import queue
-import threading
-import time
+import tempfile
 from contextlib import nullcontext
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -16,7 +15,11 @@ from feature.material_outreach import (
     send_names_from_target_snapshot,
 )
 from wxbot_core import WXBot
+from core import wechat_ui_actions
+from core.inbound_coordinator import InboundCoordinator
 from core.message_pipeline import ConversationRef, MessageEnvelope
+from core.message_store import MessageStore
+from core.reply_delivery import ReplyEchoTracker
 
 
 def msg(msg_type, content):
@@ -42,10 +45,8 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         self.assertEqual(resolved["_outreach_target_snapshot"]["targets"][0]["contact_key"], "")
 
     def test_material_forward_passes_business_ids_to_ui_journal_payload(self):
-        bot = WXBot.__new__(WXBot)
+        bot, _store = self._message_runtime_bot()
         bot._ui_owner = object()
-        bot._remember_material_outbound_echoes = lambda *_args, **_kwargs: "echo-1"
-        bot._schedule_private_outbound_echo_fallback = lambda *_args, **_kwargs: None
         captured = []
         bot._ui_forward_message = lambda *_args, **kwargs: captured.append(kwargs) or True
 
@@ -66,6 +67,22 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         self.assertEqual(captured[0]["request_id"], "request-1")
         self.assertEqual(captured[0]["run_id"], "run-1")
         self.assertEqual(captured[0]["batch_id"], "batch-1")
+
+    def test_material_duplicate_delivery_is_reported_as_uncertain_not_cancelled(self):
+        bot, _store = self._message_runtime_bot()
+        bot._ui_owner = object()
+        bot._ui_forward_message = mock.Mock(
+            side_effect=wechat_ui_actions.DeliveryAlreadySubmitted("already submitted")
+        )
+
+        with mock.patch("wxbot_core.wechat_ui_actions.hold", return_value=nullcontext()):
+            with self.assertRaises(wechat_ui_actions.DeliveryAlreadySubmitted):
+                bot._forward_material_message_unlocked(
+                    SimpleNamespace(type="link", content="素材"),
+                    ["阿英2"],
+                    material_source="素材源",
+                    delivery_id="delivery-1",
+                )
 
     def test_uncertain_material_result_stops_outer_retry_loop(self):
         bot = WXBot.__new__(WXBot)
@@ -98,20 +115,19 @@ class MaterialOutreachPoolTests(unittest.TestCase):
 
         self.assertEqual(log_mock.call_args.kwargs["level"], "WARNING")
 
-    def _material_history_bot(self):
+    def _message_runtime_bot(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             cmd="管理员",
             group=[],
-            memory_switch=True,
-            memory_max_count=5000,
         )
-        calls = []
-        bot.memory_manager = SimpleNamespace(save_message=lambda **kwargs: calls.append(kwargs))
-        bot._mark_chat_memory_dirty = lambda *_args, **_kwargs: True
-        bot._schedule_private_outbound_echo_fallback = lambda _target: True
-        bot._ensure_message_runtime_state()
-        return bot, calls
+        bot._ui_ingress_queue = queue.Queue()
+        bot._message_store = MessageStore(temp_dir.name, "material-test")
+        bot._inbound_coordinator = InboundCoordinator(bot._message_store)
+        bot._reply_echo_tracker = ReplyEchoTracker()
+        return bot, bot._message_store
 
     def test_target_snapshot_keeps_v2_contact_names_in_progress_records(self):
         snapshot = build_target_snapshot(
@@ -352,7 +368,6 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         ]
         bot._append_material_skip_record = lambda *_args, **_kwargs: None
         bot._append_material_outreach_skip_progress = lambda *_args, **_kwargs: None
-        bot._flush_lightweight_send_queue = lambda: None
 
         class RecordingLock:
             def __init__(self):
@@ -502,13 +517,9 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         self.assertEqual(resolved, [("task_1", "sent")])
         self.assertEqual(saved_queues[-1], [])
 
-    def test_ai_material_outreach_success_registers_outbound_echoes(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(
-            cmd="文件传输助手",
-            group=[],
-        )
-        bot._ensure_message_runtime_state()
+    def test_ai_material_outreach_forwards_material_and_preface(self):
+        bot, _store = self._message_runtime_bot()
+        bot.config.cmd = "文件传输助手"
         material = {
             "id": "mat_1",
             "source": "素材源",
@@ -525,13 +536,6 @@ class MaterialOutreachPoolTests(unittest.TestCase):
 
         def forward(message, targets, **kwargs):
             forwards.append((targets, kwargs))
-            bot._remember_material_outbound_echoes(
-                targets,
-                kwargs.get("material_type"),
-                preface=kwargs.get("preface"),
-                material_title=kwargs.get("material_title"),
-                source=kwargs.get("echo_source"),
-            )
             return True, ""
 
         bot._forward_material_message = forward
@@ -550,77 +554,84 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(error, "")
         self.assertEqual(forwards[0][0], ["张三"])
-        echoes = bot._private_outbound_echoes["张三"]
-        self.assertEqual([item["type"] for item in echoes], ["miniapp", "text"])
-        self.assertEqual(echoes[0]["fallback_content"], "小程序测试作品")
-        self.assertEqual(echoes[1]["content"], "这个你可能会喜欢")
-        self.assertTrue(all(item["source"] == "ai_material_outreach" for item in echoes))
-        self.assertTrue(all(not item["memory_persisted"] for item in echoes))
-
-        chat = SimpleNamespace(who="张三", chat_type="private")
-        material_echo = SimpleNamespace(type="miniapp", attr="self", content="小程序测试作品")
-        preface_echo = SimpleNamespace(type="text", attr="self", content="这个你可能会喜欢")
-        self.assertFalse(bot._should_skip_message_memory(chat, material_echo))
-        self.assertFalse(bot._should_skip_message_memory(chat, preface_echo))
+        self.assertEqual(forwards[0][1]["preface"], "这个你可能会喜欢")
+        self.assertEqual(forwards[0][1]["material_type"], "miniapp")
+        self.assertEqual(forwards[0][1]["material_title"], "小程序测试作品")
+        self.assertEqual(forwards[0][1]["echo_source"], "ai_material_outreach")
 
     def test_material_callbacks_are_saved_in_actual_callback_order(self):
-        for callback_types in (("miniapp", "text"), ("text", "miniapp")):
+        for callback_types in (("file", "text"), ("text", "file")):
             with self.subTest(callback_types=callback_types):
-                bot, calls = self._material_history_bot()
-                bot._remember_material_outbound_echoes(
-                    ["张三"],
-                    "miniapp",
-                    preface="附加文案",
-                    material_title="素材标题",
-                )
-                chat = SimpleNamespace(who="张三", chat_type="private")
+                bot, store = self._message_runtime_bot()
                 messages = {
-                    "miniapp": SimpleNamespace(type="miniapp", attr="self", sender="self", content="微信里的素材"),
-                    "text": SimpleNamespace(type="text", attr="self", sender="self", content="附加文案"),
+                    "file": MessageEnvelope(
+                        id="self-material",
+                        type="file",
+                        attr="self",
+                        sender="self",
+                        content="素材标题",
+                    ),
+                    "text": MessageEnvelope(
+                        id="self-preface",
+                        type="text",
+                        attr="self",
+                        sender="self",
+                        content="附加文案",
+                    ),
                 }
 
-                for kind in callback_types:
-                    self.assertTrue(bot._save_incoming_memory_message(chat, messages[kind]))
+                class ForwardMessage:
+                    type = "file"
+                    content = "素材标题"
 
-                self.assertEqual([item["msg_type"] for item in calls], list(callback_types))
+                    def forward(self, targets, message=""):
+                        self.targets = targets
+                        self.preface = message
+                        for kind in callback_types:
+                            bot._enqueue_ui_message(
+                                ConversationRef("张三", "private"),
+                                messages[kind],
+                            )
+                        return True
+
+                forwarded = ForwardMessage()
+                with mock.patch("wxbot_core.wechat_ui_actions.hold", return_value=nullcontext()), mock.patch(
+                    "wxbot_core.warn_slow_wechat_ui_action", return_value=nullcontext()
+                ):
+                    success, error = bot._forward_material_message_unlocked(
+                        forwarded,
+                        ["张三"],
+                        preface="附加文案",
+                        material_type="file",
+                        material_title="素材标题",
+                    )
+
+                history = store.history("张三", 10)
+                self.assertTrue(success)
+                self.assertEqual(error, "")
+                self.assertEqual(forwarded.targets, ["张三"])
+                self.assertEqual(forwarded.preface, "附加文案")
+                self.assertEqual([item["message_type"] for item in history], list(callback_types))
                 self.assertEqual(
-                    [item["content"] for item in calls],
+                    [item["content"] for item in history],
                     [messages[kind].content for kind in callback_types],
                 )
-
-    def test_missing_material_callbacks_fall_back_to_material_then_preface(self):
-        bot, calls = self._material_history_bot()
-        bot._remember_material_outbound_echoes(
-            ["张三"],
-            "miniapp",
-            preface="附加文案",
-            material_title="素材标题",
-        )
-        for echo in bot._private_outbound_echoes["张三"]:
-            echo["expires_at"] = 1
-
-        self.assertEqual(bot._flush_expired_private_outbound_echo_fallbacks("张三", now=2), 2)
-        self.assertEqual([item["msg_type"] for item in calls], ["miniapp", "text"])
-        self.assertEqual([item["content"] for item in calls], ["素材标题", "附加文案"])
-        self.assertTrue(all(item["memory_persisted"] for item in bot._private_outbound_echoes["张三"]))
+                self.assertTrue(all(message._wxbot_inbound_direction == "bot_echo" for message in messages.values()))
+                self.assertEqual(store.conversation_version("张三"), 0)
 
     def test_forward_registers_echo_before_synchronous_self_callback(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="管理员", group=[], memory_switch=False)
+        bot, store = self._message_runtime_bot()
         bot._ui_owner = None
-        bot._ui_ingress_queue = queue.Queue()
-        bot._stop_requested_event = threading.Event()
-        bot._ensure_message_runtime_state()
         callback_message = MessageEnvelope(
             id="self-material-1",
-            type="miniapp",
+            type="file",
             attr="self",
             sender="self",
             content="素材标题",
         )
 
         class ForwardMessage:
-            type = "miniapp"
+            type = "file"
             content = "素材标题"
 
             def forward(self, targets, message=""):
@@ -633,217 +644,73 @@ class MaterialOutreachPoolTests(unittest.TestCase):
             success, error = bot._forward_material_message_unlocked(
                 ForwardMessage(),
                 ["张三"],
-                preface="附加文案",
-                material_type="miniapp",
+                material_type="file",
                 material_title="素材标题",
             )
 
         self.assertTrue(success)
         self.assertEqual(error, "")
-        self.assertTrue(callback_message._wxbot_private_outbound_echo)
+        self.assertEqual(callback_message._wxbot_inbound_direction, "bot_echo")
         self.assertFalse(getattr(callback_message, "_wxbot_sequence_advanced", False))
+        self.assertEqual([item["content"] for item in store.history("张三", 10)], ["素材标题"])
+        self.assertEqual(store.conversation_version("张三"), 0)
 
-    def test_failed_callback_memory_write_remains_available_for_fallback(self):
-        bot, calls = self._material_history_bot()
-        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材标题")
-        bot.memory_manager = SimpleNamespace(save_message=lambda **_kwargs: (_ for _ in ()).throw(OSError("disk")))
-        chat = SimpleNamespace(who="张三", chat_type="private")
-        callback = SimpleNamespace(type="miniapp", attr="self", sender="self", content="素材标题")
+    def test_material_self_callback_does_not_duplicate_confirmed_history(self):
+        bot, store = self._message_runtime_bot()
 
-        self.assertFalse(bot._save_incoming_memory_message(chat, callback))
-        self.assertTrue(bot._private_outbound_echoes["张三"][0].get("reservation_id"))
-        bot.memory_manager = SimpleNamespace(save_message=lambda **kwargs: calls.append(kwargs))
-        bot._private_outbound_echoes["张三"][0]["expires_at"] = 1
+        class ForwardMessage:
+            type = "file"
+            content = "素材标题"
 
-        self.assertEqual(bot._flush_expired_private_outbound_echo_fallbacks("张三", now=2), 1)
-        self.assertEqual([item["content"] for item in calls], ["素材标题"])
+            def forward(self, _targets, message=""):
+                return True
 
-    def test_duplicate_callback_without_id_is_saved_once(self):
-        bot, calls = self._material_history_bot()
-        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材标题")
-        chat = SimpleNamespace(who="张三", chat_type="private")
+        with mock.patch("wxbot_core.wechat_ui_actions.hold", return_value=nullcontext()), mock.patch(
+            "wxbot_core.warn_slow_wechat_ui_action", return_value=nullcontext()
+        ):
+            success, error = bot._forward_material_message_unlocked(
+                ForwardMessage(),
+                ["张三"],
+                material_type="file",
+                material_title="素材标题",
+            )
+
+        callback = MessageEnvelope(
+            id="self-material-late",
+            type="file",
+            attr="self",
+            sender="self",
+            content="素材标题",
+        )
+        bot._enqueue_ui_message(ConversationRef("张三", "private"), callback)
+
+        self.assertTrue(success)
+        self.assertEqual(error, "")
+        self.assertEqual(callback._wxbot_inbound_direction, "bot_echo")
+        self.assertEqual([item["content"] for item in store.history("张三", 10)], ["素材标题"])
+        self.assertEqual(store.conversation_version("张三"), 0)
+
+    def test_repeated_callbacks_without_native_id_are_distinct_history_entries(self):
+        bot, store = self._message_runtime_bot()
+        callbacks = []
 
         for _index in range(2):
-            callback = SimpleNamespace(type="miniapp", attr="self", sender="self", content="素材标题")
-            bot._save_incoming_memory_message(chat, callback)
-
-        self.assertEqual([item["content"] for item in calls], ["素材标题"])
-
-    def test_same_type_material_callbacks_match_titles_when_reversed(self):
-        bot, calls = self._material_history_bot()
-        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材A")
-        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材B")
-        chat = SimpleNamespace(who="张三", chat_type="private")
-
-        for title in ("[小程序] 素材B", "[小程序] 素材A"):
-            callback = SimpleNamespace(type="miniapp", attr="self", sender="self", content=title)
-            self.assertTrue(bot._save_incoming_memory_message(chat, callback))
-
-        self.assertEqual([item["content"] for item in calls], ["[小程序] 素材B", "[小程序] 素材A"])
-
-    def test_material_echo_prefers_exact_or_unique_longest_overlapping_title(self):
-        bot, _calls = self._material_history_bot()
-        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材A")
-        bot._remember_material_outbound_echoes(["张三"], "miniapp", material_title="素材AB")
-
-        exact = bot._consume_private_outbound_echo(
-            "张三", msg_type="miniapp", content="素材AB", return_match=True
-        )
-        self.assertEqual(exact.get("content"), "素材AB")
-        bot._commit_private_outbound_echo_reservation(
-            SimpleNamespace(_wxbot_outbound_echo_reservation=exact.get("reservation_id"))
-        )
-        remaining = bot._consume_private_outbound_echo(
-            "张三", msg_type="miniapp", content="卡片：素材A", return_match=True
-        )
-        self.assertEqual(remaining.get("content"), "素材A")
-
-    def test_fallback_flush_is_single_flight_across_threads(self):
-        bot, _calls = self._material_history_bot()
-        bot._remember_private_outbound_echo(
-            "张三", "text", "回复", fallback_content="回复", source="test"
-        )
-        bot._private_outbound_echoes["张三"][0]["expires_at"] = 1
-        started = threading.Event()
-        release = threading.Event()
-        writes = []
-
-        def save_once(_name, _echo):
-            writes.append("write")
-            started.set()
-            release.wait(1)
-            return True
-
-        bot._save_private_outbound_echo_fallback = save_once
-        worker = threading.Thread(
-            target=lambda: bot._flush_expired_private_outbound_echo_fallbacks("张三", now=2)
-        )
-        worker.start()
-        self.assertTrue(started.wait(1))
-        self.assertEqual(bot._flush_expired_private_outbound_echo_fallbacks("张三", now=2), 0)
-        release.set()
-        worker.join(1)
-
-        self.assertEqual(writes, ["write"])
-
-    def test_stop_cancels_pending_fallback_without_starting_disk_write(self):
-        bot, calls = self._material_history_bot()
-        bot._remember_private_outbound_echo(
-            "张三", "text", "回复", fallback_content="回复", source="test"
-        )
-
-        class Timer:
-            cancelled = False
-
-            def cancel(self):
-                self.cancelled = True
-
-        timer = Timer()
-        bot._private_outbound_echo_fallback_timer = timer
-        bot._private_outbound_echo_fallback_deadline = time.time() + 10
-        bot._finalize_private_outbound_echo_fallbacks_on_stop()
-
-        self.assertTrue(timer.cancelled)
-        self.assertIsNone(bot._private_outbound_echo_fallback_timer)
-        self.assertEqual(calls, [])
-        self.assertEqual(bot._private_outbound_echoes, {})
-
-    def test_stop_waits_for_callback_writer_without_duplicate_fallback(self):
-        bot, calls = self._material_history_bot()
-        bot._remember_private_outbound_echo(
-            "张三", "text", "回复", fallback_content="回复", source="test"
-        )
-        callback = SimpleNamespace(type="text", attr="self", sender="self", content="回复")
-        match = bot._consume_private_outbound_echo(
-            "张三", message=callback, return_match=True
-        )
-        callback._wxbot_private_outbound_echo = True
-        callback._wxbot_outbound_echo_reservation = match["reservation_id"]
-        started = threading.Event()
-        release = threading.Event()
-
-        def save_message(**kwargs):
-            started.set()
-            release.wait(1)
-            calls.append(kwargs)
-
-        bot.memory_manager = SimpleNamespace(save_message=save_message)
-        chat = SimpleNamespace(who="张三", chat_type="private")
-        callback_writer = threading.Thread(target=lambda: bot._save_incoming_memory_message(chat, callback))
-        callback_writer.start()
-        self.assertTrue(started.wait(1))
-        finalizer = threading.Thread(target=bot._finalize_private_outbound_echo_fallbacks_on_stop)
-        finalizer.start()
-        self.assertTrue(finalizer.is_alive())
-        release.set()
-        callback_writer.join(1)
-        finalizer.join(1)
-
-        self.assertFalse(finalizer.is_alive())
-        self.assertEqual([item["content"] for item in calls], ["回复"])
-
-    def test_running_fallback_timer_cannot_reschedule_after_stop(self):
-        bot, _calls = self._material_history_bot()
-        delattr(bot, "_schedule_private_outbound_echo_fallback")
-        bot._remember_private_outbound_echo(
-            "张三", "text", "回复", fallback_content="回复", source="test"
-        )
-        bot._private_outbound_echoes["张三"][0]["expires_at"] = 0
-        started = threading.Event()
-        release = threading.Event()
-
-        def save_once(_name, _echo):
-            started.set()
-            release.wait(1)
-            return True
-
-        bot._save_private_outbound_echo_fallback = save_once
-        timer_worker = threading.Thread(target=bot._run_private_outbound_echo_fallback_timer)
-        timer_worker.start()
-        self.assertTrue(started.wait(1))
-        finalizer = threading.Thread(target=bot._finalize_private_outbound_echo_fallbacks_on_stop)
-        finalizer.start()
-        release.set()
-        timer_worker.join(1)
-        finalizer.join(1)
-
-        self.assertTrue(bot._private_outbound_echo_fallback_stopped)
-        self.assertIsNone(bot._private_outbound_echo_fallback_timer)
-
-    def test_unknown_text_send_uses_success_record_fallback(self):
-        bot, calls = self._material_history_bot()
-
-        with self.assertRaisesRegex(RuntimeError, "result lost"):
-            bot._run_private_outbound_echo_send(
-                "张三",
-                {"type": "text", "text": "已提交但结果未知"},
-                lambda: (_ for _ in ()).throw(RuntimeError("result lost")),
-                source="test",
+            callback = MessageEnvelope(
+                type="text",
+                attr="self",
+                sender="self",
+                content="同一句人工消息",
+                hash="same-hash",
+                hash_text="same-hash-text",
             )
-        bot._private_outbound_echoes["张三"][0]["expires_at"] = 0
-        self.assertEqual(bot._flush_expired_private_outbound_echo_fallbacks("张三"), 1)
-        bot._finalize_private_outbound_echo_fallbacks_on_stop()
+            bot._enqueue_ui_message(ConversationRef("张三", "private"), callback)
+            callbacks.append(callback)
 
-        self.assertEqual([item["content"] for item in calls], ["已提交但结果未知"])
-
-    def test_stop_history_write_timeout_does_not_block_exit(self):
-        bot, _calls = self._material_history_bot()
-        attempts = []
-
-        class BusyLock:
-            def acquire(self, *, timeout):
-                attempts.append(timeout)
-                return False
-
-            def release(self):
-                raise AssertionError("未获取锁时不得 release")
-
-        bot._private_outbound_history_write_lock = BusyLock()
-        self.assertFalse(bot._finalize_private_outbound_echo_fallbacks_on_stop())
-        self.assertEqual(len(attempts), 1)
-        self.assertGreater(attempts[0], 0)
-        self.assertTrue(bot._private_outbound_echo_fallback_stopped)
-
+        history = store.history("张三", 10)
+        self.assertEqual([item["content"] for item in history], ["同一句人工消息", "同一句人工消息"])
+        self.assertEqual([item["direction"] for item in history], ["manual_self", "manual_self"])
+        self.assertEqual(store.conversation_version("张三"), 2)
+        self.assertNotEqual(callbacks[0]._wxbot_event_id, callbacks[1]._wxbot_event_id)
 
 if __name__ == "__main__":
     unittest.main()

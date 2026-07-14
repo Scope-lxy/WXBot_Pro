@@ -186,7 +186,6 @@ class ScheduledMessageRecoveryTests(unittest.TestCase):
 
         bot = WXBot.__new__(WXBot)
         bot._ui_owner = Owner()
-        bot._remember_private_outbound_echo_for_send_result = lambda *_args, **_kwargs: None
 
         result = bot._send_text_to_target_without_child(
             "旧备注",

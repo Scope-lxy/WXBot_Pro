@@ -27,11 +27,11 @@ from feature.voice_reply import load_voice_reply_state
 from core.message_pipeline import ConversationRef, MessageEnvelope
 
 LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS = 5
-LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS = (30, 60)
-LIGHTWEIGHT_DELAYED_LISTEN_DELAY_SECONDS = LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS[0]
-LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS = 60
-LIGHTWEIGHT_DELAYED_LISTEN_ESCALATION_SECONDS = 600
-LIGHTWEIGHT_DELAYED_LISTEN_VERIFY_INTERVAL_SECONDS = 0.3
+LISTENER_WINDOW_RECOVERY_ATTEMPT_DELAYS_SECONDS = (30, 60)
+LISTENER_WINDOW_RECOVERY_FIRST_DELAY_SECONDS = LISTENER_WINDOW_RECOVERY_ATTEMPT_DELAYS_SECONDS[0]
+LISTENER_WINDOW_RECOVERY_RETRY_SECONDS = 60
+LISTENER_WINDOW_RECOVERY_DEGRADED_AFTER_SECONDS = 600
+LISTENER_WINDOW_RECOVERY_VERIFY_INTERVAL_SECONDS = 0.3
 LISTENER_RECOVERY_HRESULTS = {
     -2147220991,  # 事件无法调用任何订户
     -2147023174,  # RPC 服务器不可用
@@ -167,7 +167,7 @@ def get_verified_subwindow(bot, nickname):
     return None
 
 
-def get_verified_subwindow_with_retry(bot, nickname, retry_count=3, interval=LIGHTWEIGHT_DELAYED_LISTEN_VERIFY_INTERVAL_SECONDS):
+def get_verified_subwindow_with_retry(bot, nickname, retry_count=3, interval=LISTENER_WINDOW_RECOVERY_VERIFY_INTERVAL_SECONDS):
     attempts = max(1, int(retry_count or 1))
     for attempt in range(1, attempts + 1):
         sub_chat = get_verified_subwindow(bot, nickname)
@@ -284,7 +284,7 @@ def close_dynamic_listener_subwindows(bot, nicknames):
 
 
 def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
-    quiet_labels = {"动态监听", "轻量延后监听"}
+    quiet_labels = {"动态监听", "监听窗口恢复"}
     label_text = str(label or "").strip()
     log_level = "WARNING" if label_text in quiet_labels else "ERROR"
 
@@ -346,21 +346,21 @@ def _consume_last_dynamic_add_result(bot, chat_name):
     return info
 
 
-def ensure_lightweight_delayed_listen_state(bot):
+def ensure_listener_window_recovery_state(bot):
     supervisor = getattr(bot, "_listener_window_supervisor", None)
     if supervisor is None:
         supervisor = ListenerWindowSupervisor(
-            retry_delays=LIGHTWEIGHT_DELAYED_LISTEN_ATTEMPT_DELAYS_SECONDS,
-            retry_interval=LIGHTWEIGHT_DELAYED_LISTEN_RETRY_SECONDS,
-            degraded_after=LIGHTWEIGHT_DELAYED_LISTEN_ESCALATION_SECONDS,
+            retry_delays=LISTENER_WINDOW_RECOVERY_ATTEMPT_DELAYS_SECONDS,
+            retry_interval=LISTENER_WINDOW_RECOVERY_RETRY_SECONDS,
+            degraded_after=LISTENER_WINDOW_RECOVERY_DEGRADED_AFTER_SECONDS,
             degraded_interval=300,
         )
         bot._listener_window_supervisor = supervisor
     return supervisor
 
 
-def _has_due_lightweight_delayed_listen_task(bot, now_ts=None):
-    supervisor = ensure_lightweight_delayed_listen_state(bot)
+def _has_due_listener_window_recovery_task(bot, now_ts=None):
+    supervisor = ensure_listener_window_recovery_state(bot)
     now_ts = time.time() if now_ts is None else float(now_ts)
     return any(
         not item["inflight"] and float(item["next_retry_at"]) <= now_ts
@@ -368,22 +368,20 @@ def _has_due_lightweight_delayed_listen_task(bot, now_ts=None):
     )
 
 
-def _queue_lightweight_delayed_listen(
+def _queue_listener_window_recovery(
     bot,
     chat_name,
-    messages,
+    _messages,
     *,
     reason="",
     allow_rebuild=False,
-    recovered=False,
     now=None,
 ):
-    """Compatibility entry point: schedule window repair, never retain messages."""
+    """Schedule window repair without retaining message data."""
     name = str(chat_name or "").strip()
     if not name:
         return False
-    del messages, recovered
-    supervisor = ensure_lightweight_delayed_listen_state(bot)
+    supervisor = ensure_listener_window_recovery_state(bot)
     now_ts = time.time() if now is None else float(now)
     if supervisor.contains(name):
         supervisor.request(
@@ -424,7 +422,7 @@ def get_runtime_cached_subwindow(bot, nickname):
     return None
 
 
-def _rebuild_lightweight_delayed_listener(bot, chat_name):
+def _rebuild_listener_window(bot, chat_name):
     name = str(chat_name or "").strip()
     if not name:
         return None
@@ -436,7 +434,7 @@ def _rebuild_lightweight_delayed_listener(bot, chat_name):
         with warn_slow_wechat_ui_action(f"AddListenChat({name})"):
             result = bot.wx.AddListenChat(nickname=name, callback=bot.message_handle_callback)
     except Exception as exc:
-        _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听重建异常，稍后继续等待，详情：{exc}")
+        _bot_log(bot, level="WARNING", message=f"全局监听 {name}：监听窗口重建异常，稍后继续等待，详情：{exc}")
         return None
     if is_target_chat(result, name):
         runtime_chat_state.remember_listen_chat(bot, name, result)
@@ -447,13 +445,13 @@ def _rebuild_lightweight_delayed_listener(bot, chat_name):
         runtime_chat_state.remember_listen_chat(bot, name, sub_chat)
         touch_dynamic_listener_entry(bot, name)
         return sub_chat
-    _bot_log(bot, level="WARNING", message=f"全局监听 {name}：轻量延后监听重建失败，稍后继续等待，详情：{listen_add_error(result)}")
+    _bot_log(bot, level="WARNING", message=f"全局监听 {name}：监听窗口重建失败，稍后继续等待，详情：{listen_add_error(result)}")
     return None
 
 
-def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
-    """Compatibility entry point: repair due windows without replaying messages."""
-    supervisor = ensure_lightweight_delayed_listen_state(bot)
+def flush_listener_window_recovery_tasks(bot, *, limit=1):
+    """Repair due listener windows without replaying messages."""
+    supervisor = ensure_listener_window_recovery_state(bot)
     if _is_bot_stop_requested(bot):
         supervisor.clear()
         return False
@@ -474,7 +472,7 @@ def flush_lightweight_delayed_listen_tasks(bot, *, limit=1):
                 sub_chat = get_cached_or_verified_subwindow(bot, name)
                 if not sub_chat:
                     if item["allow_rebuild"] and supervisor.consume_rebuild(name):
-                        sub_chat = _rebuild_lightweight_delayed_listener(bot, name)
+                        sub_chat = _rebuild_listener_window(bot, name)
                     else:
                         sub_chat = add_chat_to_listen(bot, name)
             finally:
@@ -804,7 +802,7 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
         return []
 
     if not force and getattr(getattr(bot, "config", None), "AllListen_switch", False):
-        if _has_due_lightweight_delayed_listen_task(bot):
+        if _has_due_listener_window_recovery_task(bot):
             return []
 
     now_ts = time.time()
@@ -1239,7 +1237,7 @@ def is_chat_listened(bot, chat):
 
 
 def alllisten_mode(bot, last_time, timeout=10):
-    flush_lightweight_delayed_listen_tasks(bot)
+    flush_listener_window_recovery_tasks(bot)
 
     def remove_timeout_listen(chat_time_out=600):
         protected_listeners = set(expected_listener_names(bot))
@@ -1267,10 +1265,6 @@ def alllisten_mode(bot, last_time, timeout=10):
         chat_type = messages_new.get("chat_type")
         msgs = messages_new.get("msg")
 
-        if chat in bot.config.global_blacklist:
-            _bot_log(bot, message=f"{chat} 为黑名单用户，跳过处理")
-            return
-
         if not msgs:
             return
 
@@ -1292,7 +1286,11 @@ def alllisten_mode(bot, last_time, timeout=10):
             bot._enqueue_ui_message(conversation, message)
             envelopes.append(message)
 
-        supervisor = ensure_lightweight_delayed_listen_state(bot)
+        if chat in bot.config.global_blacklist:
+            _bot_log(bot, message=f"{chat} 为黑名单用户，已保存消息并跳过回复")
+            return
+
+        supervisor = ensure_listener_window_recovery_state(bot)
         if supervisor.contains(chat):
             return
 
@@ -1312,7 +1310,7 @@ def alllisten_mode(bot, last_time, timeout=10):
         _forget_runtime_listener_caches(bot, chat)
         remove_dynamic_listener_entries(bot, chat)
         add_result = _consume_last_dynamic_add_result(bot, chat)
-        _queue_lightweight_delayed_listen(
+        _queue_listener_window_recovery(
             bot,
             chat,
             envelopes,
@@ -1324,7 +1322,7 @@ def alllisten_mode(bot, last_time, timeout=10):
             level="INFO",
             message=(
                 f"全局监听 {chat}：消息已进入处理队列；监听窗口不可用，"
-                f"将在 {LIGHTWEIGHT_DELAYED_LISTEN_DELAY_SECONDS}s 后重试"
+                f"将在 {LISTENER_WINDOW_RECOVERY_FIRST_DELAY_SECONDS}s 后重试"
             ),
         )
 

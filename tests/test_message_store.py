@@ -24,13 +24,14 @@ def inbound(
     native_hash="",
     native_hash_text="",
     related_delivery_id="",
+    message_type="text",
 ):
     return {
         "conversation": "Alice",
         "chat_type": "private",
         "content": content,
         "original_content": content,
-        "message_type": "text",
+        "message_type": message_type,
         "sender": "Alice" if direction == "friend" else "self",
         "native_attr": "friend" if direction == "friend" else "self",
         "native_id": native_id,
@@ -57,6 +58,46 @@ class MessageStoreTests(unittest.TestCase):
 
     def record(self, native_id, **kwargs):
         return self.store.record_inbound(inbound(native_id, **kwargs))
+
+    def test_schema_one_database_adds_route_source_column(self):
+        legacy_path = Path(self.store.path)
+        legacy_path.unlink()
+        connection = sqlite3.connect(legacy_path)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE reply_jobs (
+                    turn_id TEXT PRIMARY KEY,
+                    conversation TEXT NOT NULL,
+                    chat_type TEXT NOT NULL,
+                    expected_version INTEGER NOT NULL,
+                    expires_at REAL NOT NULL,
+                    action_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    finished_at REAL,
+                    error TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            connection.execute("PRAGMA user_version = 1")
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated = MessageStore(self.temp.name, "wxid_test")
+        connection = sqlite3.connect(migrated.path)
+        try:
+            columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(reply_jobs)")
+            }
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            connection.close()
+
+        self.assertIn("route_source", columns)
+        self.assertEqual(version, 2)
 
     def register(self, turn_id, event_ids, *, version, expires_at=1000.0, count=1):
         return self.store.register_reply_turn(
@@ -177,6 +218,14 @@ class MessageStoreTests(unittest.TestCase):
         self.assertEqual([item["content"] for item in history], ["first", "answer"])
         self.assertEqual(history[0]["event_id"], first["event_id"])
 
+    def test_history_orders_late_imports_by_message_time(self):
+        self.record("current", content="current", received_at=200.0)
+        self.record("older", content="older", received_at=100.0)
+
+        history = self.store.history("Alice", 10)
+
+        self.assertEqual([item["content"] for item in history], ["older", "current"])
+
     def test_pending_inbound_recovery_expires_stale_and_returns_fresh_fifo(self):
         stale = self.store.append_inbound_once(
             "stale", "Alice", content="old", received_at=10, expires_at=20, now=10
@@ -189,6 +238,92 @@ class MessageStoreTests(unittest.TestCase):
 
         self.assertEqual([item["event_id"] for item in recovered], [fresh["event_id"]])
         self.assertEqual(self.store.get_event(stale["event_id"])["processing_state"], "expired")
+
+    def test_voice_transcription_enriches_the_original_event_without_duplication(self):
+        event = self.record("voice-1", content='语音8"秒')
+
+        self.assertTrue(self.store.update_inbound_content(event["event_id"], "我刚说的是这个"))
+        duplicate = self.record("voice-1", content='语音8"秒')
+
+        history = self.store.history("Alice", 20)
+        self.assertFalse(duplicate["is_new"])
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["content"], "我刚说的是这个")
+
+    def test_generation_claim_terminalizes_a_job_made_stale_before_ai_starts(self):
+        first = self.record("msg-1")
+        self.store.create_reply_job(
+            "turn-stale",
+            conversation="Alice",
+            expected_version=first["version"],
+            expires_at=1000,
+            event_ids=[first["event_id"]],
+            now=110,
+        )
+        self.record("msg-2", received_at=120, source_order=1)
+
+        status = self.store.mark_reply_job_generating("turn-stale", now=121)
+
+        self.assertEqual(status, "stale")
+        self.assertEqual(self.store.get_reply_job("turn-stale")["status"], "stale")
+        self.assertEqual(self.store.get_event(first["event_id"])["reply_state"], "stale")
+
+    def test_generation_claim_expires_before_ai_starts(self):
+        event = self.record("msg-1")
+        self.store.create_reply_job(
+            "turn-expired",
+            conversation="Alice",
+            expected_version=event["version"],
+            expires_at=120,
+            event_ids=[event["event_id"]],
+            now=110,
+        )
+
+        status = self.store.mark_reply_job_generating("turn-expired", now=120)
+
+        self.assertEqual(status, "expired")
+        self.assertEqual(self.store.get_reply_job("turn-expired")["status"], "expired")
+
+    def test_group_messages_do_not_invalidate_an_existing_group_reply(self):
+        first_payload = inbound("group-1", received_at=100)
+        first_payload.update(chat_type="group", native_attr="group", sender="甲")
+        first = self.store.record_inbound(first_payload)
+        second_payload = inbound("group-2", content="旁人的新消息", received_at=101, source_order=1)
+        second_payload.update(chat_type="group", native_attr="group", sender="乙")
+        second = self.store.record_inbound(second_payload)
+        self_payload = inbound("group-self", direction="manual_self", received_at=102, source_order=2)
+        self_payload.update(chat_type="group", native_attr="self", sender="self")
+        manual_self = self.store.record_inbound(self_payload)
+
+        self.assertEqual((first["version"], second["version"]), (0, 0))
+        self.assertEqual(manual_self["version"], 1)
+        self.assertEqual(self.store.conversation_version("Alice", chat_type="group"), 1)
+
+    def test_pending_recovery_can_page_without_leaving_fresh_records_behind(self):
+        for index in range(5):
+            self.store.append_inbound_once(
+                f"page-{index}",
+                "Alice",
+                content=str(index),
+                received_at=100 + index,
+                expires_at=1000,
+                now=100 + index,
+            )
+
+        first_page = self.store.recover_pending_inbound(now=200, limit=2)
+        second_page = self.store.recover_pending_inbound(
+            now=200,
+            limit=2,
+            after_event_seq=first_page[-1]["event_seq"],
+        )
+        third_page = self.store.recover_pending_inbound(
+            now=200,
+            limit=2,
+            after_event_seq=second_page[-1]["event_seq"],
+        )
+
+        recovered = first_page + second_page + third_page
+        self.assertEqual([item["content"] for item in recovered], ["0", "1", "2", "3", "4"])
 
     def test_mark_events_is_all_or_nothing(self):
         event = self.record("msg-1")
@@ -329,6 +464,7 @@ class MessageStoreTests(unittest.TestCase):
         self.store.create_reply_job(
             "replay-turn",
             conversation="Alice",
+            route_source="private_keyword",
             expected_version=1,
             expires_at=1000,
             event_ids=[replay_event["event_id"]],
@@ -356,6 +492,7 @@ class MessageStoreTests(unittest.TestCase):
             [job["turn_id"] for job in recovered["replay_jobs"]],
             ["replay-turn"],
         )
+        self.assertEqual(recovered["replay_jobs"][0]["route_source"], "private_keyword")
         self.assertEqual(recovered["uncertain_action_ids"], ["claimed-turn:0"])
         self.assertEqual(recovered["expired_job_ids"], ["expired-turn"])
         self.assertEqual(self.store.get_reply_job("claimed-turn")["status"], "uncertain")
@@ -403,8 +540,8 @@ class MessageStoreTests(unittest.TestCase):
         )
 
         before_confirmation = self.store.record_inbound(echo)
-        self.assertFalse(before_confirmation["is_new"])
-        self.assertEqual(len(self.store.history("Alice", 10)), 1)
+        self.assertTrue(before_confirmation["is_new"])
+        self.assertEqual(len(self.store.history("Alice", 10)), 2)
 
         confirmed = self.store.confirm_outbound(
             "turn-1:0", "Alice", content="answer", sent_at=121, now=122
@@ -415,6 +552,142 @@ class MessageStoreTests(unittest.TestCase):
         self.assertEqual(after_confirmation["event_id"], confirmed["event_id"])
         self.assertFalse(after_confirmation["is_new"])
         self.assertEqual([item["content"] for item in self.store.history("Alice", 10)], ["hello", "answer"])
+
+    def test_late_echo_resolves_uncertain_action_without_resuming_remainder(self):
+        inbound_event = self.record("msg-late")
+        self.register("turn-late", [inbound_event["event_id"]], version=1, count=2)
+        self.store.conditional_claim(
+            "turn-late:0",
+            conversation="Alice",
+            expected_version=1,
+            expires_at=1000,
+            now=120,
+        )
+        self.store.finish("turn-late:0", "uncertain", "result lost", now=121)
+
+        confirmed = self.store.confirm_outbound(
+            "turn-late:0",
+            "Alice",
+            content="late answer",
+            sent_at=122,
+            now=122,
+        )
+
+        self.assertTrue(confirmed["action_finished"])
+        self.assertEqual(
+            [item["status"] for item in self.store.delivery_actions("turn-late")],
+            ["done", "cancelled"],
+        )
+        self.assertEqual(self.store.get_reply_job("turn-late")["status"], "cancelled")
+        self.assertEqual(
+            [item["content"] for item in self.store.history("Alice", 10)],
+            ["hello", "late answer"],
+        )
+
+    def test_callback_text_wins_when_success_confirmation_uses_same_delivery_id(self):
+        echo = inbound(
+            "echo-material",
+            direction="bot_echo",
+            content="微信实际显示标题",
+            related_delivery_id="material-delivery-1",
+        )
+        callback = self.store.record_inbound(echo)
+
+        confirmed = self.store.append_confirmed_outbound_once(
+            "material-delivery-1",
+            "Alice",
+            content="发送前登记标题",
+            sent_at=101,
+            metadata={"source": "material_outreach"},
+            now=102,
+        )
+
+        self.assertFalse(confirmed["is_new"])
+        self.assertEqual(confirmed["event_id"], callback["event_id"])
+        self.assertEqual(
+            [item["content"] for item in self.store.history("Alice", 10)],
+            ["微信实际显示标题"],
+        )
+        self.assertEqual(
+            self.store.get_event(confirmed["event_id"])["metadata"],
+            {"source": "material_outreach", "callback_source": "callback"},
+        )
+
+    def test_late_callback_text_overwrites_pre_registered_content(self):
+        self.store.append_confirmed_outbound_once(
+            "material-delivery-2",
+            "Alice",
+            content="发送前登记标题",
+            sent_at=101,
+            metadata={"source": "material_outreach"},
+            now=101,
+        )
+
+        callback = self.store.record_inbound(inbound(
+            "echo-material-late",
+            direction="bot_echo",
+            content="微信实际显示标题",
+            related_delivery_id="material-delivery-2",
+        ))
+
+        self.assertFalse(callback["is_new"])
+        self.assertEqual(
+            [item["content"] for item in self.store.history("Alice", 10)],
+            ["微信实际显示标题"],
+        )
+        self.assertEqual(
+            self.store.get_event(callback["event_id"])["metadata"],
+            {"source": "material_outreach", "callback_source": "callback"},
+        )
+
+    def test_late_voice_callback_keeps_tts_semantic_text(self):
+        self.store.append_confirmed_outbound_once(
+            "voice-delivery-1",
+            "Alice",
+            content="这是语音实际说的正文",
+            sent_at=101,
+            message_type="voice",
+            now=101,
+        )
+
+        self.store.record_inbound(inbound(
+            "echo-voice-late",
+            direction="bot_echo",
+            content='语音31"秒',
+            message_type="voice",
+            related_delivery_id="voice-delivery-1",
+        ))
+
+        self.assertEqual(
+            [item["content"] for item in self.store.history("Alice", 10)],
+            ["这是语音实际说的正文"],
+        )
+
+    def test_voice_callback_before_confirmation_also_uses_tts_semantic_text(self):
+        callback = self.store.record_inbound(inbound(
+            "echo-voice-early",
+            direction="bot_echo",
+            content='语音31"秒',
+            message_type="voice",
+            related_delivery_id="voice-delivery-early",
+            received_at=101,
+        ))
+
+        confirmed = self.store.append_confirmed_outbound_once(
+            "voice-delivery-early",
+            "Alice",
+            content="这是语音实际说的正文",
+            sent_at=100,
+            message_type="voice",
+            metadata={"source": "tts"},
+            now=102,
+        )
+
+        event = self.store.get_event(confirmed["event_id"])
+        self.assertEqual(confirmed["event_id"], callback["event_id"])
+        self.assertEqual(event["content"], "这是语音实际说的正文")
+        self.assertEqual(event["received_at"], 101)
+        self.assertEqual(event["metadata"], {"source": "tts", "callback_source": "callback"})
 
     def test_history_import_marker_skips_rescan_and_batch_is_atomic(self):
         entry = {

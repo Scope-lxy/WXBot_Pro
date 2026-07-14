@@ -5,13 +5,18 @@ from types import SimpleNamespace
 from unittest import mock
 
 from core.chat_history_format import build_model_visible_history, format_history_message, format_memory_record_for_display
+from core.inbound_coordinator import InboundCoordinator
 from core.message_pipeline import (
+    ConversationRef,
+    MessageEnvelope,
     build_merged_private_message,
     format_message_semantic_text,
     format_model_message_text,
     strip_voice_duration_metadata,
 )
+from core.message_store import MessageStore
 from core.memory import MemoryManager
+from core.reply_delivery import ReplyAction, ReplyEchoTracker
 from core.sending import (
     clean_ai_reply_text,
     describe_reply_preprocess_rejection,
@@ -58,6 +63,16 @@ class InMemoryChatMemory:
 
 
 class MemoryWriteCallbackTests(unittest.TestCase):
+    def _attach_message_store(self, bot):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        store = MessageStore(temp_dir.name, "test-account")
+        bot._message_store = store
+        bot._inbound_coordinator = InboundCoordinator(store)
+        bot._reply_echo_tracker = ReplyEchoTracker()
+        bot.is_stop_requested = lambda: False
+        return store
+
     def test_private_message_saved_before_queue_is_not_saved_again_by_callback_tail(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
@@ -193,13 +208,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             "queued_batches": deque([[SimpleNamespace(content="待回复")]]),
             "worker_running": True,
         }
-        bot._ensure_lightweight_send_queue_state()
-        bot._lightweight_send_queue["张三"] = {
-            "target": "张三",
-            "actions": [{"type": "text", "text": "旧 AI 回复"}],
-            "source": "private_ai_reply",
-        }
-
         msg = SimpleNamespace(attr="self", sender="self", content="我手机上已经回复了", type="text")
         chat = SimpleNamespace(who="张三", chat_type="private")
 
@@ -213,7 +221,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertEqual(bot._get_private_message_sequence("张三"), 2)
         self.assertNotIn("张三", bot._private_message_pipelines)
         self.assertTrue(timer.cancelled)
-        self.assertNotIn("张三", bot._lightweight_send_queue)
 
     def test_private_reply_echo_self_callback_does_not_interrupt_ai_reply(self):
         bot = WXBot.__new__(WXBot)
@@ -246,18 +253,25 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             "queued_batches": deque(),
             "worker_running": True,
         }
-        bot._remember_persisted_private_reply_echo("张三", "机器人刚发")
+        store = self._attach_message_store(bot)
+        bot._reply_echo_tracker.reserve(
+            "turn-1:0",
+            "张三",
+            ReplyAction("text", "机器人刚发"),
+            confirmable=False,
+        )
+        bot._reply_echo_tracker.activate(("turn-1:0",))
 
-        msg = SimpleNamespace(attr="self", sender="self", content="机器人刚发", type="text")
+        msg = MessageEnvelope(attr="self", sender="self", content="机器人刚发", type="text")
         chat = SimpleNamespace(who="张三", chat_type="private")
 
+        self.assertTrue(bot._persist_ui_message(ConversationRef("张三"), msg))
         bot.message_handle_callback(msg, chat)
 
         self.assertEqual(bot.memory_manager.calls, [])
-        self.assertEqual(bot._get_private_message_sequence("张三"), 1)
+        self.assertEqual(store.conversation_version("张三"), 0)
         self.assertIn("张三", bot._private_message_pipelines)
-        self.assertTrue(getattr(msg, "_wxbot_private_outbound_echo", False))
-        self.assertTrue(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
+        self.assertEqual(store.get_event(msg._wxbot_event_id)["direction"], "bot_echo")
 
     def test_private_voice_echo_self_callback_does_not_interrupt_ai_reply(self):
         bot = WXBot.__new__(WXBot)
@@ -290,19 +304,26 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             "queued_batches": deque(),
             "worker_running": True,
         }
-        bot._remember_private_outbound_echo("张三", "voice", source="private_ai_reply")
+        store = self._attach_message_store(bot)
+        bot._reply_echo_tracker.reserve(
+            "turn-1:0",
+            "张三",
+            ReplyAction("voice", "[语音]"),
+            confirmable=False,
+        )
+        bot._reply_echo_tracker.activate(("turn-1:0",))
 
-        msg = SimpleNamespace(attr="self", sender="self", content='语音8"秒', type="voice")
+        msg = MessageEnvelope(attr="self", sender="self", content='语音8"秒', type="voice")
         chat = SimpleNamespace(who="张三", chat_type="private")
 
+        self.assertTrue(bot._persist_ui_message(ConversationRef("张三"), msg))
         with mock.patch("wxbot_core.log"):
             bot.message_handle_callback(msg, chat)
 
         self.assertEqual(bot.memory_manager.calls, [])
-        self.assertEqual(bot._get_private_message_sequence("张三"), 1)
+        self.assertEqual(store.conversation_version("张三"), 0)
         self.assertIn("张三", bot._private_message_pipelines)
-        self.assertTrue(getattr(msg, "_wxbot_private_outbound_echo", False))
-        self.assertFalse(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
+        self.assertEqual(store.get_event(msg._wxbot_event_id)["direction"], "bot_echo")
 
     def test_private_image_echo_self_callback_does_not_interrupt_ai_reply(self):
         bot = WXBot.__new__(WXBot)
@@ -335,19 +356,26 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             "queued_batches": deque(),
             "worker_running": True,
         }
-        bot._remember_private_outbound_echo("张三", "image", source="keyword_reply")
+        store = self._attach_message_store(bot)
+        bot._reply_echo_tracker.reserve(
+            "turn-1:0",
+            "张三",
+            ReplyAction("file", "[图片]"),
+            confirmable=False,
+        )
+        bot._reply_echo_tracker.activate(("turn-1:0",))
 
-        msg = SimpleNamespace(attr="self", sender="self", content="C:/tmp/a.jpg", type="image")
+        msg = MessageEnvelope(attr="self", sender="self", content="C:/tmp/a.jpg", type="image")
         chat = SimpleNamespace(who="张三", chat_type="private")
 
+        self.assertTrue(bot._persist_ui_message(ConversationRef("张三"), msg))
         with mock.patch("wxbot_core.log"):
             bot.message_handle_callback(msg, chat)
 
         self.assertEqual(bot.memory_manager.calls, [])
-        self.assertEqual(bot._get_private_message_sequence("张三"), 1)
+        self.assertEqual(store.conversation_version("张三"), 0)
         self.assertIn("张三", bot._private_message_pipelines)
-        self.assertTrue(getattr(msg, "_wxbot_private_outbound_echo", False))
-        self.assertFalse(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
+        self.assertEqual(store.get_event(msg._wxbot_event_id)["direction"], "bot_echo")
         self.assertTrue(getattr(msg, "_wxbot_memory_persisted", False))
 
     def test_private_reply_echo_during_active_ai_work_does_not_trigger_self_boundary(self):
@@ -381,18 +409,19 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             "queued_batches": deque([[SimpleNamespace(content="下一批用户消息")]]),
             "worker_running": True,
         }
-        bot._ensure_lightweight_send_queue_state()
-        bot._lightweight_send_queue["张三"] = {
-            "target": "张三",
-            "actions": [{"type": "text", "text": "机器人第一段"}],
-            "source": "private_ai_reply",
-            "expected_sequence": 3,
-        }
-        bot._remember_persisted_private_reply_echo("张三", "机器人第一段")
+        store = self._attach_message_store(bot)
+        bot._reply_echo_tracker.reserve(
+            "turn-1:0",
+            "张三",
+            ReplyAction("text", "机器人第一段"),
+            confirmable=False,
+        )
+        bot._reply_echo_tracker.activate(("turn-1:0",))
 
-        msg = SimpleNamespace(attr="self", sender="self", content="机器人第一段", type="text")
+        msg = MessageEnvelope(attr="self", sender="self", content="机器人第一段", type="text")
         chat = SimpleNamespace(who="张三", chat_type="private")
 
+        self.assertTrue(bot._persist_ui_message(ConversationRef("张三"), msg))
         with mock.patch("wxbot_core.log") as log_mock:
             bot.message_handle_callback(msg, chat)
 
@@ -401,10 +430,9 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertFalse(any("self 介入" in message for message in log_messages))
         self.assertFalse(any("self 边界" in message for message in log_messages))
         self.assertEqual(bot.memory_manager.calls, [])
-        self.assertEqual(bot._get_private_message_sequence("张三"), 3)
+        self.assertEqual(store.conversation_version("张三"), 0)
         self.assertIn("张三", bot._private_message_pipelines)
-        self.assertIn("张三", bot._lightweight_send_queue)
-        self.assertTrue(getattr(msg, "_wxbot_private_reply_persisted_echo", False))
+        self.assertEqual(store.get_event(msg._wxbot_event_id)["direction"], "bot_echo")
 
     def test_private_self_before_ai_starts_splits_open_batch_without_interrupt(self):
         bot = WXBot.__new__(WXBot)

@@ -5,6 +5,7 @@ import time
 import unittest
 import threading
 import tempfile
+import uuid
 from datetime import datetime, timedelta
 from collections import deque
 from types import SimpleNamespace
@@ -12,8 +13,11 @@ from unittest import mock
 
 from core import wechat_ui_actions
 from core.api import API_ERROR_REPLY_TEXT, DusAPI, OpenAIAPI, build_api_config_snapshot
+from core.inbound_coordinator import InboundCoordinator
 from core.message_pipeline import ConversationRef, MessageEnvelope
+from core.message_store import MessageStore
 from core.prompting import build_current_turn_user_message, build_image_user_message
+from core.reply_delivery import ReplyAction, ReplyDeliveryCoordinator, ReplyEchoTracker
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.reply_count_store import ReplyCountStore
 from core.vision_bridge import VisionNote
@@ -23,7 +27,213 @@ from feature.scheduled_messages import execute_scheduled_message_task
 from wxbot_core import LONG_REPLY_SEGMENT_CHARS, WXAUTO_SAVE_DIR_NAME, WXBot, WxParam
 
 
+def make_message_runtime_bot(data_dir):
+    bot = WXBot.__new__(WXBot)
+    bot.config = SimpleNamespace(group=[], cmd="管理员")
+    bot._ui_ingress_queue = queue.Queue()
+    bot._stop_requested_event = threading.Event()
+    bot._message_store = MessageStore(data_dir, "test-account")
+    bot._inbound_coordinator = InboundCoordinator(bot._message_store)
+    bot._reply_echo_tracker = ReplyEchoTracker()
+    return bot
+
+
+def configure_group_reply_runtime(bot, data_dir=None):
+    if data_dir is None:
+        bot._test_message_store_tempdir = tempfile.TemporaryDirectory()
+        data_dir = bot._test_message_store_tempdir.name
+    store = MessageStore(data_dir, f"test-group-{uuid.uuid4().hex}")
+    bot._message_store = store
+    bot._reply_echo_tracker = ReplyEchoTracker()
+    bot._reply_delivery_context = {}
+    bot._reply_delivery_context_lock = threading.Lock()
+    bot._reply_delivery_coordinator = ReplyDeliveryCoordinator(
+        store=store,
+        version_provider=lambda conversation, chat_type="private": store.conversation_version(
+            conversation,
+            chat_type=chat_type,
+        ),
+        prepare=bot._prepare_reply_delivery,
+        sender=bot._send_reply_delivery,
+    )
+    bot._ui_owner = None
+    bot._verified_send_chat = lambda target, candidate=None: (
+        candidate if getattr(candidate, "who", "") == target else None
+    )
+    bot._ensure_target_listen_chat_for_send = lambda _target: None
+    return store
+
+
+def process_persisted_group_message(bot, chat, message):
+    if not getattr(chat, "_test_reply_send_wrapped", False):
+        send_message = chat.SendMsg
+        chat.SendMsg = lambda msg=None, at=None, **_kwargs: send_message(msg, at=at)
+        chat._test_reply_send_wrapped = True
+    now = time.time()
+    stored = bot._message_store.record_inbound({
+        "conversation": chat.who,
+        "chat_type": "group",
+        "direction": "friend",
+        "sender": getattr(message, "sender", ""),
+        "content": getattr(message, "content", ""),
+        "original_content": getattr(message, "content", ""),
+        "message_type": getattr(message, "type", "text"),
+        "native_attr": getattr(message, "attr", "group"),
+        "native_id": f"test-{uuid.uuid4().hex}",
+        "received_at": now,
+        "source": "test",
+        "source_batch": f"test-{uuid.uuid4().hex}",
+        "source_order": 0,
+    })
+    message._wxbot_event_id = stored["event_id"]
+    message._wxbot_event_ids = (stored["event_id"],)
+    message._wxbot_event_version = stored["version"]
+    message._wxbot_reply_expires_at = now + 15 * 60
+    message._wxbot_received_at = now
+    return bot.process_message(chat, message)
+
+
+def configure_persisted_private_reply(bot, chat, message, data_dir):
+    store = configure_group_reply_runtime(bot, data_dir)
+    persist_private_inbound(store, chat, message)
+    return store
+
+
+def persist_private_inbound(store, chat, message):
+    now = time.time()
+    stored = store.record_inbound({
+        "conversation": chat.who,
+        "chat_type": "private",
+        "direction": "friend",
+        "sender": getattr(message, "sender", chat.who),
+        "content": getattr(message, "content", ""),
+        "original_content": getattr(message, "content", ""),
+        "message_type": getattr(message, "type", "text"),
+        "native_attr": getattr(message, "attr", "friend"),
+        "native_id": str(getattr(message, "id", "") or f"test-{uuid.uuid4().hex}"),
+        "received_at": now,
+        "source": "test",
+        "source_batch": f"test-{uuid.uuid4().hex}",
+        "source_order": 0,
+    })
+    message._wxbot_event_id = stored["event_id"]
+    message._wxbot_event_ids = (stored["event_id"],)
+    message._wxbot_event_version = stored["version"]
+    message._wxbot_reply_expires_at = now + 15 * 60
+    message._wxbot_received_at = now
+    return stored
+
+
 class ApiBehaviorTests(unittest.TestCase):
+    def test_recovered_keyword_job_never_falls_through_to_ai(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                chat_keyword_switch=False,
+                keyword_dict={},
+                chat_text_reply_limit_switch=False,
+            )
+            bot._message_store = MessageStore(tmp, "route-recovery")
+            bot._private_reply_can_continue = lambda _chat: True
+            bot._get_chat_api = lambda _name: self.fail("关键词恢复不得改走 AI")
+            chat = SimpleNamespace(who="张三", chat_type="private")
+            message = MessageEnvelope(
+                id="keyword-1",
+                attr="friend",
+                sender="张三",
+                type="text",
+                content="旧关键词",
+            )
+            stored = persist_private_inbound(bot._message_store, chat, message)
+            bot._message_store.create_reply_job(
+                "keyword-turn",
+                conversation="张三",
+                chat_type="private",
+                route_source="private_keyword",
+                expected_version=stored["version"],
+                expires_at=time.time() + 600,
+                event_ids=[stored["event_id"]],
+            )
+            message._wxbot_reply_turn_id = "keyword-turn"
+            message._wxbot_recovery_route_source = "private_keyword"
+
+            self.assertTrue(bot.wx_send_ai(chat, message))
+
+            self.assertEqual(
+                bot._message_store.get_reply_job("keyword-turn")["status"],
+                "cancelled",
+            )
+
+    def test_skipped_private_media_reaches_not_required_terminal_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_message_runtime_bot(tmp)
+            bot.config = SimpleNamespace(
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=False,
+            )
+            chat = SimpleNamespace(who="张三", chat_type="private")
+            message = MessageEnvelope(
+                id="image-1",
+                attr="friend",
+                sender="张三",
+                type="image",
+                content="[图片]",
+            )
+            stored = persist_private_inbound(bot._message_store, chat, message)
+            message._skip_ai_reply = True
+
+            bot._enqueue_private_message_for_ai(chat, message)
+
+            event = bot._message_store.get_event(stored["event_id"])
+            self.assertEqual(event["processing_state"], "handled")
+            self.assertEqual(event["reply_state"], "not_required")
+
+    def test_pending_private_voice_stays_recoverable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_message_runtime_bot(tmp)
+            bot.config = SimpleNamespace(
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=True,
+            )
+            chat = SimpleNamespace(who="张三", chat_type="private")
+            message = MessageEnvelope(
+                id="voice-1",
+                attr="friend",
+                sender="张三",
+                type="voice",
+                content='语音8"秒',
+            )
+            stored = persist_private_inbound(bot._message_store, chat, message)
+            message._skip_ai_reply = True
+            message._wxbot_pending_voice_key = "voice:张三:1"
+
+            bot._enqueue_private_message_for_ai(chat, message)
+
+            event = bot._message_store.get_event(stored["event_id"])
+            self.assertEqual(event["processing_state"], "pending")
+            self.assertEqual(event["reply_state"], "pending")
+
+    def test_paused_private_reply_does_not_survive_as_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_message_runtime_bot(tmp)
+            bot.config = SimpleNamespace(chat_listen_only=False)
+            bot._pause_chat_reply = True
+            chat = SimpleNamespace(who="张三", chat_type="private")
+            message = MessageEnvelope(
+                id="paused-1",
+                attr="friend",
+                sender="张三",
+                type="text",
+                content="暂停期间的消息",
+            )
+            stored = persist_private_inbound(bot._message_store, chat, message)
+
+            self.assertTrue(bot.wx_send_ai(chat, message))
+
+            event = bot._message_store.get_event(stored["event_id"])
+            self.assertEqual(event["processing_state"], "handled")
+            self.assertEqual(event["reply_state"], "not_required")
+
     def test_openai_chat_success_still_returns_model_text(self):
         api = OpenAIAPI.__new__(OpenAIAPI)
         api.config = build_api_config_snapshot(
@@ -195,7 +405,7 @@ class ApiBehaviorTests(unittest.TestCase):
 
 
 class MessageBehaviorTests(unittest.TestCase):
-    def test_listener_thread_exception_arms_lightweight_recovery(self):
+    def test_listener_thread_exception_arms_listener_recovery(self):
         bot = WXBot.__new__(WXBot)
         bot.is_stop_requested = lambda: False
         calls = []
@@ -547,25 +757,23 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", second))
 
     def test_private_ingress_advances_version_before_business_queue_runs(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(group=[], cmd="管理员")
-        bot._ui_ingress_queue = queue.Queue()
-        bot._stop_requested_event = threading.Event()
-        conversation = ConversationRef("张三", "private")
-        message = MessageEnvelope(
-            id="message-1",
-            type="text",
-            attr="friend",
-            sender="张三",
-            content="新消息",
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_message_runtime_bot(tmp)
+            conversation = ConversationRef("张三", "private")
+            message = MessageEnvelope(
+                id="message-1",
+                type="text",
+                attr="friend",
+                sender="张三",
+                content="新消息",
+            )
 
-        self.assertTrue(bot._enqueue_ui_message(conversation, message))
+            self.assertTrue(bot._enqueue_ui_message(conversation, message))
 
-        self.assertEqual(bot._get_private_message_sequence("张三"), 1)
-        self.assertTrue(message._wxbot_seen_at_ingress)
-        self.assertTrue(message._wxbot_sequence_advanced)
-        self.assertEqual(bot._ui_ingress_queue.qsize(), 1)
+            self.assertEqual(bot._message_store.conversation_version("张三"), 1)
+            self.assertTrue(message._wxbot_seen_at_ingress)
+            self.assertTrue(message._wxbot_sequence_advanced)
+            self.assertEqual(bot._ui_ingress_queue.qsize(), 1)
 
     def test_contact_barrier_blocks_entire_message_business_pipeline(self):
         contact_done = threading.Event()
@@ -595,136 +803,94 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(processed, [("维护期间消息", "张三")])
 
     def test_duplicate_private_ingress_does_not_advance_version_twice(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(group=[], cmd="管理员")
-        bot._ui_ingress_queue = queue.Queue()
-        bot._stop_requested_event = threading.Event()
-        conversation = ConversationRef("张三", "private")
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_message_runtime_bot(tmp)
+            conversation = ConversationRef("张三", "private")
 
-        for _index in range(2):
-            bot._enqueue_ui_message(conversation, MessageEnvelope(
-                id="same-message",
-                type="text",
-                attr="friend",
-                sender="张三",
-                content="新消息",
-            ))
+            for _index in range(2):
+                bot._enqueue_ui_message(conversation, MessageEnvelope(
+                    id="same-message",
+                    type="text",
+                    attr="friend",
+                    sender="张三",
+                    content="新消息",
+                ))
 
-        self.assertEqual(bot._get_private_message_sequence("张三"), 1)
-        self.assertEqual(bot._ui_ingress_queue.qsize(), 1)
+            self.assertEqual(bot._message_store.conversation_version("张三"), 1)
+            self.assertEqual(bot._ui_ingress_queue.qsize(), 1)
 
     def test_manual_self_ingress_invalidates_old_reply_but_bot_echo_does_not(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(group=[], cmd="管理员")
-        bot._ui_ingress_queue = queue.Queue()
-        bot._stop_requested_event = threading.Event()
-        conversation = ConversationRef("张三", "private")
-        bot._remember_private_outbound_echo("张三", "text", "机器人回复", source="test")
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_message_runtime_bot(tmp)
+            conversation = ConversationRef("张三", "private")
+            bot._reply_echo_tracker.reserve(
+                "turn-1:0",
+                "张三",
+                ReplyAction("text", "机器人回复"),
+                confirmable=False,
+            )
+            bot._reply_echo_tracker.activate(("turn-1:0",))
 
-        echo = MessageEnvelope(type="text", attr="self", sender="self", content="机器人回复")
-        manual = MessageEnvelope(type="text", attr="self", sender="self", content="人工回复")
-        bot._enqueue_ui_message(conversation, echo)
-        bot._enqueue_ui_message(conversation, manual)
+            echo = MessageEnvelope(type="text", attr="self", sender="self", content="机器人回复")
+            manual = MessageEnvelope(type="text", attr="self", sender="self", content="人工回复")
+            bot._enqueue_ui_message(conversation, echo)
+            bot._enqueue_ui_message(conversation, manual)
 
-        self.assertEqual(bot._get_private_message_sequence("张三"), 1)
-        self.assertTrue(echo._wxbot_private_outbound_echo)
-        self.assertFalse(getattr(echo, "_wxbot_private_reply_persisted_echo", False))
-        self.assertTrue(manual._wxbot_sequence_advanced)
+            self.assertEqual(bot._message_store.conversation_version("张三"), 1)
+            self.assertEqual(bot._message_store.get_event(echo._wxbot_event_id)["direction"], "bot_echo")
+            self.assertEqual(bot._message_store.get_event(manual._wxbot_event_id)["direction"], "manual_self")
+            self.assertTrue(manual._wxbot_sequence_advanced)
+            self.assertEqual(bot._ui_ingress_queue.qsize(), 1)
 
     def test_duplicate_private_self_callback_id_is_ignored(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(group=[], cmd="管理员")
-        bot._ui_ingress_queue = queue.Queue()
-        bot._stop_requested_event = threading.Event()
-        conversation = ConversationRef("张三", "private")
-        bot._remember_private_outbound_echo("张三", "text", "机器人回复", source="test")
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_message_runtime_bot(tmp)
+            conversation = ConversationRef("张三", "private")
+            bot._reply_echo_tracker.reserve(
+                "turn-1:0",
+                "张三",
+                ReplyAction("text", "机器人回复"),
+                confirmable=False,
+            )
+            bot._reply_echo_tracker.activate(("turn-1:0",))
 
-        first = MessageEnvelope(id="self-1", type="text", attr="self", sender="self", content="机器人回复")
-        duplicate = MessageEnvelope(id="self-1", type="text", attr="self", sender="self", content="机器人回复")
-        bot._enqueue_ui_message(conversation, first)
-        bot._enqueue_ui_message(conversation, duplicate)
+            first = MessageEnvelope(id="self-1", type="text", attr="self", sender="self", content="机器人回复")
+            duplicate = MessageEnvelope(id="self-1", type="text", attr="self", sender="self", content="机器人回复")
+            bot._enqueue_ui_message(conversation, first)
+            bot._enqueue_ui_message(conversation, duplicate)
 
-        self.assertEqual(bot._ui_ingress_queue.qsize(), 1)
+            self.assertEqual(bot._ui_ingress_queue.qsize(), 0)
+            self.assertEqual(bot._message_store.conversation_version("张三"), 0)
 
     def test_uncertain_send_runtime_echo_does_not_invalidate_remaining_bubbles(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(group=[], cmd="管理员")
-        bot._ui_ingress_queue = queue.Queue()
-        bot._stop_requested_event = threading.Event()
-        bot._ensure_message_runtime_state()
-        turn = bot._begin_private_reply_runtime_turn("张三")
-        bot._append_private_reply_runtime_part(turn, "结果未知的机器人气泡")
-        bot._finish_private_reply_runtime_turn("张三", turn)
-        conversation = ConversationRef("张三", "private")
-        echo = MessageEnvelope(
-            type="text",
-            attr="self",
-            sender="self",
-            content="结果未知的机器人气泡",
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_message_runtime_bot(tmp)
+            bot._reply_echo_tracker.reserve(
+                "runtime-send-1",
+                "张三",
+                ReplyAction("text", "结果未知的机器人气泡"),
+                confirmable=False,
+            )
+            bot._reply_echo_tracker.activate(("runtime-send-1",))
+            conversation = ConversationRef("张三", "private")
+            echo = MessageEnvelope(
+                type="text",
+                attr="self",
+                sender="self",
+                content="结果未知的机器人气泡",
+            )
 
-        bot._enqueue_ui_message(conversation, echo)
+            bot._enqueue_ui_message(conversation, echo)
 
-        self.assertEqual(bot._get_private_message_sequence("张三"), 0)
-        self.assertTrue(echo._wxbot_runtime_reply_echo)
+            self.assertEqual(bot._message_store.conversation_version("张三"), 0)
+            self.assertEqual(bot._message_store.get_event(echo._wxbot_event_id)["direction"], "bot_echo")
+            self.assertEqual(bot._ui_ingress_queue.qsize(), 0)
 
     def test_verified_send_chat_does_not_probe_wechat_when_candidate_missing(self):
         bot = WXBot.__new__(WXBot)
         bot._get_verified_subwindow = lambda _target: self.fail("不应主动探测微信子窗口")
 
         self.assertIsNone(bot._verified_send_chat("张三", None))
-
-    def test_lightweight_send_queue_logs_only_final_outcome(self):
-        bot = WXBot.__new__(WXBot)
-        bot._get_wechat_action_lock = lambda: threading.RLock()
-        bot._get_chat_send_lock = lambda _target: threading.RLock()
-        bot._wechat_action_lock_is_busy = lambda: False
-        bot._ensure_target_listen_chat_for_send = lambda _target: SimpleNamespace(
-            SendMsg=lambda _text: True
-        )
-
-        logs = []
-        with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append(kwargs.get("message", ""))):
-            self.assertEqual(
-                bot._queue_lightweight_send("张三", [{"type": "text", "text": "你好"}], source="text")["status"],
-                "queued",
-            )
-            self.assertTrue(bot._flush_lightweight_send_queue())
-
-        self.assertEqual(logs, ["[轻量发送队列] 张三 延后发送已完成"])
-
-        bot._ensure_lightweight_send_queue_state()
-        bot._lightweight_send_queue.clear()
-        bot._send_lightweight_actions_to_child = lambda _target, _actions, **_kwargs: False
-        logs = []
-        with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append(kwargs.get("message", ""))):
-            bot._queue_lightweight_send("李四", [{"type": "text", "text": "你好"}], source="text")
-            self.assertFalse(bot._flush_lightweight_send_queue())
-
-        self.assertEqual(logs, ["[轻量发送队列] 李四 待发送任务暂未发出，保留队列"])
-
-    def test_queued_private_ai_reply_logs_confirmed_contents_as_info(self):
-        bot = WXBot.__new__(WXBot)
-        bot._get_wechat_action_lock = lambda: threading.RLock()
-        bot._get_chat_send_lock = lambda _target: threading.RLock()
-        bot._wechat_action_lock_is_busy = lambda: False
-        bot._ensure_target_listen_chat_for_send = lambda _target: SimpleNamespace(
-            SendMsg=lambda _text: True
-        )
-
-        logs = []
-        with mock.patch(
-            "wxbot_core.log",
-            side_effect=lambda **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", ""))),
-        ):
-            bot._queue_text_reply_until_target_verified(
-                "张三",
-                ["你好", "晚安"],
-                source="private_ai_reply",
-            )
-            self.assertTrue(bot._flush_lightweight_send_queue())
-
-        self.assertEqual(logs, [("INFO", "私聊 张三：本轮回复（2条）：你好 ｜ 晚安")])
 
     def test_reply_content_log_marks_voice_and_uses_info_level(self):
         logs = []
@@ -743,229 +909,6 @@ class MessageBehaviorTests(unittest.TestCase):
             logs,
             [("INFO", "私聊 诗意&清欢：本轮回复（2条）：你好 ｜ [语音]姐姐，我也在想你哦")],
         )
-
-    def test_stale_private_ai_reply_is_dropped_from_lightweight_send_queue(self):
-        bot = WXBot.__new__(WXBot)
-        bot._get_wechat_action_lock = lambda: threading.RLock()
-        bot._wechat_action_lock_is_busy = lambda: False
-        bot._send_lightweight_actions_to_child = lambda _target, _actions, **_kwargs: self.fail("旧回复不应继续发送")
-        bot._ensure_message_runtime_state()
-        bot._next_private_message_sequence("张三")
-        expected_sequence = bot._get_private_message_sequence("张三")
-        bot._queue_text_reply_until_target_verified(
-            "张三",
-            ["旧回复"],
-            source="private_ai_reply",
-            expected_sequence=expected_sequence,
-        )
-        bot._next_private_message_sequence("张三")
-
-        logs = []
-        with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append(kwargs.get("message", ""))):
-            self.assertFalse(bot._flush_lightweight_send_queue())
-
-        self.assertEqual(bot._lightweight_send_queue, {})
-        self.assertEqual(logs, ["[轻量发送队列] 张三 已有新消息，丢弃上一轮过期回复"])
-
-    def test_owner_lightweight_actions_are_individually_versioned(self):
-        calls = []
-
-        class Owner:
-            def call(self, intent, timeout):
-                calls.append((intent, timeout))
-                return [True, True, True]
-
-        bot = WXBot.__new__(WXBot)
-        bot._ui_owner = Owner()
-        bot.config = SimpleNamespace(
-            chat_split_reply_switch=True,
-            chat_split_reply_delay_switch=True,
-        )
-        actions = [
-            {"type": "text", "text": "第一条"},
-            {"type": "file", "path": "a.png"},
-            {"type": "voice", "path": "a.wav"},
-        ]
-
-        result = bot._send_lightweight_actions_to_child(
-            "张三",
-            actions,
-            source="ai_reply",
-            expected_sequence=7,
-            delivery_id="delivery-1",
-        )
-
-        self.assertTrue(result)
-        self.assertEqual(len(calls), 3)
-        for index, (intent, timeout) in enumerate(calls):
-            self.assertEqual(intent.kind, wechat_ui_actions.UIIntentKind.SEND_ACTIONS)
-            self.assertEqual(intent.conversation_version, 7)
-            self.assertEqual(intent.payload["delivery_id"], f"delivery-1:{index}")
-            self.assertEqual([dict(item) for item in intent.payload["actions"]], [actions[index]])
-            self.assertIs(timeout, wechat_ui_actions.UI_CALL_WAIT_TIMEOUT)
-        self.assertEqual(len(bot._private_outbound_echoes["张三"]), 3)
-
-    def test_owner_lightweight_actions_stop_before_unsent_items_after_new_message(self):
-        calls = []
-
-        class Owner:
-            def call(self, intent, _timeout):
-                calls.append(intent)
-                if len(calls) == 2:
-                    raise wechat_ui_actions.IntentCancelled("会话已有新消息")
-                return [True]
-
-        bot = WXBot.__new__(WXBot)
-        bot._ui_owner = Owner()
-
-        with self.assertRaises(wechat_ui_actions.IntentCancelled):
-            bot._send_lightweight_actions_to_child(
-                "张三",
-                [
-                    {"type": "text", "text": "第一条"},
-                    {"type": "text", "text": "第二条"},
-                    {"type": "text", "text": "第三条"},
-                ],
-                source="ai_reply",
-                expected_sequence=7,
-                delivery_id="delivery-2",
-            )
-
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(len(bot._private_outbound_echoes["张三"]), 1)
-
-    def test_owner_text_send_reserves_echo_before_synchronous_self_callback(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="管理员", group=[], memory_switch=True)
-        bot._ui_ingress_queue = queue.Queue()
-        bot._ui_ingress_stop = threading.Event()
-        bot._ensure_message_runtime_state()
-
-        class Owner:
-            is_running = True
-
-            def call(self, _intent, _timeout):
-                bot._enqueue_ui_message(
-                    ConversationRef("张三", "private"),
-                    MessageEnvelope(type="text", attr="self", sender="self", content="同步回复"),
-                )
-                return True
-
-        bot._ui_owner = Owner()
-        self.assertTrue(bot._send_text_to_target_without_child("张三", "同步回复"))
-
-        _conversation, callback = bot._ui_ingress_queue.get_nowait()
-        self.assertTrue(callback._wxbot_private_outbound_echo)
-        self.assertEqual(bot._get_private_message_sequence("张三"), 0)
-
-    def test_synchronous_primary_echo_is_released_to_callback_when_result_is_unknown(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="管理员", group=[], memory_switch=True)
-        bot._ui_ingress_queue = queue.Queue()
-        bot._ui_ingress_stop = threading.Event()
-        bot._ensure_message_runtime_state()
-        group_id = bot._reserve_private_outbound_echo_for_send(
-            "张三",
-            "text",
-            "结果未知",
-            source="private_ai_reply",
-            fallback_content="结果未知",
-            primary_memory_writer=True,
-        )
-        bot._enqueue_ui_message(
-            ConversationRef("张三", "private"),
-            MessageEnvelope(type="text", attr="self", sender="self", content="结果未知"),
-        )
-        bot._release_private_outbound_echo_group_to_callback(group_id)
-
-        _conversation, callback = bot._ui_ingress_queue.get_nowait()
-        chat = SimpleNamespace(who="张三", chat_type="private")
-        self.assertTrue(callback._wxbot_private_outbound_echo_duplicate)
-        self.assertFalse(bot._should_skip_message_memory(chat, callback))
-
-    def test_reported_failed_send_still_recognizes_late_self_callback(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="管理员", group=[], memory_switch=True)
-        bot._ui_ingress_queue = queue.Queue()
-        bot._ui_ingress_stop = threading.Event()
-        bot._ensure_message_runtime_state()
-        group_id = bot._reserve_private_outbound_echo_for_send(
-            "张三", "text", "晚到回调", source="test", fallback_content="晚到回调"
-        )
-        self.assertFalse(bot._settle_private_outbound_echo_send(group_id, False))
-
-        bot._enqueue_ui_message(
-            ConversationRef("张三", "private"),
-            MessageEnvelope(type="text", attr="self", sender="self", content="晚到回调"),
-        )
-
-        _conversation, callback = bot._ui_ingress_queue.get_nowait()
-        self.assertTrue(callback._wxbot_private_outbound_echo)
-        self.assertEqual(bot._get_private_message_sequence("张三"), 0)
-        self.assertEqual(bot._private_outbound_echoes["张三"][0]["fallback_content"], "")
-
-    def test_queued_private_ai_reply_skips_first_delay_but_keeps_split_delays(self):
-        events = []
-
-        class Owner:
-            def call(self, intent, _timeout):
-                events.append(("send", intent.payload["actions"][0]["text"]))
-                return [True]
-
-        bot = WXBot.__new__(WXBot)
-        bot._ui_owner = Owner()
-        bot.config = SimpleNamespace(
-            chat_split_reply_switch=True,
-            chat_split_reply_delay_switch=True,
-        )
-        bot._get_private_message_sequence = lambda _target: 7
-        bot._human_delay_for_reply_part = lambda **kwargs: events.append((
-            "delay",
-            kwargs["part_text"],
-            kwargs["split_continuation"],
-            kwargs["is_last"],
-        ))
-        bot._remember_private_outbound_echo_for_send_result = lambda *_args, **_kwargs: True
-
-        result = bot._send_lightweight_actions_to_child(
-            "张三",
-            [
-                {"type": "text", "text": "第一条"},
-                {"type": "text", "text": "第二条"},
-                {"type": "text", "text": "第三条"},
-            ],
-            source="private_ai_reply",
-            expected_sequence=7,
-            delivery_id="delivery-delay",
-        )
-
-        self.assertTrue(result)
-        self.assertEqual(events, [
-            ("send", "第一条"),
-            ("delay", "第二条", True, False), ("send", "第二条"),
-            ("delay", "第三条", True, True), ("send", "第三条"),
-        ])
-
-    def test_queued_private_ai_reply_preserves_long_text_bubble_split(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(split_long_text=lambda _text: ["长回复上半段", "长回复下半段"])
-        captured = []
-        bot._queue_lightweight_send = lambda target, actions, **kwargs: captured.append(
-            (target, actions, kwargs)
-        ) or True
-
-        self.assertTrue(bot._queue_text_reply_until_target_verified(
-            "张三",
-            ["长" * LONG_REPLY_SEGMENT_CHARS, "第三条"],
-            source="private_ai_reply",
-            expected_sequence=9,
-        ))
-
-        self.assertEqual(captured[0][1], [
-            {"type": "text", "text": "长回复上半段"},
-            {"type": "text", "text": "长回复下半段"},
-            {"type": "text", "text": "第三条"},
-        ])
 
     def test_split_reply_delay_switch_can_disable_only_the_bubble_wait(self):
         bot = WXBot.__new__(WXBot)
@@ -986,33 +929,6 @@ class MessageBehaviorTests(unittest.TestCase):
             delay_enabled=True,
         )
         self.assertEqual(waits, [4.0])
-
-    def test_owner_rechecks_lightweight_queue_version_at_execution(self):
-        sequence_reads = iter([1, 2])
-        sent = []
-        bot = WXBot.__new__(WXBot)
-        bot._get_private_message_sequence = lambda _target: next(sequence_reads)
-        bot._remember_private_outbound_echo_for_send_result = lambda *_args, **_kwargs: True
-        owner = wechat_ui_actions.WeChatUIOwner(
-            {wechat_ui_actions.UIIntentKind.SEND_ACTIONS: lambda payload: sent.append(dict(payload)) or [True]},
-            conversation_version_provider=bot._get_private_message_sequence,
-            poll_interval=0.01,
-        )
-        bot._ui_owner = owner
-        owner.start()
-        try:
-            bot._queue_lightweight_send(
-                "张三",
-                [{"type": "text", "text": "旧回复"}],
-                source="ai_reply",
-                expected_sequence=1,
-            )
-            self.assertFalse(bot._flush_lightweight_send_queue())
-        finally:
-            owner.stop()
-
-        self.assertEqual(sent, [])
-        self.assertEqual(bot._lightweight_send_queue, {})
 
     def test_wxauto_download_dir_follows_kernel_save_path(self):
         bot = WXBot.__new__(WXBot)
@@ -1061,8 +977,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._incoming_seen_ids = {}
         bot._incoming_seen_fingerprints = {}
         bot._chat_send_locks = {}
-        bot._private_reply_runtime_turns = {}
-        bot._private_reply_persisted_echoes = {}
         bot._pending_visual_contexts = {}
         bot._chat_memory_dirty_lock = threading.Lock()
         bot._chat_memory_dirty_chats = {}
@@ -1424,6 +1338,7 @@ class MessageBehaviorTests(unittest.TestCase):
                 split_long_text=lambda text: [text],
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            configure_group_reply_runtime(bot, tmp)
             bot.memory_manager = None
             bot._pause_group_reply = False
             bot.is_stop_requested = lambda: False
@@ -1455,9 +1370,9 @@ class MessageBehaviorTests(unittest.TestCase):
 
             bot.reply_count_store.increment_ai_count("group:测试群:张三", limit_hours=24)
 
-            self.assertTrue(bot.process_message(make_chat("测试群"), make_message("张三")))
-            self.assertTrue(bot.process_message(make_chat("测试群"), make_message("李四")))
-            self.assertTrue(bot.process_message(make_chat("另一个群"), make_message("张三")))
+            self.assertTrue(process_persisted_group_message(bot, make_chat("测试群"), make_message("张三")))
+            self.assertTrue(process_persisted_group_message(bot, make_chat("测试群"), make_message("李四")))
+            self.assertTrue(process_persisted_group_message(bot, make_chat("另一个群"), make_message("张三")))
 
             self.assertEqual(
                 sent,
@@ -1616,109 +1531,7 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(len(synth_calls), 1)
 
-    def test_voice_reply_sends_audio_while_holding_wechat_ui_lock(self):
-        events = []
-
-        class RecordingLock:
-            locked = False
-
-            def acquire(self, blocking=True):
-                events.append(("acquire", blocking))
-                self.locked = True
-                return True
-
-            def release(self):
-                events.append(("release",))
-                self.locked = False
-
-        lock = RecordingLock()
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
-        bot._voice_reply_state = None
-        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
-        bot._active_tts_config = lambda _user="": {"provider": "fake"}
-        bot._record_tts_api_request = lambda: None
-        bot._remove_temp_audio_file = lambda _path: None
-        bot._get_wechat_action_lock = lambda: lock
-        saved = []
-        bot._save_private_reply_memory_message = lambda *_args, **_kwargs: saved.append(True) or True
-        bot._ui_ingress_queue = queue.Queue()
-        bot._ui_ingress_stop = threading.Event()
-        bot._ensure_message_runtime_state()
-
-        class FakeTtsClient:
-            def synthesize(self, _text, _audio_path):
-                pass
-
-        def send_audio(**_kwargs):
-            events.append(("send_audio", lock.locked))
-            bot._enqueue_ui_message(
-                ConversationRef("张三", "private"),
-                MessageEnvelope(type="voice", attr="self", sender="self", content="[语音]"),
-            )
-            return True
-
-        chat = SimpleNamespace(who="张三", SendAudio=send_audio)
-
-        with mock.patch("wxbot_core.create_tts_client", return_value=FakeTtsClient()):
-            result = bot._try_send_voice_reply(
-                chat,
-                "你好",
-                state_key="private:张三",
-                limit_count=99,
-                limit_hours=24,
-            )
-
-        self.assertTrue(result)
-        self.assertIn(("send_audio", True), events)
-        self.assertEqual(events[-1], ("release",))
-        self.assertEqual(saved, [True])
-        _conversation, callback = bot._ui_ingress_queue.get_nowait()
-        self.assertTrue(callback._wxbot_private_outbound_echo_duplicate)
-        self.assertEqual(bot._get_private_message_sequence("张三"), 0)
-
-    def test_voice_reply_does_not_fallback_after_send_result_becomes_uncertain(self):
-        class RecordingLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        statuses = []
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="", group=[], memory_switch=True)
-        bot._voice_reply_state = None
-        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
-        bot._active_tts_config = lambda _user="": {"provider": "fake"}
-        bot._record_tts_api_request = lambda: None
-        bot._remove_temp_audio_file = lambda _path: None
-        bot._get_wechat_action_lock = lambda: RecordingLock()
-        bot._mark_unanswered_send_started = lambda record_id="": statuses.append((record_id, "send_started"))
-        bot._mark_unanswered_uncertain = lambda record_id="": statuses.append((record_id, "uncertain"))
-
-        class FakeTtsClient:
-            def synthesize(self, _text, _audio_path):
-                pass
-
-        def send_audio(**_kwargs):
-            raise RuntimeError("send result lost")
-
-        chat = SimpleNamespace(who="张三", SendAudio=send_audio)
-        with mock.patch("wxbot_core.create_tts_client", return_value=FakeTtsClient()):
-            with self.assertRaisesRegex(RuntimeError, "send result lost"):
-                bot._try_send_voice_reply(
-                    chat,
-                    "你好",
-                    state_key="private:张三",
-                    limit_count=99,
-                    limit_hours=24,
-                    unanswered_record_id="record-1",
-                )
-
-        self.assertEqual(statuses, [("record-1", "send_started"), ("record-1", "uncertain")])
-
-    def test_keyword_private_reply_registers_outbound_echoes(self):
+    def test_keyword_private_reply_sends_text_and_file_actions(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
         bot._ensure_message_runtime_state()
@@ -1742,6 +1555,14 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._ensure_target_listen_chat_for_send = lambda _target: chat
 
         with tempfile.TemporaryDirectory() as tmp:
+            message = SimpleNamespace(
+                type="text",
+                attr="friend",
+                sender="张三",
+                content="关键词",
+                id="keyword-1",
+            )
+            configure_persisted_private_reply(bot, chat, message, tmp)
             image_path = os.path.join(tmp, "a.jpg")
             with open(image_path, "wb") as f:
                 f.write(b"img")
@@ -1751,150 +1572,12 @@ class MessageBehaviorTests(unittest.TestCase):
                     {"type": "text", "content": "关键词回复"},
                     {"type": "file", "path": image_path},
                 ],
+                message=message,
             )
 
         self.assertTrue(success)
         self.assertTrue(result)
-        self.assertEqual(sent[0], ("text", "关键词回复"))
-        echoes = bot._private_outbound_echoes["张三"]
-        self.assertEqual([item["type"] for item in echoes], ["text", "image"])
-        self.assertEqual(echoes[0]["content"], "关键词回复")
-        self.assertTrue(all(item["source"] == "keyword_reply" for item in echoes))
-
-    def test_known_material_echo_types_are_not_normalized_to_unknown(self):
-        bot = WXBot.__new__(WXBot)
-
-        self.assertEqual(bot._normalize_private_outbound_echo_type("note"), "note")
-        self.assertEqual(bot._normalize_private_outbound_echo_type("location"), "location")
-        self.assertEqual(bot._normalize_private_outbound_echo_type("personal_card"), "personal_card")
-
-    def test_private_outbound_echo_ttl_uses_short_known_non_text_window(self):
-        bot = WXBot.__new__(WXBot)
-
-        self.assertEqual(bot._private_outbound_echo_ttl("text"), 60)
-        self.assertEqual(bot._private_outbound_echo_ttl("image"), 60)
-        self.assertEqual(bot._private_outbound_echo_ttl("voice"), 60)
-        self.assertEqual(bot._private_outbound_echo_ttl("unknown"), 30)
-
-    def test_persisted_private_outbound_echo_keeps_original_match_window(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="管理员", group=[])
-        bot._ensure_message_runtime_state()
-
-        with mock.patch("wxbot_core.time.time", return_value=100.0):
-            group_id = bot._reserve_private_outbound_echo_for_send(
-                "张三", "text", "机器人回复", source="private_ai_reply"
-            )
-        original_expiry = bot._private_outbound_echoes["张三"][0]["expires_at"]
-
-        with mock.patch("wxbot_core.time.time", return_value=101.0):
-            self.assertTrue(bot._mark_private_outbound_echo_group_persisted(group_id))
-
-        echo = bot._private_outbound_echoes["张三"][0]
-        self.assertTrue(echo["memory_persisted"])
-        self.assertEqual(echo["expires_at"], original_expiry)
-
-    def test_persisted_echo_matches_once_then_same_text_new_id_is_manual(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="管理员", group=[])
-        bot._ensure_message_runtime_state()
-
-        with mock.patch("wxbot_core.time.time", return_value=100.0):
-            group_id = bot._reserve_private_outbound_echo_for_send(
-                "张三", "text", "相同内容", source="private_ai_reply"
-            )
-            bot._mark_private_outbound_echo_group_persisted(group_id)
-
-        with mock.patch("wxbot_core.time.time", return_value=106.0):
-            robot_echo = bot._consume_private_outbound_echo(
-                "张三",
-                message=MessageEnvelope(
-                    id="robot-echo",
-                    type="text",
-                    attr="self",
-                    sender="self",
-                    content="相同内容",
-                ),
-                return_match=True,
-            )
-        with mock.patch("wxbot_core.time.time", return_value=107.0):
-            manual_message = bot._consume_private_outbound_echo(
-                "张三",
-                message=MessageEnvelope(
-                    id="manual-message",
-                    type="text",
-                    attr="self",
-                    sender="self",
-                    content="相同内容",
-                ),
-                return_match=True,
-            )
-
-        self.assertTrue(robot_echo.get("dedupe_only"))
-        self.assertIsNone(manual_message)
-
-    def test_private_outbound_echoes_keep_last_twenty_per_chat(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
-        bot._ensure_message_runtime_state()
-
-        for index in range(25):
-            bot._remember_private_outbound_echo("张三", "text", f"消息{index}", source="test")
-
-        echoes = bot._private_outbound_echoes["张三"]
-        self.assertEqual(len(echoes), 20)
-        self.assertEqual(echoes[0]["content"], "消息5")
-        self.assertEqual(echoes[-1]["content"], "消息24")
-
-    def test_pending_private_outbound_echo_query_prunes_expired_echoes(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
-        bot._ensure_message_runtime_state()
-        bot._private_outbound_echoes = {
-            "张三": [
-                {"type": "text", "content": "过期", "source": "test", "remaining": 1, "expires_at": 99.0},
-                {"type": "text", "content": "未过期", "source": "test", "remaining": 1, "expires_at": 101.0},
-            ],
-            "李四": [
-                {"type": "image", "content": "", "source": "test", "remaining": 1, "expires_at": 98.0},
-            ],
-        }
-
-        with mock.patch("wxbot_core.time.time", return_value=100.0):
-            self.assertTrue(bot._has_pending_private_outbound_echoes())
-
-        self.assertEqual(list(bot._private_outbound_echoes.keys()), ["张三"])
-        self.assertEqual(bot._private_outbound_echoes["张三"][0]["content"], "未过期")
-
-        with mock.patch("wxbot_core.time.time", return_value=102.0):
-            self.assertFalse(bot._has_pending_private_outbound_echoes())
-        self.assertEqual(bot._private_outbound_echoes, {})
-
-    def test_claimed_private_outbound_echo_stays_pending_until_callback_settles(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="管理员", group=[])
-        bot._ensure_message_runtime_state()
-
-        with mock.patch("wxbot_core.time.time", return_value=100.0):
-            bot._remember_private_outbound_echo("张三", "text", "机器人回复", source="test")
-            match = bot._consume_private_outbound_echo(
-                "张三",
-                message=MessageEnvelope(
-                    id="echo-1",
-                    type="text",
-                    attr="self",
-                    sender="self",
-                    content="机器人回复",
-                ),
-                return_match=True,
-            )
-            self.assertTrue(bot._has_pending_private_outbound_echoes())
-
-        callback = MessageEnvelope()
-        callback._wxbot_outbound_echo_reservation = match["reservation_id"]
-        with mock.patch("wxbot_core.time.time", return_value=101.0):
-            self.assertTrue(bot._commit_private_outbound_echo_reservation(callback))
-            self.assertFalse(bot._has_pending_private_outbound_echoes())
+        self.assertEqual(sent, [("text", "关键词回复"), ("file", image_path)])
 
     def test_prepare_voice_uses_existing_wechat_auto_text_without_reconverting(self):
         bot = WXBot.__new__(WXBot)
@@ -2931,19 +2614,23 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._ensure_target_listen_chat_for_send = lambda _target: None
         bot._get_chat_send_lock = lambda _name: threading.Lock()
         bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-        bot._begin_private_reply_runtime_turn = lambda _name: []
-        bot._finish_private_reply_runtime_turn = lambda *_args, **_kwargs: None
         bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
         bot._record_replied_message_success = lambda: None
 
         sent = []
-        chat = SimpleNamespace(who="张三", SendMsg=lambda text: sent.append(text) or True)
+        chat = SimpleNamespace(
+            who="张三",
+            chat_type="private",
+            SendMsg=lambda msg=None, **_kwargs: sent.append(msg) or True,
+        )
         message = SimpleNamespace(type="text", attr="friend", sender="张三", content="测试", id="1")
 
-        with mock.patch("wxbot_core.build_current_turn_user_message", return_value="WRAPPED_CURRENT_TURN") as wrapped:
-            self.assertTrue(bot.wx_send_ai(chat, message))
+        with tempfile.TemporaryDirectory() as tmp:
+            configure_persisted_private_reply(bot, chat, message, tmp)
+            with mock.patch("wxbot_core.build_current_turn_user_message", return_value="WRAPPED_CURRENT_TURN") as wrapped:
+                self.assertTrue(bot.wx_send_ai(chat, message))
 
-        wrapped.assert_called_once_with("测试")
+            wrapped.assert_called_once_with("测试")
         self.assertEqual(captured_messages, ["WRAPPED_CURRENT_TURN"])
         self.assertEqual(sent, ["正常回复"])
 
@@ -2980,23 +2667,29 @@ class MessageBehaviorTests(unittest.TestCase):
             bot._ensure_target_listen_chat_for_send = lambda _target: None
             bot._get_chat_send_lock = lambda _name: threading.Lock()
             bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-            bot._begin_private_reply_runtime_turn = lambda _name: []
-            bot._finish_private_reply_runtime_turn = lambda *_args, **_kwargs: None
             bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
             bot._record_replied_message_success = lambda: None
-            bot._private_reply_send_allows_memory_save = lambda _result: False
 
             sent = []
-            chat = SimpleNamespace(who="张三", SendMsg=lambda text: sent.append(text) or True)
+            chat = SimpleNamespace(
+                who="张三",
+                chat_type="private",
+                SendMsg=lambda msg=None, **_kwargs: sent.append(msg) or True,
+            )
             message = SimpleNamespace(type="text", attr="friend", sender="张三", content="测试", id="1")
+            store = configure_persisted_private_reply(bot, chat, message, tmp)
 
             self.assertTrue(bot.wx_send_ai(chat, message))
+            message = SimpleNamespace(type="text", attr="friend", sender="张三", content="测试", id="2")
+            persist_private_inbound(store, chat, message)
             self.assertTrue(bot.wx_send_ai(chat, message))
             self.assertEqual(sent, ["换个说法吧"])
 
             started_at = datetime.now() - timedelta(hours=25)
             bot.reply_count_store.data["users"]["张三"]["window_started_at"] = started_at.isoformat(timespec="seconds")
 
+            message = SimpleNamespace(type="text", attr="friend", sender="张三", content="测试", id="3")
+            persist_private_inbound(store, chat, message)
             self.assertTrue(bot.wx_send_ai(chat, message))
             self.assertEqual(sent, ["换个说法吧", "换个说法吧"])
 
@@ -3081,6 +2774,7 @@ class MessageBehaviorTests(unittest.TestCase):
                 split_long_text=lambda text: [text],
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            configure_group_reply_runtime(bot, tmp)
             bot.memory_manager = None
             bot._pause_group_reply = False
             bot.is_stop_requested = lambda: False
@@ -3104,15 +2798,15 @@ class MessageBehaviorTests(unittest.TestCase):
                 quote=lambda text, at=None: sent.append((text, at)) or True,
             )
 
-            self.assertTrue(bot.process_message(chat, message))
-            self.assertTrue(bot.process_message(chat, message))
+            self.assertTrue(process_persisted_group_message(bot, chat, message))
+            self.assertTrue(process_persisted_group_message(bot, chat, message))
             self.assertEqual(sent, [("换个说法吧", None)])
 
             key = "group:测试群:张三"
             started_at = datetime.now() - timedelta(hours=25)
             bot.reply_count_store.data["users"][key]["window_started_at"] = started_at.isoformat(timespec="seconds")
 
-            self.assertTrue(bot.process_message(chat, message))
+            self.assertTrue(process_persisted_group_message(bot, chat, message))
             self.assertEqual(sent, [("换个说法吧", None), ("换个说法吧", None)])
 
     def test_group_reply_preprocess_fallback_once_does_not_mark_failed_send(self):
@@ -3146,6 +2840,7 @@ class MessageBehaviorTests(unittest.TestCase):
                 split_long_text=lambda text: [text],
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            configure_group_reply_runtime(bot, tmp)
             bot.memory_manager = None
             bot._pause_group_reply = False
             bot.is_stop_requested = lambda: False
@@ -3169,8 +2864,8 @@ class MessageBehaviorTests(unittest.TestCase):
                 quote=lambda text, at=None: attempts.append((text, at)) or False,
             )
 
-            self.assertFalse(bot.process_message(chat, message))
-            self.assertFalse(bot.process_message(chat, message))
+            self.assertFalse(process_persisted_group_message(bot, chat, message))
+            self.assertFalse(process_persisted_group_message(bot, chat, message))
             self.assertEqual(attempts, [("换个说法吧", None), ("换个说法吧", None)])
             user_data = bot.reply_count_store.get_user("group:测试群:张三")
             self.assertFalse(user_data.get("preprocess_fallback_notified"))
@@ -3206,6 +2901,7 @@ class MessageBehaviorTests(unittest.TestCase):
             split_long_text=lambda text: [text],
         )
         bot.reply_count_store = ReplyCountStore("")
+        configure_group_reply_runtime(bot)
         bot.memory_manager = None
         bot._pause_group_reply = False
         bot.is_stop_requested = lambda: False
@@ -3233,25 +2929,13 @@ class MessageBehaviorTests(unittest.TestCase):
         )
 
         with mock.patch("wxbot_core.build_current_turn_user_message", return_value="WRAPPED_GROUP_TURN") as wrapped:
-            self.assertTrue(bot.process_message(chat, message))
+            self.assertTrue(process_persisted_group_message(bot, chat, message))
 
         wrapped.assert_called_once_with("张三: 测试")
         self.assertEqual(captured_messages, ["WRAPPED_GROUP_TURN"])
         self.assertEqual(sent, [("群回复", None)])
 
-    def test_group_text_reply_sends_while_holding_wechat_ui_lock(self):
-        class RecordingLock:
-            locked = False
-
-            def __enter__(self):
-                self.locked = True
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self.locked = False
-                return False
-
-        lock = RecordingLock()
+    def test_group_text_reply_confirms_delivery_in_message_store(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             AtMe="",
@@ -3282,13 +2966,13 @@ class MessageBehaviorTests(unittest.TestCase):
             split_long_text=lambda text: [text],
         )
         bot.reply_count_store = ReplyCountStore("")
+        configure_group_reply_runtime(bot)
         bot.memory_manager = None
         bot._pause_group_reply = False
         bot.is_stop_requested = lambda: False
         bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: "群回复")
         bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
         bot._get_chat_send_lock = lambda _name: threading.Lock()
-        bot._get_wechat_action_lock = lambda: lock
         bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
         bot._record_replied_message_success = lambda: None
 
@@ -3296,7 +2980,7 @@ class MessageBehaviorTests(unittest.TestCase):
         chat = SimpleNamespace(
             who="测试群",
             chat_type="group",
-            SendMsg=lambda msg, at=None: sent.append((msg, at, lock.locked)) or True,
+            SendMsg=lambda msg, at=None: sent.append((msg, at)) or True,
         )
         message = SimpleNamespace(
             type="text",
@@ -3306,9 +2990,13 @@ class MessageBehaviorTests(unittest.TestCase):
             quote=lambda text, at=None: sent.append((text, at, lock.locked)) or True,
         )
 
-        self.assertTrue(bot.process_message(chat, message))
+        self.assertTrue(process_persisted_group_message(bot, chat, message))
 
-        self.assertEqual(sent, [("群回复", None, True)])
+        self.assertEqual(sent, [("群回复", None)])
+        self.assertEqual(
+            bot._message_store.delivery_action_status(f"{message._wxbot_reply_turn_id}:0"),
+            "done",
+        )
 
     def test_group_preprocess_rewrite_api_error_skips_voice_reply(self):
         bot = WXBot.__new__(WXBot)
@@ -3345,6 +3033,7 @@ class MessageBehaviorTests(unittest.TestCase):
             split_long_text=lambda text: [text],
         )
         bot.reply_count_store = ReplyCountStore("")
+        configure_group_reply_runtime(bot)
         bot.memory_manager = None
         bot._pause_group_reply = False
         bot.is_stop_requested = lambda: False
@@ -3370,7 +3059,7 @@ class MessageBehaviorTests(unittest.TestCase):
             quote=lambda text, at=None: sent.append((text, at)) or True,
         )
 
-        self.assertTrue(bot.process_message(chat, message))
+        self.assertTrue(process_persisted_group_message(bot, chat, message))
         self.assertEqual(sent, [("接口忙", None)])
 
     def test_group_api_error_reply_once_resets_with_reply_window(self):
@@ -3406,6 +3095,7 @@ class MessageBehaviorTests(unittest.TestCase):
                 split_long_text=lambda text: [text],
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            configure_group_reply_runtime(bot, tmp)
             bot.memory_manager = None
             bot._pause_group_reply = False
             bot.is_stop_requested = lambda: False
@@ -3429,15 +3119,15 @@ class MessageBehaviorTests(unittest.TestCase):
                 quote=lambda text, at=None: sent.append((text, at)) or True,
             )
 
-            self.assertTrue(bot.process_message(chat, message))
-            self.assertTrue(bot.process_message(chat, message))
+            self.assertTrue(process_persisted_group_message(bot, chat, message))
+            self.assertTrue(process_persisted_group_message(bot, chat, message))
             self.assertEqual(sent, [("接口忙", None)])
 
             key = "group:测试群:张三"
             started_at = datetime.now() - timedelta(hours=25)
             bot.reply_count_store.data["users"][key]["window_started_at"] = started_at.isoformat(timespec="seconds")
 
-            self.assertTrue(bot.process_message(chat, message))
+            self.assertTrue(process_persisted_group_message(bot, chat, message))
             self.assertEqual(sent, [("接口忙", None), ("接口忙", None)])
 
     def test_group_failed_voice_is_marked_skip_without_fallback_reply(self):
@@ -3575,6 +3265,7 @@ class MessageBehaviorTests(unittest.TestCase):
         )
         bot.memory_manager = None
         bot.reply_count_store = ReplyCountStore("")
+        configure_group_reply_runtime(bot)
         bot._pause_group_reply = False
         bot.is_stop_requested = lambda: False
         bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
@@ -3611,7 +3302,7 @@ class MessageBehaviorTests(unittest.TestCase):
             quote=lambda text, at=None: sent.append((text, at)) or True,
         )
 
-        self.assertTrue(bot.process_message(chat, message))
+        self.assertTrue(process_persisted_group_message(bot, chat, message))
 
         self.assertEqual(image_reply_calls, [([r"C:\tmp\a-image.png"], "看看这是啥意思")])
         self.assertEqual(sent, [("图片答案", None)])
@@ -3648,6 +3339,7 @@ class MessageBehaviorTests(unittest.TestCase):
         )
         bot.memory_manager = None
         bot.reply_count_store = ReplyCountStore("")
+        configure_group_reply_runtime(bot)
         bot._pause_group_reply = False
         bot.is_stop_requested = lambda: False
         bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
@@ -3672,7 +3364,7 @@ class MessageBehaviorTests(unittest.TestCase):
             quote=lambda text, at=None: sent.append((text, at)) or True,
         )
 
-        self.assertTrue(bot.process_message(chat, message))
+        self.assertTrue(process_persisted_group_message(bot, chat, message))
 
         self.assertEqual(sent, [("普通回答", None)])
         self.assertEqual(
@@ -3943,169 +3635,6 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(bot._run_private_message_pipeline_worker(chat))
 
         self.assertEqual(sent_to_ai, [("image", r"C:\tmp\only.png")])
-
-    def test_private_reply_stops_after_pause_even_when_reply_already_generated(self):
-        class FakeChat:
-            who = "张三"
-            chat_type = "private"
-
-            def __init__(self):
-                self.sent = []
-
-            def SendMsg(self, msg=None, message=None, **_kwargs):
-                self.sent.append(msg if msg is not None else message)
-                return True
-
-        bot = WXBot.__new__(WXBot)
-        chat = FakeChat()
-        bot.config = SimpleNamespace(cmd="管理员", chat_listen_only=False)
-        bot.is_stop_requested = lambda: False
-        bot._pause_chat_reply = False
-        bot._pause_chat_reply_users = {"张三"}
-
-        self.assertEqual(bot._send_private_ai_reply_parts(chat, ["已经生成的回复"]), (False, True))
-        self.assertEqual(chat.sent, [])
-
-    def test_private_reply_stops_remaining_parts_when_new_message_arrives(self):
-        class FakeChat:
-            who = "张三"
-            chat_type = "private"
-
-            def __init__(self, bot):
-                self.bot = bot
-                self.sent = []
-
-            def SendMsg(self, msg=None, message=None, **_kwargs):
-                text = msg if msg is not None else message
-                self.sent.append(text)
-                if len(self.sent) == 1:
-                    self.bot._next_private_message_sequence(self.who)
-                return True
-
-            def SendMsgBatch(self, *_args, **_kwargs):
-                raise AssertionError("私聊 AI 气泡不得作为不可中断批次发送")
-
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="管理员", chat_listen_only=False)
-        bot.is_stop_requested = lambda: False
-        bot._pause_chat_reply = False
-        bot._verified_send_chat = lambda _target, chat: chat
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
-        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-        bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
-        bot._ensure_message_runtime_state()
-        bot._next_private_message_sequence("张三")
-        expected_sequence = bot._get_private_message_sequence("张三")
-        chat = FakeChat(bot)
-        sent_items = []
-
-        with mock.patch("wxbot_core.log") as log_mock:
-            self.assertEqual(
-                bot._send_private_ai_reply_parts(
-                    chat,
-                    ["第一段", "第二段", "第三段"],
-                    expected_sequence=expected_sequence,
-                    sent_items=sent_items,
-                ),
-                (True, True),
-            )
-        log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
-        self.assertFalse(any("已停止发送上一轮剩余回复" in message for message in log_messages))
-        self.assertEqual(chat.sent, ["第一段"])
-        self.assertEqual(sent_items, ["第一段"])
-
-    def test_private_reply_waits_checks_and_sends_each_bubble_in_order(self):
-        events = []
-
-        class FakeChat:
-            who = "张三"
-            chat_type = "private"
-
-            def SendMsg(self, text):
-                events.append(("send", text))
-                return True
-
-            def SendMsgBatch(self, *_args, **_kwargs):
-                raise AssertionError("私聊 AI 气泡不得作为不可中断批次发送")
-
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(
-            cmd="管理员",
-            chat_listen_only=False,
-            chat_split_reply_switch=True,
-            chat_split_reply_delay_switch=True,
-        )
-        bot.is_stop_requested = lambda: False
-        bot._pause_chat_reply = False
-        bot._verified_send_chat = lambda _target, chat: chat
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
-        bot._human_delay_for_reply_part = lambda **kwargs: events.append(("wait", kwargs["part_text"]))
-        bot._save_private_reply_memory_message = lambda _chat, text: events.append(("history", text)) or True
-        bot._ensure_message_runtime_state()
-        bot._next_private_message_sequence("张三")
-        expected_sequence = bot._get_private_message_sequence("张三")
-
-        self.assertEqual(
-            bot._send_private_ai_reply_parts(
-                FakeChat(),
-                ["第一段", "第二段", "第三段"],
-                expected_sequence=expected_sequence,
-            ),
-            (True, True),
-        )
-
-        self.assertEqual(events, [
-            ("wait", "第一段"), ("send", "第一段"), ("history", "第一段"),
-            ("wait", "第二段"), ("send", "第二段"), ("history", "第二段"),
-            ("wait", "第三段"), ("send", "第三段"), ("history", "第三段"),
-        ])
-
-    def test_private_reply_none_result_waits_for_self_echo_before_memory_save(self):
-        chat = SimpleNamespace(who="张三", chat_type="private", SendMsg=lambda _text: None)
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="管理员", chat_listen_only=False)
-        bot.is_stop_requested = lambda: False
-        bot._pause_chat_reply = False
-        bot._verified_send_chat = lambda _target, candidate: candidate
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
-        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-        saved = []
-        bot._save_private_reply_memory_message = lambda _chat, text: saved.append(text) or True
-        bot._ensure_message_runtime_state()
-
-        success, result = bot._send_private_ai_reply_parts(chat, ["结果未知的回复"])
-
-        self.assertFalse(success)
-        self.assertIsNone(result)
-        self.assertEqual(saved, [])
-        self.assertTrue(bot._consume_private_reply_runtime_echo("张三", "结果未知的回复"))
-        self.assertFalse(bot._consume_private_reply_runtime_echo("张三", "结果未知的回复"))
-
-    def test_private_reply_self_callback_before_send_return_does_not_duplicate_memory(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="管理员", group=[], chat_listen_only=False)
-        bot.is_stop_requested = lambda: False
-        bot._pause_chat_reply = False
-        bot._verified_send_chat = lambda _target, candidate: candidate
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
-        bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-        saved = []
-        callback_skips = []
-        bot._save_private_reply_memory_message = lambda _chat, text: saved.append(text) or True
-        bot._ensure_message_runtime_state()
-
-        class FakeChat:
-            who = "张三"
-            chat_type = "private"
-
-            def SendMsg(self, text):
-                callback = SimpleNamespace(attr="self", sender="self", type="text", content=text)
-                callback_skips.append(bot._should_skip_message_memory(self, callback))
-                return True
-
-        self.assertEqual(bot._send_private_ai_reply_parts(FakeChat(), ["只保存一次"]), (True, True))
-        self.assertEqual(callback_skips, [True])
-        self.assertEqual(saved, ["只保存一次"])
 
     def test_reset_stop_request_allows_next_start(self):
         bot = WXBot.__new__(WXBot)

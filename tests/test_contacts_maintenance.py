@@ -327,7 +327,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(len(updated["subjects"]), 1)
         self.assertEqual(updated["subjects"][0]["wxid"], "wxid_new")
 
-    def _auto_maintenance_bot(self, *, pending_queue=False, pending_echo=False):
+    def _auto_maintenance_bot(self):
         calls = []
 
         class FreeLock:
@@ -351,24 +351,12 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def __init__(self):
                 self.calls = calls
-                self._lightweight_send_queue = {"阿英2": {"actions": []}} if pending_queue else {}
-                self._lightweight_send_queue_lock = FreeLock()
 
             def _load_contact_profiles_directory(self):
                 return {"maintenance": {}}, "ignored.json", "scope_rui"
 
             def _get_wechat_action_lock(self):
                 return FreeLock()
-
-            def _flush_lightweight_send_queue(self):
-                calls.append(("flush_lightweight",))
-                if not pending_queue:
-                    self._lightweight_send_queue.clear()
-                return not pending_queue
-
-            def _has_pending_private_outbound_echoes(self):
-                calls.append(("pending_echo",))
-                return pending_echo
 
             def _write_contact_directory_auto_cycle_state(self, directory, **updates):
                 calls.append(("write_cycle", updates))
@@ -392,29 +380,18 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         return FakeBot()
 
     def test_auto_maintenance_recent_message_no_longer_blocks(self):
-        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot = self._auto_maintenance_bot()
         with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
             result = check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
 
         self.assertTrue(result)
-        self.assertIn(("flush_lightweight",), bot.calls)
         self.assertTrue(any(call[0] == "refresh_batch" for call in bot.calls))
         success_updates = [call[1] for call in bot.calls if call[0] == "write_cycle"][-1]
         self.assertEqual(success_updates["auto_cycle_next_start_name"], "B")
         self.assertEqual(success_updates["auto_cycle_backup_start_name"], "A")
 
-    def test_auto_maintenance_waits_for_pending_private_outbound_echo(self):
-        bot = self._auto_maintenance_bot(pending_queue=False, pending_echo=True)
-        with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
-            result = check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
-
-        self.assertFalse(result)
-        self.assertIn(("flush_lightweight",), bot.calls)
-        self.assertIn(("pending_echo",), bot.calls)
-        self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
-
     def test_auto_maintenance_waits_for_active_private_pipeline(self):
-        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot = self._auto_maintenance_bot()
         bot._private_message_pipelines = {
             "张三": {
                 "open_messages": [object()],
@@ -435,14 +412,14 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertTrue(has_active_contact_maintenance_conflict(bot, now_ts=1008.0))
         self.assertFalse(has_active_contact_maintenance_conflict(bot, now_ts=1011.0))
 
-    def test_auto_maintenance_waits_for_pending_lightweight_queue(self):
-        bot = self._auto_maintenance_bot(pending_queue=True)
-        with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
-            result = check_contact_directory_auto_maintenance(bot, now=datetime(2026, 6, 10, 21, 0, 0))
+    def test_active_contact_maintenance_conflict_includes_listener_window_recovery(self):
+        supervisor = SimpleNamespace(snapshot=lambda: [{"conversation": "张三"}])
+        bot = SimpleNamespace(
+            _last_incoming_message_at=0.0,
+            _listener_window_supervisor=supervisor,
+        )
 
-        self.assertFalse(result)
-        self.assertIn(("flush_lightweight",), bot.calls)
-        self.assertFalse(any(call[0] == "refresh_batch" for call in bot.calls))
+        self.assertTrue(has_active_contact_maintenance_conflict(bot, now_ts=1008.0))
 
     def test_auto_maintenance_preflights_lock_without_holding_through_batch(self):
         calls = []
@@ -478,12 +455,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def _get_wechat_action_lock(self):
                 return lock
-
-            def _flush_lightweight_send_queue(self):
-                return True
-
-            def _has_pending_lightweight_send_queue(self):
-                return False
 
             def _write_contact_directory_auto_cycle_state(self, directory, **updates):
                 directory = dict(directory or {})
@@ -546,12 +517,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             def _get_wechat_action_lock(self):
                 return FreeLock()
 
-            def _flush_lightweight_send_queue(self):
-                return True
-
-            def _has_pending_lightweight_send_queue(self):
-                return False
-
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
                 return {
@@ -597,7 +562,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(fallback_updates["auto_cycle_retry_count"], 1)
 
     def test_auto_maintenance_timeout_persists_backup_cursor_before_reraising(self):
-        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot = self._auto_maintenance_bot()
         bot._load_contact_profiles_directory = lambda: ({
             "maintenance": {
                 "auto_cycle_status": "running",
@@ -629,7 +594,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(saved["auto_cycle_retry_count"], 1)
 
     def test_auto_maintenance_timeout_on_fallback_cursor_resets_to_head(self):
-        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot = self._auto_maintenance_bot()
         bot._load_contact_profiles_directory = lambda: ({
             "maintenance": {
                 "auto_cycle_status": "stalled",
@@ -656,7 +621,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         self.assertEqual(saved["auto_cycle_retry_count"], 2)
 
     def test_auto_maintenance_tail_probe_timeout_keeps_same_cursor(self):
-        bot = self._auto_maintenance_bot(pending_queue=False)
+        bot = self._auto_maintenance_bot()
         bot._load_contact_profiles_directory = lambda: ({
             "maintenance": {
                 "auto_cycle_status": "running",
@@ -725,12 +690,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def _get_wechat_action_lock(self):
                 return FreeLock()
-
-            def _flush_lightweight_send_queue(self):
-                return True
-
-            def _has_pending_lightweight_send_queue(self):
-                return False
 
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
@@ -812,12 +771,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def _get_wechat_action_lock(self):
                 return FreeLock()
-
-            def _flush_lightweight_send_queue(self):
-                return True
-
-            def _has_pending_lightweight_send_queue(self):
-                return False
 
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
@@ -912,12 +865,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def _get_wechat_action_lock(self):
                 return FreeLock()
-
-            def _flush_lightweight_send_queue(self):
-                return True
-
-            def _has_pending_lightweight_send_queue(self):
-                return False
 
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
@@ -1050,12 +997,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             def _get_wechat_action_lock(self):
                 return FreeLock()
 
-            def _flush_lightweight_send_queue(self):
-                return True
-
-            def _has_pending_lightweight_send_queue(self):
-                return False
-
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
                 return {
@@ -1116,12 +1057,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def _get_wechat_action_lock(self):
                 return FreeLock()
-
-            def _flush_lightweight_send_queue(self):
-                return True
-
-            def _has_pending_lightweight_send_queue(self):
-                return False
 
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))

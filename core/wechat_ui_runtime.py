@@ -17,6 +17,7 @@ from core.message_pipeline import (
     is_unrecognized_voice_placeholder,
     voice_message_body,
 )
+from core.reply_count_store import ReplyCountStore
 from core.wechat_ui_actions import (
     ActionBatchInterrupted,
     ContactBatchHandle,
@@ -48,19 +49,23 @@ class OwnedChat:
             UIIntentKind.SEND_TEXT,
             {
                 "conversation": self.who,
+                "chat_type": self.chat_type,
                 "text": str(text or ""),
                 "at": str(at or ""),
+                "echo_delivery_ids": list(kwargs.get("echo_delivery_ids") or ()),
             },
-            conversation_version=kwargs.get("conversation_version", 0),
+            conversation_version=kwargs.get("conversation_version"),
+            expires_at=kwargs.get("expires_at"),
         ), UI_CALL_WAIT_TIMEOUT)
 
-    def SendMsgBatch(self, messages, *, conversation_version=0, first_at=""):
+    def SendMsgBatch(self, messages, *, conversation_version=None, first_at=""):
         from core.wechat_ui_actions import UIIntent
 
         return self._owner.call(UIIntent(
             UIIntentKind.SEND_TEXT_BATCH,
             {
                 "conversation": self.who,
+                "chat_type": self.chat_type,
                 "messages": [str(item or "") for item in (messages or []) if str(item or "")],
                 "first_at": str(first_at or ""),
             },
@@ -71,11 +76,12 @@ class OwnedChat:
         self,
         actions,
         *,
-        conversation_version=0,
+        conversation_version=None,
         task_key="",
         task_version=0,
         contact_key="",
         delivery_id="",
+        echo_delivery_ids=(),
         require_contact_key=False,
     ):
         from core.wechat_ui_actions import UIIntent
@@ -84,9 +90,11 @@ class OwnedChat:
             UIIntentKind.SEND_ACTIONS,
             {
                 "conversation": self.who,
+                "chat_type": self.chat_type,
                 "contact_key": str(contact_key or ""),
                 "task_key": str(task_key or ""),
                 "delivery_id": str(delivery_id or uuid.uuid4()),
+                "echo_delivery_ids": list(echo_delivery_ids or ()),
                 "require_contact_key": bool(require_contact_key),
                 "actions": [dict(action or {}) for action in actions or []],
             },
@@ -98,24 +106,36 @@ class OwnedChat:
         from core.wechat_ui_actions import UIIntent
 
         path = kwargs.get("path", filepath)
-        return self._owner.call(UIIntent(UIIntentKind.SEND_FILE, {
-            "conversation": self.who,
-            "path": str(path or ""),
-            "delivery_id": str(kwargs.get("delivery_id") or uuid.uuid4()),
-        }), UI_CALL_WAIT_TIMEOUT)
+        delivery_id = str(kwargs.get("delivery_id") or uuid.uuid4()) if kwargs.get("journal", True) else ""
+        return self._owner.call(UIIntent(
+            UIIntentKind.SEND_FILE,
+            {
+                "conversation": self.who,
+                "chat_type": self.chat_type,
+                "path": str(path or ""),
+                "delivery_id": delivery_id,
+                "echo_delivery_ids": list(kwargs.get("echo_delivery_ids") or ()),
+            },
+            conversation_version=kwargs.get("conversation_version"),
+            expires_at=kwargs.get("expires_at"),
+        ), UI_CALL_WAIT_TIMEOUT)
 
     def SendAudio(self, filepath="", duration=None, **kwargs):
         from core.wechat_ui_actions import UIIntent
 
         path = kwargs.get("path", filepath)
+        delivery_id = str(kwargs.get("delivery_id") or uuid.uuid4()) if kwargs.get("journal", True) else ""
         return self._owner.call(UIIntent(
             UIIntentKind.SEND_AUDIO,
             {
                 "conversation": self.who,
+                "chat_type": self.chat_type,
                 "path": str(path or ""),
-                "delivery_id": str(kwargs.get("delivery_id") or uuid.uuid4()),
+                "delivery_id": delivery_id,
+                "echo_delivery_ids": list(kwargs.get("echo_delivery_ids") or ()),
             },
-            conversation_version=kwargs.get("conversation_version", 0),
+            conversation_version=kwargs.get("conversation_version"),
+            expires_at=kwargs.get("expires_at"),
         ), UI_CALL_WAIT_TIMEOUT)
 
 
@@ -206,10 +226,18 @@ class WeChatUIRuntime:
         on_message: Callable[[ConversationRef, MessageEnvelope], None],
         client_factory=None,
         inbound_media_enabled=None,
+        persist_message=None,
+        enrich_message=None,
+        echo_action_start=None,
+        echo_action_finish=None,
     ):
         self._on_message = on_message
         self._client_factory = client_factory or self._default_client_factory
         self._inbound_media_enabled = inbound_media_enabled or (lambda _conversation, _message_type: False)
+        self._persist_message = persist_message
+        self._enrich_message = enrich_message
+        self._echo_action_start = echo_action_start or (lambda _action_id: None)
+        self._echo_action_finish = echo_action_finish or (lambda _action_id: None)
         self._client = None
         self._owner = None
         self._listen_chats = {}
@@ -268,6 +296,8 @@ class WeChatUIRuntime:
             received_at=time.time(),
         )
         envelope._wxbot_source_batch = f"subwindow:{time.time_ns()}"
+        if callable(self._persist_message) and not self._persist_message(conversation, envelope):
+            return True
         if (
             envelope.type in {"image", "quote"}
             and self._inbound_media_enabled(conversation, envelope.type)
@@ -296,6 +326,8 @@ class WeChatUIRuntime:
                 envelope._wxbot_media_prepared = True
                 envelope._skip_ai_reply = True
                 envelope._skip_memory = True
+        if callable(self._enrich_message):
+            self._enrich_message(conversation, envelope)
         self._on_message(conversation, envelope)
         return True
 
@@ -498,21 +530,34 @@ class WeChatUIRuntime:
         for index, action in enumerate(payload.get("actions") or ()):
             action = dict(action or {})
             kind = str(action.get("type") or "text").strip().lower()
+            echo_delivery_id = str(action.get("echo_delivery_id") or "").strip()
+            if echo_delivery_id:
+                self._echo_action_start(echo_delivery_id)
             try:
                 if kind == "file":
-                    results.append(chat.SendFiles(filepath=str(action.get("path") or "")))
+                    result = chat.SendFiles(filepath=str(action.get("path") or ""))
                 elif kind in {"voice", "audio"}:
                     path = str(action.get("path") or "")
-                    results.append(chat.SendAudio(filepath=path, duration=None))
+                    result = chat.SendAudio(filepath=path, duration=None)
                 else:
                     text = str(action.get("text") or action.get("content") or "")
                     at = str(action.get("at") or "")
                     if at:
-                        results.append(chat.SendMsg(msg=text, at=at))
+                        result = chat.SendMsg(msg=text, at=at)
                     else:
-                        results.append(chat.SendMsg(text))
+                        result = chat.SendMsg(text)
             except Exception as exc:
                 raise ActionBatchInterrupted(results, index, exc) from exc
+            finally:
+                if echo_delivery_id:
+                    self._echo_action_finish(echo_delivery_id)
+            if not ReplyCountStore.was_send_success(result):
+                raise ActionBatchInterrupted(
+                    results,
+                    index,
+                    RuntimeError("WeChat handler returned an unsuccessful result"),
+                )
+            results.append(result)
         return results
 
     def send_file(self, payload):
@@ -559,7 +604,13 @@ class WeChatUIRuntime:
                 window_order=index,
             )
             envelope._wxbot_source_batch = source_batch
-            if payload.get("download_media") and chat_type != "group":
+            is_new = True
+            if callable(self._persist_message):
+                is_new = bool(self._persist_message(
+                    ConversationRef(chat_name, chat_type),
+                    envelope,
+                ))
+            if is_new and payload.get("download_media") and chat_type != "group":
                 method_name = "download_quote_image" if envelope.type == "quote" else "download"
                 if envelope.type in {"image", "quote"}:
                     method = getattr(message, method_name, None)
@@ -571,6 +622,8 @@ class WeChatUIRuntime:
                             else path
                         )
                         envelope._wxbot_media_prepared = True
+            if is_new and callable(self._enrich_message):
+                self._enrich_message(ConversationRef(chat_name, chat_type), envelope)
             envelopes.append(envelope)
         return {"chat_name": chat_name, "chat_type": chat_type, "msg": envelopes}
 

@@ -591,16 +591,6 @@ def _update_full_scan_progress(bot, **updates) -> dict[str, Any]:
     return progress
 
 
-def _has_pending_private_outbound_echoes(bot) -> bool:
-    pending_echoes = getattr(bot, "_has_pending_private_outbound_echoes", None)
-    if not callable(pending_echoes):
-        return False
-    try:
-        return bool(pending_echoes())
-    except Exception:
-        return False
-
-
 def _scan_full_sessions_with_owner(bot, state: dict[str, Any], *, max_scrolls: int) -> dict[str, Any]:
     owner = bot._ui_owner
     max_rounds = max(1, int(max_scrolls or 1))
@@ -711,8 +701,6 @@ def check_auto_scan(bot, *, now: Any = None) -> bool:
         process_pending_wechat_tag_sync(bot, now=now)
         return False
 
-    if _has_pending_private_outbound_echoes(bot):
-        return False
     owner = getattr(bot, "_ui_owner", None)
     if owner is None:
         log(level="WARNING", message="[关系扫描] 自动扫描已跳过：微信 UI owner 未运行")
@@ -867,8 +855,6 @@ def process_pending_wechat_tag_sync(bot, *, now: Any = None, force: bool = False
         return {"processed": 0, "success": 0, "failed": 0}
     records = pending_sync_records(state, now=current_time)[:1]
     if not records:
-        return {"processed": 0, "success": 0, "failed": 0}
-    if not force and _has_pending_private_outbound_echoes(bot):
         return {"processed": 0, "success": 0, "failed": 0}
     release_wechat_lock = wechat_ui_actions.try_acquire(bot)
     if not release_wechat_lock:

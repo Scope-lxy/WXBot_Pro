@@ -89,6 +89,64 @@ class WechatUiActionsTests(unittest.TestCase):
 
         self.assertEqual(events, ["exclusive-start", "exclusive-end", "text"])
 
+    def test_owner_rejects_reply_that_expires_while_queued(self):
+        started = threading.Event()
+        release = threading.Event()
+        sends = []
+
+        def blocker(_payload):
+            started.set()
+            release.wait(1)
+            return True
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.SEND_FILE: blocker,
+            wechat_ui_actions.UIIntentKind.SEND_TEXT: lambda payload: sends.append(payload["text"]),
+        })
+        owner.start()
+        try:
+            first = owner.submit(wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.SEND_FILE))
+            self.assertTrue(started.wait(1))
+            reply = owner.submit(wechat_ui_actions.UIIntent(
+                wechat_ui_actions.UIIntentKind.SEND_TEXT,
+                {"conversation": "Alice", "text": "late answer"},
+                expires_at=time.time() + 0.02,
+            ))
+            time.sleep(0.03)
+            release.set()
+            first.result(1)
+            with self.assertRaises(wechat_ui_actions.IntentCancelled):
+                reply.result(1)
+        finally:
+            release.set()
+            owner.stop()
+
+        self.assertEqual(sends, [])
+
+    def test_owner_checks_reply_expiry_after_payload_preparation(self):
+        sends = []
+
+        def prepare(intent):
+            time.sleep(0.03)
+            return dict(intent.payload)
+
+        owner = wechat_ui_actions.WeChatUIOwner(
+            {wechat_ui_actions.UIIntentKind.SEND_TEXT: lambda payload: sends.append(payload["text"])},
+            payload_preparer=prepare,
+        )
+        owner.start()
+        try:
+            with self.assertRaises(wechat_ui_actions.IntentCancelled):
+                owner.call(wechat_ui_actions.UIIntent(
+                    wechat_ui_actions.UIIntentKind.SEND_TEXT,
+                    {"conversation": "Alice", "text": "late answer"},
+                    expires_at=time.time() + 0.02,
+                ), 1)
+        finally:
+            owner.stop()
+
+        self.assertEqual(sends, [])
+
     def test_callback_bound_action_uses_owner_fifo_but_stays_on_callback_thread(self):
         current_started = threading.Event()
         release_current = threading.Event()
@@ -653,7 +711,7 @@ class WechatUiActionsTests(unittest.TestCase):
 
         owner = wechat_ui_actions.WeChatUIOwner(
             {wechat_ui_actions.UIIntentKind.SEND_TEXT: handler},
-            conversation_version_provider=lambda conversation: versions.get(conversation, 0),
+            conversation_version_provider=lambda conversation, _chat_type: versions.get(conversation, 0),
         )
         owner.start()
         try:
@@ -678,6 +736,34 @@ class WechatUiActionsTests(unittest.TestCase):
             owner.stop()
 
         self.assertEqual(sent, ["占位"])
+
+    def test_owner_checks_zero_group_version_with_group_scope(self):
+        versions = {("测试群", "group"): 1}
+        sent = []
+        owner = wechat_ui_actions.WeChatUIOwner(
+            {wechat_ui_actions.UIIntentKind.SEND_TEXT: lambda payload: sent.append(payload["text"])},
+            conversation_version_provider=lambda conversation, chat_type: versions.get(
+                (conversation, chat_type),
+                0,
+            ),
+        )
+        owner.start()
+        try:
+            ticket = owner.submit(wechat_ui_actions.UIIntent(
+                wechat_ui_actions.UIIntentKind.SEND_TEXT,
+                {
+                    "conversation": "测试群",
+                    "chat_type": "group",
+                    "text": "过期群回复",
+                },
+                conversation_version=0,
+            ))
+            with self.assertRaises(wechat_ui_actions.IntentCancelled):
+                ticket.result(1)
+        finally:
+            owner.stop()
+
+        self.assertEqual(sent, [])
 
     def test_owner_rechecks_task_version_before_execution(self):
         versions = {"task-1": 2}
@@ -750,6 +836,34 @@ class WechatUiActionsTests(unittest.TestCase):
 
         self.assertEqual(events[0], ("begin", "delivery-1", "send_file", "张三"))
         self.assertEqual(events[1][:3], ("finish", "delivery-1", "uncertain"))
+
+    def test_owner_marks_false_non_idempotent_result_uncertain(self):
+        events = []
+
+        class Journal:
+            def begin(self, delivery_id, kind, payload):
+                events.append(("begin", delivery_id, kind, payload["conversation"]))
+                return True
+
+            def finish(self, delivery_id, status, error=""):
+                events.append(("finish", delivery_id, status, error))
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.SEND_AUDIO: lambda _payload: False,
+        })
+        owner.set_delivery_journal(Journal())
+        owner.start()
+        try:
+            with self.assertRaisesRegex(RuntimeError, "unsuccessful result"):
+                owner.call(wechat_ui_actions.UIIntent(
+                    wechat_ui_actions.UIIntentKind.SEND_AUDIO,
+                    {"conversation": "张三", "path": "voice.wav", "delivery_id": "delivery-2"},
+                ), 1)
+        finally:
+            owner.stop()
+
+        self.assertEqual(events[0], ("begin", "delivery-2", "send_audio", "张三"))
+        self.assertEqual(events[1][:3], ("finish", "delivery-2", "uncertain"))
 
 
 if __name__ == "__main__":

@@ -231,7 +231,7 @@ class RuntimeMetricsBotTests(unittest.TestCase):
         bot._get_api_instance_by_index = lambda _idx: SimpleNamespace(chat=lambda *_args, **_kwargs: "先这样啦")
         bot._wrap_chat_api_for_failover = lambda api, **_kwargs: bot._wrap_api_request_counter(api, "chat")
         bot._build_text_reply_limit_ai_prompt = lambda _chat_name, **_kwargs: "closing prompt"
-        bot._text_reply_limit_history = lambda _chat_name: []
+        bot._text_reply_limit_history = lambda _chat_name, **_kwargs: []
 
         reply = bot._generate_text_reply_limit_reply(
             SimpleNamespace(who="张三"),
@@ -244,7 +244,7 @@ class RuntimeMetricsBotTests(unittest.TestCase):
     def test_group_closing_reply_uses_group_api_and_sender_context(self):
         bot = WXBot.__new__(WXBot)
         bot._build_text_reply_limit_ai_prompt = lambda _chat_name, **_kwargs: "closing prompt"
-        bot._text_reply_limit_history = lambda _chat_name: []
+        bot._text_reply_limit_history = lambda _chat_name, **_kwargs: []
         calls = []
         bot._get_group_api = lambda group_name: SimpleNamespace(
             chat=lambda content, **_kwargs: calls.append((group_name, content)) or "群里先聊到这里"

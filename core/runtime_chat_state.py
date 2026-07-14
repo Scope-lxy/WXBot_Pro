@@ -97,50 +97,15 @@ def send_text_to_target(
     task_version=0,
     require_contact_key=False,
 ):
-    if getattr(bot, "_ui_owner", None) is not None:
-        sender = getattr(bot, "_send_text_to_target_without_child", None)
-        return sender(
-            target,
-            msg,
-            contact_key=contact_key,
-            task_key=task_key,
-            task_version=task_version,
-            require_contact_key=require_contact_key,
-        ) if callable(sender) else False
-    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
-    if not release_wechat_lock:
-        sender = getattr(bot, "_send_text_to_target_without_child", None)
-        if callable(sender):
-            return sender(target, msg)
-        return False
-    try:
-        chat = get_listen_chat(bot, target)
-        if listen_chat_has_method(chat, "SendMsg"):
-            with bot._get_chat_send_lock(target):
-                result = chat.SendMsg(msg)
-                remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
-                if callable(remember_echo):
-                    remember_echo(target, result, "text", msg, source="runtime_send")
-                return result
-        verifier = getattr(bot, "_verified_send_chat", None)
-        if callable(verifier):
-            verified = verifier(target, chat)
-            if verified:
-                remember_listen_chat(bot, target, verified)
-                with bot._get_chat_send_lock(target):
-                    result = verified.SendMsg(msg)
-                    remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
-                    if callable(remember_echo):
-                        remember_echo(target, result, "text", msg, source="runtime_send")
-                    return result
-            if chat:
-                remove_listen_chat(bot, target)
-        sender = getattr(bot, "_send_text_to_target_without_child", None)
-        if callable(sender):
-            return sender(target, msg)
-        return False
-    finally:
-        release_wechat_lock()
+    sender = getattr(bot, "_send_text_to_target_without_child", None)
+    return sender(
+        target,
+        msg,
+        contact_key=contact_key,
+        task_key=task_key,
+        task_version=task_version,
+        require_contact_key=require_contact_key,
+    ) if callable(sender) else False
 
 
 def send_file_to_target(
@@ -153,47 +118,12 @@ def send_file_to_target(
     task_version=0,
     require_contact_key=False,
 ):
-    if getattr(bot, "_ui_owner", None) is not None:
-        sender = getattr(bot, "_send_file_to_target_without_child", None)
-        return sender(
-            target,
-            path,
-            contact_key=contact_key,
-            task_key=task_key,
-            task_version=task_version,
-            require_contact_key=require_contact_key,
-        ) if callable(sender) else False
-    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
-    if not release_wechat_lock:
-        sender = getattr(bot, "_send_file_to_target_without_child", None)
-        if callable(sender):
-            return sender(target, path)
-        return False
-    try:
-        chat = get_listen_chat(bot, target)
-        if listen_chat_has_method(chat, "SendFiles"):
-            with bot._get_chat_send_lock(target):
-                result = chat.SendFiles(filepath=path)
-                remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
-                if callable(remember_echo):
-                    remember_echo(target, result, "file", source="runtime_send", path=path)
-                return result
-        verifier = getattr(bot, "_verified_send_chat", None)
-        if callable(verifier):
-            verified = verifier(target, chat)
-            if verified:
-                remember_listen_chat(bot, target, verified)
-                with bot._get_chat_send_lock(target):
-                    result = verified.SendFiles(filepath=path)
-                    remember_echo = getattr(bot, "_remember_private_outbound_echo_for_send_result", None)
-                    if callable(remember_echo):
-                        remember_echo(target, result, "file", source="runtime_send", path=path)
-                    return result
-            if chat:
-                remove_listen_chat(bot, target)
-        sender = getattr(bot, "_send_file_to_target_without_child", None)
-        if callable(sender):
-            return sender(target, path)
-        return False
-    finally:
-        release_wechat_lock()
+    sender = getattr(bot, "_send_file_to_target_without_child", None)
+    return sender(
+        target,
+        path,
+        contact_key=contact_key,
+        task_key=task_key,
+        task_version=task_version,
+        require_contact_key=require_contact_key,
+    ) if callable(sender) else False

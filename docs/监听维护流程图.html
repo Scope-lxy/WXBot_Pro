@@ -149,7 +149,7 @@
         <div class="flow-row">
           <article class="node blue"><h3>owner FIFO 执行</h3><p>真实发送、窗口切换、资料页、素材读取都在 owner 中完成，并把明确结果回写给调用方。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="node amber"><h3>目标窗口不能确认</h3><p>尝试补窗；仍失败时进入轻量延后队列。宁可暂缓，也不基于错误窗口发送。</p></article>
+          <article class="node amber"><h3>目标窗口不能确认</h3><p>尝试补窗；仍失败时登记监听窗口恢复任务。任务只保存窗口状态，不持有消息；宁可暂缓，也不基于错误窗口发送。</p></article>
           <div class="arrow">-&gt;</div>
           <article class="node green"><h3>明确结果</h3><p>成功才写成功日志与历史；取消、排队或未知提交不会伪装成已完成。</p></article>
         </div>

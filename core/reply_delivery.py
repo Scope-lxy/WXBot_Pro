@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Protocol
 
@@ -114,35 +114,62 @@ class DeliveryResult:
     error: str = ""
 
 
+class DeliveryNotStarted(RuntimeError):
+    """A claimed action was rejected before the WeChat handler was invoked."""
+
+    def __init__(self, status: DeliveryStatus, message: str = "") -> None:
+        if status not in {
+            DeliveryStatus.CANCELLED,
+            DeliveryStatus.STALE,
+            DeliveryStatus.EXPIRED,
+        }:
+            raise ValueError("not-started status must be cancelled, stale, or expired")
+        self.status = status
+        super().__init__(str(message or status.value))
+
+
 @dataclass(frozen=True, slots=True)
 class ExpectedReplyEcho:
     """One short-lived outbound echo expectation kept only in memory."""
 
     action_id: str
     conversation: str
+    chat_type: str
     kind: ReplyKind
     content: str
     expires_at: float
+    confirmable: bool = True
+    matchable: bool = False
 
 
 class ReplyEchoTracker:
     """Correlate wxautox self callbacks with a claimed reply bubble."""
 
-    def __init__(self, *, ttl=15.0, max_items=512, clock=time.time) -> None:
+    def __init__(self, *, ttl=60.0, max_items=512, clock=time.time) -> None:
         self._ttl = max(1.0, float(ttl))
         self._max_items = max(1, int(max_items))
         self._clock = clock
         self._items: OrderedDict[str, ExpectedReplyEcho] = OrderedDict()
         self._lock = threading.Lock()
 
-    def reserve(self, action_id: str, conversation: str, action: ReplyAction) -> None:
+    def reserve(
+        self,
+        action_id: str,
+        conversation: str,
+        action: ReplyAction,
+        *,
+        confirmable=True,
+        chat_type="private",
+    ) -> None:
         now = float(self._clock())
         expected = ExpectedReplyEcho(
             action_id=str(action_id or "").strip(),
             conversation=str(conversation or "").strip(),
+            chat_type=str(chat_type or "private").strip().lower() or "private",
             kind=action.kind,
             content=str(action.content or "").strip(),
-            expires_at=now + self._ttl,
+            expires_at=0.0,
+            confirmable=bool(confirmable),
         )
         if not expected.action_id or not expected.conversation:
             raise ValueError("echo action_id and conversation are required")
@@ -153,15 +180,25 @@ class ReplyEchoTracker:
             while len(self._items) > self._max_items:
                 self._items.popitem(last=False)
 
-    def match(self, conversation: str, message_type: str, content: str) -> ExpectedReplyEcho | None:
+    def match(
+        self,
+        conversation: str,
+        message_type: str,
+        content: str,
+        *,
+        chat_type="private",
+    ) -> ExpectedReplyEcho | None:
         now = float(self._clock())
         conversation = str(conversation or "").strip()
+        chat_type = str(chat_type or "private").strip().lower() or "private"
         message_type = str(message_type or "text").strip().lower() or "text"
         content = str(content or "").strip()
         with self._lock:
             self._prune_locked(now)
             for action_id, expected in tuple(self._items.items()):
-                if expected.conversation != conversation:
+                if not expected.matchable:
+                    continue
+                if expected.conversation != conversation or expected.chat_type != chat_type:
                     continue
                 if not self._matches(expected, message_type, content):
                     continue
@@ -173,6 +210,32 @@ class ReplyEchoTracker:
         with self._lock:
             self._items.pop(str(action_id or "").strip(), None)
 
+    def activate(self, action_ids) -> None:
+        now = float(self._clock())
+        with self._lock:
+            for action_id in action_ids or ():
+                key = str(action_id or "").strip()
+                expected = self._items.get(key)
+                if expected is None:
+                    continue
+                self._items[key] = replace(
+                    expected,
+                    expires_at=float("inf"),
+                    matchable=True,
+                )
+                self._items.move_to_end(key)
+
+    def complete(self, action_ids) -> None:
+        now = float(self._clock())
+        with self._lock:
+            for action_id in action_ids or ():
+                key = str(action_id or "").strip()
+                expected = self._items.get(key)
+                if expected is None or not expected.matchable:
+                    continue
+                self._items[key] = replace(expected, expires_at=now + self._ttl)
+                self._items.move_to_end(key)
+
     @staticmethod
     def _matches(expected: ExpectedReplyEcho, message_type: str, content: str) -> bool:
         if expected.kind in {ReplyKind.TEXT, ReplyKind.QUOTE}:
@@ -183,7 +246,7 @@ class ReplyEchoTracker:
 
     def _prune_locked(self, now: float) -> None:
         for action_id, expected in tuple(self._items.items()):
-            if expected.expires_at < now:
+            if expected.matchable and expected.expires_at < now:
                 self._items.pop(action_id, None)
 
 
@@ -339,17 +402,50 @@ class ReplyDeliveryCoordinator:
                     if self._action_done(action_id):
                         completed += 1
                         continue
-                    return self._freeze_uncertain(
+                    frozen = self._freeze_uncertain(
                         turn,
                         action_id,
                         completed,
                         "sender returned a false result after delivery was claimed",
                     )
+                    if frozen is None:
+                        completed += 1
+                        continue
+                    return frozen
+            except DeliveryNotStarted as exc:
+                try:
+                    final_status = self._store.finish(
+                        action_id,
+                        exc.status.value,
+                        str(exc),
+                    )
+                except Exception as finish_exc:
+                    if self._action_done(action_id):
+                        completed += 1
+                        continue
+                    frozen = self._freeze_uncertain(
+                        turn,
+                        action_id,
+                        completed,
+                        str(finish_exc),
+                    )
+                    if frozen is None:
+                        completed += 1
+                        continue
+                    return frozen
+                if str(final_status) == DeliveryStatus.DONE.value:
+                    completed += 1
+                    continue
+                return DeliveryResult(exc.status, completed, action_id, str(exc))
             except Exception as exc:
                 if self._action_done(action_id):
                     completed += 1
                     continue
-                return self._freeze_uncertain(turn, action_id, completed, str(exc))
+                frozen = self._freeze_uncertain(turn, action_id, completed, str(exc))
+                if frozen is None:
+                    completed += 1
+                    continue
+                return frozen
             try:
                 self._store.confirm_outbound(
                     action_id,
@@ -363,7 +459,11 @@ class ReplyDeliveryCoordinator:
                 if self._action_done(action_id):
                     completed += 1
                     continue
-                return self._freeze_uncertain(turn, action_id, completed, str(exc))
+                frozen = self._freeze_uncertain(turn, action_id, completed, str(exc))
+                if frozen is None:
+                    completed += 1
+                    continue
+                return frozen
             completed += 1
 
         return DeliveryResult(DeliveryStatus.DONE, completed)
@@ -434,11 +534,17 @@ class ReplyDeliveryCoordinator:
         action_id: str,
         completed: int,
         error: str,
-    ) -> DeliveryResult:
+    ) -> DeliveryResult | None:
         try:
-            self._store.finish(action_id, DeliveryStatus.UNCERTAIN.value, error)
+            final_status = self._store.finish(
+                action_id,
+                DeliveryStatus.UNCERTAIN.value,
+                error,
+            )
         except Exception:
-            pass
+            final_status = ""
+        if str(final_status) == DeliveryStatus.DONE.value or self._action_done(action_id):
+            return None
         self._cancel_pending(
             turn.turn_id,
             DeliveryStatus.CANCELLED,

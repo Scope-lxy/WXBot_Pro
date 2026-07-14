@@ -311,6 +311,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         tracker = ReplyEchoTracker(clock=lambda: now["value"])
         action = ReplyAction("text", "hello")
         tracker.reserve("turn-1:0", "Alice", action)
+        tracker.activate(("turn-1:0",))
 
         self.assertIsNone(tracker.match("Bob", "text", "hello"))
         self.assertIsNone(tracker.match("Alice", "text", "different"))
@@ -319,14 +320,50 @@ class ReplyDeliveryTests(unittest.TestCase):
         self.assertEqual(matched.action_id, "turn-1:0")
         self.assertIsNone(tracker.match("Alice", "text", "hello"))
 
-    def test_echo_tracker_expires_quickly_to_avoid_hiding_manual_self_messages(self):
+    def test_echo_tracker_is_inactive_while_reserved(self):
         now = {"value": 10.0}
         tracker = ReplyEchoTracker(ttl=5, clock=lambda: now["value"])
         tracker.reserve("turn-1:0", "Alice", ReplyAction("text", "same"))
 
-        now["value"] = 16.0
+        self.assertIsNone(tracker.match("Alice", "text", "same"))
+
+    def test_echo_tracker_does_not_expire_during_a_slow_send(self):
+        now = {"value": 10.0}
+        tracker = ReplyEchoTracker(ttl=5, clock=lambda: now["value"])
+        tracker.reserve("turn-1:0", "Alice", ReplyAction("voice", "[语音]"))
+        tracker.activate(("turn-1:0",))
+
+        now["value"] = 41.0
+
+        self.assertIsNotNone(tracker.match("Alice", "voice", '语音31"秒'))
+
+    def test_echo_tracker_expires_after_the_post_send_grace_period(self):
+        now = {"value": 10.0}
+        tracker = ReplyEchoTracker(ttl=60, clock=lambda: now["value"])
+        tracker.reserve("turn-1:0", "Alice", ReplyAction("text", "same"))
+        tracker.activate(("turn-1:0",))
+        tracker.complete(("turn-1:0",))
+
+        now["value"] = 71.0
 
         self.assertIsNone(tracker.match("Alice", "text", "same"))
+
+    def test_echo_tracker_never_matches_same_named_private_and_group_chats(self):
+        tracker = ReplyEchoTracker()
+        tracker.reserve(
+            "turn-1:0",
+            "同名会话",
+            ReplyAction("text", "reply"),
+            chat_type="group",
+        )
+        tracker.activate(("turn-1:0",))
+
+        self.assertIsNone(
+            tracker.match("同名会话", "text", "reply", chat_type="private")
+        )
+        self.assertIsNotNone(
+            tracker.match("同名会话", "text", "reply", chat_type="group")
+        )
 
     def test_stop_cancels_a_turn_waiting_for_preclaim_retry(self):
         store = FakeStore()
