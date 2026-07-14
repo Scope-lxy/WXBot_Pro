@@ -544,34 +544,33 @@ def edit_friend_info_via_chat_profile(
         raise RuntimeError("缺少要修改的好友信息")
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化，请先启动机器人并保持微信主窗口可用。")
-
     owner = getattr(bot, "_ui_owner", None)
-    if owner is not None:
-        response = owner.call(
-            wechat_ui_actions.UIIntent(
-                wechat_ui_actions.UIIntentKind.CONTACT_EDIT,
-                {
-                    "target": target_name,
-                    "contact_key": _clean_text(contact_key),
-                    "expected_names": sorted(expected_names or set()),
-                    "remark": remark,
-                    "add_tags": list(add_tags or []),
-                    "remove_tags": list(remove_tags or []),
-                },
-            ),
-            wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
-        )
-        if close_dynamic_listener:
-            close_dynamic_listener_after_friend_edit(
-                bot,
-                target_name,
-                expected_names=expected_names,
-                remark=remark,
-                log_prefix=log_prefix,
-            )
-        return response
+    if owner is None:
+        raise RuntimeError("联系人资料编辑只能由微信 UI owner 执行")
 
-    raise RuntimeError("好友资料 UI 只能由微信 UI owner 执行")
+    response = owner.call(
+        wechat_ui_actions.UIIntent(
+            wechat_ui_actions.UIIntentKind.CONTACT_EDIT,
+            {
+                "target": target_name,
+                "contact_key": _clean_text(contact_key),
+                "expected_names": sorted(expected_names or set()),
+                "remark": remark,
+                "add_tags": list(add_tags or []),
+                "remove_tags": list(remove_tags or []),
+            },
+        ),
+        wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
+    )
+    if close_dynamic_listener:
+        close_dynamic_listener_after_friend_edit(
+            bot,
+            target_name,
+            expected_names=expected_names,
+            remark=remark,
+            log_prefix=log_prefix,
+        )
+    return response
 
 
 def modify_friend_tags_via_chat_profile(
@@ -975,7 +974,7 @@ def prepare_contact_directory_window(bot) -> None:
     )
 
 
-def switch_contact_directory_back_to_chat(bot, *, use_lock: bool = False) -> bool:
+def switch_contact_directory_back_to_chat(bot) -> bool:
     if not getattr(bot, "wx", None):
         return False
     switch_to_chat = getattr(bot.wx, "SwitchToChat", None)
@@ -990,12 +989,6 @@ def switch_contact_directory_back_to_chat(bot, *, use_lock: bool = False) -> boo
             _bot_log(bot, level="WARNING", message=f"[通讯录维护] 切回聊天页失败：{exc}")
             return False
 
-    if use_lock:
-        lock_fn = getattr(bot, "_get_wechat_action_lock", None)
-        if callable(lock_fn):
-            with lock_fn():
-                return do_switch()
-            return False
     return do_switch()
 
 
@@ -1489,7 +1482,6 @@ def refresh_contact_profiles_single_batch(
     logical_start_name=None,
     logical_start_identity=None,
     switch_back_to_chat=True,
-    block_on_wechat_lock=True,
 ):
     if not getattr(bot, "wx", None):
         raise RuntimeError("微信客户端未初始化，请先启动机器人并保持微信主窗口可用。")
@@ -1513,9 +1505,7 @@ def refresh_contact_profiles_single_batch(
             settings["count"] = max(1, int(count_override))
         except (TypeError, ValueError):
             pass
-    if getattr(bot, "_ui_owner", None) is not None:
-        settings["count"] = 50
-    read_interval = 0 if run_kind == "auto_maintenance" else settings["interval"]
+    settings["count"] = 50
     callback_start_name = effective_start_name(
         directory,
         start_name,
@@ -1549,11 +1539,6 @@ def refresh_contact_profiles_single_batch(
     cursor_candidates: list[dict[str, str]] = []
     callback_seen_names = set()
 
-    def callback_detail_name(detail):
-        if isinstance(detail, dict):
-            return _detail_name(detail)
-        return _clean_text(detail)
-
     def pause_requested():
         try:
             latest = load_contact_directory(directory_file, wx_id=wx_id)
@@ -1561,140 +1546,68 @@ def refresh_contact_profiles_single_batch(
         except Exception:
             return False
 
-    def callback(detail):
-        nonlocal matched_name
-        name_text = callback_detail_name(detail)
-        matched = contact_name_matches(name_text, callback_start_name)
-        if matched and not matched_name:
-            matched_name = name_text
-        if matched:
-            callback_names.append(name_text)
-            display_name = _clean_text(name_text)
-            if display_name and display_name not in callback_seen_names:
-                callback_seen_names.add(display_name)
+    local_contact_source = False
+    read_success = False
+    try:
+        if pause_requested():
+            _bot_log(bot, message="[通讯录维护] 检测到停止请求，跳过本次读取")
+            result = []
+        else:
+            with warn_slow_wechat_ui_action(f"GetFriendDetails(n={settings['count']})"):
+                setattr(bot, CONTACT_PROFILES_READING_ATTR, True)
+                timeout_seconds = contact_auto_maintenance_collect_hard_timeout_seconds(settings["count"])
+                payload = bot._run_contact_auto_maintenance_collector(
+                    start_name=callback_start_name,
+                    start_identity=callback_start_identity,
+                    count=settings["count"],
+                    timeout_seconds=timeout_seconds,
+                    run_kind=run_kind,
+                )
+            child_callback_names = [
+                _clean_text(name)
+                for name in (payload.get("callback_names") or [])
+                if _clean_text(name)
+            ]
+            callback_names.extend(child_callback_names)
+            if child_callback_names and not matched_name:
+                matched_name = _clean_text(payload.get("matched_name")) or child_callback_names[0]
+            for name_text in child_callback_names:
+                if name_text in callback_seen_names:
+                    continue
+                callback_seen_names.add(name_text)
                 read_count = len(callback_seen_names)
                 if _should_log_contact_read_progress(read_count):
-                    _bot_log(bot, message=f"[通讯录维护] 已读取联系人 {read_count} 人，当前：{display_name}")
-            if callback_start_name:
-                time.sleep(CONTACT_CURSOR_MATCH_SETTLE_SECONDS)
-        return matched
-
-    local_contact_source = False
-    result = []
-    if True:
-        if getattr(bot, "_ui_owner", None) is not None:
-            release_wechat_lock = lambda: None
+                    _bot_log(bot, message=f"[通讯录维护] 已读取联系人 {read_count} 人，当前：{name_text}")
+            result_identities = [_clean_text(value) for value in (payload.get("result_identities") or [])]
+            raw_result_identities = [
+                _clean_text(value)
+                for value in (payload.get("raw_result_identities") or [])
+                if _clean_text(value)
+            ]
+            raw_result_count = int(payload.get("raw_result_count") or len(raw_result_identities))
+            cursor_candidates = [
+                {
+                    "name": _clean_text(item.get("name")),
+                    "identity": _clean_text(item.get("identity")),
+                }
+                for item in (payload.get("cursor_candidates") or [])
+                if isinstance(item, dict)
+                and _clean_text(item.get("name"))
+                and _clean_text(item.get("identity"))
+            ]
+            result = payload.get("result") or []
+        read_success = True
+    except Exception:
+        if pause_requested():
+            _bot_log(bot, message="[通讯录维护] 读取已被停止请求中断")
+            result = []
+            read_success = True
         else:
-            release_wechat_lock = wechat_ui_actions.acquire(bot, blocking=bool(block_on_wechat_lock))
-        if not release_wechat_lock:
-            raise RuntimeError("微信操作繁忙，已跳过本次通讯录维护")
-        try:
-            def read_friend_details():
-                nonlocal matched_name, raw_result_count, raw_result_identities, result_identities, cursor_candidates
-                if pause_requested():
-                    _bot_log(bot, message="[通讯录维护] 检测到停止请求，跳过本次读取")
-                    return []
-                if run_kind != "auto_maintenance" and getattr(bot, "_ui_owner", None) is None:
-                    prepare_window_fn = getattr(bot, "_prepare_contact_directory_window", None)
-                    if callable(prepare_window_fn):
-                        prepare_window_fn()
-                    else:
-                        prepare_contact_directory_window(bot)
-                read_success = False
-                try:
-                    with warn_slow_wechat_ui_action(f"GetFriendDetails(n={settings['count']})"):
-                        setattr(bot, CONTACT_PROFILES_READING_ATTR, True)
-                        if run_kind == "auto_maintenance" or getattr(bot, "_ui_owner", None) is not None:
-                            timeout_seconds = contact_auto_maintenance_collect_hard_timeout_seconds(settings["count"])
-                            collector_fn = getattr(bot, "_run_contact_auto_maintenance_collector", None)
-                            if callable(collector_fn):
-                                payload = collector_fn(
-                                    start_name=callback_start_name,
-                                    start_identity=callback_start_identity,
-                                    count=settings["count"],
-                                    timeout_seconds=timeout_seconds,
-                                    run_kind=run_kind,
-                                )
-                            else:
-                                payload = run_contact_auto_maintenance_collector(
-                                    start_name=callback_start_name,
-                                    start_identity=callback_start_identity,
-                                    count=settings["count"],
-                                    timeout_seconds=timeout_seconds,
-                                )
-                            child_callback_names = [
-                                _clean_text(name)
-                                for name in (payload.get("callback_names") or [])
-                                if _clean_text(name)
-                            ]
-                            if child_callback_names:
-                                callback_names.extend(child_callback_names)
-                                if not matched_name:
-                                    matched_name = _clean_text(payload.get("matched_name")) or child_callback_names[0]
-                                for name_text in child_callback_names:
-                                    if name_text in callback_seen_names:
-                                        continue
-                                    callback_seen_names.add(name_text)
-                                    read_count = len(callback_seen_names)
-                                    if _should_log_contact_read_progress(read_count):
-                                        _bot_log(bot, message=f"[通讯录维护] 已读取联系人 {read_count} 人，当前：{name_text}")
-                            result_identities = [
-                                _clean_text(value)
-                                for value in (payload.get("result_identities") or [])
-                            ]
-                            raw_result_identities = [
-                                _clean_text(value)
-                                for value in (payload.get("raw_result_identities") or [])
-                                if _clean_text(value)
-                            ]
-                            raw_result_count = int(payload.get("raw_result_count") or len(raw_result_identities))
-                            cursor_candidates = [
-                                {
-                                    "name": _clean_text(item.get("name")),
-                                    "identity": _clean_text(item.get("identity")),
-                                }
-                                for item in (payload.get("cursor_candidates") or [])
-                                if isinstance(item, dict)
-                                and _clean_text(item.get("name"))
-                                and _clean_text(item.get("identity"))
-                            ]
-                            result = payload.get("result") or []
-                        else:
-                            kwargs = {
-                                "n": settings["count"],
-                                "timeout": contact_read_timeout_seconds(settings["count"]),
-                                "interval": read_interval,
-                                "save_head_image": False,
-                                "callback": callback,
-                            }
-                            result = bot.wx.GetFriendDetails(**kwargs)
-                        read_success = True
-                        return result
-                except Exception:
-                    if pause_requested():
-                        _bot_log(bot, message="[通讯录维护] 读取已被停止请求中断")
-                        read_success = True
-                        return []
-                    raise
-                finally:
-                    try:
-                        setattr(bot, CONTACT_PROFILES_READING_ATTR, False)
-                    except Exception:
-                        pass
-                    if switch_back_to_chat or not read_success:
-                        restore_contact_directory_back_to_chat(bot)
-            result = run_with_wechat_rebind_retry(
-                bot,
-                read_friend_details,
-                attempts=1 if run_kind == "auto_maintenance" or getattr(bot, "_ui_owner", None) is not None else 2,
-                on_retry=lambda exc, _attempt: _bot_log(
-                    bot,
-                    level="WARNING",
-                    message=f"[通讯录维护] 读取好友资料失败，重新初始化微信客户端后重试：{exc}",
-                ),
-            )
-        finally:
-            release_wechat_lock()
+            raise
+    finally:
+        setattr(bot, CONTACT_PROFILES_READING_ATTR, False)
+        if switch_back_to_chat or not read_success:
+            restore_contact_directory_back_to_chat(bot)
     try:
         raw_details = coerce_detail_list(result)
         if not raw_result_count:
@@ -1817,7 +1730,7 @@ def refresh_contact_profiles_single_batch(
             "backup_start_identity": backup_start_identity,
             "count_requested": settings["count"],
             "count_returned": len(raw_details),
-            "interval": read_interval,
+            "interval": settings["interval"],
             "callback_names": callback_names,
             "result_identities": result_identities,
             "raw_result_count": raw_result_count,
@@ -1863,7 +1776,6 @@ def refresh_contact_profiles_batch(
     count_override=None,
     run_to_completion=False,
     automatic=False,
-    block_on_wechat_lock=True,
 ):
     settings = refresh_batch_settings(mode, interval)
     run_kind_fn = getattr(bot, "_refresh_run_kind", None)
@@ -1882,7 +1794,6 @@ def refresh_contact_profiles_batch(
                 use_saved_position=use_saved_position,
                 count_override=count_override,
                 run_kind=run_kind,
-                block_on_wechat_lock=block_on_wechat_lock,
             )
         else:
             result = refresh_contact_profiles_single_batch(
@@ -1894,7 +1805,6 @@ def refresh_contact_profiles_batch(
                 use_saved_position=use_saved_position,
                 count_override=count_override,
                 run_kind=run_kind,
-                block_on_wechat_lock=block_on_wechat_lock,
             )
         result["run_kind"] = run_kind
         return result
@@ -1945,7 +1855,6 @@ def refresh_contact_profiles_batch(
                 logical_start_name=current_start_name,
                 logical_start_identity=current_start_identity,
                 switch_back_to_chat=False,
-                block_on_wechat_lock=block_on_wechat_lock,
             )
         else:
             result = refresh_contact_profiles_single_batch(
@@ -1963,7 +1872,6 @@ def refresh_contact_profiles_batch(
                 logical_start_name=current_start_name,
                 logical_start_identity=current_start_identity,
                 switch_back_to_chat=False,
-                block_on_wechat_lock=block_on_wechat_lock,
             )
         last_result = result
         total_count += int(result.get("count_returned", 0) or 0)
@@ -2014,7 +1922,7 @@ def refresh_contact_profiles_batch(
 
     if last_result is None:
         raise RuntimeError("建档未启动，请重试")
-    switch_contact_directory_back_to_chat(bot, use_lock=True)
+    switch_contact_directory_back_to_chat(bot)
 
     final_directory = last_result.get("directory") or {}
     summarize_growth_fn = getattr(bot, "_summarize_directory_growth", None)
@@ -2152,11 +2060,6 @@ def check_contact_directory_auto_maintenance(bot, now=None):
     else:
         _bot_log(bot, message="[通讯录维护] 自动维护从通讯录头部开始")
 
-    release_preflight_lock = wechat_ui_actions.try_acquire(bot)
-    if not release_preflight_lock:
-        return False
-    release_preflight_lock()
-
     write_cycle_fn = getattr(bot, "_write_contact_directory_auto_cycle_state", None)
     save_directory_fn = getattr(bot, "_save_contact_profiles_directory", None)
     try:
@@ -2215,7 +2118,6 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     count_override=request_count,
                     run_to_completion=False,
                     automatic=True,
-                    block_on_wechat_lock=False,
                 )
             else:
                 result = refresh_contact_profiles_batch(
@@ -2227,7 +2129,6 @@ def check_contact_directory_auto_maintenance(bot, now=None):
                     count_override=request_count,
                     run_to_completion=False,
                     automatic=True,
-                    block_on_wechat_lock=False,
                 )
         except Exception as exc:
             retry_count = cycle["retry_count"] + 1
@@ -2560,7 +2461,8 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
     else:
         records_file = contact_profiles_remark_repair_records_file(bot)
     _bot_log(bot, message=f"[通讯录维护] 开始备注修复，共 {len(candidates)} 个联系人")
-    with wechat_ui_actions.hold(bot):
+    def apply_candidates():
+        nonlocal current_directory
         for index, candidate in enumerate(candidates, start=1):
             contact_key = str(candidate.get("contact_key") or "")
             suggested_remark = str(candidate.get("suggested_remark") or "").strip()
@@ -2651,6 +2553,7 @@ def repair_contact_profile_remarks(bot, contact_keys=None):
                 result["success_count"] += 1
             else:
                 result["failed_count"] += 1
+    apply_candidates()
     result["directory"] = current_directory
     _bot_log(
         bot,

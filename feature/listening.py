@@ -12,7 +12,6 @@ from core.account_storage import account_area_dir, migrate_default_account
 from core.contact_profiles import directory_lock, merge_directory as merge_contact_directory
 from core.logger import log
 from core.listener_window_supervisor import ListenerWindowSupervisor
-from core.memory import MemoryManager
 from core.wechat_window import (
     is_wechat_client_binding_failure,
     rebind_wechat_client as core_rebind_wechat_client,
@@ -22,7 +21,7 @@ from core.wechat_ui_runtime import OwnedChat
 from core.wechat_observability import warn_slow_wechat_ui_action
 from feature.material_outreach import iter_material_outreach_listen_sources
 from feature.message_routing import prepare_message_media
-from feature.new_friends import build_new_friend_remark, iter_new_friend_welcome_actions
+from feature.new_friends import iter_new_friend_welcome_actions
 from feature.voice_reply import load_voice_reply_state
 from core.message_pipeline import ConversationRef, MessageEnvelope
 
@@ -246,19 +245,13 @@ def touch_dynamic_listener_entry(bot, nickname, timestamp=None):
 
 def _forget_runtime_listener_caches(bot, nickname):
     runtime_chat_state.remove_listen_chat(bot, nickname)
-    material_chats = getattr(bot, "_material_source_chats", None)
-    if isinstance(material_chats, dict):
-        material_chats.pop(str(nickname or "").strip(), None)
 
 
 def _call_remove_listen_chat(bot, nickname):
     remove_listen_chat = getattr(getattr(bot, "wx", None), "RemoveListenChat", None)
     if not callable(remove_listen_chat):
         raise RuntimeError("当前微信客户端不支持删除监听")
-    try:
-        return remove_listen_chat(nickname, close_window=True)
-    except TypeError:
-        return remove_listen_chat(nickname)
+    return remove_listen_chat(nickname, close_window=True)
 
 
 def close_dynamic_listener_subwindows(bot, nicknames):
@@ -289,9 +282,8 @@ def add_listen_chat_once(bot, nickname, label, *, allow_rebind=False):
     log_level = "WARNING" if label_text in quiet_labels else "ERROR"
 
     def add_action():
-        with wechat_ui_actions.hold(bot):
-            with warn_slow_wechat_ui_action(f"AddListenChat({nickname})"):
-                return bot.wx.AddListenChat(nickname=nickname, callback=bot.message_handle_callback)
+        with warn_slow_wechat_ui_action(f"AddListenChat({nickname})"):
+            return bot.wx.AddListenChat(nickname=nickname)
 
     try:
         if allow_rebind:
@@ -371,7 +363,6 @@ def _has_due_listener_window_recovery_task(bot, now_ts=None):
 def _queue_listener_window_recovery(
     bot,
     chat_name,
-    _messages,
     *,
     reason="",
     allow_rebuild=False,
@@ -432,7 +423,7 @@ def _rebuild_listener_window(bot, chat_name):
     _remove_listen_chat_verified_locked(bot, name, log_success=False)
     try:
         with warn_slow_wechat_ui_action(f"AddListenChat({name})"):
-            result = bot.wx.AddListenChat(nickname=name, callback=bot.message_handle_callback)
+            result = bot.wx.AddListenChat(nickname=name)
     except Exception as exc:
         _bot_log(bot, level="WARNING", message=f"全局监听 {name}：监听窗口重建异常，稍后继续等待，详情：{exc}")
         return None
@@ -464,19 +455,12 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
         name = item["conversation"]
         sub_chat = get_runtime_cached_subwindow(bot, name)
         if not sub_chat:
-            release_wechat_lock = wechat_ui_actions.try_acquire(bot)
-            if not release_wechat_lock:
-                supervisor.release(name, retry_after=1, now=now_ts)
-                continue
-            try:
-                sub_chat = get_cached_or_verified_subwindow(bot, name)
-                if not sub_chat:
-                    if item["allow_rebuild"] and supervisor.consume_rebuild(name):
-                        sub_chat = _rebuild_listener_window(bot, name)
-                    else:
-                        sub_chat = add_chat_to_listen(bot, name)
-            finally:
-                release_wechat_lock()
+            sub_chat = get_cached_or_verified_subwindow(bot, name)
+            if not sub_chat:
+                if item["allow_rebuild"] and supervisor.consume_rebuild(name):
+                    sub_chat = _rebuild_listener_window(bot, name)
+                else:
+                    sub_chat = add_chat_to_listen(bot, name)
         handled = True
         if sub_chat:
             supervisor.succeeded(name)
@@ -579,18 +563,18 @@ def listener_registration_specs(bot):
     specs = []
     if not getattr(bot.config, "AllListen_switch", False):
         specs.extend(
-            ("用户", str(item or "").strip(), False)
+            ("用户", str(item or "").strip())
             for item in (getattr(bot.config, "listen_list", []) or [])
         )
     if getattr(bot.config, "group_switch", False):
         specs.extend(
-            ("群组", str(item or "").strip(), False)
+            ("群组", str(item or "").strip())
             for item in (getattr(bot.config, "group", []) or [])
         )
     material_source_runtime_enabled = getattr(bot, "_material_source_runtime_enabled", None)
     if callable(material_source_runtime_enabled) and material_source_runtime_enabled():
         specs.extend(
-            ("素材投喂监听源", str(source or "").strip(), True)
+            ("素材投喂监听源", str(source or "").strip())
             for source in iter_material_outreach_listen_sources(
                 getattr(bot.config, "material_source_list", []),
                 listen_list=getattr(bot.config, "listen_list", []),
@@ -604,15 +588,15 @@ def listener_registration_specs(bot):
             name = str(item[0] or "").strip()
         else:
             name = str(item or "").strip()
-        specs.append(("动态监听", name, False))
+        specs.append(("动态监听", name))
 
     unique_specs = []
     seen = set()
-    for label, name, cache_material in specs:
+    for label, name in specs:
         if not name or name in seen:
             continue
         seen.add(name)
-        unique_specs.append((label, name, cache_material))
+        unique_specs.append((label, name))
     return unique_specs
 
 
@@ -642,7 +626,6 @@ def rebuild_listener_runtime(
     _bot_log(bot, level="DEBUG", message="启动wxautox监听器...")
     if clear_runtime_cache:
         bot._listen_chats = {}
-        bot._material_source_chats = {}
 
     bot.wx.StopListening()
     _bot_sleep(bot, 1)
@@ -650,14 +633,12 @@ def rebuild_listener_runtime(
 
     result = None
     expected_listeners = []
-    for label, name, cache_material in listener_registration_specs(bot):
+    for label, name in listener_registration_specs(bot):
         _bot_sleep(bot, 0.5)
         result = add_listen_chat_once(bot, name, label, allow_rebind=True)
         expected_listeners.append(name)
         if is_target_chat(result, name):
             runtime_chat_state.remember_listen_chat(bot, name, result)
-            if cache_material:
-                bot._material_source_chats[name] = result
 
     verify_initial_listeners(bot, expected_listeners, retry_count=verify_retry_count)
     bot._listener_reconcile_last_at = time.time()
@@ -811,20 +792,13 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
     if not force and last_at and now_ts - last_at < interval:
         return []
 
-    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
-    if not release_wechat_lock:
-        return []
-    try:
-        reopened = reconcile_listener_subwindows(bot, retry_count=retry_count)
-        bot._listener_reconcile_last_at = now_ts
-        return reopened
-    finally:
-        release_wechat_lock()
+    reopened = reconcile_listener_subwindows(bot, retry_count=retry_count)
+    bot._listener_reconcile_last_at = now_ts
+    return reopened
 
 
 def remove_listen_chat_verified(bot, nickname, *, log_success=True):
-    with wechat_ui_actions.hold(bot):
-        return _remove_listen_chat_verified_locked(bot, nickname, log_success=log_success)
+    return _remove_listen_chat_verified_locked(bot, nickname, log_success=log_success)
 
 
 def _remove_listen_chat_verified_locked(bot, nickname, *, log_success=True):
@@ -875,68 +849,12 @@ def verify_initial_listeners(bot, expected_chats, retry_count=3):
 
 def init_wx_listeners(bot):
     """Initialize WeChat client and listener registrations."""
-    if getattr(bot, "_use_ui_owner", False):
-        specs = listener_registration_specs(bot)
-        listener_names = [name for _label, name, _cache_material in specs]
-        identity = bot._bootstrap_ui_owner([])
-        bot.config.AtMe = "@" + str(identity.get("nickname") or "")
-        _bot_log(bot, level="DEBUG", message="绑定微信：" + bot.config.AtMe)
-        wx_id = str(identity.get("wx_id") or identity.get("nickname") or "")
-        bot.wx_id = wx_id
-        try:
-            migrated_default = migrate_default_account(bot.config.DATA_DIR, wx_id)
-            if migrated_default:
-                _bot_log(bot, message=f"已将 default 账号目录迁移到 {wx_id}")
-        except Exception as exc:
-            _bot_log(bot, level="WARNING", message=f"default 账号目录迁移失败：{exc}")
-        if hasattr(bot.config, "bind_account_wx_id"):
-            bot.config.bind_account_wx_id(wx_id)
-        bot._voice_reply_state = load_voice_reply_state(bot._voice_reply_state_path())
-        bot._set_material_outreach_namespace(wx_id)
-        _base = os.path.dirname(sys.executable) if hasattr(sys, "_MEIPASS") else os.path.abspath(".")
-        initialize_message_runtime = getattr(bot, "_initialize_message_runtime", None)
-        if callable(initialize_message_runtime):
-            initialize_message_runtime(wx_id)
-        else:
-            bot.memory_manager = MemoryManager(wx_id, os.path.join(_base, "data"))
-        bot._init_prompt_system(str(account_area_dir(os.path.join(_base, "data"), wx_id, "chat_memory", create=True)))
-        register_listeners = getattr(bot, "_register_ui_listener_names", None)
-        if callable(register_listeners):
-            register_listeners(listener_names)
-        else:
-            for name in listener_names:
-                bot._ui_owner.call(
-                    wechat_ui_actions.UIIntent(
-                        wechat_ui_actions.UIIntentKind.ADD_LISTEN,
-                        {"conversation": name},
-                    ),
-                    wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
-                )
-        bot._listen_chats = {}
-        for _label, name, cache_material in specs:
-            chat = OwnedChat(bot._ui_owner, name)
-            runtime_chat_state.remember_listen_chat(bot, name, chat)
-            if cache_material:
-                bot._material_source_chats[name] = chat
-        drain_recovery = getattr(bot, "_drain_message_recovery", None)
-        if callable(drain_recovery):
-            drain_recovery()
-        bot._register_runtime_task_schedules()
-        _bot_log(bot, level="DEBUG", message="监听器初始化完成")
-        return True
-
-    if not getattr(bot, "wx", None):
-        _bot_log(bot, message="本次未获取客户端，正在初始化微信客户端...")
-    bind_wechat_client(bot, force_rebind=not getattr(bot, "wx", None))
-
-    bot.config.AtMe = "@" + bot.wx.nickname
+    specs = listener_registration_specs(bot)
+    listener_names = [name for _label, name in specs]
+    identity = bot._bootstrap_ui_owner([])
+    bot.config.AtMe = "@" + str(identity.get("nickname") or "")
     _bot_log(bot, level="DEBUG", message="绑定微信：" + bot.config.AtMe)
-
-    try:
-        my_info = bot.wx.GetMyInfo()
-        wx_id = my_info.get("id", f"{bot.wx.nickname}")
-    except Exception:
-        wx_id = f"{bot.wx.nickname}"
+    wx_id = str(identity.get("wx_id") or identity.get("nickname") or "")
     bot.wx_id = wx_id
     try:
         migrated_default = migrate_default_account(bot.config.DATA_DIR, wx_id)
@@ -944,30 +862,20 @@ def init_wx_listeners(bot):
             _bot_log(bot, message=f"已将 default 账号目录迁移到 {wx_id}")
     except Exception as exc:
         _bot_log(bot, level="WARNING", message=f"default 账号目录迁移失败：{exc}")
-    try:
-        last_wx_id_file = os.path.join(bot.config.DATA_DIR, "config", "last_wx_id.txt")
-        os.makedirs(os.path.dirname(last_wx_id_file), exist_ok=True)
-        with open(last_wx_id_file, "w", encoding="utf-8") as f:
-            f.write(str(wx_id or "").strip())
-    except Exception:
-        pass
     if hasattr(bot.config, "bind_account_wx_id"):
         bot.config.bind_account_wx_id(wx_id)
     bot._voice_reply_state = load_voice_reply_state(bot._voice_reply_state_path())
     bot._set_material_outreach_namespace(wx_id)
-    _base = os.path.dirname(sys.executable) if hasattr(sys, "_MEIPASS") else os.path.abspath(".")
-    memory_base = os.path.join(_base, "data")
-    bot.memory_manager = MemoryManager(
-        wx_id,
-        memory_base,
-    )
-    bot._init_prompt_system(str(account_area_dir(os.path.join(_base, "data"), wx_id, "chat_memory", create=True)))
-    _bot_log(bot, message=f"记忆管理器已初始化，微信号: {wx_id}")
-    enqueue_memory_checks = getattr(bot, "_enqueue_existing_chat_memory_checks", None)
-    if callable(enqueue_memory_checks):
-        enqueue_memory_checks()
-    rebuild_listener_runtime(bot, verify_retry_count=3, clear_runtime_cache=True, finish_message="监听器初始化完成")
+    bot._initialize_message_runtime(wx_id)
+    bot._init_prompt_system(str(account_area_dir(bot.config.DATA_DIR, wx_id, "chat_memory", create=True)))
+    bot._register_ui_listener_names(listener_names)
+    bot._listen_chats = {}
+    for _label, name in specs:
+        chat = OwnedChat(bot._ui_owner, name)
+        runtime_chat_state.remember_listen_chat(bot, name, chat)
+    bot._drain_message_recovery()
     bot._register_runtime_task_schedules()
+    _bot_log(bot, level="DEBUG", message="监听器初始化完成")
     return True
 
 
@@ -986,30 +894,25 @@ def send_group_welcome_msg(bot, chat, message):
 
     def send_welcome(new_friend):
         _bot_sleep(bot, 5)
-        if isinstance(chat, OwnedChat):
-            guard = getattr(bot, "_config_ui_task_guard", None)
-            task_key, task_version = guard("group_welcome") if callable(guard) else ("", 0)
-            seed = "|".join([
-                str(chat.who or ""),
-                str(getattr(message, "id", "") or ""),
-                str(getattr(message, "hash", "") or ""),
-                str(getattr(message, "time", "") or ""),
-                str(getattr(message, "content", "") or ""),
-                str(new_friend or ""),
-            ])
-            try:
-                return chat.SendActions(
-                    [{"type": "text", "text": str(bot.config.group_welcome_msg or ""), "at": new_friend}],
-                    task_key=task_key,
-                    task_version=task_version,
-                    delivery_id=f"group-welcome:{uuid.uuid5(uuid.NAMESPACE_URL, seed)}",
-                )
-            except wechat_ui_actions.IntentCancelled:
-                _bot_log(bot, message=f"群欢迎设置已更新或关闭，已取消向 {new_friend} 发送旧欢迎语")
-                return True
-        with wechat_ui_actions.hold(bot):
-            with bot._get_chat_send_lock(chat.who):
-                return chat.SendMsg(msg=bot.config.group_welcome_msg, at=new_friend)
+        task_key, task_version = bot._config_ui_task_guard("group_welcome")
+        seed = "|".join([
+            str(chat.who or ""),
+            str(getattr(message, "id", "") or ""),
+            str(getattr(message, "hash", "") or ""),
+            str(getattr(message, "time", "") or ""),
+            str(getattr(message, "content", "") or ""),
+            str(new_friend or ""),
+        ])
+        try:
+            return chat.SendActions(
+                [{"type": "text", "text": str(bot.config.group_welcome_msg or ""), "at": new_friend}],
+                task_key=task_key,
+                task_version=task_version,
+                delivery_id=f"group-welcome:{uuid.uuid5(uuid.NAMESPACE_URL, seed)}",
+            )
+        except wechat_ui_actions.IntentCancelled:
+            _bot_log(bot, message=f"群欢迎设置已更新或关闭，已取消向 {new_friend} 发送旧欢迎语")
+            return True
 
     if "加入群聊" in message.content:
         new_friend = find_new_group_friend(message.content, 1)
@@ -1054,133 +957,76 @@ def archive_accepted_friend(bot, accepted):
 
 
 def pass_new_friends(bot):
-    owner = getattr(bot, "_ui_owner", None)
-    if owner is not None:
-        tags = list(getattr(bot.config, "new_friend_tags", []) or [])
-        archive_enabled = bool(getattr(bot.config, "new_friend_archive_switch", True))
-        remark_rules = {
-            "enabled": archive_enabled,
-            "prefix": str(getattr(bot.config, "new_friend_remark_prefix", "") or ""),
-            "suffix": str(getattr(bot.config, "new_friend_remark_suffix", "") or ""),
-            "prefix_timestamp": bool(getattr(bot.config, "new_friend_remark_prefix_timestamp", False)),
-            "suffix_timestamp": bool(getattr(bot.config, "new_friend_remark_suffix_timestamp", False)),
-        }
-        welcome_actions = (
-            list(iter_new_friend_welcome_actions(getattr(bot.config, "new_friend_msg", {})))
-            if bool(getattr(bot.config, "new_friend_reply_switch", False))
-            else []
+    owner = bot._ui_owner
+    tags = list(getattr(bot.config, "new_friend_tags", []) or [])
+    archive_enabled = bool(getattr(bot.config, "new_friend_archive_switch", True))
+    remark_rules = {
+        "enabled": archive_enabled,
+        "prefix": str(getattr(bot.config, "new_friend_remark_prefix", "") or ""),
+        "suffix": str(getattr(bot.config, "new_friend_remark_suffix", "") or ""),
+        "prefix_timestamp": bool(getattr(bot.config, "new_friend_remark_prefix_timestamp", False)),
+        "suffix_timestamp": bool(getattr(bot.config, "new_friend_remark_suffix_timestamp", False)),
+    }
+    welcome_actions = (
+        list(iter_new_friend_welcome_actions(getattr(bot.config, "new_friend_msg", {})))
+        if bool(getattr(bot.config, "new_friend_reply_switch", False))
+        else []
+    )
+    task_key, task_version = bot._config_ui_task_guard("new_friend")
+    try:
+        result = owner.call(
+            wechat_ui_actions.UIIntent(
+                wechat_ui_actions.UIIntentKind.NEW_FRIEND,
+                {
+                    "remark_rules": remark_rules,
+                    "tags": tags if archive_enabled else [],
+                    "task_key": task_key,
+                },
+                task_version=task_version,
+            ),
+            wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
         )
-        guard = getattr(bot, "_config_ui_task_guard", None)
-        task_key, task_version = guard("new_friend") if callable(guard) else ("", 0)
+    except wechat_ui_actions.IntentCancelled:
+        _bot_log(bot, message="新好友自动通过规则已更新或关闭，本轮已取消")
+        return True
+    for item in result or []:
+        bot._metric_increment("new_friend_accepted_count")
+        _bot_log(bot, level="INFO", message="已通过" + str(item.get("send_name") or item.get("name") or "") + "的好友请求")
         try:
-            result = owner.call(
-                wechat_ui_actions.UIIntent(
-                    wechat_ui_actions.UIIntentKind.NEW_FRIEND,
+            archive_accepted_friend(bot, item)
+        except Exception as exc:
+            _bot_log(bot, level="WARNING", message=f"新好友已通过，但即时写入通讯录档案失败：{exc}")
+        if not welcome_actions:
+            continue
+        _bot_sleep(bot, 5)
+        send_name = str(item.get("send_name") or item.get("name") or "")
+        for index, action in enumerate(welcome_actions):
+            prepared_action = (
+                {"type": "file", "path": str(action.get("path") or "")}
+                if str(action.get("type") or "") == "file"
+                else {"type": "text", "text": str(action.get("content") or "")}
+            )
+            try:
+                owner.call(wechat_ui_actions.UIIntent(
+                    wechat_ui_actions.UIIntentKind.SEND_ACTIONS,
                     {
-                        "remark_rules": remark_rules,
-                        "tags": tags if archive_enabled else [],
+                        "conversation": send_name,
                         "task_key": task_key,
+                        "delivery_id": f"new-friend-welcome:{uuid.uuid4()}:{index}",
+                        "actions": [prepared_action],
                     },
                     task_version=task_version,
-                ),
-                wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
-            )
-        except wechat_ui_actions.IntentCancelled:
-            _bot_log(bot, message="新好友自动通过规则已更新或关闭，本轮已取消")
-            return True
-        for item in result or []:
-            record_metric = getattr(bot, "_metric_increment", None)
-            if callable(record_metric):
-                record_metric("new_friend_accepted_count")
-            _bot_log(bot, level="INFO", message="已通过" + str(item.get("send_name") or item.get("name") or "") + "的好友请求")
-            try:
-                archive_accepted_friend(bot, item)
-            except Exception as exc:
-                _bot_log(bot, level="WARNING", message=f"新好友已通过，但即时写入通讯录档案失败：{exc}")
-            if welcome_actions:
-                _bot_sleep(bot, 5)
-                send_name = str(item.get("send_name") or item.get("name") or "")
-                for index, action in enumerate(welcome_actions):
-                    if str(action.get("type") or "") == "file":
-                        prepared_action = {"type": "file", "path": str(action.get("path") or "")}
-                    else:
-                        prepared_action = {"type": "text", "text": str(action.get("content") or "")}
-                    try:
-                        owner.call(wechat_ui_actions.UIIntent(
-                            wechat_ui_actions.UIIntentKind.SEND_ACTIONS,
-                            {
-                                "conversation": send_name,
-                                "task_key": task_key,
-                                "delivery_id": f"new-friend-welcome:{uuid.uuid4()}:{index}",
-                                "actions": [prepared_action],
-                            },
-                            task_version=task_version,
-                        ), wechat_ui_actions.UI_CALL_WAIT_TIMEOUT)
-                    except wechat_ui_actions.IntentCancelled:
-                        _bot_log(bot, message=f"新好友欢迎规则已更新或关闭，已停止向 {send_name} 发送旧欢迎内容")
-                        break
-                    delay = getattr(bot, "_inter_message_delay_or_stop", None)
-                    if index < len(welcome_actions) - 1 and callable(delay):
-                        delay()
-        return True
-
-    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
-    if not release_wechat_lock:
-        _bot_log(bot, message="新好友检测跳过：微信操作锁占用中")
-        return False
-    try:
-        with warn_slow_wechat_ui_action("GetNewFriends()"):
-            new_friends = bot.wx.GetNewFriends(acceptable=True)
-        _bot_sleep(bot, 1)
-        if len(new_friends) != 0:
-            _bot_log(bot, message="以下是新朋友：\n" + str(new_friends))
-            for new in new_friends:
-                accept_kwargs = {}
-                send_name = new.name
-                if bool(getattr(bot.config, "new_friend_archive_switch", True)):
-                    send_name = build_new_friend_remark(
-                        new.name,
-                        prefix=bot.config.new_friend_remark_prefix,
-                        suffix=bot.config.new_friend_remark_suffix,
-                        prefix_timestamp=bot.config.new_friend_remark_prefix_timestamp,
-                        suffix_timestamp=bot.config.new_friend_remark_suffix_timestamp,
-                    )
-                    accept_kwargs["remark"] = send_name
-                    if bot.config.new_friend_tags:
-                        accept_kwargs["tags"] = bot.config.new_friend_tags
-                new.accept(**accept_kwargs)
-                record_metric = getattr(bot, "_metric_increment", None)
-                if callable(record_metric):
-                    record_metric("new_friend_accepted_count")
-                _bot_log(bot, level="INFO", message="已通过" + send_name + "的好友请求")
-                bot.wx.SwitchToChat()
-                _bot_sleep(bot, 5)
-                if bool(getattr(bot.config, "new_friend_reply_switch", False)):
-                    fallback_actions = list(iter_new_friend_welcome_actions(getattr(bot.config, "new_friend_msg", {})))
-                    for index, action in enumerate(fallback_actions):
-                        if action["type"] == "file":
-                            bot.wx.SendFiles(who=send_name, filepath=action["path"])
-                        else:
-                            bot.wx.SendMsg(who=send_name, msg=action["content"])
-                        delay = getattr(bot, "_inter_message_delay_or_stop", None)
-                        if index < len(fallback_actions) - 1 and callable(delay):
-                            delay()
-                bot.wx.ChatWith(who="文件传输助手")
-                _bot_sleep(bot, 1)
-                bot.wx.SwitchToContact()
-            _bot_sleep(bot, 1)
-        bot.wx.SwitchToChat()
-        _bot_sleep(bot, 1)
-        return True
-    finally:
-        release_wechat_lock()
+                ), wechat_ui_actions.UI_CALL_WAIT_TIMEOUT)
+            except wechat_ui_actions.IntentCancelled:
+                _bot_log(bot, message=f"新好友欢迎规则已更新或关闭，已停止向 {send_name} 发送旧欢迎内容")
+                break
+            if index < len(welcome_actions) - 1:
+                bot._inter_message_delay_or_stop()
+    return True
 
 
 def listen_mode(bot):
-    messages_dict = bot.wx.GetListenMessage()
-    for chat in messages_dict:
-        for message in messages_dict.get(chat, []):
-            process_listen_message(bot, chat, message)
+    bot.wx.poll_listen_messages()
 
 
 def new_msg_get_plus(chat_records):
@@ -1258,7 +1104,6 @@ def alllisten_mode(bot, last_time, timeout=10):
     def get_next_new_message():
         messages_new = bot.wx.GetNextNewMessage(
             filter_mute=bot.config.AllListen_filter_mute,
-            callback=None,
             download_media=bool(getattr(bot.config, "chat_image_recognition_switch", False)),
         )
         chat = messages_new.get("chat_name")
@@ -1313,7 +1158,6 @@ def alllisten_mode(bot, last_time, timeout=10):
         _queue_listener_window_recovery(
             bot,
             chat,
-            envelopes,
             reason=add_result.get("error", ""),
             allow_rebuild=bool(add_result.get("stale")),
         )

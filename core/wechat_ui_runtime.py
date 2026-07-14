@@ -29,7 +29,7 @@ from core.wechat_ui_actions import (
 
 
 class OwnedChat:
-    """Compatibility facade containing only identity plus an owner reference."""
+    """Conversation identity whose operations are always submitted to the UI owner."""
 
     def __init__(self, owner, who, chat_type="private"):
         self._owner = owner
@@ -37,13 +37,9 @@ class OwnedChat:
         self.chat_type = str(chat_type or "private").strip() or "private"
 
     def GetAllMessage(self):
-        from core.wechat_ui_actions import UIIntent
-
         return self._owner.call(UIIntent(UIIntentKind.GET_MESSAGES, {"conversation": self.who}), UI_CALL_WAIT_TIMEOUT)
 
     def SendMsg(self, msg="", at=None, **kwargs):
-        from core.wechat_ui_actions import UIIntent
-
         text = kwargs.get("message", msg)
         return self._owner.call(UIIntent(
             UIIntentKind.SEND_TEXT,
@@ -58,20 +54,6 @@ class OwnedChat:
             expires_at=kwargs.get("expires_at"),
         ), UI_CALL_WAIT_TIMEOUT)
 
-    def SendMsgBatch(self, messages, *, conversation_version=None, first_at=""):
-        from core.wechat_ui_actions import UIIntent
-
-        return self._owner.call(UIIntent(
-            UIIntentKind.SEND_TEXT_BATCH,
-            {
-                "conversation": self.who,
-                "chat_type": self.chat_type,
-                "messages": [str(item or "") for item in (messages or []) if str(item or "")],
-                "first_at": str(first_at or ""),
-            },
-            conversation_version=conversation_version,
-        ), UI_CALL_WAIT_TIMEOUT)
-
     def SendActions(
         self,
         actions,
@@ -84,8 +66,6 @@ class OwnedChat:
         echo_delivery_ids=(),
         require_contact_key=False,
     ):
-        from core.wechat_ui_actions import UIIntent
-
         return self._owner.call(UIIntent(
             UIIntentKind.SEND_ACTIONS,
             {
@@ -103,8 +83,6 @@ class OwnedChat:
         ), UI_CALL_WAIT_TIMEOUT)
 
     def SendFiles(self, filepath="", **kwargs):
-        from core.wechat_ui_actions import UIIntent
-
         path = kwargs.get("path", filepath)
         delivery_id = str(kwargs.get("delivery_id") or uuid.uuid4()) if kwargs.get("journal", True) else ""
         return self._owner.call(UIIntent(
@@ -121,8 +99,6 @@ class OwnedChat:
         ), UI_CALL_WAIT_TIMEOUT)
 
     def SendAudio(self, filepath="", duration=None, **kwargs):
-        from core.wechat_ui_actions import UIIntent
-
         path = kwargs.get("path", filepath)
         delivery_id = str(kwargs.get("delivery_id") or uuid.uuid4()) if kwargs.get("journal", True) else ""
         return self._owner.call(UIIntent(
@@ -140,25 +116,17 @@ class OwnedChat:
 
 
 class UIClientFacade:
-    """Temporary API-compatible facade; it never stores a wxautox object."""
-
-    is_ui_owner_facade = True
+    """Owner-backed listener facade that never stores a wxautox object."""
 
     def __init__(self, owner, identity):
         self._owner = owner
         self.nickname = str((identity or {}).get("nickname") or "")
-        self._wx_id = str((identity or {}).get("wx_id") or self.nickname)
 
     def _main(self, operation, **payload):
-        from core.wechat_ui_actions import UIIntent
-
         return self._owner.call(
             UIIntent(UIIntentKind.MAIN_WINDOW, {"operation": operation, **payload}),
             UI_CALL_WAIT_TIMEOUT,
         )
-
-    def GetMyInfo(self):
-        return {"id": self._wx_id, "nickname": self.nickname}
 
     def StartListening(self):
         return self._main("start_listening")
@@ -180,45 +148,27 @@ class UIClientFacade:
     def GetAllSubWindow(self):
         return [OwnedChat(self._owner, name) for name in self._main("all_subwindows")]
 
-    def AddListenChat(self, nickname, callback=None):
-        from core.wechat_ui_actions import UIIntent
-
+    def AddListenChat(self, nickname):
         name = str(nickname or "").strip()
         self._owner.call(UIIntent(UIIntentKind.ADD_LISTEN, {"conversation": name}), UI_CALL_WAIT_TIMEOUT)
         return OwnedChat(self._owner, name)
 
     def RemoveListenChat(self, nickname=None, who=None):
-        from core.wechat_ui_actions import UIIntent
-
         name = str(nickname or who or "").strip()
         return self._owner.call(UIIntent(UIIntentKind.REMOVE_LISTEN, {"conversation": name}), UI_CALL_WAIT_TIMEOUT)
 
-    def GetListenMessage(self):
-        from core.wechat_ui_actions import UIIntent
+    def poll_listen_messages(self):
+        return self._owner.call(
+            UIIntent(UIIntentKind.POLL_MESSAGES, {"mode": "listen"}),
+            UI_CALL_WAIT_TIMEOUT,
+        )
 
-        self._owner.call(UIIntent(UIIntentKind.POLL_MESSAGES, {"mode": "listen"}), UI_CALL_WAIT_TIMEOUT)
-        return {}
-
-    def GetNextNewMessage(self, filter_mute=False, callback=None, download_media=False):
-        from core.wechat_ui_actions import UIIntent
-
+    def GetNextNewMessage(self, filter_mute=False, download_media=False):
         return self._owner.call(UIIntent(UIIntentKind.POLL_MESSAGES, {
             "mode": "next",
             "filter_mute": bool(filter_mute),
             "download_media": bool(download_media),
         }), UI_CALL_WAIT_TIMEOUT)
-
-    def ChatWith(self, who=None, exact=True):
-        name = str(who or "").strip()
-        self._main("chat_with", conversation=name, exact=bool(exact))
-        return OwnedChat(self._owner, name)
-
-    def SendMsg(self, who=None, msg="", **kwargs):
-        return OwnedChat(self._owner, who).SendMsg(msg=msg, at=kwargs.get("at"))
-
-    def SendFiles(self, who=None, filepath="", **kwargs):
-        return OwnedChat(self._owner, who).SendFiles(filepath=filepath)
-
 
 class WeChatUIRuntime:
     def __init__(
@@ -265,7 +215,6 @@ class WeChatUIRuntime:
             UIIntentKind.POLL_MESSAGES: self.poll_messages,
             UIIntentKind.GET_MESSAGES: self.get_messages,
             UIIntentKind.SEND_TEXT: self.send_text,
-            UIIntentKind.SEND_TEXT_BATCH: self.send_text_batch,
             UIIntentKind.SEND_ACTIONS: self.send_actions,
             UIIntentKind.SEND_FILE: self.send_file,
             UIIntentKind.SEND_AUDIO: self.send_audio,
@@ -325,7 +274,6 @@ class WeChatUIRuntime:
             elif envelope.type == "image":
                 envelope._wxbot_media_prepared = True
                 envelope._skip_ai_reply = True
-                envelope._skip_memory = True
         if callable(self._enrich_message):
             self._enrich_message(conversation, envelope)
         self._on_message(conversation, envelope)
@@ -505,24 +453,7 @@ class WeChatUIRuntime:
         at = payload.get("at")
         if at:
             kwargs["at"] = at
-        try:
-            return chat.SendMsg(**kwargs)
-        except TypeError:
-            return chat.SendMsg(kwargs["msg"])
-
-    def send_text_batch(self, payload):
-        chat = self._chat_for_payload(payload, allow_add=bool(payload.get("_exclusive_retry")))
-        results = []
-        first_at = str(payload.get("first_at") or "")
-        for index, text in enumerate(payload.get("messages") or ()):
-            if index == 0 and first_at:
-                try:
-                    results.append(chat.SendMsg(msg=str(text or ""), at=first_at))
-                except TypeError:
-                    results.append(chat.SendMsg(str(text or ""), at=first_at))
-            else:
-                results.append(chat.SendMsg(str(text or "")))
-        return results
+        return chat.SendMsg(**kwargs)
 
     def send_actions(self, payload):
         chat = self._chat_for_payload(payload, allow_add=True)
@@ -652,12 +583,6 @@ class WeChatUIRuntime:
                     names.append(name)
             self._listen_chats = current
             return names
-        if operation == "chat_with":
-            name = str(payload.get("conversation") or "").strip()
-            chat_with = getattr(self._client, "ChatWith", None)
-            if not callable(chat_with):
-                raise RuntimeError("当前微信内核不支持 ChatWith")
-            return bool(chat_with(who=name, exact=bool(payload.get("exact", True))))
         raise ValueError(f"未登记的主窗口操作：{operation}")
 
     def _locate_message(self, payload):

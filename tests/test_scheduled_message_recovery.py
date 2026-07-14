@@ -3,9 +3,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest import mock
 
-from core import runtime_chat_state
 from core.wechat_ui_actions import (
-    ActionBatchInterrupted,
     IntentCancelled,
     UI_CALL_WAIT_TIMEOUT,
     UIIntent,
@@ -148,35 +146,7 @@ class ScheduledMessageRecoveryTests(unittest.TestCase):
         finally:
             owner.stop()
 
-    def test_runtime_sender_forwards_task_and_contact_identity(self):
-        calls = []
-        bot = SimpleNamespace(
-            _ui_owner=object(),
-            _send_text_to_target_without_child=lambda target, msg, **kwargs: calls.append((target, msg, kwargs)) or True,
-        )
-
-        result = runtime_chat_state.send_text_to_target(
-            bot,
-            "旧备注",
-            "你好",
-            contact_key="wechat_id:wxid_zhangsan",
-            task_key="scheduled_message:task-1",
-            task_version=7,
-        )
-
-        self.assertTrue(result)
-        self.assertEqual(calls, [(
-            "旧备注",
-            "你好",
-            {
-                "contact_key": "wechat_id:wxid_zhangsan",
-                "task_key": "scheduled_message:task-1",
-                "task_version": 7,
-                "require_contact_key": False,
-            },
-        )])
-
-    def test_owner_text_sender_forwards_required_contact_identity(self):
+    def test_outbound_sender_forwards_required_contact_identity(self):
         calls = []
 
         class Owner:
@@ -187,9 +157,9 @@ class ScheduledMessageRecoveryTests(unittest.TestCase):
         bot = WXBot.__new__(WXBot)
         bot._ui_owner = Owner()
 
-        result = bot._send_text_to_target_without_child(
+        result = bot._send_outbound_to_target(
             "旧备注",
-            "你好",
+            {"type": "text", "text": "你好"},
             contact_key="wechat_id:wxid_zhangsan",
             task_key="scheduled_message:task-1",
             task_version=7,
@@ -254,31 +224,6 @@ class ScheduledMessageRecoveryTests(unittest.TestCase):
 
         self.assertEqual(records[0]["contact_key"], "")
         self.assertFalse(records[0]["require_contact_key"])
-
-    def test_action_batch_interruption_preserves_done_uncertain_and_not_started(self):
-        records = []
-
-        result = execute_scheduled_message_task(
-            task={"targets": ["张三"], "msgs": ["第一条", "第二条", "第三条"]},
-            send_text=lambda *_args: True,
-            send_file=lambda *_args: True,
-            send_actions=lambda *_args: (_ for _ in ()).throw(
-                ActionBatchInterrupted([True], 1, RuntimeError("结果丢失"))
-            ),
-            is_image_path=lambda _value: False,
-            human_delay=lambda: None,
-            should_stop=lambda: False,
-            notify_error=lambda *_args: None,
-            nickname="测试账号",
-            scheduled_tasks=[],
-            config_data={},
-            save_config=None,
-            delivery_records=records,
-        )
-
-        self.assertEqual([item["status"] for item in records], ["done", "uncertain", "pending"])
-        self.assertEqual(result["success_count"], 1)
-        self.assertEqual(result["uncertain_count"], 1)
 
     def test_material_manual_exact_target_is_not_forced_to_have_contact_key(self):
         captured = []

@@ -3,7 +3,6 @@ import json
 import os
 import subprocess
 import tempfile
-import threading
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +49,23 @@ def _contact_owner_for(wx):
     runtime = WeChatUIRuntime(lambda *_args: None)
     runtime._client = wx
     return SimpleNamespace(call=lambda intent, _timeout: runtime.edit_contact(intent.payload))
+
+
+def append_test_history(manager, chat_name, content, *, message_type="text", metadata=None):
+    manager.message_store.append_history([{
+        "event_id": f"test:{chat_name}:{content}",
+        "conversation": chat_name,
+        "chat_type": "private",
+        "direction": "friend",
+        "sender": chat_name,
+        "content": content,
+        "original_content": content,
+        "message_type": message_type,
+        "native_attr": "friend",
+        "native_time": "2026/07/14 08:00:00",
+        "received_at": 1.0,
+        "metadata": dict(metadata or {}),
+    }])
 
 
 class ContactCollectorOrphanCleanupTests(unittest.TestCase):
@@ -166,22 +182,9 @@ class WeChatNameSortTests(unittest.TestCase):
 
     def test_memory_chats_endpoint_sorts_by_display_name(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            base = Path(temp_dir) / "accounts" / "wx_test" / "memory"
-            for storage_name, display_name in [
-                ("b", "B-吴岳英"),
-                ("n", "112"),
-                ("a", "A0-努力"),
-            ]:
-                chat_dir = base / storage_name
-                chat_dir.mkdir(parents=True)
-                (chat_dir / "name.json").write_text(
-                    json.dumps({"name": display_name}, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-                (chat_dir / f"{storage_name}_memory.json").write_text(
-                    json.dumps([{"content": "hello"}], ensure_ascii=False),
-                    encoding="utf-8",
-                )
+            manager = MemoryManager("wx_test", temp_dir)
+            for display_name in ["B-吴岳英", "112", "A0-努力"]:
+                append_test_history(manager, display_name, "hello")
 
             with patch("web_server.MEMORY_BASE", temp_dir):
                 with app.test_request_context("/memory/chats/wx_test"):
@@ -193,18 +196,13 @@ class WeChatNameSortTests(unittest.TestCase):
 
     def test_memory_chats_endpoint_hides_empty_record_dirs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemoryManager("wx_test", temp_dir)
+            append_test_history(manager, "112", "hello")
             base = Path(temp_dir) / "accounts" / "wx_test" / "memory"
             empty_dir = base / "empty"
-            full_dir = base / "full"
             empty_dir.mkdir(parents=True)
-            full_dir.mkdir(parents=True)
             (empty_dir / "name.json").write_text(json.dumps({"name": "空记录"}, ensure_ascii=False), encoding="utf-8")
             (empty_dir / "empty_memory.json").write_text("[]", encoding="utf-8")
-            (full_dir / "name.json").write_text(json.dumps({"name": "112"}, ensure_ascii=False), encoding="utf-8")
-            (full_dir / "full_memory.json").write_text(
-                json.dumps([{"content": "hello"}], ensure_ascii=False),
-                encoding="utf-8",
-            )
 
             with patch("web_server.MEMORY_BASE", temp_dir):
                 with app.test_request_context("/memory/chats/wx_test"):
@@ -218,17 +216,9 @@ class WeChatNameSortTests(unittest.TestCase):
 class MemorySQLiteEndpointTests(unittest.TestCase):
     @staticmethod
     def _save(manager, chat_name, content):
-        manager.save_message(
-            chat_name,
-            chat_name,
-            content,
-            "text",
-            "friend",
-            100,
-            message_time="2026/07/14 08:00:00",
-        )
+        append_test_history(manager, chat_name, content)
 
-    def test_memory_list_triggers_legacy_migration(self):
+    def test_memory_list_does_not_import_legacy_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             memory_dir = Path(temp_dir) / "accounts" / "wx_test" / "memory" / "张三"
             memory_dir.mkdir(parents=True)
@@ -248,10 +238,7 @@ class MemorySQLiteEndpointTests(unittest.TestCase):
             self.assertEqual(payload["status"], "success")
             self.assertIn("wx_test", payload["wx_ids"])
             self.assertTrue((Path(temp_dir) / "accounts" / "wx_test" / "message_store.sqlite3").is_file())
-            self.assertEqual(
-                [item["content"] for item in MemoryManager("wx_test", temp_dir).get_messages("张三", 10)],
-                ["旧消息"],
-            )
+            self.assertEqual(MemoryManager("wx_test", temp_dir).get_messages("张三", 10), [])
 
     def test_memory_data_and_extraction_helper_are_account_scoped(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -330,14 +317,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
     def _auto_maintenance_bot(self):
         calls = []
 
-        class FreeLock:
-            def acquire(self, blocking=True):
-                calls.append(("lock_acquire", blocking))
-                return True
-
-            def release(self):
-                calls.append(("lock_release",))
-
         class FakeBot:
             wx = object()
             start_time = "2026-06-10 20:00:00"
@@ -354,9 +333,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
             def _load_contact_profiles_directory(self):
                 return {"maintenance": {}}, "ignored.json", "scope_rui"
-
-            def _get_wechat_action_lock(self):
-                return FreeLock()
 
             def _write_contact_directory_auto_cycle_state(self, directory, **updates):
                 calls.append(("write_cycle", updates))
@@ -421,7 +397,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         self.assertTrue(has_active_contact_maintenance_conflict(bot, now_ts=1008.0))
 
-    def test_auto_maintenance_preflights_lock_without_holding_through_batch(self):
+    def test_auto_maintenance_runs_batch_without_legacy_lock(self):
         calls = []
 
         class GuardLock:
@@ -453,9 +429,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             def _load_contact_profiles_directory(self):
                 return {"maintenance": {}}, "ignored.json", "scope_rui"
 
-            def _get_wechat_action_lock(self):
-                return lock
-
             def _write_contact_directory_auto_cycle_state(self, directory, **updates):
                 directory = dict(directory or {})
                 directory.setdefault("maintenance", {}).update(updates)
@@ -477,19 +450,10 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         with patch("feature.contacts.is_contact_directory_auto_maintenance_idle", return_value=True):
             self.assertTrue(check_contact_directory_auto_maintenance(FakeBot(), now=datetime(2026, 6, 10, 21, 0, 0)))
 
-        self.assertIn(("batch_lock_held", False), calls)
-        self.assertEqual(calls[0], ("lock_acquire", False))
-        self.assertIn(("lock_release",), calls[:2])
+        self.assertEqual(calls, [("batch_lock_held", False)])
 
     def test_auto_maintenance_falls_back_to_backup_cursor_after_primary_stalls(self):
         calls = []
-
-        class FreeLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
 
         class FakeBot:
             wx = object()
@@ -513,9 +477,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                         "last_attempted_at": "2026-06-10 20:00:00",
                     }
                 }, "ignored.json", "scope_rui"
-
-            def _get_wechat_action_lock(self):
-                return FreeLock()
 
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
@@ -553,7 +514,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             "count_override": 50,
             "run_to_completion": False,
             "automatic": True,
-            "block_on_wechat_lock": False,
         }))
         fallback_updates = [call[1] for call in calls if call[0] == "write_cycle"][-1]
         self.assertEqual(fallback_updates["auto_cycle_status"], "stalled")
@@ -659,13 +619,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
     def test_auto_maintenance_resets_when_primary_cursor_stalls_without_backup(self):
         calls = []
 
-        class FreeLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
         class FakeBot:
             wx = object()
             start_time = "2026-06-10 20:00:00"
@@ -687,9 +640,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                         "last_attempted_at": "2026-06-10 20:00:00",
                     }
                 }, "ignored.json", "scope_rui"
-
-            def _get_wechat_action_lock(self):
-                return FreeLock()
 
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
@@ -727,7 +677,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             "count_override": 50,
             "run_to_completion": False,
             "automatic": True,
-            "block_on_wechat_lock": False,
         }))
         fallback_updates = [call[1] for call in calls if call[0] == "write_cycle"][-1]
         self.assertEqual(fallback_updates["auto_cycle_status"], "reset_required")
@@ -738,13 +687,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
     def test_auto_maintenance_logs_cursor_usage_and_progress(self):
         calls = []
         log_messages = []
-
-        class FreeLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
 
         class FakeBot:
             wx = object()
@@ -768,9 +710,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                         "last_attempted_at": "2026-06-10 20:00:00",
                     }
                 }, "ignored.json", "scope_rui"
-
-            def _get_wechat_action_lock(self):
-                return FreeLock()
 
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
@@ -834,13 +773,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             else raw_identities
         )
 
-        class FreeLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
         class FakeBot:
             wx = object()
             start_time = "2026-06-10 20:00:00"
@@ -862,9 +794,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                         "last_attempted_at": "2026-06-10 20:00:00",
                     }
                 }, "ignored.json", "scope_rui"
-
-            def _get_wechat_action_lock(self):
-                return FreeLock()
 
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
@@ -966,13 +895,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
     def test_auto_maintenance_empty_batch_does_not_confirm_short_batch_tail(self):
         calls = []
 
-        class FreeLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
         class FakeBot:
             wx = object()
             start_time = "2026-06-10 20:00:00"
@@ -993,9 +915,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                         "last_attempted_at": "2026-06-10 20:00:00",
                     }
                 }, "ignored.json", "scope_rui"
-
-            def _get_wechat_action_lock(self):
-                return FreeLock()
 
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
@@ -1027,13 +946,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
     def test_auto_maintenance_resets_legacy_tail_complete_cycle_before_waiting_days(self):
         calls = []
 
-        class FreeLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
         class FakeBot:
             wx = object()
             start_time = "2026-06-10 20:00:00"
@@ -1054,9 +966,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                         "last_attempted_at": "2026-06-10 20:00:00",
                     }
                 }, "ignored.json", "scope_rui"
-
-            def _get_wechat_action_lock(self):
-                return FreeLock()
 
             def refresh_contact_profiles_batch(self, **kwargs):
                 calls.append(("refresh_batch", kwargs))
@@ -1355,13 +1264,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
                 runtime_events.append(message)
                 raise OSError("log unavailable")
 
-        class FakeLock:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
         class FakeWeChat:
             def SwitchToChat(self):
                 calls.append(("SwitchToChat",))
@@ -1370,9 +1272,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         class FakeBot:
             wx = FakeWeChat()
             _runtime_instance_id = "a" * 32
-
-            def _get_wechat_action_lock(self):
-                return FakeLock()
 
             def _load_contact_profiles_directory(self):
                 return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
@@ -1461,13 +1360,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
     def test_contact_read_logs_from_callback_without_duplicate_result_logs(self):
         log_messages = []
 
-        class FakeLock:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
         class FakeWeChat:
             def GetFriendDetails(self, **kwargs):
                 details = [{"昵称": f"阿英{index}"} for index in range(1, 22)]
@@ -1481,14 +1373,19 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         class FakeBot:
             wx = FakeWeChat()
 
-            def _get_wechat_action_lock(self):
-                return FakeLock()
-
             def _load_contact_profiles_directory(self):
                 return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
 
             def _prepare_contact_directory_window(self):
                 pass
+
+            def _run_contact_auto_maintenance_collector(self, **_kwargs):
+                names = [f"阿英{index}" for index in range(1, 22)]
+                return {
+                    "ok": True,
+                    "result": [{"昵称": name} for name in names],
+                    "callback_names": names,
+                }
 
         with (
             patch("feature.contacts.save_contact_directory"),
@@ -1505,22 +1402,12 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
     def test_refresh_batch_uses_relationship_synced_directory_when_available(self):
         calls = []
 
-        class FakeLock:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
         class FakeWeChat:
             def SwitchToChat(self):
                 pass
 
         class FakeBot:
             wx = FakeWeChat()
-
-            def _get_wechat_action_lock(self):
-                return FakeLock()
 
             def _load_contact_profiles_directory(self):
                 return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
@@ -1556,13 +1443,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
     def test_contact_positioning_does_not_log_every_scanned_callback_item(self):
         log_messages = []
 
-        class FakeLock:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
         class FakeWeChat:
             def GetFriendDetails(self, **kwargs):
                 callback = kwargs["callback"]
@@ -1577,14 +1457,19 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         class FakeBot:
             wx = FakeWeChat()
 
-            def _get_wechat_action_lock(self):
-                return FakeLock()
-
             def _load_contact_profiles_directory(self):
                 return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
 
             def _prepare_contact_directory_window(self):
                 pass
+
+            def _run_contact_auto_maintenance_collector(self, **_kwargs):
+                return {
+                    "ok": True,
+                    "result": [{"昵称": "阿英2"}],
+                    "callback_names": ["阿英2"],
+                    "matched_name": "阿英2",
+                }
 
         with (
             patch("feature.contacts.save_contact_directory"),
@@ -1602,13 +1487,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         calls = []
         state = {"directory": {"subjects": [], "maintenance": {}}}
 
-        class FakeLock:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
         class FakeWeChat:
             def GetFriendDetails(self, **kwargs):
                 state["directory"]["maintenance"]["paused"] = True
@@ -1621,14 +1499,19 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         class FakeBot:
             wx = FakeWeChat()
 
-            def _get_wechat_action_lock(self):
-                return FakeLock()
-
             def _load_contact_profiles_directory(self):
                 return {"subjects": [], "maintenance": {}}, "ignored.json", "scope_rui"
 
             def _prepare_contact_directory_window(self):
                 pass
+
+            def _run_contact_auto_maintenance_collector(self, **_kwargs):
+                state["directory"]["maintenance"]["paused"] = True
+                return {
+                    "ok": True,
+                    "result": [{"昵称": "阿英2"}],
+                    "callback_names": ["阿英2"],
+                }
 
         with (
             patch("feature.contacts.save_contact_directory"),
@@ -1636,7 +1519,6 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         ):
             result = refresh_contact_profiles_single_batch(FakeBot(), mode="standard")
 
-        self.assertIn(("callback_return", True), calls)
         self.assertTrue(result["stopped_early"])
         self.assertFalse(result["completed"])
         self.assertEqual(result["stopped_reason"], "paused")
@@ -1733,11 +1615,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             wx = FakeWeChat()
 
             def __init__(self):
-                self._lock = threading.RLock()
                 self._ui_owner = _contact_owner_for(self.wx)
-
-            def _get_wechat_action_lock(self):
-                return self._lock
 
         with self.assertRaisesRegex(RuntimeError, "未返回明确成功"):
             edit_friend_info_via_chat_profile(
@@ -1781,11 +1659,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             wx = FakeWeChat()
 
             def __init__(self):
-                self._lock = threading.RLock()
                 self._ui_owner = _contact_owner_for(self.wx)
-
-            def _get_wechat_action_lock(self):
-                return self._lock
 
         result = modify_friend_tags_via_chat_profile(
             FakeBot(),
@@ -1838,12 +1712,8 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             wx = FakeWeChat()
 
             def __init__(self):
-                self._lock = threading.RLock()
                 self._ui_owner = _contact_owner_for(self.wx)
                 self.all_Mode_listen_list = [["阿英2", 1]]
-
-            def _get_wechat_action_lock(self):
-                return self._lock
 
             def _close_dynamic_listener_subwindows(self, names):
                 calls.append(("CloseDynamic", list(names)))
@@ -1879,11 +1749,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             wx = FakeWeChat()
 
             def __init__(self):
-                self._lock = threading.RLock()
                 self._ui_owner = _contact_owner_for(self.wx)
-
-            def _get_wechat_action_lock(self):
-                return self._lock
 
         result = modify_friend_tags_via_chat_profile(
             FakeBot(),
@@ -1916,11 +1782,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
             wx = FakeWeChat()
 
             def __init__(self):
-                self._lock = threading.RLock()
                 self._ui_owner = _contact_owner_for(self.wx)
-
-            def _get_wechat_action_lock(self):
-                return self._lock
 
         result = modify_friend_tags_via_chat_profile(
             FakeBot(),

@@ -458,43 +458,6 @@ class RelationshipScanTests(unittest.TestCase):
         names = [record["name"] for record in pending_sync_records(state, now=now)]
         self.assertEqual(names, ["未尝试", "已尝试"])
 
-    def test_auto_wechat_tag_sync_waits_for_ui_owner_lock(self):
-        calls = []
-
-        class FakeLock:
-            def acquire(self, blocking=True):
-                calls.append("lock_acquire")
-                return False
-
-            def release(self):
-                calls.append("lock_release")
-
-        now = datetime(2026, 6, 11, 10, 0, 0)
-        with tempfile.TemporaryDirectory() as tmp:
-            state = {
-                "wx_id": "wxid_test",
-                "settings": {"auto_sync_wechat_tags": True, "sync_interval_minutes": 10},
-                "records": [
-                    {
-                        "name": "阿英2",
-                        "status": STATUS_BLOCKED,
-                        "wechat_sync_status": SYNC_PENDING,
-                    }
-                ],
-            }
-            save_state(tmp, state)
-            bot = SimpleNamespace(
-                wx=object(),
-                wx_id="wxid_test",
-                config=SimpleNamespace(DATA_DIR=tmp),
-                _get_wechat_action_lock=lambda: FakeLock(),
-            )
-
-            result = process_pending_wechat_tag_sync(bot, now=now)
-
-        self.assertEqual(result, {"processed": 0, "success": 0, "failed": 0})
-        self.assertEqual(calls, ["lock_acquire"])
-
     def test_same_status_scan_keeps_pending_retry_delay(self):
         state = {
             "wx_id": "wxid_test",
@@ -522,13 +485,6 @@ class RelationshipScanTests(unittest.TestCase):
     def test_tag_sync_does_not_reenable_disabled_settings_after_action(self):
         calls = []
 
-        class FakeLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
         with tempfile.TemporaryDirectory() as tmp:
             state = {
                 "wx_id": "wxid_test",
@@ -546,7 +502,6 @@ class RelationshipScanTests(unittest.TestCase):
                 wx=object(),
                 wx_id="wxid_test",
                 config=SimpleNamespace(DATA_DIR=tmp),
-                _get_wechat_action_lock=lambda: FakeLock(),
             )
 
             def fake_modify(_bot, targets, **_kwargs):

@@ -1,65 +1,7 @@
-"""Runtime chat listener registry and single-chat takeover helpers."""
-
-from core import wechat_ui_actions
-
+"""Runtime registry for owner-backed listener handles."""
 
 def normalize_chat_name(chat_who):
     return str(chat_who or "").strip()
-
-
-def group_member_pause_key(group_who, sender):
-    group_who = normalize_chat_name(group_who)
-    sender = normalize_chat_name(sender)
-    if not group_who or not sender:
-        return ""
-    return f"{group_who}::{sender}"
-
-
-def ensure_pause_chat_reply_users(bot):
-    if not hasattr(bot, "_pause_chat_reply_users") or bot._pause_chat_reply_users is None:
-        bot._pause_chat_reply_users = set()
-    return bot._pause_chat_reply_users
-
-
-def pause_single_chat_reply(bot, chat_who):
-    chat_who = normalize_chat_name(chat_who)
-    if not chat_who:
-        return False
-    ensure_pause_chat_reply_users(bot).add(chat_who)
-    return True
-
-
-def resume_single_chat_reply(bot, chat_who):
-    chat_who = normalize_chat_name(chat_who)
-    if not chat_who:
-        return False
-    paused = ensure_pause_chat_reply_users(bot)
-    if chat_who not in paused:
-        return False
-    paused.remove(chat_who)
-    return True
-
-
-def is_single_chat_reply_paused(bot, chat_who):
-    chat_who = normalize_chat_name(chat_who)
-    return bool(chat_who and chat_who in ensure_pause_chat_reply_users(bot))
-
-
-def pause_message_reply(bot, chat_who, sender=None, chat_type=""):
-    if str(chat_type or "").strip() == "group":
-        key = group_member_pause_key(chat_who, sender)
-        if not key:
-            return False
-        ensure_pause_chat_reply_users(bot).add(key)
-        return True
-    return pause_single_chat_reply(bot, chat_who)
-
-
-def is_message_reply_paused(bot, chat_who, sender=None, chat_type=""):
-    if str(chat_type or "").strip() == "group":
-        key = group_member_pause_key(chat_who, sender)
-        return bool(key and key in ensure_pause_chat_reply_users(bot))
-    return is_single_chat_reply_paused(bot, chat_who)
 
 
 def remember_listen_chat(bot, name, chat_obj):
@@ -77,53 +19,7 @@ def get_listen_chat(bot, name):
     return bot._listen_chats.get(normalize_chat_name(name))
 
 
-def listen_chat_has_method(chat, method_name):
-    return bool(chat and not isinstance(chat, dict) and callable(getattr(chat, method_name, None)))
-
-
 def remove_listen_chat(bot, name):
     if not hasattr(bot, "_listen_chats") or bot._listen_chats is None:
         bot._listen_chats = {}
     bot._listen_chats.pop(normalize_chat_name(name), None)
-
-
-def send_text_to_target(
-    bot,
-    target,
-    msg,
-    *,
-    contact_key="",
-    task_key="",
-    task_version=0,
-    require_contact_key=False,
-):
-    sender = getattr(bot, "_send_text_to_target_without_child", None)
-    return sender(
-        target,
-        msg,
-        contact_key=contact_key,
-        task_key=task_key,
-        task_version=task_version,
-        require_contact_key=require_contact_key,
-    ) if callable(sender) else False
-
-
-def send_file_to_target(
-    bot,
-    target,
-    path,
-    *,
-    contact_key="",
-    task_key="",
-    task_version=0,
-    require_contact_key=False,
-):
-    sender = getattr(bot, "_send_file_to_target_without_child", None)
-    return sender(
-        target,
-        path,
-        contact_key=contact_key,
-        task_key=task_key,
-        task_version=task_version,
-        require_contact_key=require_contact_key,
-    ) if callable(sender) else False

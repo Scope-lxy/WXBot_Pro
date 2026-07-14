@@ -7,7 +7,7 @@ import time
 import re
 from datetime import datetime
 
-from core import runtime_chat_state, wechat_ui_actions
+from core import wechat_ui_actions
 from core.logger import log
 from core.message_pipeline import (
     is_failed_voice_transcription_text,
@@ -146,9 +146,6 @@ def match_pending_voice_snapshot(items, messages):
 
 
 def mark_failed_voice_silent_ignore(bot, msg) -> None:
-    mark_skip_memory = getattr(bot, "_mark_message_skip_memory", None)
-    if callable(mark_skip_memory):
-        mark_skip_memory(msg)
     msg._skip_ai_reply = True
     msg._voice_transcription_failed = True
     _bot_log(bot, "INFO", "语音识别失败，未得到有效文字，已静默忽略")
@@ -181,9 +178,6 @@ def prepare_message_media(bot, msg, chat) -> None:
                 else:
                     _bot_log(bot, "ERROR", "消息处理：图片下载失败，详情：未返回文件路径")
                     msg._skip_ai_reply = True
-                    mark_skip_memory = getattr(bot, "_mark_message_skip_memory", None)
-                    if callable(mark_skip_memory):
-                        mark_skip_memory(msg)
             elif msg.type == "quote":
                 down_path = bot._ui_download_message(chat, msg, quote_image=True)
                 if down_path:
@@ -194,9 +188,6 @@ def prepare_message_media(bot, msg, chat) -> None:
         _bot_log(bot, level="ERROR", message=f"消息处理：图片下载失败，请尝试将 Windows 屏幕缩放设置为 100%，详情：{exc}")
         if msg.type == "image":
             msg._skip_ai_reply = True
-            mark_skip_memory = getattr(bot, "_mark_message_skip_memory", None)
-            if callable(mark_skip_memory):
-                mark_skip_memory(msg)
 
     if msg.type != "voice":
         return
@@ -212,9 +203,6 @@ def prepare_message_media(bot, msg, chat) -> None:
     queue_pending = getattr(bot, "_queue_pending_private_voice_transcription", None)
     if callable(queue_pending):
         queue_pending(chat, msg)
-        mark_skip_memory = getattr(bot, "_mark_message_skip_memory", None)
-        if callable(mark_skip_memory):
-            mark_skip_memory(msg)
     msg._skip_ai_reply = True
 
 
@@ -260,13 +248,6 @@ def _is_monitored_chat(bot, chat) -> bool:
 
 def _route_group_message(bot, chat, message):
     if chat.who in getattr(bot.config, "group", []) and not getattr(bot.config, "group_switch", False):
-        return {"action": "skip"}
-    if runtime_chat_state.is_message_reply_paused(
-        bot,
-        chat.who,
-        getattr(message, "sender", ""),
-        chat_type="group",
-    ):
         return {"action": "skip"}
     if getattr(message, "_skip_ai_reply", False):
         _bot_log(bot, message=f"群组 {chat.who} 消息已标记跳过 AI 回复：" + str(getattr(message, "content", "")))

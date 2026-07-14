@@ -140,6 +140,7 @@ class ExpectedReplyEcho:
     expires_at: float
     confirmable: bool = True
     matchable: bool = False
+    message_types: tuple[str, ...] = ()
 
 
 class ReplyEchoTracker:
@@ -160,6 +161,7 @@ class ReplyEchoTracker:
         *,
         confirmable=True,
         chat_type="private",
+        message_types=(),
     ) -> None:
         now = float(self._clock())
         expected = ExpectedReplyEcho(
@@ -170,6 +172,13 @@ class ReplyEchoTracker:
             content=str(action.content or "").strip(),
             expires_at=0.0,
             confirmable=bool(confirmable),
+            message_types=tuple(
+                dict.fromkeys(
+                    str(item or "").strip().lower()
+                    for item in message_types or ()
+                    if str(item or "").strip()
+                )
+            ),
         )
         if not expected.action_id or not expected.conversation:
             raise ValueError("echo action_id and conversation are required")
@@ -195,6 +204,7 @@ class ReplyEchoTracker:
         content = str(content or "").strip()
         with self._lock:
             self._prune_locked(now)
+            fallback = None
             for action_id, expected in tuple(self._items.items()):
                 if not expected.matchable:
                     continue
@@ -202,6 +212,13 @@ class ReplyEchoTracker:
                     continue
                 if not self._matches(expected, message_type, content):
                     continue
+                if content and content == expected.content:
+                    self._items.pop(action_id, None)
+                    return expected
+                if fallback is None:
+                    fallback = (action_id, expected)
+            if fallback is not None:
+                action_id, expected = fallback
                 self._items.pop(action_id, None)
                 return expected
         return None
@@ -238,6 +255,8 @@ class ReplyEchoTracker:
 
     @staticmethod
     def _matches(expected: ExpectedReplyEcho, message_type: str, content: str) -> bool:
+        if expected.message_types:
+            return message_type in expected.message_types
         if expected.kind in {ReplyKind.TEXT, ReplyKind.QUOTE}:
             return message_type in {"text", "quote"} and content == expected.content
         if expected.kind == ReplyKind.VOICE:
@@ -296,9 +315,9 @@ class ReplyDeliveryStore(Protocol):
     ) -> None: ...
 
 
-PrepareReply = Callable[[ReplyTurn, ReplyAction], Any]
-SendReply = Callable[[ReplyTurn, ReplyAction, str], Any]
-VersionProvider = Callable[..., int]
+PrepareReply = Callable[[ReplyTurn, ReplyAction, str, Any], Any]
+SendReply = Callable[[ReplyTurn, ReplyAction, str, Any], Any]
+VersionProvider = Callable[[str, str], int]
 
 
 class ReplyDeliveryCoordinator:
@@ -323,7 +342,7 @@ class ReplyDeliveryCoordinator:
         self._cancelled: set[str] = set()
         self._known: set[str] = set()
 
-    def deliver(self, turn: ReplyTurn) -> DeliveryResult:
+    def deliver(self, turn: ReplyTurn, context: Any = None) -> DeliveryResult:
         self._store.register_reply_turn(
             turn.turn_id,
             conversation=turn.conversation,
@@ -335,7 +354,7 @@ class ReplyDeliveryCoordinator:
         )
         with self._lock:
             self._known.add(turn.turn_id)
-        result = self._deliver_registered(turn)
+        result = self._deliver_registered(turn, context)
         if result.status not in {DeliveryStatus.RETRY, DeliveryStatus.BLOCKED}:
             with self._lock:
                 self._known.discard(turn.turn_id)
@@ -356,7 +375,7 @@ class ReplyDeliveryCoordinator:
         for turn_id in known:
             self._cancel_pending(turn_id, DeliveryStatus.CANCELLED, "reply coordinator stopped")
 
-    def _deliver_registered(self, turn: ReplyTurn) -> DeliveryResult:
+    def _deliver_registered(self, turn: ReplyTurn, context: Any) -> DeliveryResult:
         completed = 0
         for index, action in enumerate(turn.actions):
             action_id = turn.action_id(index)
@@ -365,10 +384,7 @@ class ReplyDeliveryCoordinator:
                 return preflight
 
             try:
-                try:
-                    prepared = self._prepare(turn, action, action_id)
-                except TypeError:
-                    prepared = self._prepare(turn, action)
+                prepared = self._prepare(turn, action, action_id, context)
             except Exception as exc:
                 return DeliveryResult(DeliveryStatus.RETRY, completed, action_id, str(exc))
             if not prepared:
@@ -397,7 +413,7 @@ class ReplyDeliveryCoordinator:
                 return DeliveryResult(status, completed, action_id, f"claim rejected: {claim.value}")
 
             try:
-                sent = self._sender(turn, action, action_id)
+                sent = self._sender(turn, action, action_id, context)
                 if not sent:
                     if self._action_done(action_id):
                         completed += 1
@@ -502,10 +518,7 @@ class ReplyDeliveryCoordinator:
             return DeliveryResult(DeliveryStatus.EXPIRED, completed, action_id, reason)
 
         try:
-            try:
-                current_version = int(self._version_provider(turn.conversation, turn.chat_type))
-            except TypeError:
-                current_version = int(self._version_provider(turn.conversation))
+            current_version = int(self._version_provider(turn.conversation, turn.chat_type))
         except Exception as exc:
             return DeliveryResult(DeliveryStatus.RETRY, completed, action_id, str(exc))
         if current_version != turn.expected_version:

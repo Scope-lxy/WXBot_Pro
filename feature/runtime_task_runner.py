@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
-from core import runtime_chat_state, wechat_ui_actions
+from core import wechat_ui_actions
 from core.logger import log
 from core.scheduled_tasks import (
     advance_task_plan_after_success,
@@ -199,23 +200,21 @@ def run_due_scheduled_message_tasks(bot, now=None):
 
         result = execute_scheduled_message_task(
             task={**raw_task, "targets": targets},
-            send_text=lambda target, msg: guarded_send(lambda: runtime_chat_state.send_text_to_target(
-                    bot,
+            send_text=lambda target, msg: guarded_send(lambda: bot._send_outbound_to_target(
                     str((target or {}).get("send_name") or "") if isinstance(target, dict) else target,
-                    msg,
+                    {"type": "text", "text": msg},
                     contact_key=str((target or {}).get("contact_key") or "") if isinstance(target, dict) else "",
                     task_key=task_key,
-                task_version=task_version,
-                require_contact_key=bool((target or {}).get("require_contact_key")) if isinstance(target, dict) else False,
+                    task_version=task_version,
+                    require_contact_key=bool((target or {}).get("require_contact_key")) if isinstance(target, dict) else False,
                 )),
-            send_file=lambda target, path: guarded_send(lambda: runtime_chat_state.send_file_to_target(
-                    bot,
+            send_file=lambda target, path: guarded_send(lambda: bot._send_outbound_to_target(
                     str((target or {}).get("send_name") or "") if isinstance(target, dict) else target,
-                    path,
+                    {"type": "file", "path": path},
                     contact_key=str((target or {}).get("contact_key") or "") if isinstance(target, dict) else "",
                     task_key=task_key,
-                task_version=task_version,
-                require_contact_key=bool((target or {}).get("require_contact_key")) if isinstance(target, dict) else False,
+                    task_version=task_version,
+                    require_contact_key=bool((target or {}).get("require_contact_key")) if isinstance(target, dict) else False,
                 )),
             is_image_path=bot.is_image_path,
             human_delay=bot._inter_message_delay_or_stop,

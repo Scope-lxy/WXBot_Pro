@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -12,6 +13,42 @@ from core.memory_context_repair import (
     snapshot_messages_through_current,
 )
 from wxbot_core import WXBot
+
+
+def append_history_message(
+    manager,
+    chat_name,
+    sender,
+    content,
+    msg_type,
+    msg_attr,
+    _max_count=None,
+    message_time=None,
+    *,
+    chat_type="private",
+    image_paths=None,
+    visual_notes=None,
+):
+    normalized_time = MemoryManager._normalize_message_time(message_time)
+    metadata = {}
+    if image_paths:
+        metadata["image_paths"] = list(image_paths)
+    if visual_notes:
+        metadata["visual_notes"] = list(visual_notes)
+    manager.message_store.append_history([{
+        "event_id": f"test-{uuid.uuid4().hex}",
+        "conversation": chat_name,
+        "chat_type": chat_type,
+        "direction": "manual_self" if msg_attr == "self" else msg_attr,
+        "sender": sender,
+        "content": "[图片]" if msg_type == "image" else content,
+        "original_content": content,
+        "message_type": msg_type,
+        "native_attr": msg_attr,
+        "native_time": normalized_time,
+        "received_at": MemoryManager._received_at(normalized_time),
+        "metadata": metadata,
+    }])
 
 
 def msg(
@@ -460,8 +497,8 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             manager = MemoryManager("wxid", tmp)
 
-            manager.save_message("张三", "张三", "好", "text", "friend", 100)
-            manager.save_message("张三", "张三", "好", "text", "friend", 100)
+            append_history_message(manager, "张三", "张三", "好", "text", "friend", 100)
+            append_history_message(manager, "张三", "张三", "好", "text", "friend", 100)
 
             self.assertEqual([item["content"] for item in manager.get_messages("张三", 10)], ["好", "好"])
 
@@ -469,8 +506,8 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             manager = MemoryManager("wxid", tmp)
 
-            manager.save_message("张三", "张三", "好", "text", "friend", 100, message_time="2026/07/03 05:00:00")
-            manager.save_message("张三", "张三", "好", "text", "friend", 100, message_time="2026/07/03 05:00:00")
+            append_history_message(manager, "张三", "张三", "好", "text", "friend", 100, message_time="2026/07/03 05:00:00")
+            append_history_message(manager, "张三", "张三", "好", "text", "friend", 100, message_time="2026/07/03 05:00:00")
 
             self.assertEqual([item["content"] for item in manager.get_messages("张三", 10)], ["好", "好"])
 
@@ -505,7 +542,7 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
     def test_append_missing_messages_dedupes_by_time_and_fingerprint(self):
         with tempfile.TemporaryDirectory() as tmp:
             manager = MemoryManager("wxid", tmp)
-            manager.save_message("张三", "张三", "早", "text", "friend", 100, message_time="2026/07/03 05:00:00")
+            append_history_message(manager, "张三", "张三", "早", "text", "friend", 100, message_time="2026/07/03 05:00:00")
 
             result = manager.append_missing_messages(
                 "张三",
@@ -561,7 +598,8 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
     def test_dash_snapshot_times_insert_stopped_messages_before_current_trigger(self):
         with tempfile.TemporaryDirectory() as tmp:
             manager = MemoryManager("wxid", tmp)
-            manager.save_message(
+            append_history_message(
+                manager,
                 "张三",
                 "张三",
                 "停机补洞最终触发",
@@ -629,20 +667,6 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
             self.assertNotIn("time_inferred", stored[0])
 
 
-class FakeLock:
-    def __init__(self, acquired=True):
-        self.acquired = acquired
-        self.acquire_calls = []
-        self.released = False
-
-    def acquire(self, blocking=True):
-        self.acquire_calls.append(blocking)
-        return self.acquired
-
-    def release(self):
-        self.released = True
-
-
 class FakeChat:
     who = "张三"
     chat_type = "private"
@@ -668,7 +692,7 @@ class FakeChat:
 
 
 class WXBotContextRepairTests(unittest.TestCase):
-    def make_bot(self, tmp, *, lock=None, memory_context_count=50):
+    def make_bot(self, tmp, *, memory_context_count=50):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             memory_switch=True,
@@ -679,9 +703,6 @@ class WXBotContextRepairTests(unittest.TestCase):
         bot.memory_manager = MemoryManager("wxid", tmp)
         bot._mark_chat_memory_dirty = lambda *args, **kwargs: None
         bot.is_stop_requested = lambda: False
-        bot._wechat_action_lock = lock or FakeLock()
-        bot._get_wechat_action_lock = lambda: bot._wechat_action_lock
-        bot._incoming_seen_lock = None
         bot._ensure_message_runtime_state()
         return bot
 
@@ -709,26 +730,6 @@ class WXBotContextRepairTests(unittest.TestCase):
                 ["早", "早呀", "新内容"],
             )
 
-    def test_private_inbound_memory_preserves_wechat_message_time(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            bot = self.make_bot(tmp)
-            incoming = msg(
-                "新内容",
-                time="2026/07/04 17:01:02",
-                message_id="native-text-1",
-                message_hash="content-hash",
-                message_hash_text="row-hash",
-            )
-            incoming._wxbot_received_at = "2026/07/04 17:01:09"
-
-            saved = bot._save_private_incoming_memory_message(FakeChat(), incoming)
-
-            self.assertTrue(saved)
-            self.assertEqual(
-                bot.memory_manager.get_messages("张三", 10)[0]["time"],
-                "2026/07/04 17:01:02",
-            )
-
     def test_successful_repair_sets_three_hundred_second_ttl(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = self.make_bot(tmp)
@@ -750,8 +751,7 @@ class WXBotContextRepairTests(unittest.TestCase):
 
     def test_visible_window_repair_skips_snapshot_when_anchor_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            lock = FakeLock()
-            bot = self.make_bot(tmp, lock=lock)
+            bot = self.make_bot(tmp)
             bot.memory_manager.append_missing_messages(
                 "张三",
                 [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
@@ -766,32 +766,10 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             self.assertFalse(repaired)
             self.assertFalse(hasattr(chat, "history_args"))
-            self.assertEqual(lock.acquire_calls, [False])
-            self.assertTrue(lock.released)
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
                 ["旧锚点"],
             )
-
-    def test_lock_busy_skips_visible_read(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            lock = FakeLock(acquired=False)
-            bot = self.make_bot(tmp, lock=lock)
-            bot.memory_manager.append_missing_messages(
-                "张三",
-                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
-                100,
-            )
-            chat = FakeChat(visible=[msg("新内容", time="3")], history=[msg("新内容", time="3")])
-
-            bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
-
-            self.assertEqual(lock.acquire_calls, [False])
-            self.assertFalse(lock.released)
-            self.assertEqual(chat.get_all_calls, 0)
-            self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("张三", 10)], ["旧锚点"])
-            self.assertNotIn("张三", bot._memory_context_repair_startup_done)
-            self.assertNotIn("private:张三", bot._memory_context_repair_last_at)
 
     def test_without_anchor_does_not_append_visible_snapshot_when_history_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -847,8 +825,7 @@ class WXBotContextRepairTests(unittest.TestCase):
 
     def test_private_repair_skips_periodic_read_without_strong_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
-            lock = FakeLock()
-            bot = self.make_bot(tmp, lock=lock)
+            bot = self.make_bot(tmp)
             bot.memory_manager.append_missing_messages(
                 "张三",
                 [
@@ -869,7 +846,6 @@ class WXBotContextRepairTests(unittest.TestCase):
             repaired = bot._repair_private_context_before_ai(chat, msg("后来呢", time="2026/07/03 05:03:00"))
 
             self.assertFalse(repaired)
-            self.assertEqual(lock.acquire_calls, [])
             self.assertEqual(chat.get_all_calls, 0)
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
@@ -878,7 +854,6 @@ class WXBotContextRepairTests(unittest.TestCase):
 
     def test_merged_private_message_does_not_trigger_repair_when_sources_are_saved(self):
         with tempfile.TemporaryDirectory() as tmp:
-            lock = FakeLock()
             bot = self.make_bot(tmp)
             bot.memory_manager.append_missing_messages(
                 "张三",
@@ -889,7 +864,6 @@ class WXBotContextRepairTests(unittest.TestCase):
                 100,
             )
             bot._memory_context_repair_startup_done.add("张三")
-            bot._wechat_action_lock = lock
             chat = FakeChat(visible=[msg("微信界面消息", time="3")])
             merged = SimpleNamespace(
                 type="text",
@@ -905,7 +879,6 @@ class WXBotContextRepairTests(unittest.TestCase):
             repaired = bot._repair_private_context_before_ai(chat, merged)
 
             self.assertFalse(repaired)
-            self.assertEqual(lock.acquire_calls, [])
             self.assertEqual(chat.get_all_calls, 0)
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
@@ -914,8 +887,7 @@ class WXBotContextRepairTests(unittest.TestCase):
 
     def test_periodic_repair_does_not_read_without_strong_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
-            lock = FakeLock()
-            bot = self.make_bot(tmp, lock=lock)
+            bot = self.make_bot(tmp)
             bot.memory_manager.append_missing_messages(
                 "张三",
                 [
@@ -937,7 +909,6 @@ class WXBotContextRepairTests(unittest.TestCase):
 
             bot._repair_private_context_before_ai(chat, msg("当前消息", time="2026/07/03 05:10:00"))
 
-            self.assertEqual(lock.acquire_calls, [])
             self.assertFalse(hasattr(chat, "history_args"))
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10)],
@@ -978,7 +949,7 @@ class WXBotContextRepairTests(unittest.TestCase):
             self.assertFalse(repaired)
             self.assertEqual([item["content"] for item in bot.memory_manager.get_messages("未配置群", 10)], ["旧锚点"])
 
-    def test_group_current_trigger_is_saved_once_before_visible_repair(self):
+    def test_group_current_trigger_is_not_duplicated_during_visible_repair(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = self.make_bot(tmp)
             bot.config.group = ["测试群"]
@@ -989,12 +960,21 @@ class WXBotContextRepairTests(unittest.TestCase):
             ])
             chat.who = "测试群"
             chat.chat_type = "group"
+            append_history_message(
+                bot.memory_manager,
+                "测试群",
+                "张三",
+                "当前触发",
+                "text",
+                "friend",
+                100,
+                message_time="2026/07/12 01:39:33",
+                chat_type="group",
+            )
 
             repaired = bot._repair_group_context_before_ai(chat, current)
-            bot._save_incoming_memory_message(chat, current, chat_type="group")
 
             self.assertTrue(repaired)
-            self.assertTrue(getattr(current, "_wxbot_memory_persisted", False))
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("测试群", 10)],
                 ["当前触发"],

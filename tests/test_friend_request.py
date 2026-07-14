@@ -219,8 +219,8 @@ class FriendRequestLogicTest(unittest.TestCase):
         self.assertEqual(reason, "")
 
     def test_run_once_records_sender_exception_as_uncertain(self):
-        class RaisingSender:
-            def send(self, *args, **kwargs):
+        class RaisingOwner:
+            def call(self, *_args, **_kwargs):
                 raise RuntimeError("微信未初始化")
 
         class FakeBot:
@@ -228,10 +228,7 @@ class FriendRequestLogicTest(unittest.TestCase):
 
             def __init__(self, data_dir):
                 self.config = SimpleNamespace(DATA_DIR=data_dir)
-                self._lock = threading.Lock()
-
-            def _get_wechat_action_lock(self):
-                return self._lock
+                self._ui_owner = RaisingOwner()
 
         with tempfile.TemporaryDirectory() as data_dir:
             state = friend_request.default_state("wxid_test")
@@ -241,29 +238,20 @@ class FriendRequestLogicTest(unittest.TestCase):
                 "tags": ["删除我的人"],
             })]
             friend_request.save_state(data_dir, state)
-            original_sender = friend_request.ConversationVerifySender
-            friend_request.ConversationVerifySender = RaisingSender
-            try:
-                result = friend_request.run_once(FakeBot(data_dir), force=True, now=datetime(2026, 6, 11, 9, 30, 0))
-            finally:
-                friend_request.ConversationVerifySender = original_sender
+            result = friend_request.run_once(FakeBot(data_dir), force=True, now=datetime(2026, 6, 11, 9, 30, 0))
 
             saved = friend_request.load_state(data_dir, "wxid_test")
             self.assertEqual(result["status"], "uncertain")
             self.assertEqual(saved["candidates"][0]["status"], "uncertain")
             self.assertIn("微信未初始化", saved["executions"][-1]["message"])
 
-    def test_run_once_records_lock_busy_as_visible_last_result(self):
+    def test_run_once_records_missing_owner_as_uncertain(self):
         class FakeBot:
             wx_id = "wxid_test"
 
             def __init__(self, data_dir):
                 self.config = SimpleNamespace(DATA_DIR=data_dir)
-                self._lock = threading.Lock()
-                self._lock.acquire()
-
-            def _get_wechat_action_lock(self):
-                return self._lock
+                self._ui_owner = None
 
         with tempfile.TemporaryDirectory() as data_dir:
             state = friend_request.default_state("wxid_test")
@@ -274,17 +262,13 @@ class FriendRequestLogicTest(unittest.TestCase):
             })]
             friend_request.save_state(data_dir, state)
 
-            bot = FakeBot(data_dir)
-            try:
-                result = friend_request.run_once(bot, force=True, now=datetime(2026, 6, 11, 9, 30, 0))
-            finally:
-                bot._lock.release()
+            result = friend_request.run_once(FakeBot(data_dir), force=True, now=datetime(2026, 6, 11, 9, 30, 0))
 
             saved = friend_request.load_state(data_dir, "wxid_test")
-            self.assertEqual(result["status"], "skipped")
-            self.assertIn("微信操作锁占用中", result["message"])
-            self.assertIn("微信操作锁占用中", saved["runtime"]["last_result"])
-            self.assertIn("微信操作锁占用中", saved["candidates"][0]["last_result"])
+            self.assertEqual(result["status"], "uncertain")
+            self.assertIn("微信 UI owner 未运行", result["message"])
+            self.assertIn("微信 UI owner 未运行", saved["runtime"]["last_result"])
+            self.assertIn("微信 UI owner 未运行", saved["candidates"][0]["last_result"])
 
     def test_concurrent_run_once_claims_candidate_only_once(self):
         started = threading.Event()
@@ -306,6 +290,9 @@ class FriendRequestLogicTest(unittest.TestCase):
             def __init__(self, data_dir):
                 self.config = SimpleNamespace(DATA_DIR=data_dir)
                 self._ui_owner = BlockingOwner()
+
+            def _metric_increment(self, _key):
+                pass
 
         with tempfile.TemporaryDirectory() as data_dir:
             state = friend_request.default_state("wxid_test")

@@ -856,11 +856,8 @@ def process_pending_wechat_tag_sync(bot, *, now: Any = None, force: bool = False
     records = pending_sync_records(state, now=current_time)[:1]
     if not records:
         return {"processed": 0, "success": 0, "failed": 0}
-    release_wechat_lock = wechat_ui_actions.try_acquire(bot)
-    if not release_wechat_lock:
-        return {"processed": 0, "success": 0, "failed": 0}
-    processed = success = failed = 0
-    try:
+    def sync_records(state):
+        processed = success = failed = 0
         state_records = _record_map(state)
         for record in records:
             name = record["name"]
@@ -989,5 +986,5 @@ def process_pending_wechat_tag_sync(bot, *, now: Any = None, force: bool = False
                 message=f"[关系扫描] 微信标签同步完成：成功 {success}，失败 {failed}",
             )
         return {"processed": processed, "success": success, "failed": failed}
-    finally:
-        release_wechat_lock()
+
+    return sync_records(state)

@@ -75,9 +75,9 @@ def make_coordinator(store, *, versions=None, prepare=None, sender=None, now=Non
     versions = versions or {"contact-1": 3}
     return ReplyDeliveryCoordinator(
         store=store,
-        version_provider=lambda conversation: versions[conversation],
-        prepare=prepare or (lambda _turn, _action: True),
-        sender=sender or (lambda _turn, _action, _action_id: True),
+        version_provider=lambda conversation, _chat_type: versions[conversation],
+        prepare=prepare or (lambda _turn, _action, _action_id, _context: True),
+        sender=sender or (lambda _turn, _action, _action_id, _context: True),
         clock=now or (lambda: 100.0),
     )
 
@@ -106,7 +106,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         sent = []
         result = make_coordinator(
             store,
-            sender=lambda _turn, action, action_id: sent.append(
+            sender=lambda _turn, action, action_id, _context: sent.append(
                 (action_id, action.kind.value, action.source.value, action.content)
             ) or True,
         ).deliver(make_turn(*actions))
@@ -133,7 +133,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         sent = []
         result = make_coordinator(
             store,
-            prepare=lambda _turn, _action: False,
+            prepare=lambda _turn, _action, _action_id, _context: False,
             sender=lambda *_args: sent.append(True),
         ).deliver(make_turn())
 
@@ -158,7 +158,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         store = FakeStore()
         versions = {"contact-1": 3}
 
-        def prepare(_turn, _action):
+        def prepare(_turn, _action, _action_id, _context):
             versions["contact-1"] = 4
             return True
 
@@ -187,7 +187,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         store = FakeStore()
         versions = {"contact-1": 3}
 
-        def send(_turn, _action, action_id):
+        def send(_turn, _action, action_id, _context):
             if action_id == "turn-1:0":
                 versions["contact-1"] = 4
             return True
@@ -239,7 +239,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         store = FakeStore()
         attempts = {"second": 0}
 
-        def prepare(_turn, action):
+        def prepare(_turn, action, _action_id, _context):
             if action.content == "second":
                 attempts["second"] += 1
                 return attempts["second"] > 1
@@ -292,7 +292,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         store = FakeStore()
         coordinator = None
 
-        def send(_turn, _action, action_id):
+        def send(_turn, _action, action_id, _context):
             if action_id == "turn-1:0":
                 coordinator.stop()
             return True
@@ -348,6 +348,41 @@ class ReplyDeliveryTests(unittest.TestCase):
 
         self.assertIsNone(tracker.match("Alice", "text", "same"))
 
+    def test_material_echo_can_match_its_exact_native_type(self):
+        tracker = ReplyEchoTracker()
+        tracker.reserve(
+            "forward-1",
+            "Alice",
+            ReplyAction("file", "miniapp material"),
+            message_types=("miniapp",),
+        )
+        tracker.activate(("forward-1",))
+
+        self.assertIsNone(tracker.match("Alice", "link", "miniapp material"))
+        self.assertIsNotNone(tracker.match("Alice", "miniapp", "miniapp material"))
+
+    def test_same_type_material_echo_prefers_matching_content(self):
+        tracker = ReplyEchoTracker()
+        tracker.reserve(
+            "forward-1",
+            "Alice",
+            ReplyAction("file", "first material"),
+            message_types=("miniapp",),
+        )
+        tracker.reserve(
+            "forward-2",
+            "Alice",
+            ReplyAction("file", "second material"),
+            message_types=("miniapp",),
+        )
+        tracker.activate(("forward-1", "forward-2"))
+
+        second = tracker.match("Alice", "miniapp", "second material")
+        first = tracker.match("Alice", "miniapp", "first material")
+
+        self.assertEqual(second.action_id, "forward-2")
+        self.assertEqual(first.action_id, "forward-1")
+
     def test_echo_tracker_never_matches_same_named_private_and_group_chats(self):
         tracker = ReplyEchoTracker()
         tracker.reserve(
@@ -380,7 +415,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         entered = threading.Event()
         release = threading.Event()
 
-        def send(_turn, _action, _action_id):
+        def send(_turn, _action, _action_id, _context):
             entered.set()
             release.wait(1)
             return True

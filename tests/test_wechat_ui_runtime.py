@@ -158,7 +158,6 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(len(received), 1)
         self.assertTrue(received[0]._wxbot_media_prepared)
         self.assertTrue(received[0]._skip_ai_reply)
-        self.assertTrue(received[0]._skip_memory)
 
     def test_subwindow_image_callback_waits_for_contact_recovery_before_download(self):
         contact_done = threading.Event()
@@ -226,7 +225,6 @@ class WeChatUIRuntimeTests(unittest.TestCase):
             ),
             all_Mode_listen_list=[],
             _listen_chats={},
-            _material_source_chats={},
             _listener_auto_recovery_active=True,
             _listener_auto_recovery_attempted=False,
             _listener_auto_recovery_probe_after=0.0,
@@ -363,29 +361,6 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         self.assertTrue(result)
         self.assertEqual(client.chats["张三"].sent, [("你好", None)])
-
-    def test_text_batch_stays_in_one_owner_transaction(self):
-        client = FakeClient()
-        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
-        runtime.bootstrap({"listeners": [{"name": "张三"}]})
-
-        results = runtime.send_text_batch({"conversation": "张三", "messages": ["第一段", "第二段", "第三段"]})
-
-        self.assertEqual(results, [True, True, True])
-        self.assertEqual(client.chats["张三"].sent, [("第一段", None), ("第二段", None), ("第三段", None)])
-
-    def test_text_batch_applies_at_only_to_first_part(self):
-        client = FakeClient()
-        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
-        runtime.bootstrap({"listeners": [{"name": "测试群"}]})
-
-        runtime.send_text_batch({
-            "conversation": "测试群",
-            "messages": ["第一段", "第二段"],
-            "first_at": "群成员",
-        })
-
-        self.assertEqual(client.chats["测试群"].sent, [("第一段", "群成员"), ("第二段", None)])
 
     def test_send_actions_reports_completed_boundary_when_middle_action_raises(self):
         client = FakeClient()

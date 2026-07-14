@@ -57,45 +57,29 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(calls, ["prepare", "process"])
 
-    def test_remove_listen_chat_uses_wechat_action_lock(self):
+    def test_remove_listen_chat_clears_runtime_cache(self):
         removed = []
         logs = []
-        lock_events = []
-
-        class RecordingLock:
-            def __enter__(self):
-                lock_events.append("enter")
-                return self
-
-            def __exit__(self, *_args):
-                lock_events.append("exit")
-                return False
 
         class FakeBot:
             _listen_chats = {"张三": object()}
             wx = SimpleNamespace(
-                RemoveListenChat=lambda _nickname: removed.append(_nickname) or {"status": "成功", "message": "ok"},
+                RemoveListenChat=lambda _nickname, close_window=True: removed.append(_nickname) or {"status": "成功", "message": "ok"},
             )
-            lock = RecordingLock()
-
-            def _get_wechat_action_lock(self):
-                return self.lock
 
         with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))):
             result = listening.remove_listen_chat_verified(FakeBot(), "张三")
 
         self.assertTrue(result)
         self.assertEqual(removed, ["张三"])
-        self.assertEqual(lock_events, ["enter", "exit"])
         self.assertEqual(logs.count("监听管理 张三：删除监听完成，已清理运行缓存"), 1)
 
     def test_remove_listen_chat_logs_wxautox_return_value_and_clears_runtime_cache(self):
         stale_chat = object()
         bot = SimpleNamespace(
             _listen_chats={"张三": stale_chat},
-            _material_source_chats={"张三": stale_chat},
             wx=SimpleNamespace(
-                RemoveListenChat=lambda _nickname: {"status": "失败", "message": "窗口忙"},
+                RemoveListenChat=lambda _nickname, close_window=True: {"status": "失败", "message": "窗口忙"},
             ),
         )
         logs = []
@@ -106,7 +90,6 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertTrue(any("监听管理 张三：删除监听结果：窗口忙" in item for item in logs))
         self.assertNotIn("张三", bot._listen_chats)
-        self.assertNotIn("张三", bot._material_source_chats)
 
     def test_remove_listen_chat_does_not_close_residual_window_when_registration_missing(self):
         calls = []
@@ -134,7 +117,6 @@ class RemoveListenChatTests(unittest.TestCase):
         windows.append(ResidualChat())
         bot = SimpleNamespace(
             _listen_chats={"张三": windows[0]},
-            _material_source_chats={"张三": windows[0]},
             wx=FakeWeChat(),
         )
 
@@ -144,7 +126,6 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(calls[0], ("RemoveListenChat", "张三", True))
         self.assertNotIn(("Close", "张三"), calls)
         self.assertNotIn("张三", bot._listen_chats)
-        self.assertNotIn("张三", bot._material_source_chats)
 
     def test_remove_listen_chat_does_not_probe_residual_close_result(self):
         calls = []
@@ -312,77 +293,33 @@ class RemoveListenChatTests(unittest.TestCase):
         calls = []
         sub_chat = SimpleNamespace(who="张三", SendMsg=lambda _msg: True)
 
-        class NoopLock:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
         class FakeWeChat:
-            def AddListenChat(self, nickname=None, callback=None):
-                calls.append(("AddListenChat", nickname, callback))
+            def AddListenChat(self, nickname=None):
+                calls.append(("AddListenChat", nickname))
                 return sub_chat
 
             def GetSubWindow(self, nickname=None):
                 calls.append(("GetSubWindow", nickname))
                 return None
 
-        bot = SimpleNamespace(wx=FakeWeChat(), message_handle_callback=object(), _listen_chats={})
-        bot._get_wechat_action_lock = lambda: NoopLock()
+        bot = SimpleNamespace(wx=FakeWeChat(), _listen_chats={})
 
         result = listening.add_and_verify_subwindow(bot, "张三")
 
         self.assertIs(result, sub_chat)
         self.assertEqual(
             calls,
-            [("GetSubWindow", "张三"), ("AddListenChat", "张三", bot.message_handle_callback)],
+            [("GetSubWindow", "张三"), ("AddListenChat", "张三")],
         )
         self.assertIs(bot._listen_chats["张三"], sub_chat)
 
-    def test_listener_window_recovery_keeps_task_when_lock_busy(self):
-        releases = []
-
-        class BusyLock:
-            def acquire(self, blocking=True):
-                return False
-
-            def release(self):
-                releases.append("release")
-
-        bot = SimpleNamespace(
-            _listen_chats={},
-        )
-        bot._get_wechat_action_lock = lambda: BusyLock()
-        supervisor = listening.ensure_listener_window_recovery_state(bot)
-        supervisor.request("张三", now=90.0)
-
-        with mock.patch.object(listening.time, "time", return_value=101.0):
-            flushed = listening.flush_listener_window_recovery_tasks(bot)
-
-        self.assertFalse(flushed)
-        self.assertTrue(supervisor.contains("张三"))
-        self.assertFalse(supervisor.snapshot()[0]["inflight"])
-        self.assertEqual(releases, [])
-
     def test_listener_reconcile_allows_future_window_recovery_pending(self):
-        calls = []
-
-        class FreeLock:
-            def acquire(self, blocking=True):
-                calls.append(("lock", blocking))
-                return True
-
-            def release(self):
-                calls.append(("unlock",))
-
         bot = SimpleNamespace(
             wx=object(),
             config=SimpleNamespace(AllListen_switch=True),
             _listener_reconcile_interval_seconds=30,
             _listener_reconcile_last_at=0.0,
         )
-        bot._get_wechat_action_lock = lambda: FreeLock()
         listening.ensure_listener_window_recovery_state(bot).request("张三", now=200.0)
 
         with mock.patch.object(listening.time, "time", return_value=100.0), mock.patch.object(
@@ -393,78 +330,49 @@ class RemoveListenChatTests(unittest.TestCase):
             reopened = listening.maybe_reconcile_listener_subwindows(bot)
 
         self.assertEqual(reopened, ["管理员"])
-        self.assertEqual(calls, [("lock", False), ("unlock",)])
         self.assertEqual(bot._listener_reconcile_last_at, 100.0)
 
     def test_listener_reconcile_ignores_window_recovery_outside_alllisten_mode(self):
-        calls = []
-
-        class FreeLock:
-            def acquire(self, blocking=True):
-                calls.append(("lock", blocking))
-                return True
-
-            def release(self):
-                calls.append(("unlock",))
-
         bot = SimpleNamespace(
             wx=object(),
             config=SimpleNamespace(AllListen_switch=False),
             _listener_reconcile_interval_seconds=30,
             _listener_reconcile_last_at=0.0,
         )
-        bot._get_wechat_action_lock = lambda: FreeLock()
         listening.ensure_listener_window_recovery_state(bot).request("张三", now=0.0)
 
         with mock.patch.object(listening, "reconcile_listener_subwindows", return_value=["管理员"]):
             reopened = listening.maybe_reconcile_listener_subwindows(bot)
 
         self.assertEqual(reopened, ["管理员"])
-        self.assertEqual(calls, [("lock", False), ("unlock",)])
 
     def test_add_listen_chat_once_returns_wechat_result(self):
         calls = []
         logs = []
 
-        class NoopLock:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
         class FakeWeChat:
-            def AddListenChat(self, nickname=None, callback=None):
-                calls.append((nickname, callback))
+            def AddListenChat(self, nickname=None):
+                calls.append(nickname)
                 return {"status": "success"}
 
-        bot = SimpleNamespace(wx=FakeWeChat(), message_handle_callback=object())
-        bot._get_wechat_action_lock = lambda: NoopLock()
+        bot = SimpleNamespace(wx=FakeWeChat())
 
         with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or (args[0] if args else ""))):
             result = listening.add_listen_chat_once(bot, "张三", "动态监听")
 
         self.assertEqual(result, {"status": "success"})
-        self.assertEqual(calls, [("张三", bot.message_handle_callback)])
+        self.assertEqual(calls, ["张三"])
         self.assertFalse(any("监听管理 张三：添加动态监听调用成功" in item for item in logs))
         self.assertFalse(any("监听管理 张三：添加动态监听失败" in item for item in logs))
 
     def test_dynamic_listener_add_failure_is_silent_until_global_retry_log(self):
         logs = []
 
-        class NoopLock:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
         class FakeWeChat:
-            def AddListenChat(self, nickname=None, callback=None):
+            def AddListenChat(self, nickname=None):
                 raise RuntimeError("无效的窗口句柄")
 
-        bot = SimpleNamespace(wx=FakeWeChat(), message_handle_callback=object())
-        bot._get_wechat_action_lock = lambda: NoopLock()
+        bot = SimpleNamespace(wx=FakeWeChat())
 
         with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message") or (args[0] if args else "")))):
             result = listening.add_listen_chat_once(bot, "张三", "动态监听")
@@ -475,19 +383,11 @@ class RemoveListenChatTests(unittest.TestCase):
     def test_manual_listener_add_failure_stays_error(self):
         logs = []
 
-        class NoopLock:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
         class FakeWeChat:
-            def AddListenChat(self, nickname=None, callback=None):
+            def AddListenChat(self, nickname=None):
                 raise RuntimeError("无效的窗口句柄")
 
-        bot = SimpleNamespace(wx=FakeWeChat(), message_handle_callback=object())
-        bot._get_wechat_action_lock = lambda: NoopLock()
+        bot = SimpleNamespace(wx=FakeWeChat())
 
         with mock.patch.object(listening, "_bot_log", side_effect=lambda _bot, *args, **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message") or (args[0] if args else "")))):
             result = listening.add_listen_chat_once(bot, "张三", "监听")

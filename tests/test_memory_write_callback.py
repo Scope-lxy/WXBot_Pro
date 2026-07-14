@@ -26,42 +26,6 @@ from core.sending import (
 from wxbot_core import WXBot
 
 
-class CaptureMemory:
-    def __init__(self):
-        self.calls = []
-
-    def save_message(self, **kwargs):
-        self.calls.append(kwargs)
-
-
-class InMemoryChatMemory:
-    def __init__(self):
-        self.messages = []
-
-    def save_message(self, **kwargs):
-        message_time = kwargs.get("message_time")
-        if hasattr(message_time, "strftime"):
-            message_time = message_time.strftime("%Y/%m/%d %H:%M:%S")
-        elif not message_time:
-            message_time = "2026/07/07 00:00:00"
-        entry = {
-            "time": str(message_time),
-            "type": str(kwargs.get("msg_type", "text")),
-            "attr": str(kwargs.get("msg_attr", "friend")),
-            "sender": str(kwargs.get("sender", "")),
-            "content": str(kwargs.get("content", "")),
-        }
-        key = tuple(entry.get(name, "") for name in ("time", "type", "attr", "sender", "content"))
-        for item in self.messages[-20:]:
-            existing_key = tuple(item.get(name, "") for name in ("time", "type", "attr", "sender", "content"))
-            if existing_key == key:
-                return
-        self.messages.append(entry)
-
-    def get_messages(self, _chat_name, limit):
-        return list(self.messages)[-int(limit or 0):]
-
-
 class MemoryWriteCallbackTests(unittest.TestCase):
     def _attach_message_store(self, bot):
         temp_dir = tempfile.TemporaryDirectory()
@@ -73,69 +37,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.is_stop_requested = lambda: False
         return store
 
-    def test_private_message_saved_before_queue_is_not_saved_again_by_callback_tail(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(
-            memory_switch=True,
-            memory_max_count=5000,
-            group_welcome=False,
-            group=[],
-            cmd="admin",
-        )
-        bot.memory_manager = CaptureMemory()
-        bot._mark_chat_memory_dirty = lambda *_args, **_kwargs: True
-        bot._handle_material_source_message = lambda *_args, **_kwargs: False
-        bot.callback_is_die = False
-        bot.wx = SimpleNamespace(nickname="bot")
-        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
-        msg = SimpleNamespace(attr="friend", sender="张三", content="同一条入站", type="text")
-        chat = SimpleNamespace(who="张三", chat_type="private")
-
-        self.assertTrue(bot._save_private_incoming_memory_message(chat, msg))
-        with mock.patch("feature.message_routing.handle_friend_message_callback", return_value=True):
-            bot.message_handle_callback(msg, chat)
-
-        self.assertEqual(len(bot.memory_manager.calls), 1)
-        self.assertTrue(getattr(msg, "_wxbot_memory_persisted", False))
-
-    def test_dirty_marker_failure_does_not_retry_durable_message_save(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(memory_switch=True, memory_max_count=5000)
-        bot.memory_manager = CaptureMemory()
-        bot._mark_chat_memory_dirty = mock.Mock(side_effect=RuntimeError("dirty failed"))
-        msg = SimpleNamespace(attr="friend", sender="张三", content="已落盘", type="text")
-        chat = SimpleNamespace(who="张三", chat_type="private")
-
-        self.assertTrue(bot._save_private_incoming_memory_message(chat, msg))
-        self.assertTrue(bot._save_private_incoming_memory_message(chat, msg))
-
-        self.assertEqual(len(bot.memory_manager.calls), 1)
-        self.assertTrue(getattr(msg, "_wxbot_memory_persisted", False))
-
-    def test_message_callback_saves_memory_with_callback_receive_time(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(
-            memory_switch=True,
-            memory_max_count=5000,
-            group_welcome=False,
-            group=[],
-            cmd="admin",
-        )
-        bot.memory_manager = CaptureMemory()
-        bot._should_skip_message_memory = lambda chat, msg: False
-        bot.callback_is_die = False
-        bot.wx = SimpleNamespace(nickname="bot")
-        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
-
-        msg = SimpleNamespace(attr="system", sender="system", content="hello", type="text")
-        chat = SimpleNamespace(who="chat-a", chat_type="private")
-
-        bot.message_handle_callback(msg, chat)
-
-        self.assertEqual(len(bot.memory_manager.calls), 1)
-        self.assertEqual(bot.memory_manager.calls[0]["chat_name"], "chat-a")
-        self.assertIn("message_time", bot.memory_manager.calls[0])
-
     def test_friend_message_callback_marks_chat_memory_dirty_without_sync_update(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
@@ -145,7 +46,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             group=[],
             cmd="admin",
         )
-        bot.memory_manager = CaptureMemory()
+        bot.memory_manager = SimpleNamespace()
         bot._should_skip_message_memory = lambda chat, msg: False
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot._record_received_message = lambda: None
@@ -164,63 +65,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
 
         bot.message_handle_callback(msg, chat)
 
-        self.assertEqual(len(bot.memory_manager.calls), 1)
         self.assertEqual(dirty_calls, [("chat-a", "hello")])
-
-    def test_manual_private_self_callback_saves_memory_and_interrupts_ai_reply(self):
-        class FakeTimer:
-            def __init__(self):
-                self.cancelled = False
-
-            def cancel(self):
-                self.cancelled = True
-
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(
-            memory_switch=True,
-            memory_max_count=5000,
-            group_welcome=False,
-            group=[],
-            cmd="admin",
-            AllListen_switch=False,
-            listen_list=[],
-            global_blacklist=[],
-            chat_image_recognition_switch=False,
-            chat_voice_recognition_switch=False,
-        )
-        bot.memory_manager = CaptureMemory()
-        bot._handle_material_source_message = lambda _chat, _msg: False
-        bot.callback_is_die = False
-        bot.wx = SimpleNamespace(nickname="bot")
-        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
-        dirty_calls = []
-        bot._mark_chat_memory_dirty = lambda chat, msg: dirty_calls.append((chat.who, msg.content)) or True
-
-        timer = FakeTimer()
-        bot._ensure_message_runtime_state()
-        bot._private_message_sequence_by_chat["张三"] = 1
-        bot._private_message_pipelines["张三"] = {
-            "open_messages": [SimpleNamespace(content="上一条")],
-            "open_started_at": 1.0,
-            "open_kind": "text",
-            "idle_timer": timer,
-            "max_timer": timer,
-            "queued_batches": deque([[SimpleNamespace(content="待回复")]]),
-            "worker_running": True,
-        }
-        msg = SimpleNamespace(attr="self", sender="self", content="我手机上已经回复了", type="text")
-        chat = SimpleNamespace(who="张三", chat_type="private")
-
-        with mock.patch("wxbot_core.log"):
-            bot.message_handle_callback(msg, chat)
-
-        self.assertEqual(len(bot.memory_manager.calls), 1)
-        self.assertEqual(bot.memory_manager.calls[0]["msg_attr"], "self")
-        self.assertEqual(bot.memory_manager.calls[0]["content"], "我手机上已经回复了")
-        self.assertEqual(dirty_calls, [("张三", "我手机上已经回复了")])
-        self.assertEqual(bot._get_private_message_sequence("张三"), 2)
-        self.assertNotIn("张三", bot._private_message_pipelines)
-        self.assertTrue(timer.cancelled)
 
     def test_private_reply_echo_self_callback_does_not_interrupt_ai_reply(self):
         bot = WXBot.__new__(WXBot)
@@ -236,14 +81,12 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             chat_image_recognition_switch=False,
             chat_voice_recognition_switch=False,
         )
-        bot.memory_manager = CaptureMemory()
+        bot.memory_manager = SimpleNamespace()
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot.callback_is_die = False
         bot.wx = SimpleNamespace(nickname="bot")
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
-        bot._mark_chat_memory_dirty = lambda _chat, _msg: self.fail("机器人回显不应重复写入记忆")
         bot._ensure_message_runtime_state()
-        bot._private_message_sequence_by_chat["张三"] = 1
         bot._private_message_pipelines["张三"] = {
             "open_messages": [SimpleNamespace(content="上一条")],
             "open_started_at": 1.0,
@@ -268,7 +111,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertTrue(bot._persist_ui_message(ConversationRef("张三"), msg))
         bot.message_handle_callback(msg, chat)
 
-        self.assertEqual(bot.memory_manager.calls, [])
         self.assertEqual(store.conversation_version("张三"), 0)
         self.assertIn("张三", bot._private_message_pipelines)
         self.assertEqual(store.get_event(msg._wxbot_event_id)["direction"], "bot_echo")
@@ -287,14 +129,12 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             chat_image_recognition_switch=False,
             chat_voice_recognition_switch=False,
         )
-        bot.memory_manager = CaptureMemory()
+        bot.memory_manager = SimpleNamespace()
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot.callback_is_die = False
         bot.wx = SimpleNamespace(nickname="bot")
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
-        bot._mark_chat_memory_dirty = lambda _chat, _msg: self.fail("机器人语音回显不应重复写入记忆")
         bot._ensure_message_runtime_state()
-        bot._private_message_sequence_by_chat["张三"] = 1
         bot._private_message_pipelines["张三"] = {
             "open_messages": [SimpleNamespace(content="上一条")],
             "open_started_at": 1.0,
@@ -320,7 +160,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         with mock.patch("wxbot_core.log"):
             bot.message_handle_callback(msg, chat)
 
-        self.assertEqual(bot.memory_manager.calls, [])
         self.assertEqual(store.conversation_version("张三"), 0)
         self.assertIn("张三", bot._private_message_pipelines)
         self.assertEqual(store.get_event(msg._wxbot_event_id)["direction"], "bot_echo")
@@ -339,14 +178,13 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             chat_image_recognition_switch=False,
             chat_voice_recognition_switch=False,
         )
-        bot.memory_manager = CaptureMemory()
+        bot.memory_manager = SimpleNamespace()
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot.callback_is_die = False
         bot.wx = SimpleNamespace(nickname="bot")
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
         bot._save_incoming_image_memory_message = lambda _chat, _msg: True
         bot._ensure_message_runtime_state()
-        bot._private_message_sequence_by_chat["张三"] = 1
         bot._private_message_pipelines["张三"] = {
             "open_messages": [SimpleNamespace(content="上一条")],
             "open_started_at": 1.0,
@@ -372,11 +210,9 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         with mock.patch("wxbot_core.log"):
             bot.message_handle_callback(msg, chat)
 
-        self.assertEqual(bot.memory_manager.calls, [])
         self.assertEqual(store.conversation_version("张三"), 0)
         self.assertIn("张三", bot._private_message_pipelines)
         self.assertEqual(store.get_event(msg._wxbot_event_id)["direction"], "bot_echo")
-        self.assertTrue(getattr(msg, "_wxbot_memory_persisted", False))
 
     def test_private_reply_echo_during_active_ai_work_does_not_trigger_self_boundary(self):
         bot = WXBot.__new__(WXBot)
@@ -392,14 +228,12 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             chat_image_recognition_switch=False,
             chat_voice_recognition_switch=False,
         )
-        bot.memory_manager = CaptureMemory()
+        bot.memory_manager = SimpleNamespace()
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot.callback_is_die = False
         bot.wx = SimpleNamespace(nickname="bot")
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
-        bot._mark_chat_memory_dirty = lambda _chat, _msg: self.fail("机器人回显不应重复写入记忆")
         bot._ensure_message_runtime_state()
-        bot._private_message_sequence_by_chat["张三"] = 3
         bot._private_message_pipelines["张三"] = {
             "open_messages": [],
             "open_started_at": 0.0,
@@ -429,7 +263,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertFalse(any("已忽略机器人回显" in message for message in log_messages))
         self.assertFalse(any("self 介入" in message for message in log_messages))
         self.assertFalse(any("self 边界" in message for message in log_messages))
-        self.assertEqual(bot.memory_manager.calls, [])
         self.assertEqual(store.conversation_version("张三"), 0)
         self.assertIn("张三", bot._private_message_pipelines)
         self.assertEqual(store.get_event(msg._wxbot_event_id)["direction"], "bot_echo")
@@ -455,11 +288,11 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         timer_calls = []
         bot._schedule_private_message_timer = lambda seconds, callback, chat: timer_calls.append((seconds, callback, chat)) or SimpleNamespace(cancel=lambda: None)
         bot._ensure_message_runtime_state()
+        self._attach_message_store(bot)
 
         chat = SimpleNamespace(who="张三", chat_type="private")
         bot._enqueue_private_message_for_ai(chat, SimpleNamespace(id="a", attr="friend", sender="张三", content="aaa", type="text"))
         bot._enqueue_private_message_for_ai(chat, SimpleNamespace(id="b", attr="friend", sender="张三", content="bbb", type="text"))
-        self.assertEqual(bot._get_private_message_sequence("张三"), 2)
         self.assertEqual([msg.content for msg in bot._private_message_pipelines["张三"]["open_messages"]], ["aaa", "bbb"])
 
         self_msg = SimpleNamespace(attr="self", sender="self", content="ccc", type="text")
@@ -470,7 +303,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertTrue(any("self 边界" in message for message in log_messages))
         self.assertTrue(any("人工介入已确认" in message for message in log_messages))
         self.assertFalse(any("检测到手动 self" in message for message in log_messages))
-        self.assertEqual(bot._get_private_message_sequence("张三"), 3)
         self.assertNotIn("张三", bot._private_message_pipelines)
 
     def test_private_self_without_pending_work_is_kept_as_history_not_interrupt(self):
@@ -490,7 +322,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
         bot._runtime_instance_id = "a" * 32
         bot._ensure_message_runtime_state()
-        bot._private_message_sequence_by_chat["张三"] = 7
+        self._attach_message_store(bot)
 
         chat = SimpleNamespace(who="张三", chat_type="private")
         self_msg = SimpleNamespace(attr="self", sender="self", content="历史里的我方消息", type="text")
@@ -501,7 +333,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         self.assertTrue(any("作为历史记录保留" in message for message in log_messages))
         self.assertFalse(any("人工介入已确认" in message for message in log_messages))
         self.assertFalse(any("检测到手动 self" in message for message in log_messages))
-        self.assertEqual(bot._get_private_message_sequence("张三"), 7)
         self.assertNotIn("张三", bot._private_message_pipelines)
 
     def test_private_pending_voice_transcription_clears_after_self_boundary_invalidates_turn(self):
@@ -510,6 +341,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.is_stop_requested = lambda: False
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
         bot._ensure_message_runtime_state()
+        self._attach_message_store(bot)
 
         chat = SimpleNamespace(who="张三", chat_type="private")
         voice = SimpleNamespace(id="v1", attr="friend", sender="张三", type="voice", content='语音4"秒')
@@ -545,6 +377,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot.is_stop_requested = lambda: False
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
         bot._ensure_message_runtime_state()
+        self._attach_message_store(bot)
 
         def mark_worker_ready(_chat, pipeline):
             pipeline["worker_running"] = True
@@ -564,113 +397,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             self.assertTrue(bot._run_private_message_pipeline_worker(chat))
 
         self.assertEqual(captured, ["ddd"])
-
-    def test_friend_message_after_manual_self_starts_new_ai_with_manual_self_in_history(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(
-            memory_switch=True,
-            memory_context_switch=True,
-            memory_context_count=10,
-            memory_max_count=5000,
-            group_welcome=False,
-            group=[],
-            group_switch=False,
-            cmd="admin",
-            AllListen_switch=False,
-            listen_list=["张三"],
-            global_blacklist=[],
-            chat_image_recognition_switch=False,
-            chat_voice_recognition_switch=False,
-            chat_keyword_switch=False,
-            keyword_dict={},
-            chat_split_reply_switch=False,
-            chat_split_max_count=4,
-            chat_split_max_chars=100,
-            clean_ai_reply_switch=False,
-            reply_preprocess_fallback_reply="",
-            reply_preprocess_fallback_once=False,
-            api_error_reply_once=False,
-            chat_text_reply_limit_switch=False,
-            chat_text_reply_limit_hours=24,
-            chat_voice_reply_switch=False,
-            chat_message_merge_delay=20,
-            chat_listen_only=False,
-            split_long_text=lambda text: [text],
-        )
-        bot.memory_manager = InMemoryChatMemory()
-        bot._handle_material_source_message = lambda _chat, _msg: False
-        bot._record_received_message = lambda: None
-        bot._mark_chat_memory_dirty = lambda _chat, _msg: True
-        bot._repair_private_context_before_ai = lambda _chat, _msg: False
-        bot._current_ai_material_outreach_config = lambda: {"ai_material_outreach_switch": False}
-        bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
-        bot._send_private_ai_reply_parts = lambda *_args, **_kwargs: (True, True)
-        bot._record_reply_metric_success = lambda *_args, **_kwargs: None
-        bot._voice_reply_state = {"private_sessions": {}, "limits": {}}
-        bot._pause_chat_reply = False
-        bot._pause_chat_reply_users = set()
-        bot.is_stop_requested = lambda: False
-        bot.callback_is_die = False
-        bot.wx = SimpleNamespace(nickname="bot")
-        bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
-        bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
-
-        def mark_worker_ready(_chat, pipeline):
-            pipeline["worker_running"] = True
-            return True
-
-        bot._start_private_message_worker_locked = mark_worker_ready
-        captured_requests = []
-        bot._get_chat_api = lambda _user: SimpleNamespace(
-            chat=lambda message, **kwargs: captured_requests.append({
-                "message": message,
-                "history": kwargs.get("history") or [],
-            }) or "新的 AI 回复"
-        )
-
-        chat = SimpleNamespace(who="张三", chat_type="private")
-        manual_self = SimpleNamespace(attr="self", sender="self", content="我手机上已经回复了", type="text")
-        friend_message = SimpleNamespace(attr="friend", sender="张三", content="那我再问一句", type="text", id="friend-1")
-
-        with mock.patch("wxbot_core.log"):
-            bot.message_handle_callback(manual_self, chat)
-            bot.message_handle_callback(friend_message, chat)
-            self.assertTrue(bot._close_private_message_batch_by_idle(chat))
-            self.assertTrue(bot._run_private_message_pipeline_worker(chat))
-
-        self.assertEqual(len(captured_requests), 1)
-        history = captured_requests[0]["history"]
-        self.assertIn(
-            {"role": "assistant", "content": "我手机上已经回复了"},
-            history,
-        )
-        self.assertTrue(
-            any(item["role"] == "user" and "那我再问一句" in item["content"] for item in history)
-        )
-
-    def test_voice_duration_only_message_is_not_saved_as_chat_content(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="admin")
-
-        chat = SimpleNamespace(who="chat-a", chat_type="private")
-        duration_only = SimpleNamespace(attr="self", sender="self", content='语音10"秒', type="voice")
-        failed = SimpleNamespace(attr="friend", sender="friend-a", content="语音未能转换", type="voice")
-        failed_with_duration = SimpleNamespace(attr="friend", sender="friend-a", content='语音1"秒语音未能转换', type="voice")
-        failed_conversion = SimpleNamespace(attr="friend", sender="friend-a", content="语音转换失败", type="voice")
-        failed_recognition = SimpleNamespace(attr="friend", sender="friend-a", content="语音识别失败", type="voice")
-        transcribed = SimpleNamespace(
-            attr="self",
-            sender="self",
-            content='语音10"秒\n\n这么想听啊，那等白天嗓子开了给你哼两句。',
-            type="voice",
-        )
-
-        self.assertTrue(bot._should_skip_message_memory(chat, duration_only))
-        self.assertTrue(bot._should_skip_message_memory(chat, failed))
-        self.assertTrue(bot._should_skip_message_memory(chat, failed_with_duration))
-        self.assertTrue(bot._should_skip_message_memory(chat, failed_conversion))
-        self.assertTrue(bot._should_skip_message_memory(chat, failed_recognition))
-        self.assertFalse(bot._should_skip_message_memory(chat, transcribed))
 
     def test_voice_label_is_display_only_not_model_context(self):
         record = {
@@ -932,7 +658,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             ],
         )
 
-    def test_group_voice_text_without_at_is_saved_but_not_replied(self):
+    def test_group_voice_text_without_at_is_not_replied(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             memory_switch=True,
@@ -952,7 +678,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             AtMe="@机器人",
             cmd="admin",
         )
-        bot.memory_manager = CaptureMemory()
+        bot.memory_manager = SimpleNamespace()
         bot._should_skip_message_memory = lambda chat, msg: False
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot._record_received_message = lambda: None
@@ -974,13 +700,8 @@ class MemoryWriteCallbackTests(unittest.TestCase):
 
         bot.message_handle_callback(msg, chat)
 
-        self.assertEqual(len(bot.memory_manager.calls), 1)
-        self.assertEqual(bot.memory_manager.calls[0]["chat_name"], "测试群")
-        self.assertEqual(bot.memory_manager.calls[0]["sender"], "B")
-        self.assertEqual(bot.memory_manager.calls[0]["content"], "B 的语音内容")
-        self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "voice")
 
-    def test_group_image_without_at_is_saved_but_not_replied(self):
+    def test_group_image_without_at_is_not_replied(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             memory_switch=True,
@@ -1000,7 +721,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             AtMe="@机器人",
             cmd="admin",
         )
-        bot.memory_manager = CaptureMemory()
+        bot.memory_manager = SimpleNamespace()
         bot._should_skip_message_memory = lambda chat, msg: False
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot._record_received_message = lambda: None
@@ -1025,13 +746,6 @@ class MemoryWriteCallbackTests(unittest.TestCase):
 
         bot.message_handle_callback(msg, chat)
 
-        self.assertEqual(len(bot.memory_manager.calls), 1)
-        self.assertEqual(bot.memory_manager.calls[0]["chat_name"], "测试群")
-        self.assertEqual(bot.memory_manager.calls[0]["sender"], "B")
-        self.assertEqual(bot.memory_manager.calls[0]["content"], "[图片]")
-        self.assertEqual(bot.memory_manager.calls[0]["msg_type"], "image")
-        self.assertEqual(bot.memory_manager.calls[0]["image_paths"], [r"C:\tmp\group-image.png"])
-        self.assertNotIn("visual_notes", bot.memory_manager.calls[0])
 
     def test_pending_voice_placeholders_are_not_visible_to_model(self):
         history = [
@@ -1063,7 +777,19 @@ class MemoryWriteCallbackTests(unittest.TestCase):
     def test_memory_manager_lists_existing_chat_record_names(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = MemoryManager("wxid", tmpdir)
-            manager.save_message("张三", "张三", "你好", "text", "friend", 5000)
+            manager.message_store.append_history([{
+                "event_id": "message-1",
+                "conversation": "张三",
+                "chat_type": "private",
+                "direction": "friend",
+                "sender": "张三",
+                "content": "你好",
+                "original_content": "你好",
+                "message_type": "text",
+                "native_attr": "friend",
+                "received_at": 1.0,
+                "metadata": {},
+            }])
 
             self.assertEqual(manager.list_chat_names(), ["张三"])
 

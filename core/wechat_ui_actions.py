@@ -1,26 +1,21 @@
-"""Single-owner scheduling for every in-process WeChat UI action.
-
-The lock helpers at the bottom are temporary migration shims. New production
-code must submit :class:`UIIntent` values to :class:`WeChatUIOwner` instead of
-holding the legacy global lock.
-"""
+"""Single-owner scheduling for every in-process WeChat UI action."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 import time
 from collections import deque
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Mapping
 
 from core.logger import log
 from core.reply_count_store import ReplyCountStore
 
 
-ReleaseLock = Callable[[], None]
 IntentHandler = Callable[[Mapping[str, Any]], Any]
 ConversationVersionProvider = Callable[[str, str], int]
 IntentVersionProvider = Callable[[str], int]
@@ -36,7 +31,6 @@ class UIIntentKind(str, Enum):
     POLL_MESSAGES = "poll_messages"
     GET_MESSAGES = "get_messages"
     SEND_TEXT = "send_text"
-    SEND_TEXT_BATCH = "send_text_batch"
     SEND_ACTIONS = "send_actions"
     ADD_LISTEN = "add_listen"
     REMOVE_LISTEN = "remove_listen"
@@ -67,7 +61,6 @@ LIGHTWEIGHT_INTENTS = frozenset({
     UIIntentKind.POLL_MESSAGES,
     UIIntentKind.GET_MESSAGES,
     UIIntentKind.SEND_TEXT,
-    UIIntentKind.SEND_TEXT_BATCH,
 })
 JOURNALED_DELIVERY_INTENTS = frozenset({
     UIIntentKind.SEND_FILE,
@@ -79,6 +72,11 @@ JOURNALED_DELIVERY_INTENTS = frozenset({
 UI_STUCK_EXIT_CODE = 86
 # Queueing is intentionally unbounded; active UI actions have their own watchdog deadlines.
 UI_CALL_WAIT_TIMEOUT = None
+
+
+def task_definition_version(definition: Any) -> int:
+    payload = json.dumps(definition or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return int.from_bytes(hashlib.blake2s(payload.encode("utf-8"), digest_size=8).digest(), "big") or 1
 
 
 def _delivery_succeeded(result: Any) -> bool:
@@ -691,60 +689,3 @@ class UIWatchdog:
                 continue
             self._on_timeout(snapshot)
             return
-
-
-def _noop_release() -> None:
-    return None
-
-
-def _lock_for(bot: Any) -> Any | None:
-    if getattr(bot, "_ui_owner", None) is not None:
-        return None
-    getter = getattr(bot, "_get_wechat_action_lock", None)
-    if not callable(getter):
-        return None
-    return getter()
-
-
-def acquire(bot: Any, *, blocking: bool = True) -> ReleaseLock | None:
-    lock = _lock_for(bot)
-    if lock is None:
-        return _noop_release
-    acquire_fn = getattr(lock, "acquire", None)
-    release_fn = getattr(lock, "release", None)
-    if callable(acquire_fn):
-        acquired = acquire_fn(blocking=bool(blocking))
-        if not acquired:
-            return None
-        if not callable(release_fn):
-            raise RuntimeError("微信 UI 操作锁不可用")
-        return release_fn
-    enter_fn = getattr(lock, "__enter__", None)
-    exit_fn = getattr(lock, "__exit__", None)
-    if callable(enter_fn) and callable(exit_fn):
-        enter_fn()
-        return lambda: exit_fn(None, None, None)
-    raise RuntimeError("微信 UI 操作锁不可用")
-
-
-def try_acquire(bot: Any) -> ReleaseLock | None:
-    return acquire(bot, blocking=False)
-
-
-def is_busy(bot: Any) -> bool:
-    release = try_acquire(bot)
-    if not release:
-        return True
-    release()
-    return False
-
-
-@contextmanager
-def hold(bot: Any) -> Iterator[None]:
-    release = acquire(bot, blocking=True)
-    if not release:
-        raise RuntimeError("微信 UI 操作锁不可用")
-    try:
-        yield
-    finally:
-        release()

@@ -44,12 +44,6 @@ def make_delivery_bot(data_dir):
     bot._message_store = MessageStore(data_dir, "wxid_integration")
     bot._inbound_coordinator = InboundCoordinator(bot._message_store)
     bot._reply_echo_tracker = ReplyEchoTracker()
-    bot._reply_delivery_context = {}
-    bot._reply_delivery_context_lock = threading.Lock()
-    bot._verified_send_chat = lambda target, candidate=None: (
-        candidate if getattr(candidate, "who", "") == target else None
-    )
-    bot._ensure_target_listen_chat_for_send = lambda _target: None
     bot._human_delay_for_reply_part = lambda **_kwargs: None
     bot._reply_delivery_coordinator = ReplyDeliveryCoordinator(
         store=bot._message_store,
@@ -157,8 +151,8 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             self.assertEqual(message._wxbot_event_ids, ("text-1",))
             self.assertEqual(bot._message_store.get_reply_job(turn_id)["event_ids"], ["text-1"])
             self.assertEqual(
-                bot._message_store.get_event("image-1")["reply_state"],
-                "not_required",
+                bot._message_store.get_event("image-1")["processing_state"],
+                "handled",
             )
 
     def test_recovery_prepares_pending_voice_before_preserving_batch_order(self):
@@ -222,20 +216,18 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             clock = {"now": time.time()}
             inbound._wxbot_reply_expires_at = clock["now"] + 300
             waits = []
-            probes = []
+            prepares = []
             sends = []
 
-            def verified(_target, candidate=None):
-                probes.append(candidate)
-                return candidate if len(probes) > 1 else None
+            def prepare(_turn, _action, _action_id, _context):
+                prepares.append(True)
+                return len(prepares) > 1
 
             def wait(seconds):
                 waits.append(seconds)
                 clock["now"] += seconds
                 return False
 
-            bot._verified_send_chat = verified
-            bot._ensure_target_listen_chat_for_send = lambda _target: None
             bot._wait_or_stop_requested = wait
             bot._reply_delivery_coordinator = ReplyDeliveryCoordinator(
                 store=bot._message_store,
@@ -245,7 +237,7 @@ class MessageLoopIntegrationTests(unittest.TestCase):
                         chat_type=chat_type,
                     )
                 ),
-                prepare=bot._prepare_reply_delivery,
+                prepare=prepare,
                 sender=bot._send_reply_delivery,
                 clock=lambda: clock["now"],
             )
@@ -259,24 +251,25 @@ class MessageLoopIntegrationTests(unittest.TestCase):
 
             self.assertEqual(result.status, DeliveryStatus.DONE)
             self.assertEqual(waits, [30.0])
-            self.assertEqual(len(probes), 2)
+            self.assertEqual(len(prepares), 2)
             self.assertEqual(sends, ["answer"])
             self.assertEqual(
                 bot._message_store.delivery_action_status(f"{inbound._wxbot_reply_turn_id}:0"),
                 "done",
             )
 
-    def test_unavailable_target_keeps_retrying_until_turn_is_expired(self):
+    def test_unprepared_turn_keeps_retrying_until_expired(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_delivery_bot(tmp)
             inbound = enqueue_friend(bot, "question", "friend-1")
             clock = {"now": time.time()}
             inbound._wxbot_reply_expires_at = clock["now"] + 95
             waits = []
-            probes = []
+            prepares = []
 
-            bot._verified_send_chat = lambda *_args, **_kwargs: probes.append(True)
-            bot._ensure_target_listen_chat_for_send = lambda _target: None
+            def prepare(*_args):
+                prepares.append(True)
+                return False
 
             def wait(seconds):
                 waits.append(seconds)
@@ -292,7 +285,7 @@ class MessageLoopIntegrationTests(unittest.TestCase):
                         chat_type=chat_type,
                     )
                 ),
-                prepare=bot._prepare_reply_delivery,
+                prepare=prepare,
                 sender=bot._send_reply_delivery,
                 clock=lambda: clock["now"],
             )
@@ -307,12 +300,12 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             turn_id = inbound._wxbot_reply_turn_id
             self.assertEqual(result.status, DeliveryStatus.EXPIRED)
             self.assertEqual(waits, [30.0, 60.0, 5.0])
-            self.assertEqual(len(probes), 3)
+            self.assertEqual(len(prepares), 3)
             self.assertEqual(bot._message_store.get_reply_job(turn_id)["status"], "expired")
             self.assertEqual(bot._message_store.delivery_action_status(f"{turn_id}:0"), "expired")
             self.assertEqual(
-                bot._message_store.get_event(inbound._wxbot_event_id)["reply_state"],
-                "expired",
+                bot._message_store.get_event(inbound._wxbot_event_id)["processing_state"],
+                "handled",
             )
 
     def test_sync_self_callback_confirms_once_before_send_returns(self):
@@ -489,7 +482,7 @@ class MessageLoopIntegrationTests(unittest.TestCase):
                 event_ids=inbound._wxbot_event_ids,
                 actions=(action,),
             )
-            bot._reply_delivery_context[turn_id] = {
+            context = {
                 "chat": FakeChat(
                     "Alice",
                     lambda **_kwargs: (_ for _ in ()).throw(
@@ -502,7 +495,7 @@ class MessageLoopIntegrationTests(unittest.TestCase):
 
             with mock.patch("wxbot_core.time.time", return_value=101):
                 with self.assertRaises(DeliveryNotStarted) as caught:
-                    bot._send_reply_delivery(turn, action, f"{turn_id}:0")
+                    bot._send_reply_delivery(turn, action, f"{turn_id}:0", context)
 
             self.assertEqual(caught.exception.status, DeliveryStatus.EXPIRED)
 
@@ -761,21 +754,18 @@ class MessageLoopIntegrationTests(unittest.TestCase):
                 actions=(ReplyAction("text", "answer"),),
                 chat_type="group",
             )
-            bot._reply_delivery_context[turn.turn_id] = {
+            context = {
                 "chat": SimpleNamespace(who="Team", chat_type="group"),
             }
 
-            self.assertTrue(bot._prepare_reply_delivery(turn, turn.actions[0], "group-turn:0"))
-            self.assertEqual(
-                bot._reply_delivery_context[turn.turn_id]["chat"].chat_type,
-                "group",
-            )
+            self.assertTrue(bot._prepare_reply_delivery(turn, turn.actions[0], "group-turn:0", context))
+            self.assertEqual(context["chat"].chat_type, "group")
 
     def test_group_attr_uses_normal_friend_business_route(self):
         bot = WXBot.__new__(WXBot)
         bot._stop_requested = threading.Event()
         bot.config = SimpleNamespace(group_welcome=False, group=[])
-        bot._save_incoming_memory_message = lambda *_args, **_kwargs: True
+        bot._mark_chat_memory_dirty = lambda *_args, **_kwargs: True
         calls = []
         message = MessageEnvelope(type="text", attr="group", sender="Alice", content="hello")
         message._wxbot_inbound_direction = "friend"

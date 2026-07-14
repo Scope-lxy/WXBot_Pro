@@ -24,7 +24,6 @@ from core.contact_profiles import (
 )
 from core.logger import log
 from core import wechat_ui_actions
-from feature.friend_request_senders import ConversationVerifySender
 from feature.task_workbench_storage import file_lock_for_path
 
 
@@ -520,83 +519,70 @@ def save_execution_state(base_dir: str | Path, state: dict[str, Any]) -> dict[st
         return save_state(base_dir, latest)
 
 
+def ui_guard(state: dict[str, Any], candidate: dict[str, Any]) -> tuple[str, int]:
+    candidate_id = _clean_text(candidate.get("candidate_id"))
+    if not candidate_id:
+        return "", 0
+    definition = {
+        "settings": normalize_settings(state.get("settings")),
+        "message_rules": state.get("message_rules") or [],
+        "candidate": dict(candidate),
+    }
+    return f"friend_request:{candidate_id}", wechat_ui_actions.task_definition_version(definition)
+
+
 def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
     wx_id = _clean_text(getattr(bot, "wx_id", "")) or "default"
-    owner = getattr(bot, "_ui_owner", None)
-    release_wechat_lock = (lambda: None) if owner is not None else wechat_ui_actions.try_acquire(bot)
-    if release_wechat_lock is None:
-        path = state_path(bot.config.DATA_DIR, wx_id)
-        with file_lock_for_path(path):
-            state = load_state(bot.config.DATA_DIR, wx_id)
-            candidate, _reason = next_pending_candidate(state, now=now, ignore_schedule=bool(force))
-            message = "微信操作锁占用中，稍后会自动重试"
-            if candidate:
-                candidate["last_result"] = message
-                state.setdefault("runtime", {})["last_result"] = f"{candidate.get('name') or candidate.get('send_target')}: {message}"
-            else:
-                state.setdefault("runtime", {})["last_result"] = message
+    path = state_path(bot.config.DATA_DIR, wx_id)
+    with file_lock_for_path(path):
+        state = load_state(bot.config.DATA_DIR, wx_id)
+        if not state.get("candidates"):
+            state = refresh_candidates(bot.config.DATA_DIR, wx_id)
+        settings = normalize_settings(state.get("settings"))
+        candidate, reason = next_pending_candidate(state, now=now, ignore_schedule=bool(force))
+        if not candidate:
+            state.setdefault("runtime", {})["last_result"] = reason
             state = save_state(bot.config.DATA_DIR, state)
-        return {"status": "skipped", "message": message, "payload": friend_request_payload(state)}
-    addmsg = ""
+            return {"status": "skipped", "message": reason, "payload": friend_request_payload(state)}
+        addmsg = select_message_for_candidate(state, candidate)
+        claim_token = uuid.uuid4().hex
+        candidate["status"] = "uncertain"
+        candidate["claim_token"] = claim_token
+        candidate["next_retry_at"] = ""
+        candidate["last_attempt_at"] = _iso_timestamp(now)
+        candidate["last_result"] = "好友申请正在提交；若进程中断需人工核实"
+        state = save_state(bot.config.DATA_DIR, state)
+        candidate = next(
+            item for item in state["candidates"]
+            if _clean_text(item.get("candidate_id")) == _clean_text(candidate.get("candidate_id"))
+        )
+
+    task_key, task_version = ui_guard(state, candidate)
     try:
-        path = state_path(bot.config.DATA_DIR, wx_id)
-        with file_lock_for_path(path):
-            state = load_state(bot.config.DATA_DIR, wx_id)
-            if not state.get("candidates"):
-                state = refresh_candidates(bot.config.DATA_DIR, wx_id)
-            settings = normalize_settings(state.get("settings"))
-            candidate, reason = next_pending_candidate(state, now=now, ignore_schedule=bool(force))
-            if not candidate:
-                state.setdefault("runtime", {})["last_result"] = reason
-                state = save_state(bot.config.DATA_DIR, state)
-                return {"status": "skipped", "message": reason, "payload": friend_request_payload(state)}
-            addmsg = select_message_for_candidate(state, candidate)
-            # Claim the candidate before the non-idempotent UI call. A concurrent
-            # manual/automatic trigger must observe this fence and skip it.
-            claim_token = uuid.uuid4().hex
-            candidate["status"] = "uncertain"
-            candidate["claim_token"] = claim_token
-            candidate["next_retry_at"] = ""
-            candidate["last_attempt_at"] = _iso_timestamp(now)
-            candidate["last_result"] = "好友申请正在提交；若进程中断需人工核实"
-            state = save_state(bot.config.DATA_DIR, state)
-        try:
-            if owner is not None:
-                guard = getattr(bot, "_friend_request_ui_guard", None)
-                task_key, task_version = guard(state, candidate) if callable(guard) else ("", 0)
-                result = owner.call(
-                    wechat_ui_actions.UIIntent(
-                        wechat_ui_actions.UIIntentKind.FRIEND_REQUEST,
-                        {
-                            "target": _clean_text(candidate.get("conversation_keyword")),
-                            "contact_key": _clean_text(candidate.get("contact_key")),
-                            "task_key": task_key,
-                            "addmsg": addmsg,
-                            "remark": _clean_text(candidate.get("remark") or candidate.get("name") or candidate.get("conversation_keyword")),
-                            "tags": list(settings.get("success_tags") or []),
-                            "permission": _clean_text(settings.get("permission")) or "不设置",
-                            "max_attempts": 2,
-                        },
-                        task_version=task_version,
-                    ),
-                    wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
-                )
-            else:
-                sender = ConversationVerifySender()
-                result = sender.send(
-                    bot,
-                    candidate.get("conversation_keyword"),
-                    addmsg=addmsg,
-                    remark=candidate.get("remark") or candidate.get("name") or candidate.get("conversation_keyword"),
-                    tags=settings.get("success_tags") or [],
-                    permission=settings.get("permission") or "不设置",
-                )
-        except wechat_ui_actions.IntentCancelled as exc:
-            result = {"status": "cancelled", "message": _clean_text(exc) or "好友申请已取消"}
-        except Exception as exc:
-            result = {"status": "uncertain", "message": _clean_text(exc) or "好友申请提交结果未知"}
-    finally:
-        release_wechat_lock()
+        owner = getattr(bot, "_ui_owner", None)
+        if owner is None:
+            raise RuntimeError("微信 UI owner 未运行")
+        result = owner.call(
+            wechat_ui_actions.UIIntent(
+                wechat_ui_actions.UIIntentKind.FRIEND_REQUEST,
+                {
+                    "target": _clean_text(candidate.get("conversation_keyword")),
+                    "contact_key": _clean_text(candidate.get("contact_key")),
+                    "task_key": task_key,
+                    "addmsg": addmsg,
+                    "remark": _clean_text(candidate.get("remark") or candidate.get("name") or candidate.get("conversation_keyword")),
+                    "tags": list(settings.get("success_tags") or []),
+                    "permission": _clean_text(settings.get("permission")) or "不设置",
+                    "max_attempts": 2,
+                },
+                task_version=task_version,
+            ),
+            wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
+        )
+    except wechat_ui_actions.IntentCancelled as exc:
+        result = {"status": "cancelled", "message": _clean_text(exc) or "好友申请已取消"}
+    except Exception as exc:
+        result = {"status": "uncertain", "message": _clean_text(exc) or "好友申请提交结果未知"}
     if _clean_text(result.get("status")) == "cancelled":
         path = state_path(bot.config.DATA_DIR, wx_id)
         with file_lock_for_path(path):
@@ -624,13 +610,8 @@ def run_once(bot, *, force: bool = False, now: Any = None) -> dict[str, Any]:
         }
     state = record_execution(state, candidate, result, addmsg=addmsg, now=now)
     state = save_execution_state(bot.config.DATA_DIR, state)
-    try:
-        if _clean_text(result.get("status")) == "sent":
-            record_metric = getattr(bot, "_metric_increment", None)
-            if callable(record_metric):
-                record_metric("friend_request_sent_count")
-    except Exception:
-        pass
+    if _clean_text(result.get("status")) == "sent":
+        bot._metric_increment("friend_request_sent_count")
     status = _clean_text(result.get("status"))
     target_label = (
         _clean_text(candidate.get("name"))

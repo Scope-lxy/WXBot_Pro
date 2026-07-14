@@ -13,7 +13,7 @@
 - 动态监听按需补窗：失败先按 30s/60s、之后按 60s 重试，持续 600s 后标记降级并改为每 300s 低频恢复；窗口 supervisor 只保存会话和错误状态，不持有消息。同一会话只保留一个恢复任务；只有“已监听但无子窗口”残留状态允许受控关闭重建。固定监听可低频巡检补回，但不要恢复主循环高频巡检、激进残留窗口强清或普通动态监听增删时重绑微信客户端。
 - 普通业务失败不得重绑整个微信客户端。控件超时、目标不匹配、单个资料页失败只结束或延后当前任务；监听器异常先探活现有客户端并只重建监听器。只有明确的客户端级失效证据（例如 Windows 1400 无效窗口句柄、COM/RPC 客户端已断开），或专用 watchdog 确认后续任务无法继续时，才允许重绑。
 - 备注和标签编辑沿用实机验证过的 `ChatWith -> ChatInfo -> EditFriendInfo`，但必须在 owner 内保留旧版关键稳定步骤：操作前和搜索后把微信主窗口置前，搜索后及编辑前把鼠标移到主窗口中央；不要只搬三个 wxautox 调用而删掉焦点管理。
-- 通讯录自动维护的完整资料采集必须走 `feature/contact_auto_collector_worker.py` 最小子进程；主进程负责微信 UI 锁、300s 硬超时、PID 级 kill/taskkill 兜底和 `SwitchToChat` 恢复，不要把 `GetFriendDetails` 搬回主进程；`tools/` 只放临时、测试性质辅助。
+- 通讯录自动维护的完整资料采集必须走 `feature/contact_auto_collector_worker.py` 最小子进程；主进程负责 UI owner 全屏障、300s 硬超时、PID 级 kill/taskkill 兜底和 `SwitchToChat` 恢复，不要把 `GetFriendDetails` 搬回主进程；`tools/` 只放临时、测试性质辅助。
 - 通讯录档案 `contacts.json` 只存联系人真源字段；`display_name` / `send_name` 只允许作为任务运行记录的历史快照，不要写回通讯录档案。
 - 生产环境不安装、初始化、检测或读取 `wechat-cli`，不要恢复本地数据库旁路。生产路径禁止 `msg.to_text()`；只有时长的语音在约 5 秒、10 秒用普通 `GetAllMessage()` 新快照重读。
 - 全部真实微信动作归唯一 UI owner；wxautox `Chat` / `Message` / `NewFriend` / UIA 对象不得跨线程。手动关系全量扫描是连续、不可抢占的独占事务，不提供中途停止；1000 次滚动只作失控保险。

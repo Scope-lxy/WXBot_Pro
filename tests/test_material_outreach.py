@@ -50,16 +50,15 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         captured = []
         bot._ui_forward_message = lambda *_args, **kwargs: captured.append(kwargs) or True
 
-        with mock.patch("wxbot_core.wechat_ui_actions.hold", return_value=nullcontext()):
-            success, error = bot._forward_material_message_unlocked(
-                SimpleNamespace(type="link", content="素材"),
-                ["阿英2"],
-                material_source="素材源",
-                delivery_id="delivery-1",
-                request_id="request-1",
-                run_id="run-1",
-                batch_id="batch-1",
-            )
+        success, error = bot._forward_material_message_unlocked(
+            SimpleNamespace(type="link", content="素材"),
+            ["阿英2"],
+            material_source="素材源",
+            delivery_id="delivery-1",
+            request_id="request-1",
+            run_id="run-1",
+            batch_id="batch-1",
+        )
 
         self.assertTrue(success)
         self.assertEqual(error, "")
@@ -75,14 +74,13 @@ class MaterialOutreachPoolTests(unittest.TestCase):
             side_effect=wechat_ui_actions.DeliveryAlreadySubmitted("already submitted")
         )
 
-        with mock.patch("wxbot_core.wechat_ui_actions.hold", return_value=nullcontext()):
-            with self.assertRaises(wechat_ui_actions.DeliveryAlreadySubmitted):
-                bot._forward_material_message_unlocked(
-                    SimpleNamespace(type="link", content="素材"),
-                    ["阿英2"],
-                    material_source="素材源",
-                    delivery_id="delivery-1",
-                )
+        with self.assertRaises(wechat_ui_actions.DeliveryAlreadySubmitted):
+            bot._forward_material_message_unlocked(
+                SimpleNamespace(type="link", content="素材"),
+                ["阿英2"],
+                material_source="素材源",
+                delivery_id="delivery-1",
+            )
 
     def test_uncertain_material_result_stops_outer_retry_loop(self):
         bot = WXBot.__new__(WXBot)
@@ -127,7 +125,19 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         bot._message_store = MessageStore(temp_dir.name, "material-test")
         bot._inbound_coordinator = InboundCoordinator(bot._message_store)
         bot._reply_echo_tracker = ReplyEchoTracker()
+        bot._ui_owner = object()
         return bot, bot._message_store
+
+    @staticmethod
+    def _install_forward_stub(bot):
+        def forward(_chat, message, targets, preface="", echo_delivery_ids=(), **_kwargs):
+            bot._reply_echo_tracker.activate(echo_delivery_ids)
+            try:
+                return message.forward(targets, message=preface)
+            finally:
+                bot._reply_echo_tracker.complete(echo_delivery_ids)
+
+        bot._ui_forward_message = forward
 
     def test_target_snapshot_keeps_v2_contact_names_in_progress_records(self):
         snapshot = build_target_snapshot(
@@ -304,55 +314,7 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         self.assertEqual(rebuilt[0]["copy_note"], "新卡片")
         self.assertIn("mat_newer", runtime_messages)
 
-    def test_material_outreach_batch_defers_when_wechat_lock_is_busy(self):
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(material_source_list=["素材源"])
-        bot.is_stop_requested = lambda: False
-        bot._material_runtime_messages = {"mat_1": object()}
-        bot._load_material_outreach_materials = lambda: [
-            {
-                "id": "mat_1",
-                "source": "素材源",
-                "status": "active",
-                "type": "link",
-                "type_bucket": "link",
-            }
-        ]
-        bot._append_material_skip_record = lambda *_args, **_kwargs: self.fail("锁忙时不应写跳过记录")
-        bot._append_material_outreach_skip_progress = lambda *_args, **_kwargs: self.fail("锁忙时不应写进度")
-        bot._send_material_outreach_action = lambda *_args, **_kwargs: self.fail("锁忙时不应进入批次发送")
-
-        class BusyLock:
-            def __init__(self):
-                self.acquire_calls = []
-
-            def acquire(self, blocking=True):
-                self.acquire_calls.append(blocking)
-                return False
-
-            def release(self):
-                self.fail("未拿到锁时不应释放")
-
-        lock = BusyLock()
-        bot._get_wechat_action_lock = lambda: lock
-
-        result = bot._attempt_material_outreach_batches(
-            {
-                "task_id": "task_1",
-                "targets": ["阿英2"],
-                "material_types": ["all"],
-                "batch_size_fixed": 1,
-            },
-            [],
-            allow_rebuild=False,
-        )
-
-        self.assertEqual(result["status"], "deferred_lock_busy")
-        self.assertEqual(lock.acquire_calls, [False])
-        self.assertTrue(bot._material_outreach_is_deferred(result))
-        self.assertFalse(bot._material_outreach_result_failed(result))
-
-    def test_material_outreach_batch_runs_action_while_holding_wechat_lock(self):
+    def test_material_outreach_batch_runs_action_with_source_data_lock(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(material_source_list=["素材源"])
         bot.is_stop_requested = lambda: False
@@ -369,20 +331,6 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         bot._append_material_skip_record = lambda *_args, **_kwargs: None
         bot._append_material_outreach_skip_progress = lambda *_args, **_kwargs: None
 
-        class RecordingLock:
-            def __init__(self):
-                self.held = False
-                self.events = []
-
-            def acquire(self, blocking=True):
-                self.events.append(("acquire", blocking))
-                self.held = True
-                return True
-
-            def release(self):
-                self.events.append(("release", self.held))
-                self.held = False
-
         class SourceLock:
             def __init__(self, events):
                 self.events = events
@@ -395,12 +343,11 @@ class MaterialOutreachPoolTests(unittest.TestCase):
                 self.events.append(("source_exit", True))
                 return False
 
-        lock = RecordingLock()
-        bot._get_wechat_action_lock = lambda: lock
-        bot._get_material_source_read_lock = lambda _source: SourceLock(lock.events)
+        events = []
+        bot._get_material_source_read_lock = lambda _source: SourceLock(events)
         action_events = []
         bot._send_material_outreach_action = (
-            lambda *_args, **_kwargs: action_events.append(("action", lock.held)) or True
+            lambda *_args, **_kwargs: action_events.append("action") or True
         )
 
         result = bot._attempt_material_outreach_batches(
@@ -415,11 +362,8 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         )
 
         self.assertTrue(result)
-        self.assertEqual(action_events, [("action", True)])
-        self.assertEqual(
-            lock.events,
-            [("source_enter", True), ("acquire", False), ("release", True), ("source_exit", True)],
-        )
+        self.assertEqual(action_events, ["action"])
+        self.assertEqual(events, [("source_enter", True), ("source_exit", True)])
 
     def test_fixed_material_runner_keeps_due_task_when_batch_is_deferred(self):
         now = datetime.now().replace(microsecond=0)
@@ -595,9 +539,8 @@ class MaterialOutreachPoolTests(unittest.TestCase):
                         return True
 
                 forwarded = ForwardMessage()
-                with mock.patch("wxbot_core.wechat_ui_actions.hold", return_value=nullcontext()), mock.patch(
-                    "wxbot_core.warn_slow_wechat_ui_action", return_value=nullcontext()
-                ):
+                self._install_forward_stub(bot)
+                with mock.patch("wxbot_core.warn_slow_wechat_ui_action", return_value=nullcontext()):
                     success, error = bot._forward_material_message_unlocked(
                         forwarded,
                         ["张三"],
@@ -621,7 +564,6 @@ class MaterialOutreachPoolTests(unittest.TestCase):
 
     def test_forward_registers_echo_before_synchronous_self_callback(self):
         bot, store = self._message_runtime_bot()
-        bot._ui_owner = None
         callback_message = MessageEnvelope(
             id="self-material-1",
             type="file",
@@ -638,9 +580,8 @@ class MaterialOutreachPoolTests(unittest.TestCase):
                 bot._enqueue_ui_message(ConversationRef("张三", "private"), callback_message)
                 return True
 
-        with mock.patch("wxbot_core.wechat_ui_actions.hold", return_value=nullcontext()), mock.patch(
-            "wxbot_core.warn_slow_wechat_ui_action", return_value=nullcontext()
-        ):
+        self._install_forward_stub(bot)
+        with mock.patch("wxbot_core.warn_slow_wechat_ui_action", return_value=nullcontext()):
             success, error = bot._forward_material_message_unlocked(
                 ForwardMessage(),
                 ["张三"],
@@ -655,6 +596,53 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         self.assertEqual([item["content"] for item in store.history("张三", 10)], ["素材标题"])
         self.assertEqual(store.conversation_version("张三"), 0)
 
+    def test_all_forwardable_material_callbacks_are_bot_echoes(self):
+        message_types = (
+            "image",
+            "video",
+            "file",
+            "location",
+            "link",
+            "emotion",
+            "merge",
+            "personal_card",
+            "note",
+            "miniapp",
+        )
+        for message_type in message_types:
+            with self.subTest(message_type=message_type):
+                bot, store = self._message_runtime_bot()
+                callback = MessageEnvelope(
+                    id=f"self-{message_type}-1",
+                    type=message_type,
+                    attr="self",
+                    sender="self",
+                    content=f"{message_type}素材",
+                )
+
+                class ForwardMessage:
+                    type = message_type
+                    content = callback.content
+
+                    def forward(self, _targets, message=""):
+                        bot._enqueue_ui_message(ConversationRef("张三", "private"), callback)
+                        return True
+
+                self._install_forward_stub(bot)
+                with mock.patch("wxbot_core.warn_slow_wechat_ui_action", return_value=nullcontext()):
+                    success, error = bot._forward_material_message_unlocked(
+                        ForwardMessage(),
+                        ["张三"],
+                        material_type=message_type,
+                        material_title=callback.content,
+                    )
+
+                self.assertTrue(success)
+                self.assertEqual(error, "")
+                self.assertEqual(callback._wxbot_inbound_direction, "bot_echo")
+                self.assertEqual(store.conversation_version("张三"), 0)
+                self.assertEqual(store.history("张三", 10)[0]["message_type"], message_type)
+
     def test_material_self_callback_does_not_duplicate_confirmed_history(self):
         bot, store = self._message_runtime_bot()
 
@@ -665,9 +653,8 @@ class MaterialOutreachPoolTests(unittest.TestCase):
             def forward(self, _targets, message=""):
                 return True
 
-        with mock.patch("wxbot_core.wechat_ui_actions.hold", return_value=nullcontext()), mock.patch(
-            "wxbot_core.warn_slow_wechat_ui_action", return_value=nullcontext()
-        ):
+        self._install_forward_stub(bot)
+        with mock.patch("wxbot_core.warn_slow_wechat_ui_action", return_value=nullcontext()):
             success, error = bot._forward_material_message_unlocked(
                 ForwardMessage(),
                 ["张三"],

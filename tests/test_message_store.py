@@ -97,7 +97,7 @@ class MessageStoreTests(unittest.TestCase):
             connection.close()
 
         self.assertIn("route_source", columns)
-        self.assertEqual(version, 2)
+        self.assertEqual(version, 3)
 
     def register(self, turn_id, event_ids, *, version, expires_at=1000.0, count=1):
         return self.store.register_reply_turn(
@@ -266,7 +266,7 @@ class MessageStoreTests(unittest.TestCase):
 
         self.assertEqual(status, "stale")
         self.assertEqual(self.store.get_reply_job("turn-stale")["status"], "stale")
-        self.assertEqual(self.store.get_event(first["event_id"])["reply_state"], "stale")
+        self.assertEqual(self.store.get_event(first["event_id"])["processing_state"], "handled")
 
     def test_generation_claim_expires_before_ai_starts(self):
         event = self.record("msg-1")
@@ -689,7 +689,7 @@ class MessageStoreTests(unittest.TestCase):
         self.assertEqual(event["received_at"], 101)
         self.assertEqual(event["metadata"], {"source": "tts", "callback_source": "callback"})
 
-    def test_history_import_marker_skips_rescan_and_batch_is_atomic(self):
+    def test_history_append_is_idempotent_and_batch_is_atomic(self):
         entry = {
             "event_id": "legacy-1",
             "conversation": "Legacy",
@@ -704,15 +704,13 @@ class MessageStoreTests(unittest.TestCase):
             "received_at": 10,
             "metadata": {},
         }
-        self.assertFalse(self.store.migration_completed("legacy-v1"))
-        self.assertEqual(self.store.import_history_once("legacy-v1", [entry], now=20), 1)
-        self.assertTrue(self.store.migration_completed("legacy-v1"))
-        self.assertEqual(self.store.import_history_once("legacy-v1", [], now=30), 0)
+        self.assertEqual(self.store.append_history([entry], now=20), 1)
+        self.assertEqual(self.store.append_history([entry], now=30), 0)
 
         conflict = dict(entry, content="different")
         new_entry = dict(entry, event_id="legacy-2", content="new")
         with self.assertRaises(MessageStoreConflictError):
-            self.store.import_history_once(None, [new_entry, conflict], now=40)
+            self.store.append_history([new_entry, conflict], now=40)
         self.assertIsNone(self.store.get_event("legacy-2"))
 
     def test_history_visual_notes_listing_and_logical_delete(self):
@@ -732,7 +730,7 @@ class MessageStoreTests(unittest.TestCase):
                 "metadata": {"image_paths": ["C:/tmp/a.png"]},
             }
         ]
-        self.store.import_history_once(None, entries, now=20)
+        self.store.append_history(entries, now=20)
 
         self.assertEqual(self.store.list_conversations(), ["Pictures"])
         self.assertTrue(

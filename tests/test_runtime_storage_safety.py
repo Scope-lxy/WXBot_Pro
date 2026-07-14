@@ -110,15 +110,30 @@ os._exit(91)
     def test_memory_sqlite_write_failure_keeps_previous_messages(self):
         with tempfile.TemporaryDirectory() as tmp:
             manager = MemoryManager("wxid_test", tmp)
-            manager.save_message("张三", "张三", "旧消息", "text", "friend", 100)
+            old_entry = {
+                "event_id": "old-message",
+                "conversation": "张三",
+                "chat_type": "private",
+                "direction": "friend",
+                "sender": "张三",
+                "content": "旧消息",
+                "original_content": "旧消息",
+                "message_type": "text",
+                "native_attr": "friend",
+                "received_at": 1.0,
+                "metadata": {},
+            }
+            manager.message_store.append_history([old_entry])
 
             with patch.object(
                 manager.message_store,
-                "import_history_once",
+                "append_history",
                 side_effect=OSError("injected"),
             ):
                 with self.assertRaisesRegex(OSError, "injected"):
-                    manager.save_message("张三", "张三", "新消息", "text", "friend", 100)
+                    manager.message_store.append_history([
+                        dict(old_entry, event_id="new-message", content="新消息", original_content="新消息")
+                    ])
 
             self.assertEqual([item["content"] for item in manager.get_messages("张三", 10)], ["旧消息"])
 

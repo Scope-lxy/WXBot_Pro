@@ -1,4 +1,4 @@
-"""Compatibility facade for account-scoped SQLite chat history."""
+"""Application-facing access to account-scoped SQLite chat history."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import re
 import time
 import uuid
 from datetime import datetime
-from pathlib import Path
 
 from core.account_storage import account_area_dir
 from core.memory_context_repair import build_repair_plan, unique_message_key
@@ -23,7 +22,6 @@ WINDOWS_RESERVED_NAMES = {
     "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 }
 INVALID_FILENAME_CHARS_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-LEGACY_MEMORY_MIGRATION_KEY = "legacy-memory-json-v1"
 
 
 def normalize_memory_chat_name(chat_name):
@@ -75,14 +73,13 @@ def find_memory_chat_dir(base_path, wx_id, chat_name):
 
 
 class MemoryManager:
-    """Keep the legacy memory API while SQLite owns all message facts."""
+    """Read chat history and append explicitly repaired history gaps."""
 
     def __init__(self, wx_id, base_path, chat_name_resolver=None, message_store=None):
         self.wx_id = wx_id
         self.base_path = base_path
         self.chat_name_resolver = chat_name_resolver
         self.message_store = message_store or MessageStore(base_path, wx_id)
-        self._migrate_legacy_json_once()
 
     def resolve_chat_name(self, chat_name):
         resolver = self.chat_name_resolver
@@ -221,99 +218,6 @@ class MemoryManager:
         digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
         return f"evt_{prefix}_{digest}"
 
-    def _legacy_memory_files(self):
-        base = Path(account_area_dir(self.base_path, self.wx_id, "memory"))
-        if not base.is_dir():
-            return []
-        result = []
-        directories = (path for path in base.iterdir() if path.is_dir())
-        for directory in sorted(directories, key=lambda path: path.name):
-            preferred = directory / f"{directory.name}_memory.json"
-            candidates = sorted(directory.glob("*_memory.json"))
-            path = preferred if preferred.is_file() else (candidates[0] if candidates else None)
-            if path is not None:
-                result.append((read_memory_original_name(str(directory), directory.name), path))
-        return result
-
-    def _migrate_legacy_json_once(self):
-        if self.message_store.migration_completed(LEGACY_MEMORY_MIGRATION_KEY):
-            return
-        imported = []
-        fallback = time.time()
-        sequence = 0
-        for raw_conversation, path in self._legacy_memory_files():
-            conversation = self.resolve_chat_name(raw_conversation)
-            if not conversation:
-                continue
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError):
-                continue
-            if not isinstance(payload, list):
-                continue
-            for index, raw_entry in enumerate(payload):
-                if not isinstance(raw_entry, dict):
-                    continue
-                entry = self._normalize_entry(raw_entry)
-                identity = json.dumps(
-                    [conversation, path.name, index, entry],
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                imported.append(
-                    self._store_entry(
-                        conversation,
-                        entry,
-                        chat_type="private",
-                        event_id=self._event_id("legacy", identity),
-                        fallback_time=fallback + sequence / 1000000,
-                    )
-                )
-                sequence += 1
-        self.message_store.import_history_once(
-            LEGACY_MEMORY_MIGRATION_KEY,
-            imported,
-            now=fallback,
-        )
-
-    def save_message(
-        self,
-        chat_name,
-        sender,
-        content,
-        msg_type,
-        msg_attr,
-        max_count,
-        message_time=None,
-        image_paths=None,
-        visual_notes=None,
-    ):
-        del max_count
-        conversation = self.resolve_chat_name(chat_name)
-        entry = self._normalize_entry(
-            {
-                "time": message_time,
-                "type": msg_type,
-                "attr": msg_attr,
-                "sender": sender,
-                "content": content,
-                "image_paths": image_paths or [],
-                "visual_notes": visual_notes or [],
-            }
-        )
-        self.message_store.import_history_once(
-            None,
-            [
-                self._store_entry(
-                    conversation,
-                    entry,
-                    chat_type="private",
-                    event_id=self._event_id("memory"),
-                )
-            ],
-        )
-
     def append_missing_messages(
         self,
         chat_name,
@@ -380,7 +284,7 @@ class MemoryManager:
                     event_id=self._event_id("repair"),
                 )
             )
-        added = self.message_store.import_history_once(None, to_append)
+        added = self.message_store.append_history(to_append)
         result = {
             "added": added,
             "total": len(self.get_messages(conversation, history_limit)),
@@ -405,7 +309,7 @@ class MemoryManager:
         return value if value > 0 else fallback
 
     @classmethod
-    def _legacy_message(cls, event):
+    def _history_message(cls, event):
         metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
         native_time = str(event.get("native_time", "") or "").strip()
         if native_time:
@@ -437,7 +341,7 @@ class MemoryManager:
             count,
             chat_type=None,
         )
-        return [self._legacy_message(event) for event in events]
+        return [self._history_message(event) for event in events]
 
     def list_chat_names(self):
         return self.message_store.list_conversations()

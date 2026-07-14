@@ -14,19 +14,9 @@ from pathlib import Path
 from core.account_storage import account_file
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_REPLY_TTL_SECONDS = 15 * 60
 
-REPLY_STATES = {
-    "pending",
-    "queued",
-    "done",
-    "not_required",
-    "cancelled",
-    "stale",
-    "expired",
-    "uncertain",
-}
 ACTION_STATES = {"pending", "inflight", "done", "uncertain", "cancelled", "stale", "expired"}
 
 
@@ -119,7 +109,7 @@ class MessageStore:
         connection = self._connect()
         try:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, SCHEMA_VERSION}:
+            if version not in {0, 1, 2, SCHEMA_VERSION}:
                 raise MessageStoreSchemaError(
                     f"unsupported message store schema {version}; expected {SCHEMA_VERSION}"
                 )
@@ -160,7 +150,6 @@ class MessageStore:
                     reply_expires_at REAL,
                     conversation_version INTEGER NOT NULL CHECK (conversation_version >= 0),
                     processing_state TEXT NOT NULL,
-                    reply_state TEXT NOT NULL,
                     state_updated_at REAL NOT NULL,
                     history_visible INTEGER NOT NULL DEFAULT 1 CHECK (history_visible IN (0, 1)),
                     metadata_json TEXT NOT NULL
@@ -220,11 +209,6 @@ class MessageStore:
                     details_json TEXT NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS history_imports (
-                    migration_key TEXT PRIMARY KEY,
-                    imported_at REAL NOT NULL,
-                    added_count INTEGER NOT NULL CHECK (added_count >= 0)
-                );
                 """
             )
             reply_job_columns = {
@@ -234,6 +218,11 @@ class MessageStore:
                 connection.execute(
                     "ALTER TABLE reply_jobs ADD COLUMN route_source TEXT NOT NULL DEFAULT ''"
                 )
+            chat_event_columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(chat_events)")
+            }
+            if "reply_state" in chat_event_columns:
+                connection.execute("ALTER TABLE chat_events DROP COLUMN reply_state")
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             integrity = str(connection.execute("PRAGMA quick_check").fetchone()[0])
             if integrity.lower() != "ok":
@@ -552,10 +541,10 @@ class MessageStore:
                 expires_at = received_at + DEFAULT_REPLY_TTL_SECONDS
             else:
                 expires_at = _timestamp(expires_at, "reply_expires_at")
-            processing_state, reply_state = "pending", "pending"
+            processing_state = "pending"
         else:
             expires_at = None
-            processing_state, reply_state = "handled", "not_required"
+            processing_state = "handled"
 
         source_order = _event_value(event, "source_order")
         if source_order is not None:
@@ -602,7 +591,6 @@ class MessageStore:
             "stored_at": stored_at,
             "reply_expires_at": expires_at,
             "processing_state": processing_state,
-            "reply_state": reply_state,
             "state_updated_at": stored_at,
             "history_visible": 1,
             "metadata_json": _json_object(metadata),
@@ -667,7 +655,6 @@ class MessageStore:
             "stored_at": stored_at,
             "reply_expires_at": expires_at,
             "processing_state": "pending",
-            "reply_state": "pending",
             "state_updated_at": stored_at,
             "metadata_json": _json_object(metadata),
         }
@@ -726,7 +713,6 @@ class MessageStore:
             "stored_at": stored_at,
             "reply_expires_at": None,
             "processing_state": "handled",
-            "reply_state": "not_required",
             "state_updated_at": stored_at,
             "metadata_json": _json_object(metadata),
         }
@@ -828,27 +814,18 @@ class MessageStore:
             "stored_at": stored_at,
             "reply_expires_at": None,
             "processing_state": "handled",
-            "reply_state": "not_required",
             "state_updated_at": stored_at,
             "history_visible": 1,
             "metadata_json": _json_object(_event_value(entry, "metadata", None)),
         }
 
-    def import_history_once(self, migration_key, entries, *, now=None):
-        """Import a complete history batch without changing reply versions."""
+    def append_history(self, entries, *, now=None):
+        """Append a complete history batch without changing reply versions."""
 
-        migration_key = str(migration_key or "").strip() or None
         entries = list(entries or [])
         current = _now(now)
         values = [self._import_event_values(entry, current) for entry in entries]
         with self._transaction() as connection:
-            if migration_key is not None:
-                completed = connection.execute(
-                    "SELECT 1 FROM history_imports WHERE migration_key = ?",
-                    (migration_key,),
-                ).fetchone()
-                if completed is not None:
-                    return 0
             added = 0
             for item in values:
                 result = self._record_event_locked(
@@ -857,24 +834,7 @@ class MessageStore:
                     advances_version=False,
                 )
                 added += int(result["is_new"])
-            if migration_key is not None:
-                connection.execute(
-                    """
-                    INSERT INTO history_imports(migration_key, imported_at, added_count)
-                    VALUES (?, ?, ?)
-                    """,
-                    (migration_key, current, added),
-                )
             return added
-
-    def migration_completed(self, migration_key):
-        migration_key = _required_text(migration_key, "migration_key")
-        with self._reader() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM history_imports WHERE migration_key = ?",
-                (migration_key,),
-            ).fetchone()
-            return row is not None
 
     def list_conversations(self, *, chat_type=None):
         parameters = []
@@ -1031,10 +991,6 @@ class MessageStore:
                         WHEN processing_state = 'pending' THEN 'cancelled'
                         ELSE processing_state
                     END,
-                    reply_state = CASE
-                        WHEN processing_state = 'pending' THEN 'cancelled'
-                        ELSE reply_state
-                    END,
                     state_updated_at = ?
                 WHERE {' AND '.join(clauses)}
                 """,
@@ -1059,10 +1015,6 @@ class MessageStore:
                     processing_state = CASE
                         WHEN processing_state = 'pending' THEN 'cancelled'
                         ELSE processing_state
-                    END,
-                    reply_state = CASE
-                        WHEN processing_state = 'pending' THEN 'cancelled'
-                        ELSE reply_state
                     END,
                     state_updated_at = ?
                 WHERE {' AND '.join(clauses)}
@@ -1142,7 +1094,6 @@ class MessageStore:
                 """
                 UPDATE chat_events SET
                     processing_state = 'expired',
-                    reply_state = 'expired',
                     state_updated_at = ?
                 WHERE direction = 'friend'
                   AND processing_state = 'pending'
@@ -1164,7 +1115,7 @@ class MessageStore:
             ).fetchall()
             return [self._event_row(row) for row in rows]
 
-    def mark_inbound_events(self, event_ids, processing_state, *, reply_state=None, now=None):
+    def mark_inbound_events(self, event_ids, processing_state, *, now=None):
         """Atomically terminalize a complete set of inbound event IDs."""
 
         event_ids = list(dict.fromkeys(_required_text(item, "event_id") for item in event_ids))
@@ -1173,20 +1124,11 @@ class MessageStore:
         processing_state = _required_text(processing_state, "processing_state")
         if processing_state not in {"handled", "cancelled", "expired"}:
             raise ValueError("processing_state must be handled, cancelled, or expired")
-        if reply_state is None:
-            reply_state = {
-                "handled": "not_required",
-                "cancelled": "cancelled",
-                "expired": "expired",
-            }[processing_state]
-        reply_state = _required_text(reply_state, "reply_state")
-        if reply_state not in REPLY_STATES:
-            raise ValueError(f"unsupported reply_state: {reply_state}")
         placeholders = ", ".join("?" for _ in event_ids)
         current = _now(now)
         with self._transaction() as connection:
             rows = connection.execute(
-                f"SELECT event_id, direction, processing_state, reply_state "
+                f"SELECT event_id, direction, processing_state "
                 f"FROM chat_events WHERE event_id IN ({placeholders})",
                 event_ids,
             ).fetchall()
@@ -1202,13 +1144,13 @@ class MessageStore:
             connection.execute(
                 f"""
                 UPDATE chat_events SET
-                    processing_state = ?, reply_state = ?, state_updated_at = ?
+                    processing_state = ?, state_updated_at = ?
                 WHERE event_id IN ({placeholders})
                 """,
-                [processing_state, reply_state, current, *event_ids],
+                [processing_state, current, *event_ids],
             )
             return sum(
-                row["processing_state"] != processing_state or row["reply_state"] != reply_state
+                row["processing_state"] != processing_state
                 for row in rows
             )
 
@@ -1306,7 +1248,6 @@ class MessageStore:
             f"""
             UPDATE chat_events SET
                 processing_state = 'handled',
-                reply_state = 'queued',
                 state_updated_at = ?
             WHERE event_id IN ({placeholders})
             """,
@@ -1465,7 +1406,7 @@ class MessageStore:
         route_source="",
         now=None,
     ):
-        """Compatibility one-shot API used after reply bubbles are generated."""
+        """Atomically register a generated reply and all of its bubbles."""
 
         turn_id = _required_text(turn_id, "turn_id")
         conversation = _required_text(conversation, "conversation")
@@ -1504,31 +1445,6 @@ class MessageStore:
             return job_created or actions_created
 
     @classmethod
-    def _set_job_event_reply_state(cls, connection, turn_id, reply_state, current):
-        processing_state = {
-            "pending": "pending",
-            "queued": "pending",
-            "done": "handled",
-            "not_required": "handled",
-            "uncertain": "handled",
-            "cancelled": "cancelled",
-            "stale": "cancelled",
-            "expired": "expired",
-        }.get(reply_state)
-        if processing_state is None:
-            raise ValueError(f"unsupported reply_state: {reply_state}")
-        connection.execute(
-            """
-            UPDATE chat_events SET
-                processing_state = ?, reply_state = ?, state_updated_at = ?
-            WHERE event_id IN (
-                SELECT event_id FROM reply_job_events WHERE turn_id = ?
-            )
-            """,
-            (processing_state, reply_state, current, turn_id),
-        )
-
-    @classmethod
     def _cancel_pending_locked(cls, connection, turn_id, status, error, current):
         if status not in {"cancelled", "stale", "expired"}:
             raise ValueError("status must be cancelled, stale, or expired")
@@ -1555,8 +1471,6 @@ class MessageStore:
                 """,
                 (status, current, current, str(error or ""), turn_id),
             )
-            if updated.rowcount:
-                cls._set_job_event_reply_state(connection, turn_id, status, current)
         return cursor.rowcount
 
     def conditional_claim(
@@ -1716,7 +1630,6 @@ class MessageStore:
                 """,
                 (status, current, current, str(error or ""), turn_id),
             )
-            cls._set_job_event_reply_state(connection, turn_id, status, current)
             return True
 
         remaining = connection.execute(
@@ -1728,12 +1641,11 @@ class MessageStore:
             (turn_id,),
         ).fetchone()
         if remaining is None:
-            job_status, reply_state, finished_at = "done", "done", current
+            job_status, finished_at = "done", current
         elif remaining["status"] == "pending":
-            job_status, reply_state, finished_at = "pending", "queued", None
+            job_status, finished_at = "pending", None
         else:
             job_status = str(remaining["status"])
-            reply_state = job_status if job_status in REPLY_STATES else "cancelled"
             finished_at = current
         connection.execute(
             """
@@ -1743,7 +1655,6 @@ class MessageStore:
             """,
             (job_status, current, finished_at, str(error or ""), turn_id),
         )
-        cls._set_job_event_reply_state(connection, turn_id, reply_state, current)
         return True
 
     def confirm_outbound(
@@ -1928,7 +1839,6 @@ class MessageStore:
                     """,
                     (current, current, turn_id),
                 )
-                self._set_job_event_reply_state(connection, turn_id, "uncertain", current)
                 uncertain_action_ids.append(action_id)
 
             jobs = connection.execute(
@@ -1980,7 +1890,6 @@ class MessageStore:
                     """,
                     (current, turn_id),
                 )
-                self._set_job_event_reply_state(connection, turn_id, "pending", current)
                 refreshed = connection.execute(
                     "SELECT * FROM reply_jobs WHERE turn_id = ?",
                     (turn_id,),
@@ -2026,8 +1935,7 @@ class MessageStore:
             cursor = connection.execute(
                 """
                 UPDATE chat_events SET
-                    processing_state = 'cancelled', reply_state = 'cancelled',
-                    state_updated_at = ?
+                    processing_state = 'cancelled', state_updated_at = ?
                 WHERE direction = 'friend' AND processing_state = 'pending'
                 """,
                 (current,),

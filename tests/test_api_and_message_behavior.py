@@ -45,8 +45,6 @@ def configure_group_reply_runtime(bot, data_dir=None):
     store = MessageStore(data_dir, f"test-group-{uuid.uuid4().hex}")
     bot._message_store = store
     bot._reply_echo_tracker = ReplyEchoTracker()
-    bot._reply_delivery_context = {}
-    bot._reply_delivery_context_lock = threading.Lock()
     bot._reply_delivery_coordinator = ReplyDeliveryCoordinator(
         store=store,
         version_provider=lambda conversation, chat_type="private": store.conversation_version(
@@ -57,10 +55,6 @@ def configure_group_reply_runtime(bot, data_dir=None):
         sender=bot._send_reply_delivery,
     )
     bot._ui_owner = None
-    bot._verified_send_chat = lambda target, candidate=None: (
-        candidate if getattr(candidate, "who", "") == target else None
-    )
-    bot._ensure_target_listen_chat_for_send = lambda _target: None
     return store
 
 
@@ -186,7 +180,7 @@ class ApiBehaviorTests(unittest.TestCase):
 
             event = bot._message_store.get_event(stored["event_id"])
             self.assertEqual(event["processing_state"], "handled")
-            self.assertEqual(event["reply_state"], "not_required")
+            self.assertEqual(event["processing_state"], "handled")
 
     def test_pending_private_voice_stays_recoverable(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -211,7 +205,7 @@ class ApiBehaviorTests(unittest.TestCase):
 
             event = bot._message_store.get_event(stored["event_id"])
             self.assertEqual(event["processing_state"], "pending")
-            self.assertEqual(event["reply_state"], "pending")
+            self.assertEqual(event["processing_state"], "pending")
 
     def test_paused_private_reply_does_not_survive_as_pending(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -232,7 +226,7 @@ class ApiBehaviorTests(unittest.TestCase):
 
             event = bot._message_store.get_event(stored["event_id"])
             self.assertEqual(event["processing_state"], "handled")
-            self.assertEqual(event["reply_state"], "not_required")
+            self.assertEqual(event["processing_state"], "handled")
 
     def test_openai_chat_success_still_returns_model_text(self):
         api = OpenAIAPI.__new__(OpenAIAPI)
@@ -690,72 +684,6 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertEqual(bot.all_Mode_listen_list, [["张三", 9.0]])
 
-    def test_private_message_keeps_distinct_ids_with_same_content(self):
-        bot = WXBot.__new__(WXBot)
-        first = SimpleNamespace(
-            type="text",
-            attr="friend",
-            sender="张三",
-            content="你好",
-            id="global-id",
-            _wxbot_ingress_source="global",
-        )
-        duplicate = SimpleNamespace(
-            type="text",
-            attr="friend",
-            sender="张三",
-            content="你好",
-            id="subwindow-id",
-            _wxbot_ingress_source="subwindow",
-        )
-
-        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", first))
-        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", duplicate))
-
-    def test_private_message_keeps_repeated_send_with_distinct_ids(self):
-        bot = WXBot.__new__(WXBot)
-        first = SimpleNamespace(
-            type="text",
-            attr="friend",
-            sender="张三",
-            content="你好",
-            id="subwindow-id-1",
-            _wxbot_ingress_source="subwindow",
-        )
-        second = SimpleNamespace(
-            type="text",
-            attr="friend",
-            sender="张三",
-            content="你好",
-            id="subwindow-id-2",
-            _wxbot_ingress_source="subwindow",
-        )
-
-        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", first))
-        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", second))
-
-    def test_private_message_without_stable_identity_preserves_repeated_content(self):
-        bot = WXBot.__new__(WXBot)
-        first = SimpleNamespace(type="text", attr="friend", sender="张三", content="你好", id="", hash="", time="")
-        duplicate = SimpleNamespace(type="text", attr="friend", sender="张三", content="你好", id="", hash="", time="")
-
-        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", first))
-        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", duplicate))
-
-    def test_private_message_native_hash_text_keeps_repeated_content(self):
-        bot = WXBot.__new__(WXBot)
-        first = SimpleNamespace(
-            type="image", attr="friend", sender="张三", content="图片",
-            id="", hash="", hash_text="image-row-1", time="",
-        )
-        second = SimpleNamespace(
-            type="image", attr="friend", sender="张三", content="图片",
-            id="", hash="", hash_text="image-row-2", time="",
-        )
-
-        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", first))
-        self.assertTrue(bot._mark_message_content_fingerprint_seen("张三", second))
-
     def test_private_ingress_advances_version_before_business_queue_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_message_runtime_bot(tmp)
@@ -771,8 +699,6 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertTrue(bot._enqueue_ui_message(conversation, message))
 
             self.assertEqual(bot._message_store.conversation_version("张三"), 1)
-            self.assertTrue(message._wxbot_seen_at_ingress)
-            self.assertTrue(message._wxbot_sequence_advanced)
             self.assertEqual(bot._ui_ingress_queue.qsize(), 1)
 
     def test_contact_barrier_blocks_entire_message_business_pipeline(self):
@@ -839,7 +765,6 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertEqual(bot._message_store.conversation_version("张三"), 1)
             self.assertEqual(bot._message_store.get_event(echo._wxbot_event_id)["direction"], "bot_echo")
             self.assertEqual(bot._message_store.get_event(manual._wxbot_event_id)["direction"], "manual_self")
-            self.assertTrue(manual._wxbot_sequence_advanced)
             self.assertEqual(bot._ui_ingress_queue.qsize(), 1)
 
     def test_duplicate_private_self_callback_id_is_ignored(self):
@@ -885,12 +810,6 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertEqual(bot._message_store.conversation_version("张三"), 0)
             self.assertEqual(bot._message_store.get_event(echo._wxbot_event_id)["direction"], "bot_echo")
             self.assertEqual(bot._ui_ingress_queue.qsize(), 0)
-
-    def test_verified_send_chat_does_not_probe_wechat_when_candidate_missing(self):
-        bot = WXBot.__new__(WXBot)
-        bot._get_verified_subwindow = lambda _target: self.fail("不应主动探测微信子窗口")
-
-        self.assertIsNone(bot._verified_send_chat("张三", None))
 
     def test_reply_content_log_marks_voice_and_uses_info_level(self):
         logs = []
@@ -972,11 +891,6 @@ class MessageBehaviorTests(unittest.TestCase):
                 "worker_running": True,
             }
         }
-        bot._private_message_sequence_by_chat = {"张三": 1}
-        bot._incoming_seen_lock = threading.Lock()
-        bot._incoming_seen_ids = {}
-        bot._incoming_seen_fingerprints = {}
-        bot._chat_send_locks = {}
         bot._pending_visual_contexts = {}
         bot._chat_memory_dirty_lock = threading.Lock()
         bot._chat_memory_dirty_chats = {}
@@ -1041,7 +955,6 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(timers[0].cancelled)
         pipeline = bot._private_message_pipelines["张三"]
         self.assertEqual([msg.content for msg in pipeline["open_messages"]], ["第一条", "第二条"])
-        self.assertEqual(bot._get_private_message_sequence("张三"), 2)
 
     def test_private_message_merge_supports_minimum_one_second_delay(self):
         class FakeTimer:
@@ -1082,7 +995,6 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(timers[0].seconds, 1.0)
         self.assertAlmostEqual(timers[1].seconds, 3.0, places=2)
         self.assertEqual([msg.content for msg in pipeline["open_messages"]], ["马上回"])
-        self.assertEqual(bot._get_private_message_sequence("张三"), 1)
 
     def test_failed_private_voice_is_silently_ignored_without_batch_timer(self):
         bot = WXBot.__new__(WXBot)
@@ -1227,7 +1139,7 @@ class MessageBehaviorTests(unittest.TestCase):
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
             bot.reply_count_store.increment_ai_count("张三", limit_hours=24)
-            bot._record_replied_message_success = lambda: None
+            bot._record_replied_message_success = lambda *_args, **_kwargs: None
             sent = []
             bot._send_private_ai_reply_parts = lambda _chat, parts, **_kwargs: sent.extend(parts) or (True, True)
             chat = SimpleNamespace(who="张三")
@@ -1254,7 +1166,7 @@ class MessageBehaviorTests(unittest.TestCase):
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
             bot.reply_count_store.increment_ai_count("张三", limit_hours=24)
-            bot._record_replied_message_success = lambda: None
+            bot._record_replied_message_success = lambda *_args, **_kwargs: None
             sent = []
             bot._send_private_ai_reply_parts = lambda _chat, parts, **_kwargs: sent.extend(parts) or (True, True)
             chat = SimpleNamespace(who="张三")
@@ -1283,7 +1195,7 @@ class MessageBehaviorTests(unittest.TestCase):
             )
             bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
             bot.reply_count_store.increment_ai_count("张三", limit_hours=24)
-            bot._record_replied_message_success = lambda: None
+            bot._record_replied_message_success = lambda *_args, **_kwargs: None
             bot._send_private_ai_reply_parts = lambda _chat, parts, **_kwargs: (True, True)
             chat = SimpleNamespace(who="张三")
             logs = []
@@ -1343,9 +1255,8 @@ class MessageBehaviorTests(unittest.TestCase):
             bot._pause_group_reply = False
             bot.is_stop_requested = lambda: False
             bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
-            bot._get_chat_send_lock = lambda _name: threading.Lock()
             bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-            bot._record_replied_message_success = lambda: None
+            bot._record_replied_message_success = lambda *_args, **_kwargs: None
             api_calls = []
             bot._get_group_api = lambda group: SimpleNamespace(
                 chat=lambda *_args, **_kwargs: api_calls.append(group) or "正常群回复"
@@ -1491,46 +1402,6 @@ class MessageBehaviorTests(unittest.TestCase):
         warning_logs = [message for level, message in logs if level == "WARNING" and "语音回复触发上限" in message]
         self.assertEqual(len(warning_logs), 2)
 
-    def test_voice_reply_does_not_send_audio_when_wechat_ui_lock_is_busy(self):
-        class BusyLock:
-            def acquire(self, blocking=True):
-                return False
-
-            def release(self):
-                raise AssertionError("busy lock should not be released")
-
-        bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(cmd="文件传输助手", DATA_DIR="")
-        bot._voice_reply_state = None
-        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
-        bot._active_tts_config = lambda _user="": {"provider": "fake"}
-        bot._record_tts_api_request = lambda: None
-        bot._remove_temp_audio_file = lambda _path: None
-        bot._get_wechat_action_lock = lambda: BusyLock()
-
-        synth_calls = []
-
-        class FakeTtsClient:
-            def synthesize(self, text, audio_path):
-                synth_calls.append((text, audio_path))
-
-        chat = SimpleNamespace(
-            who="张三",
-            SendAudio=lambda *_args, **_kwargs: self.fail("微信 UI 锁忙时不应发送语音"),
-        )
-
-        with mock.patch("wxbot_core.create_tts_client", return_value=FakeTtsClient()):
-            result = bot._try_send_voice_reply(
-                chat,
-                "你好",
-                state_key="private:张三",
-                limit_count=99,
-                limit_hours=24,
-            )
-
-        self.assertFalse(result)
-        self.assertEqual(len(synth_calls), 1)
-
     def test_keyword_private_reply_sends_text_and_file_actions(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
@@ -1551,9 +1422,6 @@ class MessageBehaviorTests(unittest.TestCase):
                 return True
 
         chat = Chat()
-        bot._verified_send_chat = lambda _target, candidate=None: candidate
-        bot._ensure_target_listen_chat_for_send = lambda _target: chat
-
         with tempfile.TemporaryDirectory() as tmp:
             message = SimpleNamespace(
                 type="text",
@@ -1612,7 +1480,6 @@ class MessageBehaviorTests(unittest.TestCase):
             chat_image_recognition_switch=True,
             chat_voice_recognition_switch=False,
         )
-        bot._mark_message_skip_memory = lambda message: setattr(message, "_skip_memory", True)
         chat = SimpleNamespace(who="瑞东（私人号）", chat_type="private")
 
         for download in (
@@ -1631,7 +1498,6 @@ class MessageBehaviorTests(unittest.TestCase):
                 message_routing.prepare_message_media(bot, msg, chat)
 
                 self.assertTrue(getattr(msg, "_skip_ai_reply", False))
-                self.assertTrue(getattr(msg, "_skip_memory", False))
                 self.assertEqual(msg.content, "图片")
 
     def test_prepare_pending_voice_never_calls_to_text_and_queues_snapshot_reread(self):
@@ -1657,7 +1523,6 @@ class MessageBehaviorTests(unittest.TestCase):
         message_routing.prepare_message_media(bot, msg, chat)
 
         self.assertTrue(getattr(msg, "_skip_ai_reply", False))
-        self.assertTrue(getattr(msg, "_skip_memory", False))
         self.assertEqual(msg.content, '语音2"秒')
         self.assertEqual(queued, [("张三", '语音2"秒')])
 
@@ -1684,7 +1549,6 @@ class MessageBehaviorTests(unittest.TestCase):
         message_routing.prepare_message_media(bot, msg, chat)
 
         self.assertTrue(getattr(msg, "_skip_ai_reply", False))
-        self.assertTrue(getattr(msg, "_skip_memory", False))
         self.assertFalse(getattr(msg, "_voice_transcription_failed", False))
         self.assertEqual(msg.content, '语音1"秒')
         self.assertEqual(queued, [("张三", '语音1"秒')])
@@ -1706,7 +1570,6 @@ class MessageBehaviorTests(unittest.TestCase):
         message_routing.prepare_message_media(bot, msg, chat)
 
         self.assertTrue(getattr(msg, "_skip_ai_reply", False))
-        self.assertTrue(getattr(msg, "_skip_memory", False))
         self.assertEqual(queued, [("张三", '语音2"秒')])
 
     def test_prepare_pending_private_voice_does_not_invoke_converter(self):
@@ -1754,7 +1617,6 @@ class MessageBehaviorTests(unittest.TestCase):
                 message_routing.prepare_message_media(bot, msg, chat)
                 self.assertTrue(getattr(msg, "_voice_transcription_failed", False))
                 self.assertTrue(getattr(msg, "_skip_ai_reply", False))
-                self.assertTrue(getattr(msg, "_skip_memory", False))
 
     def test_voice_failure_detection_does_not_use_broad_contains(self):
         self.assertEqual(message_routing.voice_content_state("语音未能转换"), "failed")
@@ -1775,14 +1637,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pending_private_voice_transcription = {}
         bot.is_stop_requested = lambda: False
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        bot._get_wechat_action_lock = lambda: TryLock()
         timer_calls = []
         bot._schedule_private_message_timer = lambda seconds, callback, chat: timer_calls.append((seconds, callback, chat)) or SimpleNamespace(cancel=lambda: None)
         bot._read_pending_voice_snapshot = lambda _name: [SimpleNamespace(
@@ -1813,15 +1667,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pending_private_voice_transcription = {}
         bot.is_stop_requested = lambda: False
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        bot._get_wechat_action_lock = lambda: TryLock()
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
         timer_calls = []
         bot._schedule_private_message_timer = lambda seconds, callback, chat: timer_calls.append((seconds, callback, chat)) or SimpleNamespace(cancel=lambda: None)
         snapshots = iter([
@@ -1858,14 +1703,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pending_private_voice_transcription = {}
         bot.is_stop_requested = lambda: False
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        bot._get_wechat_action_lock = lambda: TryLock()
         bot._enqueue_private_message_for_ai = lambda *_args, **_kwargs: self.fail("未识别语音不应进 AI")
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
         bot._read_pending_voice_snapshot = lambda _name: [SimpleNamespace(
@@ -1902,15 +1739,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pending_private_voice_transcription = {}
         bot.is_stop_requested = lambda: False
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        bot._get_wechat_action_lock = lambda: TryLock()
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
         bot._read_pending_voice_snapshot = lambda _name: [SimpleNamespace(
             id="fresh-v1", attr="friend", sender="张三", type="voice", content="重读时转出来了"
@@ -1939,15 +1767,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pending_private_voice_transcription = {}
         bot.is_stop_requested = lambda: False
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        bot._get_wechat_action_lock = lambda: TryLock()
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
         bot._read_pending_voice_snapshot = lambda _name: [SimpleNamespace(
             id="new-ui-id", hash="new-hash", attr="friend", sender="张三", type="voice", content="原消息直接转出来"
@@ -1977,14 +1796,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pending_private_voice_transcription = {}
         bot.is_stop_requested = lambda: False
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        bot._get_wechat_action_lock = lambda: TryLock()
         bot._enqueue_private_message_for_ai = lambda *_args, **_kwargs: self.fail("未识别占位不应立即进 AI")
         timer_calls = []
         bot._schedule_private_message_timer = lambda seconds, callback, chat: timer_calls.append((seconds, callback, chat)) or SimpleNamespace(cancel=lambda: None)
@@ -2014,15 +1825,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pending_private_voice_transcription = {}
         bot.is_stop_requested = lambda: False
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        bot._get_wechat_action_lock = lambda: TryLock()
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
         bot._read_pending_voice_snapshot = lambda _name: [SimpleNamespace(
             id="fresh-v1", attr="friend", sender="张三", type="voice", content="第三次终于识别出来"
@@ -2058,11 +1860,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._chat_merge_lock = threading.Lock()
         bot._pending_private_voice_transcription = {}
         bot._private_message_pipelines = {}
-        bot._private_message_sequence_by_chat = {}
-        bot._incoming_seen_lock = threading.Lock()
-        bot._incoming_seen_ids = {}
-        bot._incoming_seen_fingerprints = {}
-
         class FakeTimer:
             def __init__(self, seconds, callback, args):
                 self.seconds = seconds
@@ -2080,17 +1877,8 @@ class MessageBehaviorTests(unittest.TestCase):
         timers = []
         bot._schedule_private_message_timer = lambda seconds, callback, chat: timers.append(FakeTimer(seconds, callback, (chat,))) or timers[-1]
         bot._start_private_message_worker_locked = lambda _chat, _pipeline: True
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
-
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
 
         chat = SimpleNamespace(who="张三")
-        bot._get_wechat_action_lock = lambda: TryLock()
         bot._read_pending_voice_snapshot = lambda _name: [SimpleNamespace(
             id="fresh-v1", attr="friend", sender="张三", type="voice", content="中间这句识别出来了"
         )]
@@ -2141,7 +1929,6 @@ class MessageBehaviorTests(unittest.TestCase):
         )
         bot.is_stop_requested = lambda: False
         bot._ensure_message_runtime_state()
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
         bot._start_private_message_worker_locked = lambda _chat, _pipeline: True
 
         class FakeTimer:
@@ -2162,7 +1949,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._schedule_private_message_timer = lambda seconds, callback, chat: timers.append(FakeTimer(seconds, callback, (chat,))) or timers[-1]
 
         chat = SimpleNamespace(who="张三")
-        bot._get_wechat_action_lock = lambda: threading.RLock()
         bot._read_pending_voice_snapshot = lambda _name: [
             SimpleNamespace(id=f"fresh-v{index}", attr="friend", sender="张三", type="voice", content=text)
             for index, text in enumerate(["第一条。", "第二条。", "第三条。"], start=1)
@@ -2216,11 +2002,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._chat_merge_lock = threading.Lock()
         bot._pending_private_voice_transcription = {}
         bot._private_message_pipelines = {}
-        bot._private_message_sequence_by_chat = {}
-        bot._incoming_seen_lock = threading.Lock()
-        bot._incoming_seen_ids = {}
-        bot._incoming_seen_fingerprints = {}
-
         class FakeTimer:
             def __init__(self, seconds, callback, args):
                 self.seconds = seconds
@@ -2238,18 +2019,8 @@ class MessageBehaviorTests(unittest.TestCase):
         timers = []
         bot._schedule_private_message_timer = lambda seconds, callback, chat: timers.append(FakeTimer(seconds, callback, (chat,))) or timers[-1]
         bot._start_private_message_worker_locked = lambda _chat, _pipeline: True
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
-
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
 
         chat = SimpleNamespace(who="张三")
-        bot._get_wechat_action_lock = lambda: TryLock()
-
         self.assertTrue(bot._enqueue_private_message_for_ai(
             chat,
             SimpleNamespace(id="t1", attr="friend", sender="张三", type="text", content="AAA"),
@@ -2280,6 +2051,9 @@ class MessageBehaviorTests(unittest.TestCase):
 
     def test_pending_private_voice_result_is_ignored_if_self_clears_placeholder_during_reread(self):
         bot = WXBot.__new__(WXBot)
+        bot._test_message_store_tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(bot._test_message_store_tempdir.cleanup)
+        bot._message_store = MessageStore(bot._test_message_store_tempdir.name, "test-account")
         bot.config = SimpleNamespace(
             memory_switch=False,
             chat_message_merge_delay=20,
@@ -2291,19 +2065,25 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._ensure_message_runtime_state()
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
         bot._enqueue_private_message_for_ai = lambda *_args, **_kwargs: self.fail("self 介入后过期语音不应重新入队")
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: self.fail("self 介入后过期语音不应写入 history")
-
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
 
         chat = SimpleNamespace(who="张三", chat_type="private")
-        bot._get_wechat_action_lock = lambda: TryLock()
 
         def reread_after_self(_chat):
+            bot._message_store.record_inbound({
+                "conversation": "张三",
+                "chat_type": "private",
+                "direction": "manual_self",
+                "sender": "self",
+                "content": "我接手",
+                "original_content": "我接手",
+                "message_type": "text",
+                "native_attr": "self",
+                "native_id": "manual-1",
+                "received_at": time.time(),
+                "source": "test",
+                "source_batch": "manual-self",
+                "source_order": 0,
+            })
             bot._handle_private_self_message_boundary(
                 chat,
                 SimpleNamespace(attr="self", sender="self", type="text", content="我接手"),
@@ -2337,7 +2117,7 @@ class MessageBehaviorTests(unittest.TestCase):
         log_messages = [str(call.kwargs.get("message", "")) for call in log_mock.call_args_list]
         self.assertTrue(any("语音识别结果已过期" in message for message in log_messages))
 
-    def test_pending_private_voice_deadline_unblocks_batch_when_wechat_lock_stays_busy(self):
+    def test_pending_private_voice_deadline_unblocks_batch_when_voice_stays_unrecognized(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
             memory_switch=False,
@@ -2346,7 +2126,6 @@ class MessageBehaviorTests(unittest.TestCase):
         )
         bot.is_stop_requested = lambda: False
         bot._ensure_message_runtime_state()
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
 
         class FakeTimer:
             def __init__(self, seconds, callback, args):
@@ -2366,12 +2145,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._schedule_private_message_timer = lambda seconds, callback, chat: timers.append(FakeTimer(seconds, callback, (chat,))) or timers[-1]
         bot._start_private_message_worker_locked = lambda _chat, _pipeline: True
 
-        class BusyLock:
-            def acquire(self, blocking=True):
-                return False
-
         chat = SimpleNamespace(who="张三")
-        bot._get_wechat_action_lock = lambda: BusyLock()
 
         self.assertTrue(bot._enqueue_private_message_for_ai(
             chat,
@@ -2404,18 +2178,9 @@ class MessageBehaviorTests(unittest.TestCase):
         bot.config = SimpleNamespace(memory_switch=False)
         bot.is_stop_requested = lambda: False
         bot._ensure_message_runtime_state()
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
         chat = SimpleNamespace(who="张三")
-        bot._get_wechat_action_lock = lambda: TryLock()
         bot._read_pending_voice_snapshot = lambda _name: [SimpleNamespace(
             id="fresh-v1", attr="friend", sender="张三", type="voice", content="最后一刻识别成功"
         )]
@@ -2447,14 +2212,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pending_private_voice_transcription = {}
         bot.is_stop_requested = lambda: False
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        bot._get_wechat_action_lock = lambda: TryLock()
         bot._enqueue_private_message_for_ai = lambda *_args, **_kwargs: self.fail("未识别占位不应进 AI")
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
         bot._read_pending_voice_snapshot = lambda _name: [SimpleNamespace(
@@ -2488,15 +2245,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pending_private_voice_transcription = {}
         bot.is_stop_requested = lambda: False
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        bot._get_wechat_action_lock = lambda: TryLock()
-        bot._save_private_incoming_memory_message = lambda *_args, **_kwargs: True
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
         chat = SimpleNamespace(who="张三")
         bot._read_pending_voice_snapshot = lambda _name: [
@@ -2545,14 +2293,6 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pending_private_voice_transcription = {}
         bot.is_stop_requested = lambda: False
 
-        class TryLock:
-            def acquire(self, blocking=True):
-                return True
-
-            def release(self):
-                pass
-
-        bot._get_wechat_action_lock = lambda: TryLock()
         bot._enqueue_private_message_for_ai = lambda *_args, **_kwargs: self.fail("空语音不应进 AI")
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
         bot._read_pending_voice_snapshot = lambda _name: [SimpleNamespace(
@@ -2610,12 +2350,8 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._get_chat_api = lambda _user: SimpleNamespace(
             chat=lambda message, **_kwargs: captured_messages.append(message) or "正常回复"
         )
-        bot._verified_send_chat = lambda _target, chat: chat
-        bot._ensure_target_listen_chat_for_send = lambda _target: None
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
         bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-        bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
-        bot._record_replied_message_success = lambda: None
+        bot._record_replied_message_success = lambda *_args, **_kwargs: None
 
         sent = []
         chat = SimpleNamespace(
@@ -2663,12 +2399,8 @@ class MessageBehaviorTests(unittest.TestCase):
             bot._current_ai_material_outreach_config = lambda: {"ai_material_outreach_switch": False}
             bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
             bot._get_chat_api = lambda _user: SimpleNamespace(chat=lambda *_args, **_kwargs: "作为AI，我不能这样回复")
-            bot._verified_send_chat = lambda _target, chat: chat
-            bot._ensure_target_listen_chat_for_send = lambda _target: None
-            bot._get_chat_send_lock = lambda _name: threading.Lock()
             bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-            bot._save_private_reply_memory_message = lambda *_args, **_kwargs: True
-            bot._record_replied_message_success = lambda: None
+            bot._record_replied_message_success = lambda *_args, **_kwargs: None
 
             sent = []
             chat = SimpleNamespace(
@@ -2734,7 +2466,7 @@ class MessageBehaviorTests(unittest.TestCase):
             lambda _chat, parts, **kwargs: sent.append((parts, kwargs.get("expected_sequence"))) or (True, True)
         )
         bot._record_reply_metric_success = lambda *_args, **_kwargs: None
-        bot._record_replied_message_success = lambda: None
+        bot._record_replied_message_success = lambda *_args, **_kwargs: None
         bot._get_private_message_sequence = lambda _name: 1
 
         chat = SimpleNamespace(who="张三")
@@ -2780,9 +2512,8 @@ class MessageBehaviorTests(unittest.TestCase):
             bot.is_stop_requested = lambda: False
             bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: "作为AI，我不能这样回复")
             bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
-            bot._get_chat_send_lock = lambda _name: threading.Lock()
             bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-            bot._record_replied_message_success = lambda: None
+            bot._record_replied_message_success = lambda *_args, **_kwargs: None
 
             sent = []
             chat = SimpleNamespace(
@@ -2846,9 +2577,8 @@ class MessageBehaviorTests(unittest.TestCase):
             bot.is_stop_requested = lambda: False
             bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: "作为AI，我不能这样回复")
             bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
-            bot._get_chat_send_lock = lambda _name: threading.Lock()
             bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-            bot._record_replied_message_success = lambda: None
+            bot._record_replied_message_success = lambda *_args, **_kwargs: None
 
             attempts = []
             chat = SimpleNamespace(
@@ -2910,9 +2640,8 @@ class MessageBehaviorTests(unittest.TestCase):
             chat=lambda message, **_kwargs: captured_messages.append(message) or "群回复"
         )
         bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
         bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-        bot._record_replied_message_success = lambda: None
+        bot._record_replied_message_success = lambda *_args, **_kwargs: None
 
         sent = []
         chat = SimpleNamespace(
@@ -2972,9 +2701,8 @@ class MessageBehaviorTests(unittest.TestCase):
         bot.is_stop_requested = lambda: False
         bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: "群回复")
         bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
         bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-        bot._record_replied_message_success = lambda: None
+        bot._record_replied_message_success = lambda *_args, **_kwargs: None
 
         sent = []
         chat = SimpleNamespace(
@@ -3040,9 +2768,8 @@ class MessageBehaviorTests(unittest.TestCase):
         replies = iter(["这是一段明显超过限制的回复内容", API_ERROR_REPLY_TEXT])
         bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: next(replies))
         bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
         bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-        bot._record_replied_message_success = lambda: None
+        bot._record_replied_message_success = lambda *_args, **_kwargs: None
         bot._try_send_voice_reply = lambda *_args, **_kwargs: self.fail("接口错误回复不应进入语音发送")
 
         sent = []
@@ -3101,9 +2828,8 @@ class MessageBehaviorTests(unittest.TestCase):
             bot.is_stop_requested = lambda: False
             bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: API_ERROR_REPLY_TEXT)
             bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
-            bot._get_chat_send_lock = lambda _name: threading.Lock()
             bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-            bot._record_replied_message_success = lambda: None
+            bot._record_replied_message_success = lambda *_args, **_kwargs: None
 
             sent = []
             chat = SimpleNamespace(
@@ -3151,7 +2877,6 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertTrue(getattr(message, "_voice_transcription_failed", False))
         self.assertTrue(getattr(message, "_skip_ai_reply", False))
-        self.assertTrue(getattr(message, "_skip_memory", False))
 
     def test_group_voice_candidate_supports_selected_trigger_modes(self):
         keyword_config = SimpleNamespace(
@@ -3269,9 +2994,8 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pause_group_reply = False
         bot.is_stop_requested = lambda: False
         bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
         bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-        bot._record_replied_message_success = lambda: None
+        bot._record_replied_message_success = lambda *_args, **_kwargs: None
 
         image_reply_calls = []
         def fake_group_image_reply(_chat, _message, _history, image_paths=None, attached_text=""):
@@ -3343,9 +3067,8 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._pause_group_reply = False
         bot.is_stop_requested = lambda: False
         bot._build_prompt_with_context = lambda *_args, **_kwargs: "prompt"
-        bot._get_chat_send_lock = lambda _name: threading.Lock()
         bot._human_delay_for_reply_part = lambda *_args, **_kwargs: None
-        bot._record_replied_message_success = lambda: None
+        bot._record_replied_message_success = lambda *_args, **_kwargs: None
         bot._reply_group_image_message = lambda *_args, **_kwargs: self.fail("普通 @ 消息不应消费 pending 图片")
         bot._get_group_api = lambda _group: SimpleNamespace(chat=lambda *_args, **_kwargs: "普通回答")
 
