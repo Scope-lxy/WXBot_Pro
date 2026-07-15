@@ -264,6 +264,36 @@ class MemorySQLiteEndpointTests(unittest.TestCase):
             self.assertNotIn("event_id", panel_messages[0])
             self.assertEqual([item["content"] for item in extracted], ["账号二"])
 
+    def test_memory_data_hides_inferred_time_and_internal_marker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = MemoryManager("wx_test", temp_dir)
+            manager.append_missing_messages(
+                "张三",
+                [{
+                    "time": "2026/07/12 01:16:59",
+                    "time_inferred": True,
+                    "attr": "friend",
+                    "sender": "张三",
+                    "type": "text",
+                    "content": "停机消息",
+                }],
+                100,
+                reconcile_visible_snapshot=True,
+                chat_type="private",
+            )
+
+            with patch("web_server.MEMORY_BASE", temp_dir):
+                with app.test_request_context(
+                    "/memory/data/wx_test/张三?chat_type=private"
+                ):
+                    response = memory_data.__wrapped__("wx_test", "张三")
+
+            message = response.get_json()["messages"][0]
+            self.assertEqual(message["content"], "停机消息")
+            self.assertEqual(message["time"], "")
+            self.assertNotIn("event_id", message)
+            self.assertNotIn("time_inferred", message)
+
     def test_memory_delete_chat_only_hides_selected_conversation(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemoryManager("wx_test", temp_dir)
@@ -272,8 +302,9 @@ class MemorySQLiteEndpointTests(unittest.TestCase):
 
             with patch("web_server.MEMORY_BASE", temp_dir):
                 with app.test_request_context(
-                    "/memory/delete_chat/wx_test/张三?chat_type=private",
+                    "/memory/delete_chat/wx_test/张三",
                     method="DELETE",
+                    data={"chat_type": "private"},
                 ):
                     response = memory_delete_chat.__wrapped__("wx_test", "张三")
 

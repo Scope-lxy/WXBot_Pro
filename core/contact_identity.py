@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 from core.account_storage import account_area_dir
-from core.memory import read_memory_original_name, resolve_memory_storage_name
+from core.memory import resolve_memory_storage_name
+from core.message_store import MessageStore
 
 
 def _now_text(now: Any = None) -> str:
@@ -55,119 +56,8 @@ def backup_paths(paths: dict[str, Path], backup_root: Path) -> dict[str, str]:
     return copied
 
 
-def memory_dir(base_dir: str | Path, wx_id: str, chat_name: str) -> Path:
-    return account_area_dir(base_dir, wx_id, "memory") / resolve_memory_storage_name(chat_name)
-
-
-def memory_file_in_dir(chat_dir: Path) -> Path | None:
-    if not chat_dir.exists() or not chat_dir.is_dir():
-        return None
-    preferred = chat_dir / f"{chat_dir.name}_memory.json"
-    if preferred.exists():
-        return preferred
-    for path in chat_dir.iterdir():
-        if path.is_file() and path.name.endswith("_memory.json"):
-            return path
-    return None
-
-
-def _canonical_memory_file(chat_dir: Path, chat_name: str) -> Path:
-    return chat_dir / f"{resolve_memory_storage_name(chat_name)}_memory.json"
-
-
-def _write_memory_dir_payload(chat_dir: Path, chat_name: str, messages: list[Any]) -> Path:
-    chat_dir.mkdir(parents=True, exist_ok=True)
-    target_file = _canonical_memory_file(chat_dir, chat_name)
-    existing_files = [
-        path for path in chat_dir.iterdir()
-        if path.is_file() and path.name.endswith("_memory.json")
-    ]
-    target_file.write_text(json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8")
-    for path in existing_files:
-        if path != target_file:
-            try:
-                path.unlink()
-            except OSError:
-                pass
-    (chat_dir / "name.json").write_text(json.dumps({"name": _clean(chat_name)}, ensure_ascii=False, indent=2), encoding="utf-8")
-    return target_file
-
-
 def chat_memory_file(base_dir: str | Path, wx_id: str, chat_name: str) -> Path:
     return account_area_dir(base_dir, wx_id, "chat_memory") / f"{resolve_memory_storage_name(chat_name)}.json"
-
-
-def _read_json_list(path: Path) -> list[Any]:
-    if not path or not path.exists():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
-
-
-def _message_key(message: Any) -> str:
-    if not isinstance(message, dict):
-        return hashlib.sha1(str(message).encode("utf-8", errors="ignore")).hexdigest()
-    digest = hashlib.sha1(str(message.get("content", "") or "").encode("utf-8", errors="ignore")).hexdigest()[:12]
-    return "|".join([
-        _clean(message.get("time")),
-        _clean(message.get("sender")),
-        _clean(message.get("type")),
-        _clean(message.get("attr")),
-        digest,
-    ])
-
-
-def merge_memory_dirs(base_dir: str | Path, wx_id: str, old_chat_name: str, new_chat_name: str) -> dict[str, Any]:
-    old_dir = memory_dir(base_dir, wx_id, old_chat_name)
-    new_dir = memory_dir(base_dir, wx_id, new_chat_name)
-    result = {
-        "old_chat_name": old_chat_name,
-        "new_chat_name": new_chat_name,
-        "old_dir": str(old_dir),
-        "new_dir": str(new_dir),
-        "old_count": 0,
-        "new_count": 0,
-        "merged_count": 0,
-        "deduped_count": 0,
-        "changed": False,
-    }
-    if not old_dir.exists():
-        return result
-    if not new_dir.exists():
-        new_dir.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(str(old_dir), str(new_dir))
-        memory_file = memory_file_in_dir(new_dir)
-        messages = _read_json_list(memory_file) if memory_file else []
-        result["old_count"] = len(messages)
-        result["merged_count"] = len(messages)
-        _write_memory_dir_payload(new_dir, new_chat_name, messages)
-        result["changed"] = True
-        return result
-
-    old_file = memory_file_in_dir(old_dir)
-    new_file = memory_file_in_dir(new_dir)
-    old_messages = _read_json_list(old_file) if old_file else []
-    new_messages = _read_json_list(new_file) if new_file else []
-    result["old_count"] = len(old_messages)
-    result["new_count"] = len(new_messages)
-    merged = []
-    seen = set()
-    for message in [*new_messages, *old_messages]:
-        key = _message_key(message)
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(message)
-    merged.sort(key=lambda item: _clean(item.get("time")) if isinstance(item, dict) else "")
-    _write_memory_dir_payload(new_dir, new_chat_name, merged)
-    shutil.rmtree(old_dir)
-    result["merged_count"] = len(merged)
-    result["deduped_count"] = len(old_messages) + len(new_messages) - len(merged)
-    result["changed"] = True
-    return result
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -559,13 +449,15 @@ def reconcile_contact_storage(
     backup_root = Path(backup_base) if backup_base else account_area_dir(base_dir, wx_id, "contact_merge_backups", create=True)
     backup_root = backup_root / f"merged_{stamp}_{_short_hash(old_chat_name + '->' + new_chat_name, 6)}"
     paths = {
-        "old_memory": memory_dir(base_dir, wx_id, old_chat_name),
-        "new_memory": memory_dir(base_dir, wx_id, new_chat_name),
         "old_chat_memory": chat_memory_file(base_dir, wx_id, old_chat_name),
         "new_chat_memory": chat_memory_file(base_dir, wx_id, new_chat_name),
     }
     copied = backup_paths(paths, backup_root)
-    memory_result = merge_memory_dirs(base_dir, wx_id, old_chat_name, new_chat_name)
+    memory_result = MessageStore(base_dir, wx_id).merge_conversations(
+        old_chat_name,
+        new_chat_name,
+        chat_type="private",
+    )
     chat_memory_result = merge_chat_memory_files(base_dir, wx_id, old_chat_name, new_chat_name)
     config_result = sync_contact_config_names(base_dir, old_chat_name, new_chat_name)
     task_result = sync_contact_task_names(base_dir, wx_id, old_chat_name, new_chat_name)
@@ -589,14 +481,7 @@ def reconcile_contact_storage(
 
 
 def list_memory_chat_names(base_dir: str | Path, wx_id: str) -> list[str]:
-    base = account_area_dir(base_dir, wx_id, "memory")
-    if not base.exists():
-        return []
-    names = []
-    for child in base.iterdir():
-        if child.is_dir():
-            names.append(read_memory_original_name(child, child.name))
-    return sorted(set(name for name in names if _clean(name)))
+    return MessageStore(base_dir, wx_id).list_conversations(chat_type="private")
 
 
 def list_chat_memory_names(base_dir: str | Path, wx_id: str) -> list[str]:

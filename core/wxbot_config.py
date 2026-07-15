@@ -133,6 +133,7 @@ class WXBotConfig:
         # ---------- 对话记忆配置 ----------
         self.memory_switch        = True      # 记忆开关（默认开启）
         self.memory_context_switch = True     # 是否把最近聊天记录带入 AI 上下文
+        self.memory_context_repair_switch = True  # 是否从当前微信窗口补齐停机消息
         self.memory_max_count     = 5000     # 单窗口最多存储条数（上限 5000）
         self.memory_context_count = 50       # AI 请求时带入最近聊天记录条数
 
@@ -256,6 +257,7 @@ class WXBotConfig:
                     "everyday_stop_bot_time": "23:00",
                     "memory_switch": True,
                     "memory_context_switch": True,
+                    "memory_context_repair_switch": True,
                     "memory_max_count": 5000,
                     "memory_context_count": 50,
                     "wxauto_save_cache_retention_days": 30,
@@ -801,6 +803,7 @@ class WXBotConfig:
         # 对话记忆配置
         self.memory_switch        = self.config.get('memory_switch', True)
         self.memory_context_switch = bool(self.config.get('memory_context_switch', self.memory_switch))
+        self.memory_context_repair_switch = bool(self.config.get('memory_context_repair_switch', True))
         self.memory_max_count = self._coerce_int_range(
             self.config.get('memory_max_count', 5000), 5000, 100, 5000
         )

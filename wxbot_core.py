@@ -4826,13 +4826,15 @@ class WXBot:
                 return result
             else:
                 history = []
-                if self.config.memory_switch and self.config.memory_context_switch and self.memory_manager:
-                    self._repair_private_context_before_ai(chat, message)
-                    history = self._get_model_context_history(
-                        str(getattr(chat, "who", "") or "").strip(),
-                        event_ids=self._reply_event_ids(message),
-                        chat_type="private",
-                    )
+                if self.config.memory_switch and self.memory_manager:
+                    if getattr(self.config, "memory_context_repair_switch", True):
+                        self._repair_private_context_before_ai(chat, message)
+                    if self.config.memory_context_switch:
+                        history = self._get_model_context_history(
+                            str(getattr(chat, "who", "") or "").strip(),
+                            event_ids=self._reply_event_ids(message),
+                            chat_type="private",
+                        )
                 voice_candidate = private_voice_candidate(self.config, message)
                 if getattr(message, "attr", "") == "friend":
                     if (
@@ -5285,13 +5287,15 @@ class WXBot:
             group_preprocess_fallback_should_mark = False
             try:
                 history = []
-                if self.config.memory_switch and self.config.memory_context_switch and self.memory_manager:
-                    self._repair_group_context_before_ai(chat, message)
-                    history = self._get_model_context_history(
-                        chat.who,
-                        event_ids=self._reply_event_ids(message),
-                        chat_type="group",
-                    )
+                if self.config.memory_switch and self.memory_manager:
+                    if getattr(self.config, "memory_context_repair_switch", True):
+                        self._repair_group_context_before_ai(chat, message)
+                    if self.config.memory_context_switch:
+                        history = self._get_model_context_history(
+                            chat.who,
+                            event_ids=self._reply_event_ids(message),
+                            chat_type="group",
+                        )
                 # 构建有效 prompt；拆分改为发送前本地处理，不再注入模型格式要求
                 group_voice_candidate_hit = group_voice_candidate(self.config, message)
                 _effective_group_prompt = self._build_prompt_with_context(
@@ -6716,7 +6720,18 @@ class WXBot:
         ):
             messages = list(get_all() or [])
         limit = max(1, min(50, int(limit or DEFAULT_VISIBLE_LIMIT)))
-        return messages[-limit:] if len(messages) > limit else messages
+        selected = []
+        message_count = 0
+        for message in reversed(messages):
+            is_time_separator = (
+                str(getattr(message, "type", "") or "").strip().lower() == "time"
+            )
+            if not is_time_separator:
+                if message_count >= limit:
+                    break
+                message_count += 1
+            selected.append(message)
+        return list(reversed(selected))
 
     def _context_repair_log_label(self, chat_type, chat_name):
         label = "群聊" if str(chat_type or "").strip().lower() == "group" else "私聊"
@@ -6733,7 +6748,7 @@ class WXBot:
         level = "DEBUG" if added == 0 and not suffix else "INFO"
         log(level=level, message=f"{label}：{action_text}完成，补入 {added} 条{suffix_text}")
 
-    def _append_context_repair_messages(self, memory_chat_name, entries, *, chat_type):
+    def _append_context_repair_messages(self, memory_chat_name, entries, *, chat_type, not_after=None):
         if not entries or not self.memory_manager:
             return {"added": 0, "total": 0}
         result = self.memory_manager.append_missing_messages(
@@ -6744,6 +6759,7 @@ class WXBot:
             require_anchor=True,
             chat_type=chat_type,
             anchor_recent_count=DEFAULT_ANCHOR_RECENT_COUNT,
+            not_after=not_after,
         )
         if int(result.get("added", 0) or 0) > 0:
             self._mark_chat_memory_dirty(
@@ -6758,7 +6774,7 @@ class WXBot:
             return False
         if not (
             getattr(getattr(self, "config", None), "memory_switch", False)
-            and getattr(getattr(self, "config", None), "memory_context_switch", False)
+            and getattr(getattr(self, "config", None), "memory_context_repair_switch", True)
             and self.memory_manager
         ):
             return False
@@ -6770,6 +6786,7 @@ class WXBot:
             return False
 
         try:
+            repair_not_after = getattr(message, "_wxbot_received_at", 0.0) or time.time()
             local_history = self.memory_manager.get_messages(
                 chat_name,
                 cfg["local_history_limit"],
@@ -6780,20 +6797,28 @@ class WXBot:
             visible_entries = normalize_wechat_snapshot(
                 visible_messages,
                 source="wechat_context_repair_group",
-                fallback_tail_time=(
-                    getattr(message, "time", "")
-                    or getattr(message, "_wxbot_received_at", "")
-                ),
+                fallback_tail_time=repair_not_after,
             )
-            result = self._append_context_repair_messages(chat_name, visible_entries, chat_type="group")
+            result = self._append_context_repair_messages(
+                chat_name,
+                visible_entries,
+                chat_type="group",
+                not_after=repair_not_after,
+            )
             added = int(result.get("added", 0) or 0)
             anchor_found = bool(result.get("anchor_found"))
+            deleted_boundary_skipped = int(result.get("deleted_boundary_skipped", 0) or 0)
+            suffix_parts = []
+            if not anchor_found:
+                suffix_parts.append("未找到锚点，已跳过当前可见快照")
+            if deleted_boundary_skipped:
+                suffix_parts.append(f"{deleted_boundary_skipped} 条早于删除边界，未重新补入")
             self._log_context_repair_result(
                 "group",
                 chat_name,
                 "ui",
                 added,
-                suffix="未找到锚点，已跳过当前可见快照" if not anchor_found else "",
+                suffix="，".join(suffix_parts),
             )
             if not anchor_found:
                 return False
@@ -6809,7 +6834,7 @@ class WXBot:
             return False
         if not (
             getattr(getattr(self, "config", None), "memory_switch", False)
-            and getattr(getattr(self, "config", None), "memory_context_switch", False)
+            and getattr(getattr(self, "config", None), "memory_context_repair_switch", True)
             and self.memory_manager
         ):
             return False
@@ -6830,6 +6855,7 @@ class WXBot:
             return False
 
         try:
+            repair_not_after = getattr(message, "_wxbot_received_at", 0.0) or time.time()
             local_history = self.memory_manager.get_messages(
                 memory_chat_name,
                 cfg["local_history_limit"],
@@ -6845,24 +6871,28 @@ class WXBot:
             visible_entries = normalize_wechat_snapshot(
                 visible_messages,
                 source="wechat_context_repair",
-                fallback_tail_time=(
-                    getattr(message, "time", "")
-                    or getattr(message, "_wxbot_received_at", "")
-                ),
+                fallback_tail_time=repair_not_after,
             )
             result = self._append_context_repair_messages(
                 memory_chat_name,
                 visible_entries,
                 chat_type="private",
+                not_after=repair_not_after,
             )
             added = int(result.get("added", 0) or 0)
             anchor_found = bool(result.get("anchor_found"))
+            deleted_boundary_skipped = int(result.get("deleted_boundary_skipped", 0) or 0)
+            suffix_parts = []
+            if not anchor_found:
+                suffix_parts.append("未找到锚点，已跳过当前可见快照")
+            if deleted_boundary_skipped:
+                suffix_parts.append(f"{deleted_boundary_skipped} 条早于删除边界，未重新补入")
             self._log_context_repair_result(
                 "private",
                 chat_name,
                 "ui",
                 added,
-                suffix="未找到锚点，已跳过当前可见快照" if not anchor_found else "",
+                suffix="，".join(suffix_parts),
             )
             if not anchor_found:
                 return False

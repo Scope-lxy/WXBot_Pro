@@ -18,6 +18,10 @@ DEFAULT_ANCHOR_RECENT_COUNT = 5
 DEFAULT_VISIBLE_LIMIT = 30
 DEFAULT_LOCAL_HISTORY_LIMIT = 50
 NEARBY_DUPLICATE_WINDOW_SECONDS = 600
+SNAPSHOT_CLOCK_SKEW_SECONDS = 120
+SNAPSHOT_DAY_ROLLOVER_SECONDS = 24 * 60 * 60
+MIN_INFERRED_DEDUPE_TEXT_LENGTH = 6
+VOICE_DUPLICATE_PUNCTUATION = str.maketrans("", "", "，。！？、～~,.!?：:；;‘’“”\"'（）()")
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,10 @@ def normalize_group_self_content(content) -> str:
         if body:
             return body
     return text
+
+
+def normalize_voice_duplicate_content(content) -> str:
+    return "".join(clean_text(content).translate(VOICE_DUPLICATE_PUNCTUATION).split())
 
 
 def message_content_candidates(content, msg_type="", *, allow_voice_shell=False) -> tuple[str, ...]:
@@ -105,6 +113,11 @@ def relaxed_duplicate_keys(item, *, chat_type="private", allow_voice_shell=False
         msg_type,
         allow_voice_shell=allow_voice_shell,
     )
+    if msg_type == "voice":
+        contents = tuple(dict.fromkeys([
+            *contents,
+            *(normalize_voice_duplicate_content(content) for content in contents),
+        ]))
     if normalized_chat_type == "group" and direction == "self":
         contents = tuple(dict.fromkeys(
             [*contents, *(normalize_group_self_content(content) for content in contents)]
@@ -115,7 +128,29 @@ def relaxed_duplicate_keys(item, *, chat_type="private", allow_voice_shell=False
     }
 
 
+def inferred_duplicate_is_specific(item) -> bool:
+    if not isinstance(item, dict):
+        return False
+    msg_type = normalize_message_type(item.get("type"))
+    if msg_type not in {"text", "voice"}:
+        return True
+    contents = message_content_candidates(
+        item.get("content"),
+        msg_type,
+        allow_voice_shell=True,
+    )
+    normalized = [normalize_voice_duplicate_content(content) for content in contents]
+    return any(len(content) >= MIN_INFERRED_DEDUPE_TEXT_LENGTH for content in normalized)
+
+
 def parse_message_time(value):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value))
+        except (OSError, OverflowError, ValueError):
+            return None
     text = clean_text(value)
     if not text:
         return None
@@ -217,6 +252,9 @@ def normalize_wechat_message(message, *, source="wechat_context_repair") -> dict
         "content": normalize_message_content(getattr(message, "content", ""), msg_type),
         "source": source,
     }
+    message_id = clean_text(getattr(message, "id", ""))
+    if message_id:
+        entry["message_id"] = message_id
     return entry
 
 
@@ -230,6 +268,31 @@ def _assign_snapshot_times_before(entries, indexes, anchor_time, *, include_anch
     for position, index in enumerate(indexes):
         entries[index]["time"] = (anchor_dt - timedelta(seconds=last_offset - position)).strftime(fmt)
         entries[index]["time_inferred"] = True
+
+
+def _reconcile_snapshot_times(entries, boundary_time):
+    upper_bound = parse_message_time(boundary_time)
+    if not upper_bound:
+        return
+    for entry in reversed(entries):
+        parsed = parse_message_time(entry.get("time"))
+        if not parsed:
+            continue
+        corrected = parsed
+        if parsed > upper_bound:
+            future_seconds = (parsed - upper_bound).total_seconds()
+            if future_seconds <= SNAPSHOT_CLOCK_SKEW_SECONDS:
+                corrected = upper_bound
+            elif future_seconds <= SNAPSHOT_DAY_ROLLOVER_SECONDS:
+                corrected = parsed - timedelta(days=1)
+            else:
+                raise ValueError("微信快照包含无法校正的未来消息时间")
+            if corrected > upper_bound:
+                raise ValueError("微信快照消息时间与窗口顺序冲突")
+            fmt = "%Y-%m-%d %H:%M:%S" if "-" in clean_text(entry.get("time")) else "%Y/%m/%d %H:%M:%S"
+            entry["time"] = corrected.strftime(fmt)
+            entry["time_corrected"] = True
+        upper_bound = corrected
 
 
 def normalize_wechat_snapshot(
@@ -256,13 +319,18 @@ def normalize_wechat_snapshot(
         if not entry["time"]:
             leading_without_time.append(len(entries) - 1)
     if leading_without_time:
-        tail_time = clean_text(fallback_tail_time) or datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+        tail_time = (
+            fallback_tail_time
+            if parse_message_time(fallback_tail_time)
+            else datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+        )
         _assign_snapshot_times_before(
             entries,
             leading_without_time,
             tail_time,
             include_anchor=True,
         )
+    _reconcile_snapshot_times(entries, fallback_tail_time)
     return entries
 
 
@@ -272,16 +340,23 @@ def snapshot_messages_through_current(messages, current_message):
     current_hash_text = clean_text(getattr(current_message, "hash_text", ""))
     current_entry = normalize_wechat_message(current_message, source="current_snapshot_tail")
     current_fps = set(message_fingerprints(current_entry))
+    if current_id:
+        for index, item in enumerate(source):
+            if normalize_message_type(getattr(item, "type", "text")) == "time":
+                continue
+            item_id = clean_text(getattr(item, "id", ""))
+            if item_id and item_id == current_id:
+                return source[:index + 1]
+        return source
+
+    hash_matches = []
     matched_raw_index = None
     for index, item in enumerate(source):
         if normalize_message_type(getattr(item, "type", "text")) == "time":
             continue
-        item_id = clean_text(getattr(item, "id", ""))
-        if current_id and item_id and item_id == current_id:
-            return source[:index + 1]
         item_hash_text = clean_text(getattr(item, "hash_text", ""))
         if current_hash_text and item_hash_text and item_hash_text == current_hash_text:
-            return source[:index + 1]
+            hash_matches.append(index)
         item_fps = set(
             message_fingerprints(
                 normalize_wechat_message(item),
@@ -290,6 +365,8 @@ def snapshot_messages_through_current(messages, current_message):
         )
         if current_fps and current_fps.intersection(item_fps):
             matched_raw_index = index
+    if len(hash_matches) == 1:
+        return source[:hash_matches[0] + 1]
     if matched_raw_index is None:
         return source
     return source[:matched_raw_index + 1]
@@ -350,6 +427,18 @@ def find_anchor_index(
     remote = filter_model_repair_messages(remote_history)
     if not remote:
         return None
+    for local_item in reversed(filter_model_repair_messages(local_history)):
+        message_id = clean_text(local_item.get("message_id"))
+        if not message_id:
+            continue
+        matches = [
+            index
+            for index, item in enumerate(remote)
+            if clean_text(item.get("message_id")) == message_id
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        break
     remote_anchor_pairs = [
         (index, repair_anchor_fingerprint(item, chat_type=chat_type))
         for index, item in enumerate(remote)
@@ -428,7 +517,11 @@ def build_repair_plan(
             _, nearby_match = min(nearby_matches)
             unmatched_local.remove(nearby_match)
             continue
-        if remote_item.get("time_inferred") and relaxed_keys:
+        if (
+            remote_item.get("time_inferred")
+            and relaxed_keys
+            and inferred_duplicate_is_specific(remote_item)
+        ):
             inferred_match = next(
                 (
                     index

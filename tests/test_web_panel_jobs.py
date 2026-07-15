@@ -217,6 +217,22 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertIs(config["chat_split_reply_delay_switch"], False)
         self.assertIs(config["group_split_reply_delay_switch"], True)
 
+    def test_context_repair_has_independent_dropdown_and_boolean_config(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+
+        self.assertEqual(dashboard.count('id="memory_context_repair_switch"'), 1)
+        self.assertIn('<option value="true"', dashboard)
+        self.assertIn('<option value="false"', dashboard)
+        self.assertIn(
+            "memory_context_repair_switch:$('#memory_context_repair_switch').val() !== 'false'",
+            dashboard,
+        )
+
+        config = {"memory_context_repair_switch": "false"}
+        web_server._coerce_bool_fields(config)
+        self.assertIs(config["memory_context_repair_switch"], False)
+
     def test_text_reply_limits_live_in_private_and_group_reply_cards(self):
         root = Path(__file__).resolve().parents[1]
         dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")

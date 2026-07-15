@@ -103,6 +103,22 @@ class MessageStoreTests(unittest.TestCase):
         self.assertIsNotNone(echo_table)
         self.assertEqual(version, 4)
 
+    def test_merge_conversations_moves_sqlite_history(self):
+        self.record("old-1", content="旧消息")
+        new_event = inbound("new-1", content="新消息", received_at=101.0)
+        new_event["conversation"] = "Bob"
+        new_event["sender"] = "Bob"
+        self.store.record_inbound(new_event)
+
+        result = self.store.merge_conversations("Alice", "Bob", chat_type="private")
+
+        self.assertTrue(result["changed"])
+        self.assertEqual(self.store.history("Alice", 10, chat_type="private"), [])
+        self.assertEqual(
+            [item["content"] for item in self.store.history("Bob", 10, chat_type="private")],
+            ["旧消息", "新消息"],
+        )
+
     def register(self, turn_id, event_ids, *, version, expires_at=1000.0, count=1):
         return self.store.register_reply_turn(
             turn_id,

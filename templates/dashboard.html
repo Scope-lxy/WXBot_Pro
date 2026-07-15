@@ -3074,6 +3074,18 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
           <div class="cfg-hint">按真实聊天顺序带入最近消息；微信时间分隔线只作为消息时间，不占条数</div>
         </div>
+        <div class="memory-config-section">
+          <div class="switch-row switch-row--inline-desc">
+            <label class="form-check-label" for="memory_context_repair_switch">上下文补洞</label>
+            <span class="switch-desc">补回机器人停机期间当前窗口仍可见的消息</span>
+          </div>
+          <label class="cfg-label" for="memory_context_repair_switch">补洞状态</label>
+          <select class="form-select" id="memory_context_repair_switch">
+            <option value="true" {% if config.get('memory_context_repair_switch', True) %}selected{% endif %}>开启</option>
+            <option value="false" {% if not config.get('memory_context_repair_switch', True) %}selected{% endif %}>关闭</option>
+          </select>
+          <div class="cfg-hint">关闭后不再读取微信窗口补历史，实时收到的消息仍正常保存</div>
+        </div>
       </div>
     </div>
     <!-- 记忆查看卡片 -->
@@ -9968,6 +9980,7 @@ $(function(){
       everyday_stop_bot_time:$('#everyday_stop_bot_time').val(),
       memory_switch:$('#memory_switch').is(':checked'),
       memory_context_switch:$('#memory_context_switch').is(':checked'),
+      memory_context_repair_switch:$('#memory_context_repair_switch').val() !== 'false',
       memory_max_count:Math.max(100,Math.min(5000,parseInt($('#memory_max_count').val())||5000)),
       memory_context_count:(function(){
         var v=parseInt($('#memory_context_count').val(), 10);

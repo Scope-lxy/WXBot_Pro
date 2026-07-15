@@ -262,6 +262,8 @@ def build_model_visible_history(history, *, message_limit=None):
 
 def format_memory_record_for_display(item):
     item = dict(item or {})
+    item.pop("time_inferred", None)
+    item.pop("message_id", None)
     speaker_role = "assistant" if item.get("attr") == "self" else "user"
     raw_content = _clean_text(item.get("content"))
     display_content = _render_record_content(item, speaker_role=speaker_role, compact=True)

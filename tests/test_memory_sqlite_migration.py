@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from core.memory import MemoryManager
+from tools.migrate_legacy_message_history import migrate_account
 
 
 class MemorySQLiteMigrationTests(unittest.TestCase):
@@ -77,6 +78,38 @@ class MemorySQLiteMigrationTests(unittest.TestCase):
             self.assertEqual(history[0]["content"], "[图片]")
             self.assertEqual(history[0]["visual_note"], "一张照片")
             self.assertFalse((Path(tmp) / "accounts" / "wxid" / "memory").exists())
+
+    def test_one_time_migration_preserves_duplicate_occurrences_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._legacy_file(tmp)
+            path.write_text(
+                json.dumps(
+                    [
+                        {"time": "2026/07/03 05:00:00", "type": "text", "attr": "friend", "sender": "张三", "content": "好"},
+                        {"time": "2026/07/03 05:00:00", "type": "text", "attr": "friend", "sender": "张三", "content": "好"},
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            manager = MemoryManager("wxid", tmp)
+            manager.append_missing_messages(
+                "张三",
+                [{"time": "2026/07/03 05:00:00", "type": "text", "attr": "friend", "sender": "张三", "content": "好"}],
+                100,
+                chat_type="private",
+            )
+
+            first = migrate_account(tmp, "wxid")
+            second = migrate_account(tmp, "wxid")
+
+            self.assertTrue(first["verified"])
+            self.assertEqual(first["added_rows"], 1)
+            self.assertEqual(second["added_rows"], 0)
+            self.assertEqual(
+                [item["content"] for item in manager.get_messages("张三", 10, chat_type="private")],
+                ["好", "好"],
+            )
 
 
 if __name__ == "__main__":

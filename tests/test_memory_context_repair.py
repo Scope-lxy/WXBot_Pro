@@ -1,9 +1,12 @@
 import tempfile
+import threading
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from core.chat_history_format import build_model_visible_history
 from core.memory import MemoryManager
 from core.memory_context_repair import (
     build_repair_plan,
@@ -516,6 +519,67 @@ class MemoryContextRepairCoreTests(unittest.TestCase):
         )
         self.assertTrue(all(item.get("time_inferred") is True for item in entries))
 
+    def test_snapshot_epoch_boundary_assigns_missing_times(self):
+        boundary = MemoryManager._received_at("2026/07/15 06:04:06")
+
+        entries = normalize_wechat_snapshot(
+            [msg("更早消息", time=""), msg("当前触发", time="")],
+            fallback_tail_time=boundary,
+        )
+
+        self.assertEqual(
+            [item["time"] for item in entries],
+            ["2026/07/15 06:04:05", "2026/07/15 06:04:06"],
+        )
+
+    def test_snapshot_rolls_previous_evening_back_across_midnight(self):
+        entries = normalize_wechat_snapshot(
+            [
+                msg("昨晚消息", time="2026/07/15 23:20:00"),
+                msg("当前触发", time="2026/07/15 06:04:00"),
+            ],
+            fallback_tail_time="2026/07/15 06:04:06",
+        )
+
+        self.assertEqual(
+            [(item["content"], item["time"]) for item in entries],
+            [
+                ("昨晚消息", "2026/07/14 23:20:00"),
+                ("当前触发", "2026/07/15 06:04:00"),
+            ],
+        )
+        self.assertTrue(entries[0].get("time_corrected"))
+        self.assertNotIn("time_inferred", entries[0])
+
+    def test_cross_midnight_snapshot_does_not_reimport_existing_sequence(self):
+        local = [
+            {"time": "2026/07/14 23:19:05", "attr": "friend", "sender": "张三", "type": "text", "content": "这是啥"},
+            {"time": "2026/07/14 23:19:52", "attr": "self", "sender": "self", "type": "text", "content": "这是汽车轮毂吧？看起来挺漂亮的。"},
+            {"time": "2026/07/14 23:20:57", "attr": "self", "sender": "self", "type": "voice", "content": "在处理消息呢～刚才那轮毂，是你喜欢的款式吗？"},
+            {"time": "2026/07/15 06:04:06", "attr": "friend", "sender": "张三", "type": "text", "content": "在吗"},
+        ]
+        remote = normalize_wechat_snapshot(
+            [
+                msg("这是啥", time="2026/07/15 23:19:57"),
+                msg("这是汽车轮毂吧？看起来挺漂亮的。", attr="self", sender="self", time="2026/07/15 23:19:58"),
+                msg("在处理消息呢，刚才那轮毂是你喜欢的款式吗？", attr="self", sender="self", msg_type="voice", time="2026/07/15 23:20:00"),
+                msg("在吗", time="2026/07/15 06:04:00"),
+            ],
+            fallback_tail_time="2026/07/15 06:04:06",
+        )
+
+        plan = build_repair_plan(local, remote)
+
+        self.assertTrue(plan.anchor_found)
+        self.assertEqual(plan.messages_to_append, [])
+
+    def test_snapshot_rejects_unexplainable_future_time(self):
+        with self.assertRaisesRegex(ValueError, "未来消息时间"):
+            normalize_wechat_snapshot(
+                [msg("异常消息", time="2026/07/16 08:00:00")],
+                fallback_tail_time="2026/07/15 06:04:06",
+            )
+
     def test_inferred_leading_time_does_not_duplicate_existing_visible_message(self):
         local = [
             {
@@ -535,6 +599,21 @@ class MemoryContextRepairCoreTests(unittest.TestCase):
         plan = build_repair_plan(local, remote, anchor_recent_count=5)
 
         self.assertEqual([item["content"] for item in plan.messages_to_append], ["测试一下"])
+
+    def test_inferred_short_text_is_not_deduped_against_distant_history(self):
+        local = [
+            {"time": "2026/07/14 23:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "好"},
+            {"time": "2026/07/15 10:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "当前消息"},
+        ]
+        remote = [
+            {"time": "2026/07/15 09:59:59", "time_inferred": True, "attr": "friend", "sender": "张三", "type": "text", "content": "好"},
+            {"time": "2026/07/15 10:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "当前消息"},
+        ]
+
+        plan = build_repair_plan(local, remote)
+
+        self.assertTrue(plan.anchor_found)
+        self.assertEqual([item["content"] for item in plan.messages_to_append], ["好"])
 
     def test_snapshot_stops_at_current_trigger_and_leaves_later_message_for_its_callback(self):
         current = msg("当前触发", time="", message_id="current-runtime")
@@ -558,6 +637,48 @@ class MemoryContextRepairCoreTests(unittest.TestCase):
         trimmed = snapshot_messages_through_current(snapshot, current)
 
         self.assertEqual(trimmed, [current])
+
+    def test_snapshot_native_id_is_not_preempted_by_earlier_hash_collision(self):
+        current = msg(
+            "相同内容",
+            time="",
+            message_id="current-id",
+            message_hash_text="same-row",
+        )
+        earlier = msg(
+            "相同内容",
+            time="",
+            message_id="earlier-id",
+            message_hash_text="same-row",
+        )
+
+        trimmed = snapshot_messages_through_current([earlier, current], current)
+
+        self.assertEqual(trimmed, [earlier, current])
+
+    def test_current_runtime_id_anchors_repeated_current_content(self):
+        local = [{
+            "time": "2026/07/15 10:00:00",
+            "attr": "friend",
+            "sender": "张三",
+            "type": "text",
+            "content": "好",
+            "message_id": "current-id",
+        }]
+        remote = [
+            {"time": "2026/07/15 09:58:00", "attr": "friend", "sender": "张三", "type": "text", "content": "停机消息"},
+            {"time": "2026/07/15 09:59:00", "attr": "friend", "sender": "张三", "type": "text", "content": "好", "message_id": "earlier-id"},
+            {"time": "2026/07/15 10:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "好", "message_id": "current-id"},
+        ]
+
+        plan = build_repair_plan(local, remote)
+
+        self.assertTrue(plan.anchor_found)
+        self.assertEqual(plan.anchor_index, 2)
+        self.assertEqual(
+            [item["content"] for item in plan.messages_to_append],
+            ["停机消息", "好"],
+        )
 
     def test_group_anchor_matching_keeps_sender_identity(self):
         local = [
@@ -613,6 +734,26 @@ class MemoryContextRepairCoreTests(unittest.TestCase):
 
         self.assertFalse(plan.anchor_found)
         self.assertEqual([item["content"] for item in plan.messages_to_append], ["好"])
+
+    def test_voice_duplicate_matching_ignores_transcription_punctuation(self):
+        local = [{
+            "time": "2026/07/14 23:20:57",
+            "attr": "self",
+            "sender": "self",
+            "type": "voice",
+            "content": "在处理消息呢～刚才那轮毂，是你喜欢的款式吗？",
+        }]
+        remote = [{
+            "time": "2026/07/14 23:20:00",
+            "attr": "self",
+            "sender": "self",
+            "type": "voice",
+            "content": "在处理消息呢，刚才那轮毂是你喜欢的款式吗？",
+        }]
+
+        plan = build_repair_plan(local, remote)
+
+        self.assertEqual(plan.messages_to_append, [])
 
     def test_current_message_found_near_tail(self):
         local = [
@@ -822,30 +963,317 @@ class MemoryManagerContextRepairTests(unittest.TestCase):
             )
             self.assertTrue(all("-" not in item["time"][:10] for item in stored))
 
-    def test_inferred_time_marker_is_not_persisted_in_memory(self):
+    def test_inferred_time_is_only_persisted_as_an_internal_sort_value(self):
         with tempfile.TemporaryDirectory() as tmp:
             manager = MemoryManager("wxid", tmp)
+            snapshot = [
+                {
+                    "time": "2026-07-12 01:16:58",
+                    "time_inferred": True,
+                    "attr": "friend",
+                    "sender": "张三",
+                    "type": "text",
+                    "content": "第一条新消息",
+                },
+                {
+                    "time": "2026-07-12 01:16:59",
+                    "time_inferred": True,
+                    "attr": "friend",
+                    "sender": "张三",
+                    "type": "text",
+                    "content": "第二条新消息",
+                },
+            ]
 
-            manager.append_missing_messages(
+            first = manager.append_missing_messages(
                 "张三",
-                [
-                    {
-                        "time": "2026-07-12 01:16:59",
-                        "time_inferred": True,
-                        "attr": "friend",
-                        "sender": "张三",
-                        "type": "text",
-                        "content": "新消息",
-                    },
-                ],
+                snapshot,
+                100,
+                reconcile_visible_snapshot=True,
+                chat_type="private",
+            )
+            second = MemoryManager("wxid", tmp).append_missing_messages(
+                "张三",
+                snapshot,
                 100,
                 reconcile_visible_snapshot=True,
                 chat_type="private",
             )
 
             stored = manager.get_messages("张三", 10, chat_type="private")
-            self.assertEqual(stored[0]["time"], "2026/07/12 01:16:59")
-            self.assertNotIn("time_inferred", stored[0])
+            raw_events = manager.message_store.history("张三", 10, chat_type="private")
+            self.assertEqual(first["added"], 2)
+            self.assertEqual(second["added"], 0)
+            self.assertEqual(
+                [event["native_time"] for event in raw_events],
+                ["", ""],
+            )
+            self.assertEqual(
+                [event["received_at"] for event in raw_events],
+                [
+                    MemoryManager._received_at("2026/07/12 01:16:58"),
+                    MemoryManager._received_at("2026/07/12 01:16:59"),
+                ],
+            )
+            self.assertTrue(all(
+                event["metadata"]["time_inferred"] is True
+                for event in raw_events
+            ))
+            self.assertEqual(
+                [item["content"] for item in stored],
+                ["第一条新消息", "第二条新消息"],
+            )
+            self.assertEqual([item["time"] for item in stored], ["", ""])
+            self.assertTrue(all(item["time_inferred"] is True for item in stored))
+            self.assertEqual(
+                build_model_visible_history(stored),
+                [
+                    {"role": "user", "content": "张三: 第一条新消息"},
+                    {"role": "user", "content": "张三: 第二条新消息"},
+                ],
+            )
+
+    def test_inferred_snapshot_prefix_does_not_duplicate_existing_messages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = MemoryManager("wxid", tmp)
+            existing = [
+                ("2026/07/14 23:20:57", "self", "self", "voice", "在处理消息呢～刚才那轮毂，是你喜欢的款式吗？"),
+                ("2026/07/14 23:21:48", "friend", "细妹小号", "text", "F1-异常恢复测试"),
+                ("2026/07/14 23:22:33", "self", "self", "text", "在处理消息呢"),
+                ("2026/07/14 23:22:35", "self", "self", "text", "刚才那轮毂挺好看的"),
+                ("2026/07/14 23:22:39", "self", "self", "text", "是你喜欢的款式吗？"),
+                ("2026/07/15 07:17:49", "friend", "细妹小号", "text", "测试一下，你还记得我们刚刚聊了些什么吗"),
+            ]
+            for message_time, attr, sender, msg_type, content in existing:
+                append_history_message(
+                    manager,
+                    "细妹小号",
+                    sender,
+                    content,
+                    msg_type,
+                    attr,
+                    message_time=message_time,
+                )
+
+            inferred_prefix = [
+                ("2026/07/15 06:03:55", "self", "self", "voice", "在处理消息呢，刚才那轮毂是你喜欢的款式吗？"),
+                ("2026/07/15 06:03:56", "friend", "细妹小号", "text", "F1-异常恢复测试"),
+                ("2026/07/15 06:03:57", "self", "self", "text", "在处理消息呢"),
+                ("2026/07/15 06:03:58", "self", "self", "text", "刚才那轮毂挺好看的"),
+                ("2026/07/15 06:03:59", "self", "self", "text", "是你喜欢的款式吗？"),
+            ]
+            snapshot = [
+                {
+                    "time": message_time,
+                    "time_inferred": True,
+                    "attr": attr,
+                    "sender": sender,
+                    "type": msg_type,
+                    "content": content,
+                }
+                for message_time, attr, sender, msg_type, content in inferred_prefix
+            ]
+            snapshot.append({
+                "time": "2026/07/15 07:17:49",
+                "attr": "friend",
+                "sender": "细妹小号",
+                "type": "text",
+                "content": "测试一下，你还记得我们刚刚聊了些什么吗",
+            })
+
+            result = manager.append_missing_messages(
+                "细妹小号",
+                snapshot,
+                100,
+                reconcile_visible_snapshot=True,
+                require_anchor=True,
+                chat_type="private",
+                not_after=MemoryManager._received_at("2026/07/15 07:17:49"),
+            )
+
+            self.assertTrue(result["anchor_found"])
+            self.assertEqual(result["added"], 0)
+            self.assertEqual(
+                [item["content"] for item in manager.get_messages(
+                    "细妹小号",
+                    20,
+                    chat_type="private",
+                )],
+                [item[4] for item in existing],
+            )
+
+    def test_deleted_history_is_not_restored_by_context_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = MemoryManager("wxid", tmp)
+            old = {
+                "time": "2026/07/15 08:00:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "text",
+                "content": "已删除旧消息",
+            }
+            current = {
+                "time": "2026/07/15 10:00:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "text",
+                "content": "删除后的新消息",
+            }
+            manager.append_missing_messages("张三", [old], 100, chat_type="private")
+            manager.clear_messages("张三", chat_type="private")
+            manager.append_missing_messages("张三", [current], 100, chat_type="private")
+
+            result = manager.append_missing_messages(
+                "张三",
+                [old, current],
+                100,
+                reconcile_visible_snapshot=True,
+                require_anchor=True,
+                chat_type="private",
+            )
+
+            self.assertEqual(result["added"], 0)
+            self.assertEqual(result["deleted_boundary_skipped"], 1)
+            self.assertEqual(
+                [item["content"] for item in manager.get_messages(
+                    "张三",
+                    10,
+                    chat_type="private",
+                )],
+                ["删除后的新消息"],
+            )
+
+    def test_concurrent_context_repair_appends_each_occurrence_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = MemoryManager("wxid", tmp)
+            current = {
+                "time": "2026/07/15 10:00:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "text",
+                "content": "当前消息",
+            }
+            missing = {
+                "time": "2026/07/15 09:59:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "text",
+                "content": "停机消息",
+            }
+            manager.append_missing_messages("张三", [current], 100, chat_type="private")
+            barrier = threading.Barrier(2)
+            original_get_messages = manager.get_messages
+            thread_state = threading.local()
+
+            def synchronized_get_messages(*args, **kwargs):
+                result = original_get_messages(*args, **kwargs)
+                if not getattr(thread_state, "waited", False):
+                    thread_state.waited = True
+                    barrier.wait(timeout=10)
+                return result
+
+            manager.get_messages = synchronized_get_messages
+
+            def repair_once():
+                return manager.append_missing_messages(
+                    "张三",
+                    [missing, current],
+                    100,
+                    reconcile_visible_snapshot=True,
+                    require_anchor=True,
+                    chat_type="private",
+                )["added"]
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                added = list(executor.map(lambda _index: repair_once(), range(2)))
+
+            self.assertEqual(sum(added), 1)
+            self.assertEqual(
+                [item["content"] for item in original_get_messages(
+                    "张三",
+                    10,
+                    chat_type="private",
+                )],
+                ["停机消息", "当前消息"],
+            )
+
+    def test_later_identical_snapshot_occurrence_is_not_lost_to_stable_event_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = MemoryManager("wxid", tmp)
+            anchor = {
+                "time": "2026/07/15 09:58:00",
+                "attr": "self",
+                "sender": "self",
+                "type": "text",
+                "content": "旧锚点",
+            }
+            repeated = {
+                "time": "2026/07/15 09:59:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "text",
+                "content": "好",
+            }
+            current = {
+                "time": "2026/07/15 10:00:00",
+                "attr": "friend",
+                "sender": "张三",
+                "type": "text",
+                "content": "当前消息",
+            }
+            manager.append_missing_messages(
+                "张三",
+                [anchor, current],
+                100,
+                chat_type="private",
+            )
+
+            first = manager.append_missing_messages(
+                "张三",
+                [anchor, repeated, current],
+                100,
+                reconcile_visible_snapshot=True,
+                require_anchor=True,
+                chat_type="private",
+            )
+            second = manager.append_missing_messages(
+                "张三",
+                [anchor, repeated, dict(repeated), current],
+                100,
+                reconcile_visible_snapshot=True,
+                require_anchor=True,
+                chat_type="private",
+            )
+
+            self.assertEqual(first["added"], 1)
+            self.assertEqual(second["added"], 1)
+            self.assertEqual(
+                [item["content"] for item in manager.get_messages(
+                    "张三",
+                    10,
+                    chat_type="private",
+                )],
+                ["旧锚点", "好", "好", "当前消息"],
+            )
+
+    def test_context_repair_storage_rejects_message_after_inbound_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = MemoryManager("wxid", tmp)
+
+            with self.assertRaisesRegex(ValueError, "exceeds current inbound boundary"):
+                manager.append_missing_messages(
+                    "张三",
+                    [{
+                        "time": "2026/07/15 23:20:00",
+                        "attr": "friend",
+                        "sender": "张三",
+                        "type": "text",
+                        "content": "未来消息",
+                    }],
+                    100,
+                    chat_type="private",
+                    not_after="2026/07/15 06:04:06",
+                )
 
 
 class FakeChat:
@@ -878,6 +1306,7 @@ class WXBotContextRepairTests(unittest.TestCase):
         bot.config = SimpleNamespace(
             memory_switch=True,
             memory_context_switch=True,
+            memory_context_repair_switch=True,
             memory_max_count=100,
             memory_context_count=memory_context_count,
         )
@@ -893,23 +1322,84 @@ class WXBotContextRepairTests(unittest.TestCase):
             bot.memory_manager.append_missing_messages(
                 "张三",
                 [
-                    {"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "早"},
-                    {"time": "2", "attr": "self", "sender": "self", "type": "text", "content": "早呀"},
+                    {"time": "2026/07/03 05:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "早"},
+                    {"time": "2026/07/03 05:01:00", "attr": "self", "sender": "self", "type": "text", "content": "早呀"},
                 ],
                 100,
                 chat_type="private",
             )
             chat = FakeChat(visible=[
-                msg("早", time="1"),
-                msg("早呀", attr="self", sender="self", time="2"),
-                msg("新内容", time="3"),
+                msg("早", time="2026/07/03 05:00:00"),
+                msg("早呀", attr="self", sender="self", time="2026/07/03 05:01:00"),
+                msg("新内容", time="2026/07/03 05:02:00"),
             ])
 
-            bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
+            bot._repair_private_context_before_ai(chat, msg("新内容", time="2026/07/03 05:02:00"))
 
             self.assertEqual(
                 [item["content"] for item in bot.memory_manager.get_messages("张三", 10, chat_type="private")],
                 ["早", "早呀", "新内容"],
+            )
+
+    def test_context_repair_switch_disabled_skips_ui_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp)
+            bot.config.memory_context_repair_switch = False
+            chat = FakeChat(visible=[msg("当前消息")])
+
+            repaired = bot._repair_private_context_before_ai(chat, msg("当前消息"))
+
+            self.assertFalse(repaired)
+            self.assertEqual(chat.get_all_calls, 0)
+
+    def test_visible_limit_counts_message_bubbles_not_time_separators(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp)
+            visible = [
+                msg("09:00", attr="system", sender="system", msg_type="time"),
+                msg("第一条"),
+                msg("第二条"),
+                msg("第三条"),
+                msg("10:00", attr="system", sender="system", msg_type="time"),
+                msg("第四条"),
+            ]
+            chat = FakeChat(visible=visible)
+
+            selected = bot._read_visible_context_messages(chat, 3)
+
+            self.assertEqual(
+                [item.content for item in selected],
+                ["第二条", "第三条", "10:00", "第四条"],
+            )
+
+    def test_context_repair_does_not_depend_on_model_history_switch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp)
+            bot.config.memory_context_switch = False
+            bot.memory_manager.append_missing_messages(
+                "张三",
+                [{"time": "2026/07/03 05:02:00", "attr": "friend", "sender": "张三", "type": "text", "content": "当前消息"}],
+                100,
+                chat_type="private",
+            )
+            chat = FakeChat(visible=[
+                msg("停机消息", time="2026/07/03 05:01:00"),
+                msg("当前消息", time="2026/07/03 05:02:00"),
+            ])
+
+            repaired = bot._repair_private_context_before_ai(
+                chat,
+                msg("当前消息", time="2026/07/03 05:02:00"),
+            )
+
+            self.assertTrue(repaired)
+            self.assertEqual(
+                [item["content"] for item in bot.memory_manager.get_messages(
+                    "张三",
+                    10,
+                    chat_type="private",
+                )],
+                ["停机消息", "当前消息"],
             )
 
     def test_successful_repair_sets_three_hundred_second_ttl(self):
@@ -917,16 +1407,16 @@ class WXBotContextRepairTests(unittest.TestCase):
             bot = self.make_bot(tmp)
             bot.memory_manager.append_missing_messages(
                 "张三",
-                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                [{"time": "2026/07/03 05:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
                 100,
                 chat_type="private",
             )
             chat = FakeChat(visible=[
-                msg("旧锚点", time="1"),
-                msg("新内容", time="2"),
+                msg("旧锚点", time="2026/07/03 05:00:00"),
+                msg("新内容", time="2026/07/03 05:01:00"),
             ])
 
-            repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="2"))
+            repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="2026/07/03 05:01:00"))
 
             self.assertTrue(repaired)
             self.assertIn("private:张三", bot._memory_context_repair_last_at)
@@ -1116,17 +1606,17 @@ class WXBotContextRepairTests(unittest.TestCase):
             bot.config.group = ["测试群"]
             bot.memory_manager.append_missing_messages(
                 "测试群",
-                [{"time": "1", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
+                [{"time": "2026/07/03 05:00:00", "attr": "friend", "sender": "张三", "type": "text", "content": "旧锚点"}],
                 100,
                 chat_type="private",
             )
             chat = FakeChat(visible=[
-                msg("旧锚点", time="1"),
-                msg("新内容", time="3"),
+                msg("旧锚点", time="2026/07/03 05:00:00"),
+                msg("新内容", time="2026/07/03 05:02:00"),
             ])
             chat.who = "测试群"
 
-            repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="3"))
+            repaired = bot._repair_private_context_before_ai(chat, msg("新内容", time="2026/07/03 05:02:00"))
 
             self.assertTrue(repaired)
             self.assertEqual(

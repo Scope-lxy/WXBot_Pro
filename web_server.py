@@ -363,10 +363,6 @@ def _account_area_dir(wx_id, area, *, create=False, base_dir=None):
     return str(account_area_dir(root, wx_id, area, create=create))
 
 
-def _account_memory_dir(wx_id, *, create=False):
-    return _account_area_dir(wx_id, 'memory', create=create, base_dir=MEMORY_BASE)
-
-
 def _account_memory_manager(wx_id):
     return MemoryManager(wx_id, MEMORY_BASE)
 
@@ -2143,6 +2139,7 @@ def dashboard():
     config.setdefault('everyday_stop_bot_time', "23:00")
     config.setdefault('memory_switch', True)
     config.setdefault('memory_context_switch', config.get('memory_switch', True))
+    config.setdefault('memory_context_repair_switch', True)
     config.setdefault('memory_max_count', 5000)
     config.setdefault('memory_context_count', 50)
     config.setdefault('wxauto_save_cache_retention_days', 30)
@@ -2413,6 +2410,7 @@ def _dashboard_config_status_snapshot(cfg):
         'keyword_count': len(cfg.get('keyword_dict', {}) or {}),
         'memory_switch': bool(cfg.get('memory_switch', True)),
         'memory_context_switch': bool(cfg.get('memory_context_switch', cfg.get('memory_switch', True))),
+        'memory_context_repair_switch': bool(cfg.get('memory_context_repair_switch', True)),
         'memory_context_count': cfg.get('memory_context_count', 50),
         'default_prompt': str(cfg.get('default_prompt', '默认') or '默认').strip(),
         'clean_ai_reply_switch': bool(cfg.get('clean_ai_reply_switch', True)),
@@ -2798,6 +2796,7 @@ def _coerce_bool_fields(merged_config):
         'everyday_start_stop_bot_switch',   # 新增
         'memory_switch',                    # 聊天记录保存开关
         'memory_context_switch',            # 最近聊天带入开关
+        'memory_context_repair_switch',     # 上下文补洞开关
         'clean_ai_reply_switch',            # AI 回复清洗开关
         'chat_image_recognition_switch',    # 私聊图片识别开关
         'group_image_recognition_switch',   # 群组图片识别开关
@@ -3172,6 +3171,7 @@ def save_config(config_data):
         original_config = read_config() or {}
         merged_config = {**original_config, **config_data}
         merged_config.setdefault('memory_context_switch', merged_config.get('memory_switch', True))
+        merged_config.setdefault('memory_context_repair_switch', True)
 
         _coerce_bool_fields(merged_config)
         _coerce_list_fields(merged_config)
@@ -3247,6 +3247,7 @@ def save_config_route():
 
         merged_config = {**(read_config() or {}), **config_data}
         merged_config.setdefault('memory_context_switch', merged_config.get('memory_switch', True))
+        merged_config.setdefault('memory_context_repair_switch', True)
 
         # 预处理（与 save_config 二次校验互补）
         _coerce_bool_fields(merged_config)
@@ -6161,8 +6162,11 @@ def chat_memory_state_get(chat_name):
         state = store.load_state(chat_name, wx_id=wx_id, strict=True)
         has_chat_record = False
         if wx_id and chat_name:
-            chat_dir = os.path.join(_account_memory_dir(wx_id), resolve_memory_storage_name(chat_name))
-            has_chat_record = os.path.isdir(chat_dir)
+            has_chat_record = bool(_account_memory_manager(wx_id).get_messages(
+                chat_name,
+                1,
+                chat_type='private',
+            ))
         return jsonify({
             'status': 'success',
             'wx_id': wx_id,
@@ -6469,7 +6473,7 @@ def memory_delete_chat(wx_id, chat_name):
     """删除指定窗口的聊天记录"""
     try:
         wx_id = _validate_known_account_wx_id(wx_id, base_dir=MEMORY_BASE)
-        chat_type = str(request.args.get('chat_type') or '').strip().lower()
+        chat_type = str(request.values.get('chat_type') or '').strip().lower()
         if chat_type not in {'private', 'group'}:
             raise ValueError('chat_type 必须是 private 或 group')
         _account_memory_manager(wx_id).clear_messages(
@@ -6714,6 +6718,7 @@ def main():
                 "everyday_stop_bot_time": "23:00",
                 "memory_switch": True,
                 "memory_context_switch": True,
+                "memory_context_repair_switch": True,
                 "memory_max_count": 5000,
                 "memory_context_count": 50,
                 "wxauto_save_cache_retention_days": 30,

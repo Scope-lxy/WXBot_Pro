@@ -971,7 +971,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .switch-row > .cfg-hint { min-width: 0; flex: 1 1 220px; margin: 0 0 0 auto; text-align: right; line-height: 1.6; }
 .switch-row .switch-desc--emphasis { color: var(--card-fg); font-weight: 600; }
 .switch-row--ghost { visibility: hidden; pointer-events: none; }
-.memory-config-grid { display: grid; grid-template-columns: repeat(2, minmax(260px, 1fr)); gap: 16px; }
+.memory-config-grid { display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 16px; }
 .memory-config-section { min-width: 0; }
 .memory-config-section .switch-row { margin-bottom: 12px; min-height: 44px; }
 .memory-config-section .cfg-label { display: block; }

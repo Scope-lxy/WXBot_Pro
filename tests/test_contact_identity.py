@@ -20,7 +20,7 @@ from core.contact_identity import (
     sync_contact_task_names,
     sync_relationship_scan_names,
 )
-from core.memory import resolve_memory_storage_name
+from core.memory import MemoryManager, resolve_memory_storage_name
 import web_server
 from wxbot_core import WXBot
 
@@ -47,6 +47,21 @@ def contact(**kwargs):
 
 
 class ContactIdentityTests(unittest.TestCase):
+    @staticmethod
+    def _save_message(base, wx_id, chat_name, content, message_time="2026/06/15 10:00:00"):
+        MemoryManager(wx_id, base).append_missing_messages(
+            chat_name,
+            [{
+                "time": message_time,
+                "sender": chat_name,
+                "type": "text",
+                "attr": "friend",
+                "content": content,
+            }],
+            100,
+            chat_type="private",
+        )
+
     def test_reconcile_storage_merges_memory_conversation_config_and_relationship_scan(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
@@ -54,18 +69,8 @@ class ContactIdentityTests(unittest.TestCase):
             old_name = "A0-努力"
             new_name = "B0-我要摸鱼"
 
-            old_memory_dir = account_area_dir(base, wx_id, "memory", create=True) / resolve_memory_storage_name(old_name)
-            new_memory_dir = account_area_dir(base, wx_id, "memory", create=True) / resolve_memory_storage_name(new_name)
-            old_memory_dir.mkdir(parents=True, exist_ok=True)
-            new_memory_dir.mkdir(parents=True, exist_ok=True)
-            (old_memory_dir / f"{old_memory_dir.name}_memory.json").write_text(
-                json.dumps([{"time": "2026/06/15 10:00:00", "sender": "user", "type": "text", "attr": "friend", "content": "旧"}], ensure_ascii=False),
-                encoding="utf-8",
-            )
-            (new_memory_dir / f"{new_memory_dir.name}_memory.json").write_text(
-                json.dumps([{"time": "2026/06/15 10:01:00", "sender": "user", "type": "text", "attr": "friend", "content": "新"}], ensure_ascii=False),
-                encoding="utf-8",
-            )
+            self._save_message(base, wx_id, old_name, "旧")
+            self._save_message(base, wx_id, new_name, "新", "2026/06/15 10:01:00")
 
             conv_dir = account_area_dir(base, wx_id, "chat_memory", create=True)
             (conv_dir / f"{resolve_memory_storage_name(old_name)}.json").write_text(
@@ -103,9 +108,10 @@ class ContactIdentityTests(unittest.TestCase):
             manifest = reconcile_contact_storage(base, wx_id, old_name, new_name, reason="test")
 
             self.assertTrue(manifest["memory"]["changed"])
-            merged_messages = json.loads((new_memory_dir / f"{new_memory_dir.name}_memory.json").read_text(encoding="utf-8"))
+            manager = MemoryManager(wx_id, base)
+            merged_messages = manager.get_messages(new_name, 10, chat_type="private")
             self.assertEqual([item["content"] for item in merged_messages], ["旧", "新"])
-            self.assertFalse(old_memory_dir.exists())
+            self.assertEqual(manager.get_messages(old_name, 10, chat_type="private"), [])
 
             merged_state = json.loads((conv_dir / f"{resolve_memory_storage_name(new_name)}.json").read_text(encoding="utf-8"))
             self.assertEqual({item["content"] for item in merged_state["memories"]}, {"旧记忆", "新记忆"})
@@ -120,45 +126,28 @@ class ContactIdentityTests(unittest.TestCase):
             self.assertEqual(relationship["records"][0]["name"], new_name)
             self.assertEqual(relationship["events"][0]["name"], new_name)
 
-    def test_memory_rename_normalizes_internal_memory_file_name(self):
+    def test_memory_rename_moves_sqlite_conversation(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             wx_id = "wxid_test"
             old_name = "A0-努力"
             new_name = "A0-努力加油"
-            old_memory_dir = account_area_dir(base, wx_id, "memory", create=True) / resolve_memory_storage_name(old_name)
-            old_memory_dir.mkdir(parents=True, exist_ok=True)
-            old_file = old_memory_dir / f"{old_memory_dir.name}_memory.json"
-            old_file.write_text(
-                json.dumps([{"time": "2026/06/15 10:00:00", "sender": "user", "type": "text", "attr": "friend", "content": "旧"}], ensure_ascii=False),
-                encoding="utf-8",
-            )
+            self._save_message(base, wx_id, old_name, "旧")
 
             manifest = reconcile_contact_storage(base, wx_id, old_name, new_name, reason="rename_only")
 
-            new_memory_dir = account_area_dir(base, wx_id, "memory") / resolve_memory_storage_name(new_name)
-            canonical_file = new_memory_dir / f"{new_memory_dir.name}_memory.json"
             self.assertTrue(manifest["memory"]["changed"])
-            self.assertTrue(canonical_file.exists())
-            self.assertEqual([path.name for path in new_memory_dir.glob("*_memory.json")], [canonical_file.name])
-            messages = json.loads(canonical_file.read_text(encoding="utf-8"))
+            manager = MemoryManager(wx_id, base)
+            messages = manager.get_messages(new_name, 10, chat_type="private")
             self.assertEqual([item["content"] for item in messages], ["旧"])
+            self.assertEqual(manager.get_messages(old_name, 10, chat_type="private"), [])
 
     def test_manual_identity_calibration_candidates_include_memory_names(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             wx_id = "wxid_test"
             old_name = "旧备注"
-            old_memory_dir = account_area_dir(base, wx_id, "memory", create=True) / resolve_memory_storage_name(old_name)
-            old_memory_dir.mkdir(parents=True, exist_ok=True)
-            (old_memory_dir / "name.json").write_text(
-                json.dumps({"name": old_name}, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            (old_memory_dir / f"{old_memory_dir.name}_memory.json").write_text(
-                json.dumps([{"content": "旧消息"}], ensure_ascii=False),
-                encoding="utf-8",
-            )
+            self._save_message(base, wx_id, old_name, "旧消息")
 
             with patch.object(web_server, "DATA_DIR", str(base)):
                 app = web_server.app
@@ -181,16 +170,7 @@ class ContactIdentityTests(unittest.TestCase):
             wx_id = "wxid_test"
             old_name = "旧备注"
             new_name = "新备注"
-            old_memory_dir = account_area_dir(base, wx_id, "memory", create=True) / resolve_memory_storage_name(old_name)
-            old_memory_dir.mkdir(parents=True, exist_ok=True)
-            (old_memory_dir / "name.json").write_text(
-                json.dumps({"name": old_name}, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            (old_memory_dir / f"{old_memory_dir.name}_memory.json").write_text(
-                json.dumps([{"content": "旧消息"}], ensure_ascii=False),
-                encoding="utf-8",
-            )
+            self._save_message(base, wx_id, old_name, "旧消息")
 
             with patch.object(web_server, "DATA_DIR", str(base)):
                 app = web_server.app
@@ -205,11 +185,10 @@ class ContactIdentityTests(unittest.TestCase):
 
             payload = response.get_json()
             self.assertEqual(payload["status"], "success")
-            new_memory_dir = account_area_dir(base, wx_id, "memory") / resolve_memory_storage_name(new_name)
-            self.assertTrue(new_memory_dir.exists())
-            self.assertFalse(old_memory_dir.exists())
-            merged = json.loads((new_memory_dir / f"{new_memory_dir.name}_memory.json").read_text(encoding="utf-8"))
+            manager = MemoryManager(wx_id, base)
+            merged = manager.get_messages(new_name, 10, chat_type="private")
             self.assertEqual([item["content"] for item in merged], ["旧消息"])
+            self.assertEqual(manager.get_messages(old_name, 10, chat_type="private"), [])
 
     def test_chat_memory_merge_keeps_legacy_profile_items(self):
         with tempfile.TemporaryDirectory() as tmp:

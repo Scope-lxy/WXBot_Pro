@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 import re
 import time
-import uuid
 from datetime import datetime
 
-from core.account_storage import account_area_dir
 from core.memory_context_repair import build_repair_plan, unique_message_key
 from core.message_pipeline import split_quoted_image_message
 from core.message_store import MessageStore
@@ -57,26 +53,6 @@ def resolve_memory_storage_name(chat_name):
     ):
         return hash_memory_storage_name(raw_name)
     return raw_name
-
-
-def read_memory_original_name(chat_path, fallback=""):
-    name_path = os.path.join(chat_path, "name.json")
-    if not os.path.exists(name_path):
-        return fallback
-    try:
-        with open(name_path, "r", encoding="utf-8") as file:
-            data = json.load(file)
-        name = str(data.get("name", "") if isinstance(data, dict) else "").strip()
-        return name or fallback
-    except Exception:
-        return fallback
-
-
-def find_memory_chat_dir(base_path, wx_id, chat_name):
-    raw_name = normalize_memory_chat_name(chat_name)
-    storage_name = resolve_memory_storage_name(raw_name)
-    wx_path = account_area_dir(base_path, wx_id, "memory")
-    return storage_name, os.path.join(wx_path, storage_name)
 
 
 class MemoryManager:
@@ -171,6 +147,11 @@ class MemoryManager:
         source = str(entry.get("source", "") or "").strip()
         if source:
             normalized["source"] = source
+        message_id = str(entry.get("message_id", "") or "").strip()
+        if message_id:
+            normalized["message_id"] = message_id
+        if entry.get("time_inferred") is True:
+            normalized["time_inferred"] = True
         if image_paths:
             normalized["image_paths"] = image_paths
         raw_notes = entry.get("visual_notes")
@@ -206,6 +187,9 @@ class MemoryManager:
             for key in ("source", "image_paths", "visual_notes", "visual_note")
             if key in entry
         }
+        time_inferred = entry.get("time_inferred") is True
+        if time_inferred:
+            metadata["time_inferred"] = True
         return {
             "event_id": event_id,
             "conversation": conversation,
@@ -216,7 +200,7 @@ class MemoryManager:
             "original_content": entry.get("content", ""),
             "message_type": entry.get("type", "text"),
             "native_attr": entry.get("attr", ""),
-            "native_time": entry.get("time", ""),
+            "native_time": "" if time_inferred else entry.get("time", ""),
             "received_at": self._received_at(entry.get("time"), fallback_time),
             "metadata": metadata,
         }
@@ -224,7 +208,7 @@ class MemoryManager:
     @staticmethod
     def _event_id(prefix, value=None):
         if value is None:
-            return f"evt_{prefix}_{uuid.uuid4().hex}"
+            raise ValueError("deterministic event identity is required")
         digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()
         return f"evt_{prefix}_{digest}"
 
@@ -238,6 +222,7 @@ class MemoryManager:
         require_anchor=False,
         chat_type,
         anchor_recent_count=5,
+        not_after=None,
     ):
         chat_type = require_memory_chat_type(chat_type)
         conversation = self.resolve_chat_name(chat_name, chat_type=chat_type)
@@ -249,12 +234,37 @@ class MemoryManager:
             if unique_message_key(normalized):
                 normalized_entries.append(normalized)
 
+        if reconcile_visible_snapshot:
+            snapshot_occurrences = {}
+            for entry in normalized_entries:
+                key = unique_message_key(entry)
+                entry["_repair_occurrence"] = snapshot_occurrences.get(key, 0)
+                snapshot_occurrences[key] = entry["_repair_occurrence"] + 1
+
+        if not_after is not None:
+            boundary = self._parse_message_time(self._normalize_message_time(not_after))
+            if boundary is None:
+                raise ValueError("context repair boundary time is invalid")
+            for entry in normalized_entries:
+                message_time = self._parse_message_time(entry.get("time"))
+                if message_time is None or message_time > boundary:
+                    raise ValueError("context repair message exceeds current inbound boundary")
+
         history_limit = self._positive_count(max_count, fallback=5000)
         messages = self.get_messages(conversation, history_limit, chat_type=chat_type)
+        deletion_boundary = (
+            self.message_store.latest_history_deletion_at(
+                conversation,
+                chat_type=chat_type,
+            )
+            if reconcile_visible_snapshot
+            else None
+        )
         if not normalized_entries:
-            return {"added": 0, "total": len(messages)}
+            return {"added": 0, "total": len(messages), "deleted_boundary_skipped": 0}
 
         repair_plan = None
+        deleted_boundary_skipped = 0
         if reconcile_visible_snapshot:
             repair_plan = build_repair_plan(
                 messages,
@@ -267,6 +277,19 @@ class MemoryManager:
                 if repair_plan.anchor_found or not require_anchor
                 else []
             )
+            if deletion_boundary is not None:
+                kept_entries = []
+                for entry in normalized_entries:
+                    parsed_time = self._parse_message_time(entry.get("time"))
+                    if (
+                        entry.get("time_inferred") is True
+                        or parsed_time is None
+                        or parsed_time.timestamp() <= deletion_boundary
+                    ):
+                        deleted_boundary_skipped += 1
+                        continue
+                    kept_entries.append(entry)
+                normalized_entries = kept_entries
 
         existing_keys = {
             unique_message_key(item)
@@ -281,24 +304,36 @@ class MemoryManager:
             )
         )
         to_append = []
+        occurrence_counts = {}
         for _index, entry in indexed:
             key = unique_message_key(entry)
             if not key or (not reconcile_visible_snapshot and key in existing_keys):
                 continue
             if not reconcile_visible_snapshot:
                 existing_keys.add(key)
+            occurrence = entry.get("_repair_occurrence")
+            if occurrence is None:
+                occurrence = occurrence_counts.get(key, 0)
+                occurrence_counts[key] = occurrence + 1
+            repair_identity = "\x1f".join((
+                conversation,
+                chat_type,
+                key,
+                str(occurrence),
+            ))
             to_append.append(
                 self._store_entry(
                     conversation,
                     entry,
                     chat_type=chat_type,
-                    event_id=self._event_id("repair"),
+                    event_id=self._event_id("repair", repair_identity),
                 )
             )
         added = self.message_store.append_history(to_append)
         result = {
             "added": added,
             "total": len(self.get_messages(conversation, history_limit, chat_type=chat_type)),
+            "deleted_boundary_skipped": deleted_boundary_skipped,
         }
         if repair_plan is not None:
             result.update(
@@ -328,8 +363,11 @@ class MemoryManager:
     @classmethod
     def _history_message(cls, event):
         metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        time_inferred = metadata.get("time_inferred") is True
         native_time = str(event.get("native_time", "") or "").strip()
-        if native_time:
+        if time_inferred:
+            message_time = ""
+        elif native_time:
             message_time = cls._normalize_message_time(native_time)
         else:
             message_time = datetime.fromtimestamp(float(event["received_at"])).strftime("%Y/%m/%d %H:%M:%S")
@@ -347,6 +385,11 @@ class MemoryManager:
         for key in ("source", "image_paths", "visual_notes", "visual_note"):
             if key in metadata:
                 item[key] = metadata[key]
+        if time_inferred:
+            item["time_inferred"] = True
+        native_id = str(event.get("native_id", "") or "").strip()
+        if native_id:
+            item["message_id"] = native_id
         return item
 
     def get_messages(self, chat_name, count, *, chat_type):

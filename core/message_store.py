@@ -1226,7 +1226,7 @@ class MessageStore:
         ).fetchone()
         if row is not None:
             raise MessageStoreTransitionError(
-                f"active reply job {row['turn_id']} prevents history deletion"
+                f"active reply job {row['turn_id']} prevents conversation mutation"
             )
 
     def delete_conversation(self, conversation, *, chat_type=None, now=None):
@@ -1280,11 +1280,83 @@ class MessageStore:
             )
             return cursor.rowcount
 
+    def latest_history_deletion_at(self, conversation, *, chat_type):
+        conversation = _required_text(conversation, "conversation")
+        chat_type = _required_chat_type(chat_type)
+        with self._reader() as connection:
+            row = connection.execute(
+                """
+                SELECT MAX(state_updated_at) AS deleted_at
+                FROM chat_events
+                WHERE conversation = ? AND chat_type = ? AND history_visible = 0
+                """,
+                (conversation, chat_type),
+            ).fetchone()
+            return None if row is None or row["deleted_at"] is None else float(row["deleted_at"])
+
     def conversation_version(self, conversation, *, chat_type="private"):
         conversation = _required_text(conversation, "conversation")
         chat_type = _required_chat_type(chat_type)
         with self._reader() as connection:
             return self._current_version(connection, conversation, chat_type)
+
+    def merge_conversations(self, old_conversation, new_conversation, *, chat_type="private"):
+        old_conversation = _required_text(old_conversation, "old_conversation")
+        new_conversation = _required_text(new_conversation, "new_conversation")
+        chat_type = _required_chat_type(chat_type)
+        if old_conversation == new_conversation:
+            return {
+                "changed": False,
+                "events_changed": 0,
+                "jobs_changed": 0,
+                "echoes_changed": 0,
+            }
+
+        with self._transaction() as connection:
+            self._assert_no_active_jobs(connection, old_conversation, chat_type)
+            self._assert_no_active_jobs(connection, new_conversation, chat_type)
+
+            state_rows = connection.execute(
+                """
+                SELECT conversation, version, updated_at
+                FROM conversation_state
+                WHERE chat_type = ? AND conversation IN (?, ?)
+                """,
+                (chat_type, old_conversation, new_conversation),
+            ).fetchall()
+            if state_rows:
+                version = max(int(row["version"]) for row in state_rows)
+                updated_at = max(float(row["updated_at"]) for row in state_rows)
+                connection.execute(
+                    "DELETE FROM conversation_state WHERE chat_type = ? AND conversation IN (?, ?)",
+                    (chat_type, old_conversation, new_conversation),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO conversation_state(conversation, chat_type, version, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (new_conversation, chat_type, version, updated_at),
+                )
+
+            events = connection.execute(
+                "UPDATE chat_events SET conversation = ? WHERE conversation = ? AND chat_type = ?",
+                (new_conversation, old_conversation, chat_type),
+            ).rowcount
+            jobs = connection.execute(
+                "UPDATE reply_jobs SET conversation = ? WHERE conversation = ? AND chat_type = ?",
+                (new_conversation, old_conversation, chat_type),
+            ).rowcount
+            echoes = connection.execute(
+                "UPDATE reply_echo_expectations SET conversation = ? WHERE conversation = ? AND chat_type = ?",
+                (new_conversation, old_conversation, chat_type),
+            ).rowcount
+            return {
+                "changed": bool(events or jobs or echoes or state_rows),
+                "events_changed": events,
+                "jobs_changed": jobs,
+                "echoes_changed": echoes,
+            }
 
     def history(
         self,
