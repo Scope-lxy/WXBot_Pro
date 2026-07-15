@@ -152,7 +152,7 @@
           <div class="arrow">-&gt;</div>
           <article class="node blue"><h3>按代次补齐可见尾部</h3><p>窗口变为当前运行期可信可用后的首次回复读取当前窗口一次；没有标记时不读取，也不滚动深历史。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="node blue"><h3>构造并生成回复</h3><p>组合人设、近况、记忆、最近聊天、图片视觉笔记和本轮消息。模型输出再经过清洗、准入、必要时重写或固定兜底。</p></article>
+          <article class="node blue"><h3>构造并生成回复</h3><p>组合人设、近况、记忆、最近聊天、图片视觉笔记、处理时间，以及新消息入站时从当前消息上方最多 30 个控件内取得的最近微信时间条（如有）和本轮消息。不会继承历史旧时间，时间取不到也不阻断回复。</p></article>
         </div>
         <div class="arrow down">v</div>
         <div class="two-column">

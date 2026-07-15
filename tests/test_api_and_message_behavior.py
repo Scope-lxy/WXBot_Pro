@@ -86,6 +86,7 @@ def process_persisted_group_message(bot, chat, message):
         "message_type": getattr(message, "type", "text"),
         "native_attr": getattr(message, "attr", "group"),
         "native_id": f"test-{uuid.uuid4().hex}",
+        "native_time": getattr(message, "time", ""),
         "received_at": now,
         "source": "test",
         "source_batch": f"test-{uuid.uuid4().hex}",
@@ -105,25 +106,6 @@ def configure_persisted_private_reply(bot, chat, message, data_dir):
     return store
 
 
-def persist_time_marker(store, conversation, *, chat_type, native_time):
-    return store.record_inbound({
-        "conversation": conversation,
-        "chat_type": chat_type,
-        "direction": "system",
-        "sender": "system",
-        "content": native_time[11:16],
-        "original_content": native_time[11:16],
-        "message_type": "time",
-        "native_attr": "system",
-        "native_id": f"time-{uuid.uuid4().hex}",
-        "native_time": native_time,
-        "received_at": time.time() - 1,
-        "source": "test",
-        "source_batch": f"test-{uuid.uuid4().hex}",
-        "source_order": 0,
-    })
-
-
 def persist_private_inbound(store, chat, message):
     now = time.time()
     stored = store.record_inbound({
@@ -136,6 +118,7 @@ def persist_private_inbound(store, chat, message):
         "message_type": getattr(message, "type", "text"),
         "native_attr": getattr(message, "attr", "friend"),
         "native_id": str(getattr(message, "id", "") or f"test-{uuid.uuid4().hex}"),
+        "native_time": getattr(message, "time", ""),
         "received_at": now,
         "source": "test",
         "source_batch": f"test-{uuid.uuid4().hex}",
@@ -577,7 +560,7 @@ class MessageBehaviorTests(unittest.TestCase):
 
         bot = WXBot.__new__(WXBot)
         bot._message_store = SimpleNamespace(
-            latest_time_marker_before_events=fail_lookup,
+            current_message_native_time=fail_lookup,
         )
         message = SimpleNamespace(_wxbot_event_ids=("event-1",))
 
@@ -2770,16 +2753,17 @@ class MessageBehaviorTests(unittest.TestCase):
             chat_type="private",
             SendMsg=lambda msg=None, **_kwargs: sent.append(msg) or True,
         )
-        message = SimpleNamespace(type="text", attr="friend", sender="张三", content="测试", id="1")
+        message = SimpleNamespace(
+            type="text",
+            attr="friend",
+            sender="张三",
+            content="测试",
+            id="1",
+            time="2026-07-14 23:15:00",
+        )
 
         with tempfile.TemporaryDirectory() as tmp:
             store = configure_group_reply_runtime(bot, tmp)
-            persist_time_marker(
-                store,
-                chat.who,
-                chat_type="private",
-                native_time="2026-07-14 23:15:00",
-            )
             persist_private_inbound(store, chat, message)
             with mock.patch("wxbot_core.build_current_turn_user_message", return_value="WRAPPED_CURRENT_TURN") as wrapped:
                 self.assertTrue(bot.wx_send_ai(chat, message))
@@ -3075,14 +3059,8 @@ class MessageBehaviorTests(unittest.TestCase):
             attr="group",
             sender="张三",
             content="测试",
+            time="2026-07-14 23:15:00",
             quote=lambda text, at=None: sent.append((text, at)) or True,
-        )
-
-        persist_time_marker(
-            store,
-            chat.who,
-            chat_type="group",
-            native_time="2026-07-14 23:15:00",
         )
 
         with mock.patch("wxbot_core.build_current_turn_user_message", return_value="WRAPPED_GROUP_TURN") as wrapped:

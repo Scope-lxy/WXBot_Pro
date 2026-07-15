@@ -4657,7 +4657,7 @@ class WXBot:
         if store is None or not event_ids:
             return ""
         try:
-            return store.latest_time_marker_before_events(
+            return store.current_message_native_time(
                 str(getattr(chat, "who", "") or "").strip(),
                 event_ids,
                 chat_type=chat_type,

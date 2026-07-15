@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from threading import RLock, get_ident
 from typing import Any, Callable
+from wxautox4.msgs.msg import parse_msg
 from wxautox4.param import WxParam
 
 from core.message_pipeline import (
@@ -27,6 +28,9 @@ from core.wechat_ui_actions import (
     UIIntent,
     UIIntentKind,
 )
+
+
+MESSAGE_TIME_CONTROL_SCAN_LIMIT = 30
 
 
 def _required_internal_chat_type(chat_type):
@@ -702,6 +706,45 @@ class WeChatUIRuntime:
         path = str(payload.get("path") or "")
         return chat.SendAudio(filepath=path, duration=None)
 
+    @staticmethod
+    def _current_message_time(raw_messages):
+        last_inbound_index = None
+        for index in range(len(raw_messages) - 1, -1, -1):
+            message = raw_messages[index]
+            message_type = str(getattr(message, "type", "") or "").strip().lower()
+            attr = str(getattr(message, "attr", "") or "").strip().lower()
+            if message_type != "time" and attr not in {"self", "system"}:
+                last_inbound_index = index
+                break
+        if last_inbound_index is None:
+            return None, ""
+
+        for message in reversed(raw_messages[:last_inbound_index]):
+            if str(getattr(message, "type", "") or "").strip().lower() == "time":
+                timestamp = str(getattr(message, "time", "") or "").strip()
+                if timestamp:
+                    return last_inbound_index, timestamp
+                break
+
+        message = raw_messages[last_inbound_index]
+        control = getattr(message, "control", None)
+        parent = getattr(message, "parent", None)
+        if control is None or parent is None:
+            return last_inbound_index, ""
+        for _index in range(MESSAGE_TIME_CONTROL_SCAN_LIMIT):
+            control = control.GetPreviousSiblingControl()
+            if control is None:
+                break
+            if (
+                str(getattr(control, "ClassName", "") or "") != "mmui::ChatItemView"
+                or str(getattr(control, "AutomationId", "") or "")
+            ):
+                continue
+            parsed = parse_msg(control, parent)
+            if str(getattr(parsed, "type", "") or "").strip().lower() == "time":
+                return last_inbound_index, str(getattr(parsed, "time", "") or "").strip()
+        return last_inbound_index, ""
+
     def poll_messages(self, payload):
         if self._client is None:
             return []
@@ -752,6 +795,10 @@ class WeChatUIRuntime:
             result.get("chat_type") or getattr(self._client, "chat_type", "private"),
         )
         raw_messages = list(result.get("msg") or captured)
+        try:
+            timed_message_index, message_time = self._current_message_time(raw_messages)
+        except Exception:
+            timed_message_index, message_time = None, ""
         envelopes = []
         source_batch = f"global:{time.time_ns()}"
         for index, message in enumerate(raw_messages):
@@ -761,6 +808,8 @@ class WeChatUIRuntime:
                 received_at=time.time(),
                 window_order=index,
             )
+            if index == timed_message_index and message_time:
+                envelope.time = message_time
             envelope._wxbot_source_batch = source_batch
             envelopes.append(envelope)
         return {

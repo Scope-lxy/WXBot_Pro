@@ -111,7 +111,30 @@ class FakeClient:
         return True
 
 
+class FakeMessageControl:
+    def __init__(self, *, class_name="", automation_id="message", previous=None):
+        self.ClassName = class_name
+        self.AutomationId = automation_id
+        self.previous = previous
+
+    def GetPreviousSiblingControl(self):
+        return self.previous
+
+
 class WeChatUIRuntimeTests(unittest.TestCase):
+    @staticmethod
+    def _poll_global_messages(messages, *, client=None):
+        client = client or FakeClient()
+        client.GetSession = lambda: []
+        client.GetNextNewMessage = lambda **_kwargs: {
+            "chat_name": "张三",
+            "chat_type": "friend",
+            "msg": messages,
+        }
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+        return runtime.poll_messages({"mode": "next"})
+
     def test_subwindow_callback_downloads_exact_original_image_before_copying(self):
         received = []
         downloads = []
@@ -662,6 +685,115 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(batch["max_quantity"], 30)
         self.assertEqual(batch["max_runtime_seconds"], 10.0)
         self.assertFalse(hasattr(batch["msg"][0], "download"))
+
+    def test_global_poll_prefers_preceding_time_from_returned_batch(self):
+        messages = [
+            SimpleNamespace(type="time", attr="system", content="00:07", time="2026-07-16 00:07:00"),
+            SimpleNamespace(type="time", attr="system", content="00:20", time="2026-07-16 00:20:00"),
+            SimpleNamespace(type="text", attr="friend", sender="张三", content="刚发的消息", time=""),
+            SimpleNamespace(type="time", attr="system", content="01:53", time="2026-07-16 01:53:00"),
+        ]
+
+        with patch("core.wechat_ui_runtime.parse_msg") as parse_mock:
+            batch = self._poll_global_messages(messages)
+
+        self.assertEqual(batch["msg"][2].time, "2026-07-16 00:20:00")
+        parse_mock.assert_not_called()
+
+    def test_global_poll_resolves_missing_time_from_preceding_sibling(self):
+        parent = object()
+        time_control = FakeMessageControl(class_name="mmui::ChatItemView", automation_id="")
+        message_control = FakeMessageControl(previous=time_control)
+        message = SimpleNamespace(
+            type="text",
+            attr="friend",
+            sender="张三",
+            content="昨晚积压的消息",
+            time="",
+            control=message_control,
+            parent=parent,
+        )
+        client = FakeClient()
+        client.GetAllMessage = lambda: self.fail("取消息时间不得读取完整聊天记录")
+
+        with patch(
+            "core.wechat_ui_runtime.parse_msg",
+            return_value=SimpleNamespace(type="time", time="2026-07-15 20:55:00"),
+        ) as parse_mock:
+            batch = self._poll_global_messages([message], client=client)
+
+        self.assertEqual(batch["msg"][0].time, "2026-07-15 20:55:00")
+        parse_mock.assert_called_once_with(time_control, parent)
+
+    def test_global_poll_uses_nearest_preceding_time_and_only_marks_last_inbound(self):
+        parent = object()
+        old_time = FakeMessageControl(class_name="mmui::ChatItemView", automation_id="")
+        first_message_control = FakeMessageControl(previous=old_time)
+        nearest_time = FakeMessageControl(
+            class_name="mmui::ChatItemView",
+            automation_id="",
+            previous=first_message_control,
+        )
+        last_message_control = FakeMessageControl(previous=nearest_time)
+        messages = [
+            SimpleNamespace(
+                type="text", attr="friend", sender="张三", content="第一条", time="",
+                control=first_message_control, parent=parent,
+            ),
+            SimpleNamespace(
+                type="text", attr="friend", sender="张三", content="最后一条", time="",
+                control=last_message_control, parent=parent,
+            ),
+        ]
+
+        def parse(control, _parent):
+            timestamp = (
+                "2026-07-16 00:20:00"
+                if control is nearest_time
+                else "2026-07-16 00:07:00"
+            )
+            return SimpleNamespace(type="time", time=timestamp)
+
+        with patch("core.wechat_ui_runtime.parse_msg", side_effect=parse) as parse_mock:
+            batch = self._poll_global_messages(messages)
+
+        self.assertEqual(batch["msg"][0].time, "")
+        self.assertEqual(batch["msg"][1].time, "2026-07-16 00:20:00")
+        parse_mock.assert_called_once_with(nearest_time, parent)
+
+    def test_global_poll_stops_time_lookup_after_thirty_siblings(self):
+        hidden_time = FakeMessageControl(class_name="mmui::ChatItemView", automation_id="")
+        previous = hidden_time
+        for _index in range(30):
+            previous = FakeMessageControl(previous=previous)
+        message = SimpleNamespace(
+            type="text", attr="friend", sender="张三", content="当前消息", time="",
+            control=FakeMessageControl(previous=previous), parent=object(),
+        )
+
+        with patch("core.wechat_ui_runtime.parse_msg") as parse_mock:
+            batch = self._poll_global_messages([message])
+
+        self.assertEqual(batch["msg"][0].time, "")
+        parse_mock.assert_not_called()
+
+    def test_global_poll_time_lookup_failure_does_not_fail_message_poll(self):
+        time_control = FakeMessageControl(class_name="mmui::ChatItemView", automation_id="")
+        message = SimpleNamespace(
+            type="text", attr="friend", sender="张三", content="当前消息", time="",
+            control=FakeMessageControl(previous=time_control), parent=object(),
+        )
+        messages = [
+            SimpleNamespace(type="time", attr="system", content="00:07", time="2026-07-16 00:07:00"),
+            SimpleNamespace(type="time", attr="system", content="00:20", time=""),
+            message,
+        ]
+
+        with patch("core.wechat_ui_runtime.parse_msg", side_effect=RuntimeError("parse failed")):
+            batch = self._poll_global_messages(messages)
+
+        self.assertEqual(batch["msg"][2].content, "当前消息")
+        self.assertEqual(batch["msg"][2].time, "")
 
     def test_global_poll_does_not_clear_unread_when_snapshot_fails(self):
         client = FakeClient()
