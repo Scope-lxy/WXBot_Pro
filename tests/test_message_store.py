@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from core.message_store import (
+    MESSAGE_TIME_LOOKBACK_LIMIT,
     MessageStore,
     MessageStoreConflictError,
     MessageStoreTransitionError,
@@ -25,6 +26,7 @@ def inbound(
     native_hash_text="",
     related_delivery_id="",
     message_type="text",
+    native_time="10:00",
 ):
     return {
         "conversation": "Alice",
@@ -37,7 +39,7 @@ def inbound(
         "native_id": native_id,
         "native_hash": native_hash,
         "native_hash_text": native_hash_text,
-        "native_time": "10:00",
+        "native_time": native_time,
         "received_at": received_at,
         "stored_at": received_at + 0.1,
         "source": source,
@@ -814,6 +816,69 @@ class MessageStoreTests(unittest.TestCase):
         with self.assertRaises(MessageStoreConflictError):
             self.store.append_history([new_entry, conflict], now=40)
         self.assertIsNone(self.store.get_event("legacy-2"))
+
+    def test_latest_time_marker_uses_nearest_marker_before_last_batch_event(self):
+        self.record(
+            "time-0007",
+            content="00:07",
+            direction="system",
+            message_type="time",
+            native_time="2026-07-16 00:07:00",
+            received_at=100,
+        )
+        first = self.record("batch-first", content="第一条", received_at=101)
+        self.record(
+            "time-0020",
+            content="00:20",
+            direction="system",
+            message_type="time",
+            native_time="2026-07-16 00:20:00",
+            received_at=102,
+        )
+        last = self.record("batch-last", content="最后一条", received_at=103)
+        self.record(
+            "time-0153",
+            content="01:53",
+            direction="system",
+            message_type="time",
+            native_time="2026-07-16 01:53:00",
+            received_at=104,
+        )
+
+        self.assertEqual(
+            self.store.latest_time_marker_before_events(
+                "Alice",
+                (first["event_id"], last["event_id"]),
+                chat_type="private",
+            ),
+            "2026-07-16 00:20:00",
+        )
+
+    def test_latest_time_marker_does_not_scan_beyond_recent_record_limit(self):
+        self.record(
+            "old-time",
+            content="23:15",
+            direction="system",
+            message_type="time",
+            native_time="2026-06-01 23:15:00",
+            received_at=100,
+        )
+        for index in range(MESSAGE_TIME_LOOKBACK_LIMIT):
+            self.record(
+                f"later-{index}",
+                content=f"后续消息 {index}",
+                received_at=101 + index,
+            )
+        current = self.record("current", content="当前消息", received_at=200)
+
+        self.assertEqual(
+            self.store.latest_time_marker_before_events(
+                "Alice",
+                (current["event_id"],),
+                chat_type="private",
+            ),
+            "",
+        )
 
     def test_history_visual_notes_listing_and_logical_delete(self):
         entries = [

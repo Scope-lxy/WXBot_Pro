@@ -17,6 +17,7 @@ from core.memory_context_repair import build_tail_repair_plan
 
 SCHEMA_VERSION = 4
 DEFAULT_REPLY_TTL_SECONDS = 15 * 60
+MESSAGE_TIME_LOOKBACK_LIMIT = 30
 
 ACTION_STATES = {"pending", "inflight", "done", "uncertain", "cancelled", "stale", "expired"}
 CHAT_TYPES = {"private", "group"}
@@ -1630,6 +1631,72 @@ class MessageStore:
                 parameters,
             ).fetchall()
             return [self._event_row(row) for row in rows]
+
+    def latest_time_marker_before_events(
+        self,
+        conversation,
+        event_ids,
+        *,
+        chat_type="private",
+    ):
+        """Return the nearest visible WeChat time marker before the last event."""
+        conversation = _required_text(conversation, "conversation")
+        chat_type = _required_chat_type(chat_type)
+        boundary_ids = list(dict.fromkeys(
+            str(item or "").strip() for item in event_ids or ()
+        ))
+        boundary_ids = [item for item in boundary_ids if item]
+        if not boundary_ids:
+            return ""
+
+        with self._reader() as connection:
+            placeholders = ", ".join("?" for _ in boundary_ids)
+            rows = connection.execute(
+                f"""
+                SELECT event_id, conversation, chat_type, event_seq
+                FROM chat_events WHERE event_id IN ({placeholders})
+                """,
+                boundary_ids,
+            ).fetchall()
+            if len(rows) != len(boundary_ids):
+                raise MessageStoreConflictError(
+                    "one or more time marker boundary event IDs do not exist"
+                )
+            for row in rows:
+                if row["conversation"] != conversation or row["chat_type"] != chat_type:
+                    raise MessageStoreConflictError(
+                        f"event {row['event_id']} does not belong to the time marker conversation"
+                    )
+
+            boundary_seq = max(int(row["event_seq"]) for row in rows)
+            marker = connection.execute(
+                """
+                WITH recent_events AS (
+                    SELECT event_seq, direction, message_type, native_time, content
+                    FROM chat_events
+                    WHERE conversation = ?
+                      AND chat_type = ?
+                      AND event_seq < ?
+                      AND history_visible = 1
+                    ORDER BY event_seq DESC
+                    LIMIT ?
+                )
+                SELECT native_time, content
+                FROM recent_events
+                WHERE direction = 'system' AND message_type = 'time'
+                ORDER BY event_seq DESC
+                LIMIT 1
+                """,
+                (
+                    conversation,
+                    chat_type,
+                    boundary_seq,
+                    MESSAGE_TIME_LOOKBACK_LIMIT,
+                ),
+            ).fetchone()
+            if marker is None:
+                return ""
+            return str(marker["native_time"] or marker["content"] or "").strip()
 
     def recent_image_events(self, conversation, *, chat_type, since, limit=9):
         conversation = _required_text(conversation, "conversation")

@@ -4651,6 +4651,21 @@ class WXBot:
                 event_ids.append(event_id)
         return tuple(event_ids)
 
+    def _current_message_time_reference(self, chat, message, *, chat_type):
+        store = getattr(self, "_message_store", None)
+        event_ids = self._reply_event_ids(message)
+        if store is None or not event_ids:
+            return ""
+        try:
+            return store.latest_time_marker_before_events(
+                str(getattr(chat, "who", "") or "").strip(),
+                event_ids,
+                chat_type=chat_type,
+            )
+        except Exception as exc:
+            log(level="WARNING", message=f"读取当前消息时间失败，已按无时间继续：{exc}")
+            return ""
+
     def _ensure_reply_job(self, chat, message, *, chat_type="private", route_source=""):
         store = getattr(self, "_message_store", None)
         event_ids = self._reply_event_ids(message)
@@ -4855,6 +4870,11 @@ class WXBot:
                     self._record_keyword_reply_success(chat.who, chat_type="private", action_count=len(reply_actions))
                 return result
             else:
+                message_time = self._current_message_time_reference(
+                    chat,
+                    message,
+                    chat_type="private",
+                )
                 history = []
                 if self.config.memory_switch and self.memory_manager:
                     repaired_history = self._repair_context_before_ai(
@@ -4891,7 +4911,10 @@ class WXBot:
                     chat_type='private',
                 )
                 message_content = message_semantic_text
-                model_user_message = build_current_turn_user_message(model_message_text)
+                model_user_message = build_current_turn_user_message(
+                    model_message_text,
+                    message_time=message_time,
+                )
                 fallback_image_path = ""
                 quoted_text = ""
                 quoted_image_paths = []
@@ -4909,7 +4932,7 @@ class WXBot:
                         chat_type="private",
                     )
                     reply = self._reply_private_image_message(
-                        chat, history, [message.content]
+                        chat, history, [message.content], message_time=message_time
                     )
                     image_reply_context_used = True
                 elif self.config.chat_image_recognition_switch and quoted_image_paths:
@@ -4919,7 +4942,11 @@ class WXBot:
                         chat_type="private",
                     )
                     reply = self._reply_private_image_message(
-                        chat, history, quoted_image_paths, quoted_text
+                        chat,
+                        history,
+                        quoted_image_paths,
+                        quoted_text,
+                        message_time=message_time,
                     )
                     image_reply_context_used = True
                 elif fallback_image_path:
@@ -4929,7 +4956,10 @@ class WXBot:
                         chat_type="private",
                     )
                     reply = self._reply_private_image_message(
-                        chat, history, [fallback_image_path]
+                        chat,
+                        history,
+                        [fallback_image_path],
+                        message_time=message_time,
                     )
                     image_reply_context_used = True
                 elif self.config.chat_image_recognition_switch:
@@ -4944,6 +4974,7 @@ class WXBot:
                             pending_visual_context.get("image_paths", []),
                             message_content,
                             visual_notes=pending_visual_context.get("visual_notes", []),
+                            message_time=message_time,
                         )
                         image_reply_context_used = True
                     else:
@@ -5316,10 +5347,18 @@ class WXBot:
             )
             log(level="DEBUG", message=f"群组 {chat.who}：触发 AI 回复，内容：{content_without_at}")
             content_with_sender = f"{message.sender}: {format_model_message_text({'type': getattr(message, 'type', ''), 'content': content_without_at})}"
-            model_group_user_message = build_current_turn_user_message(content_with_sender)
             group_voice_candidate_hit = False
             group_preprocess_fallback_should_mark = False
             try:
+                message_time = self._current_message_time_reference(
+                    chat,
+                    message,
+                    chat_type="group",
+                )
+                model_group_user_message = build_current_turn_user_message(
+                    content_with_sender,
+                    message_time=message_time,
+                )
                 history = []
                 if self.config.memory_switch and self.memory_manager:
                     repaired_history = self._repair_context_before_ai(
@@ -5346,6 +5385,7 @@ class WXBot:
                         message,
                         history,
                         [message.content],
+                        message_time=message_time,
                     )
                 elif self.config.group_image_recognition_switch and QUOTE_IMAGE_MARKER in content_without_at:
                     text_part, image_paths = split_quoted_image_message(content_without_at)
@@ -5355,6 +5395,7 @@ class WXBot:
                         history,
                         image_paths,
                         text_part.strip(),
+                        message_time=message_time,
                     )
                 elif (
                     self.config.group_image_recognition_switch
@@ -5372,6 +5413,7 @@ class WXBot:
                             pending_visual_context.get("image_paths", []),
                             content_without_at,
                             image_senders=pending_visual_context.get("image_senders", []),
+                            message_time=message_time,
                         )
                     else:
                         group_api = self._get_group_api(chat.who)
@@ -5934,6 +5976,7 @@ class WXBot:
         image_count=1,
         visual_notes=None,
         image_senders=None,
+        message_time="",
     ):
         return build_image_user_message(
             chat_type,
@@ -5942,6 +5985,7 @@ class WXBot:
             image_count=image_count,
             visual_notes=visual_notes,
             image_senders=image_senders,
+            message_time=message_time,
         )
 
     def _build_image_description_prompt(self, chat_type="private", sender="", attached_text=""):
@@ -5986,6 +6030,7 @@ class WXBot:
         sender="",
         image_senders=None,
         visual_notes=None,
+        message_time="",
     ):
         self._record_image_api_request()
         return self._get_image_reply_pipeline().reply(ImageReplyRequest(
@@ -6009,6 +6054,7 @@ class WXBot:
             image_paths=image_paths,
             image_senders=image_senders,
             visual_notes=visual_notes,
+            message_time=message_time,
             on_visual_notes=lambda paths, notes: self._remember_visual_notes(
                 chat_name,
                 paths,
@@ -6023,7 +6069,15 @@ class WXBot:
             recognition_api_index=recognition_api_index,
         ))
 
-    def _reply_private_image_message(self, chat, history, image_paths=None, attached_text="", visual_notes=None):
+    def _reply_private_image_message(
+        self,
+        chat,
+        history,
+        image_paths=None,
+        attached_text="",
+        visual_notes=None,
+        message_time="",
+    ):
         normalized_paths = (
             [str(path or "").strip() for path in image_paths if str(path or "").strip()]
             if isinstance(image_paths, (list, tuple))
@@ -6058,6 +6112,7 @@ class WXBot:
             image_paths=normalized_paths,
             attached_text=attached_text,
             visual_notes=normalized_notes,
+            message_time=message_time,
         )
 
     def _get_image_recognition_api_for_chat(self, chat_type):
@@ -6126,6 +6181,7 @@ class WXBot:
         image_paths=None,
         attached_text="",
         image_senders=None,
+        message_time="",
     ):
         normalized_paths = (
             [str(path or "").strip() for path in image_paths if str(path or "").strip()]
@@ -6168,6 +6224,7 @@ class WXBot:
             sender=getattr(message, 'sender', ''),
             image_senders=normalized_senders,
             visual_notes=normalized_notes,
+            message_time=message_time,
         )
 
     def _ensure_message_runtime_state(self):

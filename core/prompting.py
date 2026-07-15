@@ -44,7 +44,17 @@ def _coerce_datetime(value=None):
     return datetime.now()
 
 
-def build_current_turn_user_message(message, *, now=None):
+def _format_message_time(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return datetime.fromisoformat(text.replace("/", "-")).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return text
+
+
+def build_current_turn_user_message(message, *, now=None, message_time=""):
     """Attach volatile runtime facts to the final user turn."""
     dt = _coerce_datetime(now)
     lines = [
@@ -55,8 +65,11 @@ def build_current_turn_user_message(message, *, now=None):
     lines.extend([
         "",
         CURRENT_TURN_MESSAGE_HEADER,
-        str(message or "").strip(),
     ])
+    message_time = _format_message_time(message_time)
+    if message_time:
+        lines.append(f"消息时间：{message_time}")
+    lines.append(str(message or "").strip())
     return "\n".join(lines).strip()
 
 
@@ -92,6 +105,7 @@ def build_image_user_message(
     image_count=1,
     visual_notes=None,
     image_senders=None,
+    message_time="",
 ):
     lines = []
     sender = str(sender or "").strip()
@@ -135,7 +149,7 @@ def build_image_user_message(
             lines.append(f"{sender}说：{attached_text}")
         else:
             lines.append(f"消息内容：{attached_text}")
-    return build_current_turn_user_message("\n".join(lines))
+    return build_current_turn_user_message("\n".join(lines), message_time=message_time)
 
 
 def build_image_description_prompt(chat_type="private", sender="", attached_text=""):

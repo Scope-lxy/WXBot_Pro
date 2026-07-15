@@ -105,6 +105,25 @@ def configure_persisted_private_reply(bot, chat, message, data_dir):
     return store
 
 
+def persist_time_marker(store, conversation, *, chat_type, native_time):
+    return store.record_inbound({
+        "conversation": conversation,
+        "chat_type": chat_type,
+        "direction": "system",
+        "sender": "system",
+        "content": native_time[11:16],
+        "original_content": native_time[11:16],
+        "message_type": "time",
+        "native_attr": "system",
+        "native_id": f"time-{uuid.uuid4().hex}",
+        "native_time": native_time,
+        "received_at": time.time() - 1,
+        "source": "test",
+        "source_batch": f"test-{uuid.uuid4().hex}",
+        "source_order": 0,
+    })
+
+
 def persist_private_inbound(store, chat, message):
     now = time.time()
     stored = store.record_inbound({
@@ -537,6 +556,40 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertIn("[运行信息]", result)
         self.assertIn("处理时间：2026-07-03 13:57", result)
         self.assertIn("[用户消息]\n早，姐姐", result)
+        self.assertNotIn("消息时间：", result)
+
+    def test_current_turn_user_message_places_one_full_time_before_message_text(self):
+        result = build_current_turn_user_message(
+            "晚安，早点睡\n谢谢你老公晚安咯\n明天我也会想你的",
+            now="2026-07-15 15:20",
+            message_time="2026/07/14 23:15:00",
+        )
+
+        self.assertIn(
+            "[用户消息]\n消息时间：2026-07-14 23:15\n晚安，早点睡\n谢谢你老公晚安咯\n明天我也会想你的",
+            result,
+        )
+        self.assertEqual(result.count("消息时间："), 1)
+
+    def test_current_message_time_lookup_failure_degrades_to_no_time(self):
+        def fail_lookup(*_args, **_kwargs):
+            raise RuntimeError("lookup failed")
+
+        bot = WXBot.__new__(WXBot)
+        bot._message_store = SimpleNamespace(
+            latest_time_marker_before_events=fail_lookup,
+        )
+        message = SimpleNamespace(_wxbot_event_ids=("event-1",))
+
+        with mock.patch("wxbot_core.log") as log_mock:
+            result = bot._current_message_time_reference(
+                SimpleNamespace(who="张三"),
+                message,
+                chat_type="private",
+            )
+
+        self.assertEqual(result, "")
+        self.assertIn("已按无时间继续", log_mock.call_args.kwargs["message"])
 
     def test_two_stage_image_reply_places_visual_note_in_current_user_message(self):
         captured = {}
@@ -577,6 +630,7 @@ class MessageBehaviorTests(unittest.TestCase):
             recognition_api=SimpleNamespace(),
             final_api_supports_vision=False,
             image_path=r"C:\tmp\logo.png",
+            message_time="2026-07-14 23:15:00",
         ))
 
         self.assertEqual(result, "最终回复")
@@ -585,6 +639,7 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertIn("[图片]一张蓝色会标。", captured["message"])
         self.assertIn("可见文字：ERC 博济全球慈善互助会", captured["message"])
         self.assertIn("消息内容：这里写的什么？", captured["message"])
+        self.assertIn("[用户消息]\n消息时间：2026-07-14 23:15", captured["message"])
         self.assertNotIn("图片概览：", captured["message"])
         self.assertEqual(captured["prompt_kwargs"]["image_parse_block"], "IMAGE_RULES")
         self.assertEqual(logs, ["私聊 张三：AI 正在先识别图片内容，再生成回复"])
@@ -2718,11 +2773,21 @@ class MessageBehaviorTests(unittest.TestCase):
         message = SimpleNamespace(type="text", attr="friend", sender="张三", content="测试", id="1")
 
         with tempfile.TemporaryDirectory() as tmp:
-            configure_persisted_private_reply(bot, chat, message, tmp)
+            store = configure_group_reply_runtime(bot, tmp)
+            persist_time_marker(
+                store,
+                chat.who,
+                chat_type="private",
+                native_time="2026-07-14 23:15:00",
+            )
+            persist_private_inbound(store, chat, message)
             with mock.patch("wxbot_core.build_current_turn_user_message", return_value="WRAPPED_CURRENT_TURN") as wrapped:
                 self.assertTrue(bot.wx_send_ai(chat, message))
 
-            wrapped.assert_called_once_with("测试")
+            wrapped.assert_called_once_with(
+                "测试",
+                message_time="2026-07-14 23:15:00",
+            )
         self.assertEqual(captured_messages, ["WRAPPED_CURRENT_TURN"])
         self.assertEqual(sent, ["正常回复"])
 
@@ -2987,7 +3052,7 @@ class MessageBehaviorTests(unittest.TestCase):
             split_long_text=lambda text: [text],
         )
         bot.reply_count_store = ReplyCountStore("")
-        configure_group_reply_runtime(bot)
+        store = configure_group_reply_runtime(bot)
         bot.memory_manager = None
         bot._pause_group_reply = False
         bot.is_stop_requested = lambda: False
@@ -3013,10 +3078,20 @@ class MessageBehaviorTests(unittest.TestCase):
             quote=lambda text, at=None: sent.append((text, at)) or True,
         )
 
+        persist_time_marker(
+            store,
+            chat.who,
+            chat_type="group",
+            native_time="2026-07-14 23:15:00",
+        )
+
         with mock.patch("wxbot_core.build_current_turn_user_message", return_value="WRAPPED_GROUP_TURN") as wrapped:
             self.assertTrue(process_persisted_group_message(bot, chat, message))
 
-        wrapped.assert_called_once_with("张三: 测试")
+        wrapped.assert_called_once_with(
+            "张三: 测试",
+            message_time="2026-07-14 23:15:00",
+        )
         self.assertEqual(captured_messages, ["WRAPPED_GROUP_TURN"])
         self.assertEqual(sent, [("群回复", None)])
 
@@ -3560,6 +3635,7 @@ class MessageBehaviorTests(unittest.TestCase):
             image_paths=None,
             attached_text="",
             image_senders=None,
+            message_time="",
         ):
             paths = list(image_paths or [])
             image_reply_calls.append((paths, attached_text, list(image_senders or [])))
@@ -3674,7 +3750,15 @@ class MessageBehaviorTests(unittest.TestCase):
             [r"C:\tmp\a-image.png"],
         )
 
-        def answer_image(_chat, _message, _history, image_paths=None, attached_text="", image_senders=None):
+        def answer_image(
+            _chat,
+            _message,
+            _history,
+            image_paths=None,
+            attached_text="",
+            image_senders=None,
+            message_time="",
+        ):
             bot._set_pending_visual_context(
                 "测试群",
                 image_paths,

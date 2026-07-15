@@ -23,6 +23,7 @@ class ImageReplyRequest:
     on_visual_notes: Optional[Callable[[list[str], list[str]], None]] = None
     final_api_index: int = 0
     recognition_api_index: int = 0
+    message_time: str = ""
 
 
 class ImageReplyPipeline:
@@ -88,6 +89,7 @@ class ImageReplyPipeline:
             attached_text=request.attached_text,
             image_count=len(image_paths),
             image_senders=image_senders,
+            message_time=request.message_time,
         )
         prompt = self.prompt_builder(
             request.chat_name,
@@ -137,6 +139,7 @@ class ImageReplyPipeline:
             image_count=len(image_paths),
             image_senders=image_senders,
             visual_notes=[note.render() for note in notes],
+            message_time=request.message_time,
         )
         image_parse_block = self.image_parse_block_builder()
 
