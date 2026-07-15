@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core.account_storage import account_file
+from core.memory_context_repair import build_tail_repair_plan
 
 
 SCHEMA_VERSION = 4
@@ -1093,6 +1094,194 @@ class MessageStore:
                 added += int(result["is_new"])
             return added
 
+    @classmethod
+    def _context_repair_values(
+        cls,
+        entry,
+        *,
+        conversation,
+        chat_type,
+        source_batch,
+        source_order,
+        received_at,
+        stored_at,
+    ):
+        native_id = str(_event_value(entry, "message_id", "") or "").strip()
+        native_attr = str(_event_value(entry, "attr", "") or "").strip().lower()
+        direction = "manual_self" if native_attr == "self" else "friend"
+        source = "wechat_context_repair"
+        identity_input = {
+            "conversation": conversation,
+            "chat_type": chat_type,
+            "native_id": native_id,
+            "source": source,
+            "source_batch": source_batch,
+            "source_order": source_order,
+        }
+        event_id, identity_kind, identity_value = cls._logical_event_id(identity_input)
+        content = str(_event_value(entry, "content", "") or "")
+        image_paths = [
+            str(path or "").strip()
+            for path in (_event_value(entry, "image_paths", ()) or ())
+            if str(path or "").strip()
+        ]
+        metadata = {"context_repair": True}
+        if image_paths:
+            metadata["image_paths"] = image_paths
+        native_time = str(_event_value(entry, "time", "") or "").strip()
+        if not native_time:
+            metadata["time_inferred"] = True
+        return {
+            "event_id": event_id,
+            "conversation": conversation,
+            "chat_type": chat_type,
+            "direction": direction,
+            "sender": str(_event_value(entry, "sender", "") or ""),
+            "content": content,
+            "original_content": image_paths[0] if image_paths else content,
+            "message_type": str(_event_value(entry, "type", "text") or "text"),
+            "native_attr": native_attr,
+            "native_id": native_id,
+            "native_hash": str(_event_value(entry, "native_hash", "") or ""),
+            "native_hash_text": str(_event_value(entry, "native_hash_text", "") or ""),
+            "native_time": native_time,
+            "source": source,
+            "source_batch": source_batch,
+            "source_order": source_order,
+            "identity_kind": identity_kind,
+            "identity_value": identity_value,
+            "delivery_id": None,
+            "received_at": received_at,
+            "stored_at": stored_at,
+            "reply_expires_at": None,
+            "processing_state": "handled",
+            "state_updated_at": stored_at,
+            "history_visible": 1,
+            "metadata_json": _json_object(metadata),
+        }
+
+    def reconcile_visible_tail(
+        self,
+        conversation,
+        visible_tail,
+        *,
+        current_event_ids,
+        chat_type,
+        history_limit=50,
+        now=None,
+    ):
+        """Atomically append the visible gap immediately before the current turn."""
+
+        conversation = _required_text(conversation, "conversation")
+        chat_type = _required_chat_type(chat_type)
+        current_ids = list(dict.fromkeys(
+            str(event_id or "").strip()
+            for event_id in current_event_ids or ()
+            if str(event_id or "").strip()
+        ))
+        if not current_ids:
+            raise ValueError("current_event_ids is required")
+        try:
+            history_limit = max(1, int(history_limit))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("history_limit must be an integer") from exc
+        visible_tail = [entry for entry in visible_tail or [] if isinstance(entry, dict)]
+        stored_at = _now(now)
+
+        with self._transaction() as connection:
+            current_placeholders = ", ".join("?" for _ in current_ids)
+            current_rows = connection.execute(
+                f"""
+                SELECT event_id, conversation, chat_type, received_at
+                FROM chat_events WHERE event_id IN ({current_placeholders})
+                """,
+                current_ids,
+            ).fetchall()
+            if len(current_rows) != len(current_ids):
+                raise MessageStoreConflictError("one or more current context-repair events do not exist")
+            if any(
+                row["conversation"] != conversation or row["chat_type"] != chat_type
+                for row in current_rows
+            ):
+                raise MessageStoreConflictError("current context-repair events belong to another conversation")
+            boundary_at = min(float(row["received_at"]) for row in current_rows)
+
+            local_rows = connection.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT * FROM chat_events
+                    WHERE conversation = ? AND chat_type = ?
+                      AND history_visible = 1
+                      AND received_at <= ?
+                      AND event_id NOT IN ({current_placeholders})
+                    ORDER BY received_at DESC, event_seq DESC
+                    LIMIT ?
+                )
+                ORDER BY received_at, event_seq
+                """,
+                [conversation, chat_type, boundary_at, *current_ids, history_limit],
+            ).fetchall()
+            local_history = [dict(row) for row in local_rows]
+            plan = build_tail_repair_plan(
+                local_history,
+                visible_tail,
+                chat_type=chat_type,
+            )
+
+            deletion_row = connection.execute(
+                """
+                SELECT MAX(state_updated_at) AS deleted_at
+                FROM chat_events
+                WHERE conversation = ? AND chat_type = ? AND history_visible = 0
+                """,
+                (conversation, chat_type),
+            ).fetchone()
+            deletion_at = None if deletion_row is None else deletion_row["deleted_at"]
+            deleted_boundary_skipped = 0
+            selected = plan.messages_to_append
+            has_post_delete_history = bool(
+                deletion_at is not None
+                and any(float(row["stored_at"]) > float(deletion_at) for row in local_rows)
+            )
+            if not plan.anchor_found and deletion_at is not None and not has_post_delete_history:
+                deleted_boundary_skipped = len(selected)
+                selected = []
+
+            source_batch = hashlib.sha256("\x1f".join(current_ids).encode("utf-8")).hexdigest()
+            event_ids = []
+            added = 0
+            visible_count = max(1, len(visible_tail))
+            for entry in selected:
+                source_order = int(entry.get("window_order", 0) or 0)
+                distance = max(1, visible_count - source_order)
+                values = self._context_repair_values(
+                    entry,
+                    conversation=conversation,
+                    chat_type=chat_type,
+                    source_batch=source_batch,
+                    source_order=source_order,
+                    received_at=boundary_at - distance / 1000.0,
+                    stored_at=stored_at,
+                )
+                result = self._record_event_locked(connection, values, advances_version=False)
+                event_ids.append(result["event_id"])
+                added += int(result["is_new"])
+
+            visible_events = {}
+            if event_ids:
+                placeholders = ", ".join("?" for _ in event_ids)
+                rows = connection.execute(
+                    f"SELECT * FROM chat_events WHERE history_visible = 1 AND event_id IN ({placeholders})",
+                    event_ids,
+                ).fetchall()
+                visible_events = {row["event_id"]: self._event_row(row) for row in rows}
+            return {
+                "added": added,
+                "anchor_found": plan.anchor_found,
+                "deleted_boundary_skipped": deleted_boundary_skipped,
+                "events": [visible_events[event_id] for event_id in event_ids if event_id in visible_events],
+            }
+
     def list_conversations(self, *, chat_type=None):
         parameters = []
         chat_type_sql = ""
@@ -1279,20 +1468,6 @@ class MessageStore:
                 [current, *parameters],
             )
             return cursor.rowcount
-
-    def latest_history_deletion_at(self, conversation, *, chat_type):
-        conversation = _required_text(conversation, "conversation")
-        chat_type = _required_chat_type(chat_type)
-        with self._reader() as connection:
-            row = connection.execute(
-                """
-                SELECT MAX(state_updated_at) AS deleted_at
-                FROM chat_events
-                WHERE conversation = ? AND chat_type = ? AND history_visible = 0
-                """,
-                (conversation, chat_type),
-            ).fetchone()
-            return None if row is None or row["deleted_at"] is None else float(row["deleted_at"])
 
     def conversation_version(self, conversation, *, chat_type="private"):
         conversation = _required_text(conversation, "conversation")

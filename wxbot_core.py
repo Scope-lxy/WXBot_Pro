@@ -111,13 +111,11 @@ from core.chat_history_format import (
     format_history_message,
 )
 from core.memory_context_repair import (
-    DEFAULT_ANCHOR_RECENT_COUNT,
-    DEFAULT_CONTEXT_REPAIR_COOLDOWN_SECONDS,
+    DEFAULT_CONTEXT_REPAIR_RETRY_SECONDS,
     DEFAULT_LOCAL_HISTORY_LIMIT,
     DEFAULT_VISIBLE_LIMIT,
-    current_message_found_near_tail,
     normalize_wechat_snapshot,
-    snapshot_messages_through_current,
+    snapshot_before_current,
 )
 from core.reply_count_store import ReplyCountStore
 from core.wechat_window import run_with_wechat_rebind_retry
@@ -538,9 +536,7 @@ class WXBot:
         self._last_incoming_message_at = 0.0
         self._private_message_pipelines = {}
         self._group_message_pipelines = {}
-        self._memory_context_repair_startup_done = set()
-        self._memory_context_repair_restore_pending = set()
-        self._memory_context_repair_last_at = {}
+        self._memory_context_repair_state = {}
         self._memory_context_repair_lock = threading.Lock()
         self._pending_private_voice_transcription = {}
         self._chat_memory_dirty_lock = threading.Lock()
@@ -4827,13 +4823,17 @@ class WXBot:
             else:
                 history = []
                 if self.config.memory_switch and self.memory_manager:
-                    if getattr(self.config, "memory_context_repair_switch", True):
-                        self._repair_private_context_before_ai(chat, message)
+                    repaired_history = self._repair_context_before_ai(
+                        chat,
+                        message,
+                        chat_type="private",
+                    )
                     if self.config.memory_context_switch:
                         history = self._get_model_context_history(
                             str(getattr(chat, "who", "") or "").strip(),
                             event_ids=self._reply_event_ids(message),
                             chat_type="private",
+                            extra_messages=repaired_history,
                         )
                 voice_candidate = private_voice_candidate(self.config, message)
                 if getattr(message, "attr", "") == "friend":
@@ -5288,13 +5288,17 @@ class WXBot:
             try:
                 history = []
                 if self.config.memory_switch and self.memory_manager:
-                    if getattr(self.config, "memory_context_repair_switch", True):
-                        self._repair_group_context_before_ai(chat, message)
+                    repaired_history = self._repair_context_before_ai(
+                        chat,
+                        message,
+                        chat_type="group",
+                    )
                     if self.config.memory_context_switch:
                         history = self._get_model_context_history(
                             chat.who,
                             event_ids=self._reply_event_ids(message),
                             chat_type="group",
+                            extra_messages=repaired_history,
                         )
                 # 构建有效 prompt；拆分改为发送前本地处理，不再注入模型格式要求
                 group_voice_candidate_hit = group_voice_candidate(self.config, message)
@@ -6145,12 +6149,8 @@ class WXBot:
             self._pending_private_voice_sequence = {}
         if not hasattr(self, '_pending_visual_contexts'):
             self._pending_visual_contexts = {}
-        if not hasattr(self, '_memory_context_repair_startup_done'):
-            self._memory_context_repair_startup_done = set()
-        if not hasattr(self, '_memory_context_repair_restore_pending'):
-            self._memory_context_repair_restore_pending = set()
-        if not hasattr(self, '_memory_context_repair_last_at'):
-            self._memory_context_repair_last_at = {}
+        if not hasattr(self, '_memory_context_repair_state'):
+            self._memory_context_repair_state = {}
         if not hasattr(self, '_memory_context_repair_lock'):
             self._memory_context_repair_lock = threading.Lock()
 
@@ -6636,79 +6636,36 @@ class WXBot:
             ))
         return True
 
-    def _memory_context_repair_config(self):
-        return {
-            "cooldown": DEFAULT_CONTEXT_REPAIR_COOLDOWN_SECONDS,
-            "anchor_count": DEFAULT_ANCHOR_RECENT_COUNT,
-            "visible_limit": DEFAULT_VISIBLE_LIMIT,
-            "local_history_limit": DEFAULT_LOCAL_HISTORY_LIMIT,
-        }
-
-    def _mark_context_repair_needed_after_restore(self, chat_name):
+    def _mark_context_repair_needed_after_restore(self, chat_name, *, chat_type):
         chat_name = str(chat_name or "").strip()
-        if not chat_name:
+        chat_type = str(chat_type or "").strip().lower()
+        if not chat_name or chat_type not in {"private", "group"}:
             return False
         self._ensure_message_runtime_state()
         with self._memory_context_repair_lock:
-            self._memory_context_repair_restore_pending.add(chat_name)
+            self._memory_context_repair_state[f"{chat_type}:{chat_name}"] = {
+                "dirty": True,
+                "retry_at": 0.0,
+            }
         return True
 
-    def _context_repair_reasons(self, chat, message, memory_chat_name, *, chat_type):
-        chat_name = str(getattr(chat, "who", "") or "").strip()
-        if not chat_name:
-            return []
+    def _context_repair_should_run(self, repair_key):
         self._ensure_message_runtime_state()
-        reasons = []
         with self._memory_context_repair_lock:
-            if chat_name not in self._memory_context_repair_startup_done:
-                reasons.append("startup_first_reply")
-            if chat_name in self._memory_context_repair_restore_pending:
-                reasons.append("restore_first_reply")
-
-        try:
-            tail = (
-                self.memory_manager.get_messages(
-                    memory_chat_name,
-                    8,
-                    chat_type=chat_type,
-                )
-                if self.memory_manager
-                else []
+            state = self._memory_context_repair_state.get(repair_key)
+            if state is None:
+                return True
+            return bool(state.get("dirty", True)) and time.time() >= float(
+                state.get("retry_at", 0.0) or 0.0
             )
-            if not current_message_found_near_tail(tail, message, tail_count=8):
-                reasons.append("current_message_missing_from_memory_tail")
-        except Exception:
-            reasons.append("memory_tail_check_failed")
-        return reasons
 
-    def _consume_context_repair_reasons(self, chat_name, reasons):
-        chat_name = str(chat_name or "").strip()
-        if not chat_name or not reasons:
-            return
+    def _finish_context_repair_attempt(self, repair_key, *, success):
         self._ensure_message_runtime_state()
         with self._memory_context_repair_lock:
-            if "startup_first_reply" in reasons:
-                self._memory_context_repair_startup_done.add(chat_name)
-            if "restore_first_reply" in reasons:
-                self._memory_context_repair_restore_pending.discard(chat_name)
-
-    def _context_repair_success_ttl_allows(self, chat_key, ttl_seconds):
-        chat_key = str(chat_key or "").strip()
-        if not chat_key:
-            return False
-        self._ensure_message_runtime_state()
-        now = time.time()
-        with self._memory_context_repair_lock:
-            last = float(self._memory_context_repair_last_at.get(chat_key, 0) or 0)
-        return not (ttl_seconds > 0 and now - last < ttl_seconds)
-
-    def _mark_context_repair_success(self, chat_key):
-        chat_key = str(chat_key or "").strip()
-        if not chat_key:
-            return
-        self._ensure_message_runtime_state()
-        with self._memory_context_repair_lock:
-            self._memory_context_repair_last_at[chat_key] = time.time()
+            self._memory_context_repair_state[repair_key] = {
+                "dirty": not success,
+                "retry_at": 0.0 if success else time.time() + DEFAULT_CONTEXT_REPAIR_RETRY_SECONDS,
+            }
 
     def _read_visible_context_messages(self, chat, limit):
         get_all = getattr(chat, "GetAllMessage", None)
@@ -6748,160 +6705,90 @@ class WXBot:
         level = "DEBUG" if added == 0 and not suffix else "INFO"
         log(level=level, message=f"{label}：{action_text}完成，补入 {added} 条{suffix_text}")
 
-    def _append_context_repair_messages(self, memory_chat_name, entries, *, chat_type, not_after=None):
-        if not entries or not self.memory_manager:
-            return {"added": 0, "total": 0}
-        result = self.memory_manager.append_missing_messages(
-            memory_chat_name,
-            entries,
-            getattr(self.config, "memory_max_count", 5000),
-            reconcile_visible_snapshot=True,
-            require_anchor=True,
-            chat_type=chat_type,
-            anchor_recent_count=DEFAULT_ANCHOR_RECENT_COUNT,
-            not_after=not_after,
-        )
-        if int(result.get("added", 0) or 0) > 0:
-            self._mark_chat_memory_dirty(
-                SimpleNamespace(who=memory_chat_name, chat_type=chat_type),
-                SimpleNamespace(type="text", attr="friend", content="[上下文补洞]"),
-            )
-        return result
-
-    def _repair_group_context_before_ai(self, chat, message):
+    def _repair_context_before_ai(self, chat, message, *, chat_type):
         chat_name = str(getattr(chat, "who", "") or "").strip()
-        if str(getattr(chat, "chat_type", "") or "").strip().lower() != "group":
-            return False
+        chat_type = str(chat_type or "").strip().lower()
+        if chat_type not in {"private", "group"}:
+            raise ValueError("chat_type must be private or group")
+        if str(getattr(chat, "chat_type", "") or "").strip().lower() != chat_type:
+            return []
+        switch_name = (
+            "group_context_repair_switch"
+            if chat_type == "group"
+            else "chat_context_repair_switch"
+        )
         if not (
             getattr(getattr(self, "config", None), "memory_switch", False)
-            and getattr(getattr(self, "config", None), "memory_context_repair_switch", True)
+            and getattr(getattr(self, "config", None), switch_name, True)
             and self.memory_manager
         ):
-            return False
-        cfg = self._memory_context_repair_config()
+            return []
         if not chat_name:
-            return False
-        cooldown_key = f"group:{chat_name}"
-        if not self._context_repair_success_ttl_allows(cooldown_key, cfg["cooldown"]):
-            return False
+            return []
+        repair_key = f"{chat_type}:{chat_name}"
+        if not self._context_repair_should_run(repair_key):
+            return []
 
         try:
-            repair_not_after = getattr(message, "_wxbot_received_at", 0.0) or time.time()
-            local_history = self.memory_manager.get_messages(
-                chat_name,
-                cfg["local_history_limit"],
-                chat_type="group",
-            ) or []
-            visible_messages = self._read_visible_context_messages(chat, cfg["visible_limit"])
-            visible_messages = snapshot_messages_through_current(visible_messages, message)
-            visible_entries = normalize_wechat_snapshot(
+            visible_messages = self._read_visible_context_messages(chat, DEFAULT_VISIBLE_LIMIT)
+            boundary = snapshot_before_current(
                 visible_messages,
-                source="wechat_context_repair_group",
-                fallback_tail_time=repair_not_after,
+                message,
+                chat_type=chat_type,
             )
-            result = self._append_context_repair_messages(
-                chat_name,
-                visible_entries,
-                chat_type="group",
-                not_after=repair_not_after,
-            )
-            added = int(result.get("added", 0) or 0)
-            anchor_found = bool(result.get("anchor_found"))
-            deleted_boundary_skipped = int(result.get("deleted_boundary_skipped", 0) or 0)
-            suffix_parts = []
-            if not anchor_found:
-                suffix_parts.append("未找到锚点，已跳过当前可见快照")
-            if deleted_boundary_skipped:
-                suffix_parts.append(f"{deleted_boundary_skipped} 条早于删除边界，未重新补入")
-            self._log_context_repair_result(
-                "group",
-                chat_name,
-                "ui",
-                added,
-                suffix="，".join(suffix_parts),
-            )
-            if not anchor_found:
-                return False
-            self._mark_context_repair_success(cooldown_key)
-            return bool(added or anchor_found)
-        except Exception as exc:
-            log(level="WARNING", message=f"群聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")
-            return False
-
-    def _repair_private_context_before_ai(self, chat, message):
-        chat_name = str(getattr(chat, "who", "") or "").strip()
-        if str(getattr(chat, "chat_type", "") or "").strip().lower() != "private":
-            return False
-        if not (
-            getattr(getattr(self, "config", None), "memory_switch", False)
-            and getattr(getattr(self, "config", None), "memory_context_repair_switch", True)
-            and self.memory_manager
-        ):
-            return False
-        cfg = self._memory_context_repair_config()
-        if not chat_name:
-            return False
-        memory_chat_name = str(chat_name or "").strip()
-        repair_key = f"private:{chat_name}"
-        reasons = self._context_repair_reasons(
-            chat,
-            message,
-            memory_chat_name,
-            chat_type="private",
-        )
-        if not reasons:
-            return False
-        if not self._context_repair_success_ttl_allows(repair_key, cfg["cooldown"]):
-            return False
-
-        try:
-            repair_not_after = getattr(message, "_wxbot_received_at", 0.0) or time.time()
-            local_history = self.memory_manager.get_messages(
-                memory_chat_name,
-                cfg["local_history_limit"],
-                chat_type="private",
-            ) or []
-            visible_messages = self._read_visible_context_messages(chat, cfg["visible_limit"])
-        except Exception as exc:
-            log(level="WARNING", message=f"私聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")
-            return False
-
-        try:
-            visible_messages = snapshot_messages_through_current(visible_messages, message)
+            if not boundary.found:
+                self._finish_context_repair_attempt(repair_key, success=False)
+                label = self._context_repair_log_label(chat_type, chat_name)
+                log(level="INFO", message=f"{label}：上下文补洞未能确认当前消息边界，稍后重试")
+                return []
             visible_entries = normalize_wechat_snapshot(
-                visible_messages,
+                boundary.messages,
                 source="wechat_context_repair",
-                fallback_tail_time=repair_not_after,
             )
-            result = self._append_context_repair_messages(
-                memory_chat_name,
+            if not visible_entries:
+                self._finish_context_repair_attempt(repair_key, success=True)
+                self._log_context_repair_result(chat_type, chat_name, "ui", 0)
+                return []
+            current_event_ids = self._reply_event_ids(message)
+            if not current_event_ids:
+                raise RuntimeError("当前消息尚未写入事实库")
+            result = self.memory_manager.reconcile_visible_tail(
+                chat_name,
                 visible_entries,
-                chat_type="private",
-                not_after=repair_not_after,
+                current_event_ids=current_event_ids,
+                chat_type=chat_type,
+                history_limit=DEFAULT_LOCAL_HISTORY_LIMIT,
             )
             added = int(result.get("added", 0) or 0)
             anchor_found = bool(result.get("anchor_found"))
             deleted_boundary_skipped = int(result.get("deleted_boundary_skipped", 0) or 0)
             suffix_parts = []
             if not anchor_found:
-                suffix_parts.append("未找到锚点，已跳过当前可见快照")
+                if deleted_boundary_skipped:
+                    suffix_parts.append("无历史重合且存在删除记录，已跳过当前可见尾段")
+                else:
+                    suffix_parts.append("无历史重合，已按最新记录补入")
             if deleted_boundary_skipped:
-                suffix_parts.append(f"{deleted_boundary_skipped} 条早于删除边界，未重新补入")
+                suffix_parts.append(f"{deleted_boundary_skipped} 条未重新补入")
             self._log_context_repair_result(
-                "private",
+                chat_type,
                 chat_name,
                 "ui",
                 added,
                 suffix="，".join(suffix_parts),
             )
-            if not anchor_found:
-                return False
-            self._consume_context_repair_reasons(chat_name, reasons)
-            self._mark_context_repair_success(repair_key)
-            return bool(added or anchor_found)
+            if added:
+                self._mark_chat_memory_dirty(
+                    SimpleNamespace(who=chat_name, chat_type=chat_type),
+                    SimpleNamespace(type="text", attr="friend", content="[上下文补洞]"),
+                )
+            self._finish_context_repair_attempt(repair_key, success=True)
+            return list(result.get("history_messages") or [])
         except Exception as exc:
-            log(level="WARNING", message=f"私聊 {chat_name}：上下文补洞失败，已继续原回复流程，详情：{exc}")
-            return False
+            self._finish_context_repair_attempt(repair_key, success=False)
+            label = self._context_repair_log_label(chat_type, chat_name)
+            log(level="WARNING", message=f"{label}：上下文补洞失败，已继续原回复流程，详情：{exc}")
+            return []
 
     def _build_merged_private_message(self, messages):
         source_messages = list(messages or [])
@@ -8176,7 +8063,14 @@ class WXBot:
             ) or []
         return []
 
-    def _get_model_context_history(self, chat_who, *, event_ids=(), chat_type="private"):
+    def _get_model_context_history(
+        self,
+        chat_who,
+        *,
+        event_ids=(),
+        chat_type="private",
+        extra_messages=(),
+    ):
         try:
             count = max(0, int(getattr(self.config, 'memory_context_count', 0) or 0))
         except Exception:
@@ -8191,6 +8085,7 @@ class WXBot:
                 chat_type=chat_type,
                 event_ids=event_ids,
             )
+            raw_history.extend(list(extra_messages or ()))
             history = build_model_visible_history(
                 raw_history,
                 message_limit=count,

@@ -267,19 +267,11 @@ class MemorySQLiteEndpointTests(unittest.TestCase):
     def test_memory_data_hides_inferred_time_and_internal_marker(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             manager = MemoryManager("wx_test", temp_dir)
-            manager.append_missing_messages(
+            append_test_history(
+                manager,
                 "张三",
-                [{
-                    "time": "2026/07/12 01:16:59",
-                    "time_inferred": True,
-                    "attr": "friend",
-                    "sender": "张三",
-                    "type": "text",
-                    "content": "停机消息",
-                }],
-                100,
-                reconcile_visible_snapshot=True,
-                chat_type="private",
+                "停机消息",
+                metadata={"time_inferred": True, "context_repair": True},
             )
 
             with patch("web_server.MEMORY_BASE", temp_dir):

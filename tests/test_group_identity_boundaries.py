@@ -30,9 +30,9 @@ def _routing_config(**overrides):
     return SimpleNamespace(**values)
 
 
-def _record(store, *, chat_type, content, native_id, image_path=""):
+def _record(store, *, chat_type, content, native_id, image_path="", conversation="同名会话"):
     payload = {
-        "conversation": "同名会话",
+        "conversation": conversation,
         "chat_type": chat_type,
         "direction": "friend",
         "sender": "发送者",
@@ -147,14 +147,14 @@ class MemoryChatIdentityTests(unittest.TestCase):
             chat_name_resolver=lambda _name: "私聊真源",
             message_store=self.store,
         )
-        entry = {"time": "2026/07/15 10:00:00", "type": "text", "attr": "friend", "content": "消息"}
-
-        manager.append_missing_messages(
-            "同名会话", [entry], 10, chat_type="private"
+        _record(
+            self.store,
+            chat_type="private",
+            content="消息",
+            native_id="private-message",
+            conversation="私聊真源",
         )
-        manager.append_missing_messages(
-            "同名会话", [dict(entry, content="群消息")], 10, chat_type="group"
-        )
+        _record(self.store, chat_type="group", content="群消息", native_id="group-message")
 
         self.assertEqual(
             [item["content"] for item in manager.get_messages(

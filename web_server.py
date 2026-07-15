@@ -2139,7 +2139,8 @@ def dashboard():
     config.setdefault('everyday_stop_bot_time', "23:00")
     config.setdefault('memory_switch', True)
     config.setdefault('memory_context_switch', config.get('memory_switch', True))
-    config.setdefault('memory_context_repair_switch', True)
+    config.setdefault('chat_context_repair_switch', True)
+    config.setdefault('group_context_repair_switch', True)
     config.setdefault('memory_max_count', 5000)
     config.setdefault('memory_context_count', 50)
     config.setdefault('wxauto_save_cache_retention_days', 30)
@@ -2410,7 +2411,8 @@ def _dashboard_config_status_snapshot(cfg):
         'keyword_count': len(cfg.get('keyword_dict', {}) or {}),
         'memory_switch': bool(cfg.get('memory_switch', True)),
         'memory_context_switch': bool(cfg.get('memory_context_switch', cfg.get('memory_switch', True))),
-        'memory_context_repair_switch': bool(cfg.get('memory_context_repair_switch', True)),
+        'chat_context_repair_switch': bool(cfg.get('chat_context_repair_switch', True)),
+        'group_context_repair_switch': bool(cfg.get('group_context_repair_switch', True)),
         'memory_context_count': cfg.get('memory_context_count', 50),
         'default_prompt': str(cfg.get('default_prompt', '默认') or '默认').strip(),
         'clean_ai_reply_switch': bool(cfg.get('clean_ai_reply_switch', True)),
@@ -2796,7 +2798,8 @@ def _coerce_bool_fields(merged_config):
         'everyday_start_stop_bot_switch',   # 新增
         'memory_switch',                    # 聊天记录保存开关
         'memory_context_switch',            # 最近聊天带入开关
-        'memory_context_repair_switch',     # 上下文补洞开关
+        'chat_context_repair_switch',       # 私聊上下文补洞开关
+        'group_context_repair_switch',      # 群聊上下文补洞开关
         'clean_ai_reply_switch',            # AI 回复清洗开关
         'chat_image_recognition_switch',    # 私聊图片识别开关
         'group_image_recognition_switch',   # 群组图片识别开关
@@ -3171,7 +3174,8 @@ def save_config(config_data):
         original_config = read_config() or {}
         merged_config = {**original_config, **config_data}
         merged_config.setdefault('memory_context_switch', merged_config.get('memory_switch', True))
-        merged_config.setdefault('memory_context_repair_switch', True)
+        merged_config.setdefault('chat_context_repair_switch', True)
+        merged_config.setdefault('group_context_repair_switch', True)
 
         _coerce_bool_fields(merged_config)
         _coerce_list_fields(merged_config)
@@ -3247,7 +3251,8 @@ def save_config_route():
 
         merged_config = {**(read_config() or {}), **config_data}
         merged_config.setdefault('memory_context_switch', merged_config.get('memory_switch', True))
-        merged_config.setdefault('memory_context_repair_switch', True)
+        merged_config.setdefault('chat_context_repair_switch', True)
+        merged_config.setdefault('group_context_repair_switch', True)
 
         # 预处理（与 save_config 二次校验互补）
         _coerce_bool_fields(merged_config)
@@ -6718,7 +6723,8 @@ def main():
                 "everyday_stop_bot_time": "23:00",
                 "memory_switch": True,
                 "memory_context_switch": True,
-                "memory_context_repair_switch": True,
+                "chat_context_repair_switch": True,
+                "group_context_repair_switch": True,
                 "memory_max_count": 5000,
                 "memory_context_count": 50,
                 "wxauto_save_cache_retention_days": 30,

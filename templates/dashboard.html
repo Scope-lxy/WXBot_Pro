@@ -981,7 +981,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-image"></i>
         <h5>内容识别</h5>
-        <span class="desc">设置是否识别好友发来的图片和语音</span>
+        <span class="desc">设置私聊图片、语音和上下文补洞</span>
         <div class="ui-head__actions">
           <select class="form-select ui-head-select recognition-api-select" id="chat_image_recognition_api" name="chat_image_recognition_api" title="辅助识图接口">
             {% for cfg in config.api_configs %}
@@ -1007,6 +1007,13 @@ html.icons-pref-local [class*=" bi-"]::before {
                  {% if config.get('chat_voice_recognition_switch', False) %}checked{% endif %}>
           <label for="chat_voice_recognition_switch"><span class="switch-title">识别语音消息</span></label>
           <span class="switch-desc">读取微信自带的语音转文字结果</span>
+        </div>
+        <div class="switch-row switch-row--inline-desc recognition-inline-row">
+          <input class="form-check-input" type="checkbox" id="chat_context_repair_switch"
+                 name="chat_context_repair_switch"
+                 {% if config.get('chat_context_repair_switch', True) %}checked{% endif %}>
+          <label for="chat_context_repair_switch"><span class="switch-title">上下文补洞</span></label>
+          <span class="switch-desc">补回停机期间窗口仍可见的私聊消息</span>
         </div>
       </div>
     </div>
@@ -1309,7 +1316,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-image"></i>
         <h5>内容识别</h5>
-        <span class="desc">设置是否识别群聊中的图片和语音</span>
+        <span class="desc">设置群聊图片、语音和上下文补洞</span>
         <div class="ui-head__actions">
           <select class="form-select ui-head-select recognition-api-select" id="group_image_recognition_api" name="group_image_recognition_api" title="辅助识图接口">
             {% for cfg in config.api_configs %}
@@ -1335,6 +1342,13 @@ html.icons-pref-local [class*=" bi-"]::before {
                  {% if config.get('group_voice_recognition_switch', False) %}checked{% endif %}>
           <label for="group_voice_recognition_switch"><span class="switch-title">识别语音消息</span></label>
           <span class="switch-desc">读取微信自带的语音转文字结果</span>
+        </div>
+        <div class="switch-row switch-row--inline-desc recognition-inline-row">
+          <input class="form-check-input" type="checkbox" id="group_context_repair_switch"
+                 name="group_context_repair_switch"
+                 {% if config.get('group_context_repair_switch', True) %}checked{% endif %}>
+          <label for="group_context_repair_switch"><span class="switch-title">上下文补洞</span></label>
+          <span class="switch-desc">补回停机期间窗口仍可见的群聊消息</span>
         </div>
       </div>
     </div>
@@ -3073,18 +3087,6 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
           </div>
           <div class="cfg-hint">按真实聊天顺序带入最近消息；微信时间分隔线只作为消息时间，不占条数</div>
-        </div>
-        <div class="memory-config-section">
-          <div class="switch-row switch-row--inline-desc">
-            <label class="form-check-label" for="memory_context_repair_switch">上下文补洞</label>
-            <span class="switch-desc">补回机器人停机期间当前窗口仍可见的消息</span>
-          </div>
-          <label class="cfg-label" for="memory_context_repair_switch">补洞状态</label>
-          <select class="form-select" id="memory_context_repair_switch">
-            <option value="true" {% if config.get('memory_context_repair_switch', True) %}selected{% endif %}>开启</option>
-            <option value="false" {% if not config.get('memory_context_repair_switch', True) %}selected{% endif %}>关闭</option>
-          </select>
-          <div class="cfg-hint">关闭后不再读取微信窗口补历史，实时收到的消息仍正常保存</div>
         </div>
       </div>
     </div>
@@ -9980,7 +9982,6 @@ $(function(){
       everyday_stop_bot_time:$('#everyday_stop_bot_time').val(),
       memory_switch:$('#memory_switch').is(':checked'),
       memory_context_switch:$('#memory_context_switch').is(':checked'),
-      memory_context_repair_switch:$('#memory_context_repair_switch').val() !== 'false',
       memory_max_count:Math.max(100,Math.min(5000,parseInt($('#memory_max_count').val())||5000)),
       memory_context_count:(function(){
         var v=parseInt($('#memory_context_count').val(), 10);
@@ -9989,6 +9990,7 @@ $(function(){
       wxauto_save_cache_retention_days:parseInt($('#wxauto_save_cache_retention_days').val(),10)||0,
       chat_image_recognition_switch:$('#chat_image_recognition_switch').is(':checked'),
       chat_voice_recognition_switch:$('#chat_voice_recognition_switch').is(':checked'),
+      chat_context_repair_switch:$('#chat_context_repair_switch').is(':checked'),
       chat_voice_reply_switch:$('#chat_voice_reply_switch').is(':checked'),
       chat_voice_reply_trigger_modes:selectedCompactMultiSelectValues($('#chat_voice_reply_trigger_modes_wrap')),
       chat_voice_reply_request_keywords:splitInlineList('#chat_voice_reply_request_keywords'),
@@ -9997,6 +9999,7 @@ $(function(){
       chat_message_merge_delay:Math.max(1,Math.min(60,parseInt($('#chat_message_merge_delay').val())||20)),
       chat_image_recognition_api:parseInt($('#chat_image_recognition_api').val())||0,
       group_voice_recognition_switch:$('#group_voice_recognition_switch').is(':checked'),
+      group_context_repair_switch:$('#group_context_repair_switch').is(':checked'),
       group_voice_reply_switch:$('#group_voice_reply_switch').is(':checked'),
       group_voice_reply_trigger_modes:selectedCompactMultiSelectValues($('#group_voice_reply_trigger_modes_wrap')),
       group_voice_reply_request_keywords:splitInlineList('#group_voice_reply_request_keywords'),

@@ -1,6 +1,8 @@
 import json
 import tempfile
 import unittest
+import uuid
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,18 +51,22 @@ def contact(**kwargs):
 class ContactIdentityTests(unittest.TestCase):
     @staticmethod
     def _save_message(base, wx_id, chat_name, content, message_time="2026/06/15 10:00:00"):
-        MemoryManager(wx_id, base).append_missing_messages(
-            chat_name,
-            [{
-                "time": message_time,
-                "sender": chat_name,
-                "type": "text",
-                "attr": "friend",
-                "content": content,
-            }],
-            100,
-            chat_type="private",
-        )
+        manager = MemoryManager(wx_id, base)
+        received_at = datetime.strptime(message_time, "%Y/%m/%d %H:%M:%S").timestamp()
+        manager.message_store.append_history([{
+            "event_id": f"test-{uuid.uuid4().hex}",
+            "conversation": chat_name,
+            "chat_type": "private",
+            "direction": "friend",
+            "sender": chat_name,
+            "content": content,
+            "original_content": content,
+            "message_type": "text",
+            "native_attr": "friend",
+            "native_time": message_time,
+            "received_at": received_at,
+            "metadata": {},
+        }])
 
     def test_reconcile_storage_merges_memory_conversation_config_and_relationship_scan(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +16,6 @@ if str(ROOT) not in sys.path:
 
 from core.account_storage import account_area_dir
 from core.memory import MemoryManager
-from core.memory_context_repair import unique_message_key
 
 
 def _read_json(path: Path):
@@ -70,6 +71,66 @@ def _chat_type(manager: MemoryManager, chat_name: str, group_names: set[str]) ->
     return "private"
 
 
+def _normalize_legacy_entry(entry):
+    entry = entry if isinstance(entry, dict) else {}
+    msg_type = str(entry.get("type", "text") or "text").strip().lower() or "text"
+    raw_content = str(entry.get("content", "") or "")
+    content = "[图片]" if msg_type == "image" else raw_content
+    if not content.strip():
+        return None
+    return {
+        "time": str(entry.get("time", "") or "").strip(),
+        "type": msg_type,
+        "attr": str(entry.get("attr", "") or "").strip(),
+        "sender": str(entry.get("sender", "") or ""),
+        "content": content,
+        "original_content": raw_content,
+    }
+
+
+def _legacy_message_key(entry):
+    entry = _normalize_legacy_entry(entry)
+    if entry is None:
+        return ""
+    return "\x1f".join(
+        entry[field] for field in ("time", "type", "attr", "sender", "content")
+    )
+
+
+def _legacy_received_at(value, fallback):
+    for fmt in ("%Y/%m/%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(str(value or ""), fmt).timestamp()
+        except ValueError:
+            pass
+    return float(fallback)
+
+
+def _legacy_store_entry(account_id, chat_name, chat_type, source_index, entry, key):
+    event_identity = json.dumps(
+        [account_id, chat_type, chat_name, source_index, key],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    metadata = {}
+    if entry["type"] == "image" and entry["original_content"]:
+        metadata["image_paths"] = [entry["original_content"]]
+    return {
+        "event_id": "evt_legacy_json_" + hashlib.sha256(event_identity.encode("utf-8")).hexdigest(),
+        "conversation": chat_name,
+        "chat_type": chat_type,
+        "direction": "manual_self" if entry["attr"] == "self" else "friend",
+        "sender": entry["sender"],
+        "content": entry["content"],
+        "original_content": entry["original_content"],
+        "message_type": entry["type"],
+        "native_attr": entry["attr"],
+        "native_time": entry["time"],
+        "received_at": _legacy_received_at(entry["time"], source_index),
+        "metadata": metadata,
+    }
+
+
 def migrate_account(data_dir, account_id, *, dry_run=False) -> dict:
     data_dir = Path(data_dir).resolve()
     account_id = str(account_id or "").strip()
@@ -101,14 +162,14 @@ def migrate_account(data_dir, account_id, *, dry_run=False) -> dict:
         chat_type = _chat_type(manager, chat_name, group_names)
         existing = manager.get_messages(chat_name, sys.maxsize, chat_type=chat_type)
         existing_counts = Counter(
-            key for item in existing if (key := unique_message_key(item))
+            key for item in existing if (key := _legacy_message_key(item))
         )
         remaining_existing = existing_counts.copy()
         to_append = []
         eligible_counts = Counter()
         for source_index, entry in enumerate(legacy):
-            normalized = manager._normalize_entry(entry)
-            key = unique_message_key(normalized)
+            normalized = _normalize_legacy_entry(entry)
+            key = _legacy_message_key(normalized)
             if not key:
                 result["invalid_rows"] += 1
                 continue
@@ -118,17 +179,13 @@ def migrate_account(data_dir, account_id, *, dry_run=False) -> dict:
                 remaining_existing[key] -= 1
                 result["existing_rows"] += 1
                 continue
-            normalized["source"] = "legacy_json_migration"
-            event_identity = json.dumps(
-                [account_id, chat_type, chat_name, source_index, key],
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            to_append.append(manager._store_entry(
+            to_append.append(_legacy_store_entry(
+                account_id,
                 chat_name,
+                chat_type,
+                source_index,
                 normalized,
-                chat_type=chat_type,
-                event_id=manager._event_id("legacy_json", event_identity),
+                key,
             ))
 
         result["conversations"] += 1
@@ -139,7 +196,7 @@ def migrate_account(data_dir, account_id, *, dry_run=False) -> dict:
         result["added_rows"] += manager.message_store.append_history(to_append)
         migrated = manager.get_messages(chat_name, sys.maxsize, chat_type=chat_type)
         migrated_counts = Counter(
-            key for item in migrated if (key := unique_message_key(item))
+            key for item in migrated if (key := _legacy_message_key(item))
         )
         if any(migrated_counts[key] < count for key, count in eligible_counts.items()):
             result["verified"] = False

@@ -593,6 +593,9 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
         if sub_chat:
             supervisor.succeeded(name, chat_type=chat_type)
             touch_dynamic_listener_entry(bot, name, chat_type=chat_type)
+            mark_context_repair = getattr(bot, "_mark_context_repair_needed_after_restore", None)
+            if callable(mark_context_repair):
+                mark_context_repair(name, chat_type=chat_type)
             _bot_log(bot, level="INFO", message=f"全局监听 {name}：监听窗口已恢复")
             continue
 

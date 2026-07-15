@@ -93,12 +93,20 @@ class MemorySQLiteMigrationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             manager = MemoryManager("wxid", tmp)
-            manager.append_missing_messages(
-                "张三",
-                [{"time": "2026/07/03 05:00:00", "type": "text", "attr": "friend", "sender": "张三", "content": "好"}],
-                100,
-                chat_type="private",
-            )
+            manager.message_store.append_history([{
+                "event_id": "existing-good",
+                "conversation": "张三",
+                "chat_type": "private",
+                "direction": "friend",
+                "sender": "张三",
+                "content": "好",
+                "original_content": "好",
+                "message_type": "text",
+                "native_attr": "friend",
+                "native_time": "2026/07/03 05:00:00",
+                "received_at": 1.0,
+                "metadata": {},
+            }])
 
             first = migrate_account(tmp, "wxid")
             second = migrate_account(tmp, "wxid")

@@ -217,21 +217,30 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertIs(config["chat_split_reply_delay_switch"], False)
         self.assertIs(config["group_split_reply_delay_switch"], True)
 
-    def test_context_repair_has_independent_dropdown_and_boolean_config(self):
+    def test_context_repair_has_private_and_group_switches_in_recognition_cards(self):
         root = Path(__file__).resolve().parents[1]
         dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
 
-        self.assertEqual(dashboard.count('id="memory_context_repair_switch"'), 1)
-        self.assertIn('<option value="true"', dashboard)
-        self.assertIn('<option value="false"', dashboard)
-        self.assertIn(
-            "memory_context_repair_switch:$('#memory_context_repair_switch').val() !== 'false'",
-            dashboard,
-        )
+        self.assertNotIn('id="memory_context_repair_switch"', dashboard)
+        self.assertEqual(dashboard.count('id="chat_context_repair_switch"'), 1)
+        self.assertEqual(dashboard.count('id="group_context_repair_switch"'), 1)
+        private_panel = dashboard.index('id="tab-listen"')
+        group_panel = dashboard.index('id="tab-group"')
+        memory_panel = dashboard.index('id="tab-memory"')
+        self.assertLess(private_panel, dashboard.index('id="chat_context_repair_switch"'))
+        self.assertLess(dashboard.index('id="chat_context_repair_switch"'), group_panel)
+        self.assertLess(group_panel, dashboard.index('id="group_context_repair_switch"'))
+        self.assertLess(dashboard.index('id="group_context_repair_switch"'), memory_panel)
+        self.assertIn("chat_context_repair_switch:$('#chat_context_repair_switch').is(':checked')", dashboard)
+        self.assertIn("group_context_repair_switch:$('#group_context_repair_switch').is(':checked')", dashboard)
 
-        config = {"memory_context_repair_switch": "false"}
+        config = {
+            "chat_context_repair_switch": "false",
+            "group_context_repair_switch": "true",
+        }
         web_server._coerce_bool_fields(config)
-        self.assertIs(config["memory_context_repair_switch"], False)
+        self.assertIs(config["chat_context_repair_switch"], False)
+        self.assertIs(config["group_context_repair_switch"], True)
 
     def test_text_reply_limits_live_in_private_and_group_reply_cards(self):
         root = Path(__file__).resolve().parents[1]
