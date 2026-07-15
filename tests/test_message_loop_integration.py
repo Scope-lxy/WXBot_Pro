@@ -1288,12 +1288,16 @@ class MessageLoopIntegrationTests(unittest.TestCase):
 
         self.assertEqual(order, ["persist", "download", "enrich", "dispatch"])
 
-    def test_global_image_is_in_sqlite_before_media_download(self):
+    def test_global_image_batch_is_persisted_before_later_media_download(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_delivery_bot(tmp)
             facts_seen_during_download = []
 
             class GlobalClient:
+                @staticmethod
+                def GetSession():
+                    return []
+
                 def GetNextNewMessage(self, filter_mute=False, callback=None):
                     message = SimpleNamespace(
                         id="global-image-1",
@@ -1325,9 +1329,24 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             )
             runtime._client = GlobalClient()
 
-            batch = runtime.poll_messages({"mode": "next", "download_media": True})
+            batch = runtime.poll_messages({"mode": "next"})
+            self.assertEqual(facts_seen_during_download, [])
+            accepted = bot._persist_ui_message_batch(
+                ConversationRef("Alice", "private"),
+                batch["msg"],
+            )
+            self.assertEqual(len(accepted), 1)
+            self.assertEqual(
+                bot._message_store.history("Alice", 10)[0]["content"],
+                "[图片]",
+            )
 
-            self.assertEqual(len(facts_seen_during_download), 1)
+            batch["msg"][0].content = GlobalClient.download()
+            batch["msg"][0]._wxbot_media_prepared = True
+            bot._enrich_persisted_ui_message(
+                ConversationRef("Alice", "private"),
+                batch["msg"][0],
+            )
             self.assertEqual(facts_seen_during_download[0]["content"], "[图片]")
             self.assertEqual(batch["msg"][0].content, "C:/temp/global.png")
             stored = bot._message_store.get_event(batch["msg"][0]._wxbot_event_id)

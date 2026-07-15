@@ -89,7 +89,7 @@
     <header class="topbar">
       <div>
         <h1>监听维护与 UI 调度流程图</h1>
-        <p class="lede">当前重构版不再用主循环高频巡检“硬盯”子窗口，而是固定监听预注册、动态按需补窗、发送前复核和受控故障恢复。</p>
+        <p class="lede">黑名单模式由单一扫描泵公平发现未读，消息整批落库后再按需建窗；全部微信动作仍由唯一 UI owner 按 FIFO 执行。</p>
       </div>
       <nav class="nav" aria-label="相关文档">
         <a href="消息处理流程图.html">查看消息处理图</a>
@@ -107,20 +107,20 @@
 
     <div class="workflow">
       <section class="stage">
-        <div class="stage-title"><span class="stage-number">01</span><h2>启动与固定监听</h2></div>
+        <div class="stage-title"><span class="stage-number">01</span><h2>启动与全局扫描</h2></div>
         <div class="flow-row">
           <article class="node blue"><h3>启动 UI owner</h3><p>owner 线程创建 <code>WeChat</code>、读取当前账号、初始化监听器。wxautox 对象不能跨线程保存或使用。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="node blue"><h3>注册固定对象</h3><p>白名单好友、监听群和素材来源注册为固定监听。</p></article>
+          <article class="node blue"><h3>先扫描并整批落库</h3><p>黑名单模式只保留一个扫描任务；非空结果立即把下一轮放到 FIFO 尾部，SQLite 整批成功前不建窗。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="node green"><h3>验证后进入运行态</h3><p>验证固定子窗口是否真实存在；缺失时轻量补一次。之后仅低频巡检，不恢复主循环高频扫描。</p></article>
+          <article class="node green"><h3>空扫描后放行固定窗口</h3><p>首次空扫描后再补固定群聊和素材来源。白名单模式仍直接注册已配置对象。</p></article>
         </div>
       </section>
 
       <section class="stage">
         <div class="stage-title"><span class="stage-number">02</span><h2>动态监听与按需补窗</h2></div>
         <div class="flow-row">
-          <article class="node blue"><h3>收到新消息</h3><p>固定监听回调直接带来消息；全局监听模式发现陌生私聊时，先得到目标与纯数据快照。</p></article>
+          <article class="node blue"><h3>发现并保存新消息</h3><p>固定回调逐条保存；全局扫描返回同一会话的纯数据批次，原子提交后才进入业务队列。</p></article>
           <div class="arrow">-&gt;</div>
           <article class="decision"><div><strong>目标已有健康子窗口？</strong><span>同时校验当前窗口是否仍属于这个目标</span></div></article>
           <div class="arrow">-&gt;</div>
@@ -128,9 +128,14 @@
         </div>
         <div class="arrow down">v</div>
         <div class="branch-grid">
-          <div class="branch"><p class="branch-label">没有健康窗口</p><article class="node blue"><h3>补一次并立刻验证</h3><p>由 owner 尝试添加监听子窗口；只有拿到的窗口和目标匹配，才允许继续处理。</p></article></div>
+          <div class="branch"><p class="branch-label">没有健康窗口</p><article class="node blue"><h3>登记一个建窗任务</h3><p>扫描链路不等待建窗；owner 稍后添加并验证子窗口，当前 runtime 已登记的窗口直接复用。</p></article></div>
           <div class="branch"><p class="branch-label">补窗暂时失败</p><article class="node amber"><h3>延后、合并和轻量重试</h3><p>先在 30 秒、60 秒后延后；之后在 600 秒待处理窗口内继续轻量重试。同一好友的新消息合并到既有任务。</p></article></div>
           <div class="branch"><p class="branch-label">已监听但无子窗口残留</p><article class="node violet"><h3>受控关闭重建</h3><p>只有这类明确残留状态允许关闭后重建。普通动态监听增删不重绑微信客户端，也不强清窗口。</p></article></div>
+        </div>
+        <div class="arrow down">v</div>
+        <div class="two-column">
+          <article class="node amber"><h3>扫描覆盖降级</h3><p>返回少于扫描前未读、耗时达到 10 秒或数量达到 30 条时明确提示；已取得消息继续处理，第一阶段不自动 deep。</p></article>
+          <article class="node violet"><h3>窗口恢复后的 tail</h3><p>窗口从不可信变为可用时生成补洞代次；旧补洞成功不能清除恢复期间产生的新代次。</p></article>
         </div>
       </section>
 

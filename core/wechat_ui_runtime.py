@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from threading import RLock, get_ident
 from typing import Any, Callable
+from wxautox4.param import WxParam
 
 from core.message_pipeline import (
     ConversationRef,
@@ -215,11 +216,10 @@ class UIClientFacade:
             UI_CALL_WAIT_TIMEOUT,
         )
 
-    def GetNextNewMessage(self, filter_mute=False, download_media=False):
+    def GetNextNewMessage(self, filter_mute=False):
         return self._owner.call(UIIntent(UIIntentKind.POLL_MESSAGES, {
             "mode": "next",
             "filter_mute": bool(filter_mute),
-            "download_media": bool(download_media),
         }), UI_CALL_WAIT_TIMEOUT)
 
 class WeChatUIRuntime:
@@ -492,6 +492,20 @@ class WeChatUIRuntime:
             if chat_type is not None
             else None
         )
+        if requested is None:
+            matches = [
+                chat
+                for (cached_type, cached_name), chat in self._listen_chats.items()
+                if cached_name == name
+                and self._chat_conversation(chat) == ConversationRef(name, cached_type)
+            ]
+            existing = matches[0] if len(matches) == 1 else None
+        else:
+            existing = self._listen_chats.get(self._chat_key(requested))
+            if existing is not None and self._chat_conversation(existing) != requested:
+                existing = None
+        if existing is not None:
+            return existing
         add = getattr(self._client, "AddListenChat", None)
         if not callable(add):
             raise RuntimeError("当前微信内核不支持添加监听")
@@ -699,17 +713,39 @@ class WeChatUIRuntime:
                 for message in messages or []:
                     self._callback(message, chat)
             return len(result or {})
-        getter = getattr(self._client, "GetNextNewMessage", None)
-        if not callable(getter):
-            return {"chat_name": "", "chat_type": "", "msg": []}
+        getter = self._client.GetNextNewMessage
+        unread_before = []
+        for session in self._client.GetSession() or []:
+            name = str(getattr(session, "name", "") or "").strip()
+            try:
+                new_count = max(0, int(getattr(session, "new_count", 0) or 0))
+            except (TypeError, ValueError):
+                new_count = 0
+            is_new = bool(getattr(session, "isnew", False)) or new_count > 0
+            if not name or not is_new:
+                continue
+            raw_chat_type = str(getattr(session, "chat_type", "") or "").strip().lower()
+            chat_type = "private" if raw_chat_type == "friend" else raw_chat_type
+            if chat_type not in {"private", "group"}:
+                chat_type = ""
+            unread_before.append({
+                "name": name,
+                "chat_type": chat_type,
+                "isnew": is_new,
+                "new_count": new_count,
+                "ismute": bool(getattr(session, "ismute", False)),
+            })
         captured = []
 
         def capture(message):
             captured.append(message)
             return True
 
+        started_at = time.monotonic()
         result = getter(filter_mute=bool(payload.get("filter_mute")), callback=capture)
-        result = result if isinstance(result, dict) else {}
+        elapsed_seconds = max(0.0, time.monotonic() - started_at)
+        if not isinstance(result, dict):
+            raise TypeError("全局未读扫描未返回字典结果")
         chat_name = str(result.get("chat_name") or "").strip()
         conversation = ConversationRef(
             chat_name,
@@ -726,31 +762,15 @@ class WeChatUIRuntime:
                 window_order=index,
             )
             envelope._wxbot_source_batch = source_batch
-            is_new = True
-            if callable(self._persist_message):
-                is_new = bool(self._persist_message(
-                    conversation,
-                    envelope,
-                ))
-            if is_new and payload.get("download_media") and conversation.chat_type != "group":
-                method_name = "download_quote_image" if envelope.type == "quote" else "download"
-                if envelope.type in {"image", "quote"}:
-                    method = getattr(message, method_name, None)
-                    path = str(method() or "") if callable(method) else ""
-                    if path:
-                        envelope.content = (
-                            envelope.content + "+引用的图片:" + path
-                            if envelope.type == "quote"
-                            else path
-                        )
-                        envelope._wxbot_media_prepared = True
-            if is_new and callable(self._enrich_message):
-                self._enrich_message(conversation, envelope)
             envelopes.append(envelope)
         return {
             "chat_name": chat_name,
             "chat_type": conversation.chat_type,
             "msg": envelopes,
+            "unread_before": unread_before,
+            "elapsed_seconds": elapsed_seconds,
+            "max_quantity": int(WxParam.GET_NEXT_MAX_QUANTITY),
+            "max_runtime_seconds": float(WxParam.GET_NEXT_MAX_RUNTIME),
         }
 
     def main_window(self, payload):
@@ -758,6 +778,7 @@ class WeChatUIRuntime:
         if operation == "start_listening":
             return self._client.StartListening()
         if operation == "stop_listening":
+            self._listen_chats = {}
             return self._client.StopListening()
         if operation == "is_online":
             return self._client.IsOnline()

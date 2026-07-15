@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass, replace
 from threading import RLock
-from typing import Callable, Literal, Mapping, Protocol, TypeAlias
+from typing import Callable, Iterable, Literal, Mapping, Protocol, TypeAlias
 
 
 InboundDirection: TypeAlias = Literal[
@@ -61,6 +61,9 @@ class InboundAcceptResult:
 class InboundStore(Protocol):
     def record_inbound(self, event: InboundEvent) -> Mapping[str, object]:
         """Persist ``event`` once and return event_id, is_new, and version."""
+
+    def inbound_batch(self):
+        """Yield a transaction-scoped ``record_inbound`` callable."""
 
 
 class DirectionClassifier(Protocol):
@@ -134,40 +137,80 @@ class InboundCoordinator:
             raise TypeError("event must be an InboundEvent")
 
         with self._lock:
-            observation_keys = self._observation_keys(event)
-            seen = self._find_seen(observation_keys)
-            if seen is not None:
-                self._consume_handoff(seen, observed_source=event.source)
-                return self._duplicate(seen)
+            return self._accept_locked(event, self._store.record_inbound)
 
-            if event.source in {"global", "subwindow"}:
-                handed_off = self._take_handoff(event)
-                if handed_off is not None:
-                    self._remember(observation_keys, handed_off)
-                    return self._duplicate(handed_off, handoff=True)
+    def accept_batch(self, events: Iterable[InboundEvent]) -> list[InboundAcceptResult]:
+        """Atomically accept one ordered batch without advancing memory on failure."""
+        events = list(events)
+        if not events:
+            return []
+        if any(not isinstance(event, InboundEvent) for event in events):
+            raise TypeError("events must contain only InboundEvent values")
+        batch_identity = {(event.source, event.source_batch) for event in events}
+        if len(batch_identity) != 1:
+            raise ValueError("one inbound batch must share source and source_batch")
+        native_observations = {}
+        for event in events:
+            for key in self._observation_keys(event):
+                if key[-2] != "id":
+                    continue
+                previous = native_observations.get(key)
+                if (
+                    previous is not None
+                    and self._occurrence_signature(previous)
+                    != self._occurrence_signature(event)
+                ):
+                    raise ValueError("one native_id was reused for different batch facts")
+                native_observations[key] = event
 
-            direction = self._classifier.classify(event)
-            if direction not in {
-                "friend",
-                "manual_self",
-                "bot_echo",
-                "system",
-                "unknown",
-            }:
-                raise ValueError(f"unsupported inbound direction: {direction!r}")
-
-            classified_event = replace(event, direction=direction)
-            stored = self._store.record_inbound(classified_event)
-            result = InboundAcceptResult(
-                event=classified_event,
-                event_id=str(stored["event_id"]),
-                is_new=bool(stored["is_new"]),
-                version=int(stored["version"]),
+        with self._lock:
+            snapshot = (
+                OrderedDict(self._seen),
+                OrderedDict(self._handoffs),
+                self._next_handoff_id,
             )
-            self._remember(observation_keys, result)
-            if event.source in {"global", "subwindow"}:
-                self._remember_handoff(result)
-            return result
+            try:
+                with self._store.inbound_batch() as record:
+                    return [self._accept_locked(event, record) for event in events]
+            except BaseException:
+                self._seen, self._handoffs, self._next_handoff_id = snapshot
+                raise
+
+    def _accept_locked(self, event, record) -> InboundAcceptResult:
+        observation_keys = self._observation_keys(event)
+        seen = self._find_seen(observation_keys)
+        if seen is not None:
+            self._consume_handoff(seen, observed_source=event.source)
+            return self._duplicate(seen)
+
+        if event.source in {"global", "subwindow"}:
+            handed_off = self._take_handoff(event)
+            if handed_off is not None:
+                self._remember(observation_keys, handed_off)
+                return self._duplicate(handed_off, handoff=True)
+
+        direction = self._classifier.classify(event)
+        if direction not in {
+            "friend",
+            "manual_self",
+            "bot_echo",
+            "system",
+            "unknown",
+        }:
+            raise ValueError(f"unsupported inbound direction: {direction!r}")
+
+        classified_event = replace(event, direction=direction)
+        stored = record(classified_event)
+        result = InboundAcceptResult(
+            event=classified_event,
+            event_id=str(stored["event_id"]),
+            is_new=bool(stored["is_new"]),
+            version=int(stored["version"]),
+        )
+        self._remember(observation_keys, result)
+        if event.source in {"global", "subwindow"}:
+            self._remember_handoff(result)
+        return result
 
     @staticmethod
     def _observation_keys(event: InboundEvent) -> tuple[tuple[str, ...], ...]:

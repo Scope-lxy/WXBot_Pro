@@ -523,6 +523,40 @@ class WechatUiActionsTests(unittest.TestCase):
 
         self.assertEqual(events, ["recover", "text", "poll"])
 
+    def test_global_poll_is_coalesced_while_the_first_poll_is_running(self):
+        started = threading.Event()
+        release = threading.Event()
+        calls = []
+
+        def poll(_payload):
+            calls.append("poll")
+            started.set()
+            self.assertTrue(release.wait(1))
+            return "done"
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.POLL_MESSAGES: poll,
+        }, poll_interval=0.01)
+        owner.start()
+        try:
+            first = owner.submit(wechat_ui_actions.UIIntent(
+                wechat_ui_actions.UIIntentKind.POLL_MESSAGES,
+                {"mode": "next"},
+            ))
+            self.assertTrue(started.wait(1))
+            second = owner.submit(wechat_ui_actions.UIIntent(
+                wechat_ui_actions.UIIntentKind.POLL_MESSAGES,
+                {"mode": "next"},
+            ))
+            self.assertIs(first, second)
+            release.set()
+            self.assertEqual(first.result(1), "done")
+        finally:
+            release.set()
+            owner.stop()
+
+        self.assertEqual(calls, ["poll"])
+
     def test_contact_start_failure_releases_business_barrier(self):
         owner = wechat_ui_actions.WeChatUIOwner({
             wechat_ui_actions.UIIntentKind.CONTACT_START: lambda _payload: (_ for _ in ()).throw(

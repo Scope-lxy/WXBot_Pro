@@ -151,6 +151,18 @@ class MessageStoreTests(unittest.TestCase):
             self.record("msg-1", content="different")
         self.assertEqual(self.store.conversation_version("Alice"), 1)
 
+    def test_inbound_batch_conflict_rolls_back_the_whole_batch(self):
+        first = inbound("msg-1", content="one", source_order=0)
+        conflict = inbound("msg-1", content="different", source_order=1)
+
+        with self.assertRaises(MessageStoreConflictError):
+            with self.store.inbound_batch() as record:
+                record(first)
+                record(conflict)
+
+        self.assertEqual(self.store.history("Alice", 10, chat_type="private"), [])
+        self.assertEqual(self.store.conversation_version("Alice"), 0)
+
     def test_later_observation_of_same_native_id_keeps_first_boundary_facts(self):
         first = self.record("msg-1", received_at=100, native_hash="hash-a")
         later = self.record(

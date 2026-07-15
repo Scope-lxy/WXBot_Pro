@@ -1283,7 +1283,21 @@ def contact_directory_auto_maintenance_time_window_allows(bot, now=None):
 
 
 def is_contact_directory_auto_maintenance_idle(bot):
-    return True
+    if getattr(getattr(bot, "config", None), "AllListen_switch", False):
+        from feature.listening import global_scan_snapshot
+
+        scan = global_scan_snapshot(bot)
+        if (
+            not scan.get("initial_drain_complete")
+            or not scan.get("last_scan_empty")
+            or scan.get("scan_coverage_degraded")
+        ):
+            return False
+    if has_active_contact_maintenance_conflict(bot):
+        return False
+    owner = getattr(bot, "_ui_owner", None)
+    is_idle = getattr(owner, "is_idle", None)
+    return bool(callable(is_idle) and is_idle())
 
 
 def has_active_contact_maintenance_conflict(bot, *, now_ts: float | None = None) -> bool:
@@ -1295,11 +1309,15 @@ def has_active_contact_maintenance_conflict(bot, *, now_ts: float | None = None)
     if last_incoming_at > 0 and now_ts - last_incoming_at < AUTO_MAINTENANCE_ACTIVITY_GRACE_SECONDS:
         return True
 
-    pipelines = getattr(bot, "_private_message_pipelines", {}) or {}
-    if isinstance(pipelines, dict):
+    ingress = getattr(bot, "_ui_ingress_queue", None)
+    if ingress is not None and not ingress.empty():
+        return True
+
+    for pipelines in (
+        getattr(bot, "_private_message_pipelines", {}) or {},
+        getattr(bot, "_group_message_pipelines", {}) or {},
+    ):
         for pipeline in pipelines.values():
-            if not isinstance(pipeline, dict):
-                continue
             if (
                 pipeline.get("open_messages")
                 or pipeline.get("queued_batches")
@@ -1308,7 +1326,14 @@ def has_active_contact_maintenance_conflict(bot, *, now_ts: float | None = None)
                 return True
 
     pending_voice = getattr(bot, "_pending_private_voice_transcription", {}) or {}
-    if isinstance(pending_voice, dict) and pending_voice:
+    if pending_voice:
+        return True
+
+    repair_states = getattr(bot, "_memory_context_repair_state", {}) or {}
+    if any(
+        state["inflight_generation"] is not None
+        for state in repair_states.values()
+    ):
         return True
 
     supervisor = getattr(bot, "_listener_window_supervisor", None)

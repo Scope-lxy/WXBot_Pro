@@ -1082,6 +1082,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._chat_memory_dirty_lock = threading.Lock()
         bot._chat_memory_dirty_chats = {}
         bot._chat_memory_worker_running = False
+        bot._global_scan_stop = threading.Event()
         bot.is_err = lambda *_args, **_kwargs: self.fail("停止不应报错")
 
         self.assertTrue(WXBot.stop_wxbot(bot))
@@ -1104,6 +1105,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._stop_requested = threading.Event()
         bot._stop_cleanup_lock = threading.Lock()
         bot._stop_cleanup_done = False
+        bot._global_scan_stop = threading.Event()
         bot._cancel_pending_private_message_timers = mock.Mock()
         bot._clear_group_message_pipelines = mock.Mock()
         bot._clear_chat_memory_background_state = mock.Mock()
@@ -1139,6 +1141,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._stop_requested = threading.Event()
         bot._stop_cleanup_lock = threading.Lock()
         bot._stop_cleanup_done = False
+        bot._global_scan_stop = threading.Event()
         bot._cancel_pending_private_message_timers = mock.Mock(
             side_effect=RuntimeError("timer cleanup failed")
         )

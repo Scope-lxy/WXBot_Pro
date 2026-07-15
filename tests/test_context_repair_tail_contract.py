@@ -402,6 +402,10 @@ class WXBotContractTests(unittest.TestCase):
             )
             self.assertEqual(private.get_all_calls, 0)
             self.assertTrue(bot.config.group_context_repair_switch)
+            self.assertTrue(bot._mark_context_repair_needed_after_restore(
+                "测试群",
+                chat_type="group",
+            ))
             self.assertEqual(
                 bot._repair_context_before_ai(group, self.current_message(), chat_type="group"),
                 [],
@@ -412,6 +416,10 @@ class WXBotContractTests(unittest.TestCase):
             bot.config.group_context_repair_switch = False
             private_enabled = FakeChat("李四", "private", visible=[])
             group_disabled = FakeChat("另一个群", "group", visible=[])
+            self.assertTrue(bot._mark_context_repair_needed_after_restore(
+                "李四",
+                chat_type="private",
+            ))
             self.assertEqual(
                 bot._repair_context_before_ai(
                     private_enabled,
@@ -440,6 +448,7 @@ class WXBotContractTests(unittest.TestCase):
             current = self.current_message()
             chat = FakeChat(visible=[bubble("漏掉"), current])
 
+            bot._mark_context_repair_needed_after_restore("张三", chat_type="private")
             repaired = bot._repair_context_before_ai(chat, current, chat_type="private")
             history = bot._get_model_context_history(
                 "张三",
@@ -461,6 +470,10 @@ class WXBotContractTests(unittest.TestCase):
             chat = FakeChat(visible=[current])
 
             bot._repair_context_before_ai(chat, current, chat_type="private")
+            self.assertEqual(chat.get_all_calls, 0)
+
+            bot._mark_context_repair_needed_after_restore("张三", chat_type="private")
+            bot._repair_context_before_ai(chat, current, chat_type="private")
             bot._repair_context_before_ai(chat, current, chat_type="private")
             self.assertEqual(chat.get_all_calls, 1)
             history = bot.memory_manager.get_messages("张三", 10, chat_type="private")
@@ -469,6 +482,31 @@ class WXBotContractTests(unittest.TestCase):
             bot._mark_context_repair_needed_after_restore("张三", chat_type="private")
             bot._repair_context_before_ai(chat, current, chat_type="private")
             self.assertEqual(chat.get_all_calls, 2)
+
+    def test_old_repair_success_cannot_clear_a_new_repair_generation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = self.make_bot(tmp)
+            key = "private:张三"
+            bot._mark_context_repair_needed_after_restore("张三", chat_type="private")
+            first_generation = bot._claim_context_repair(key)
+
+            bot._mark_context_repair_needed_after_restore("张三", chat_type="private")
+            self.assertFalse(bot._finish_context_repair_attempt(
+                key,
+                first_generation,
+                success=True,
+            ))
+            state = bot._memory_context_repair_state[key]
+            self.assertEqual(state["generation"], first_generation + 1)
+
+            second_generation = bot._claim_context_repair(key)
+            self.assertEqual(second_generation, first_generation + 1)
+            self.assertTrue(bot._finish_context_repair_attempt(
+                key,
+                second_generation,
+                success=True,
+            ))
+            self.assertNotIn(key, bot._memory_context_repair_state)
 
     def test_listener_window_restore_marks_the_same_chat_type_dirty(self):
         marked = []

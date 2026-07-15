@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 import uuid
 
@@ -31,6 +32,8 @@ LISTENER_WINDOW_RECOVERY_FIRST_DELAY_SECONDS = LISTENER_WINDOW_RECOVERY_ATTEMPT_
 LISTENER_WINDOW_RECOVERY_RETRY_SECONDS = 60
 LISTENER_WINDOW_RECOVERY_DEGRADED_AFTER_SECONDS = 600
 LISTENER_WINDOW_RECOVERY_VERIFY_INTERVAL_SECONDS = 0.3
+GLOBAL_SCAN_EMPTY_INTERVAL_SECONDS = 3.0
+GLOBAL_SCAN_REPEAT_BACKOFF_MAX_SECONDS = 5.0
 LISTENER_RECOVERY_HRESULTS = {
     -2147220991,  # 事件无法调用任何订户
     -2147023174,  # RPC 服务器不可用
@@ -593,9 +596,7 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
         if sub_chat:
             supervisor.succeeded(name, chat_type=chat_type)
             touch_dynamic_listener_entry(bot, name, chat_type=chat_type)
-            mark_context_repair = getattr(bot, "_mark_context_repair_needed_after_restore", None)
-            if callable(mark_context_repair):
-                mark_context_repair(name, chat_type=chat_type)
+            bot._mark_context_repair_needed_after_restore(name, chat_type=chat_type)
             _bot_log(bot, level="INFO", message=f"全局监听 {name}：监听窗口已恢复")
             continue
 
@@ -786,9 +787,29 @@ def rebuild_listener_runtime(
     _bot_sleep(bot, 1)
     bot.wx.StartListening()
 
+    specs = listener_registration_specs(bot)
+    if bot.config.AllListen_switch:
+        scan = global_scan_snapshot(bot)
+        if scan.get("fail_stopped"):
+            raise RuntimeError(scan.get("last_error") or "全局扫描已停止")
+        refs = [conversation for _label, conversation in specs]
+        thread = bot._global_scan_thread
+        if thread is None or not thread.is_alive():
+            start_global_scan_pump(bot, refs)
+        else:
+            bot._global_scan_deferred_listener_refs = refs
+            _update_global_scan_state(
+                bot,
+                initial_drain_complete=False,
+                last_scan_empty=False,
+            )
+        bot._listener_reconcile_last_at = time.time()
+        _bot_log(bot, level="INFO", message=finish_message)
+        return True
+
     result = None
     expected_listeners = []
-    for label, conversation in listener_registration_specs(bot):
+    for label, conversation in specs:
         _bot_sleep(bot, 0.5)
         result = add_listen_chat_once(
             bot,
@@ -801,6 +822,12 @@ def rebuild_listener_runtime(
             runtime_chat_state.remember_listen_chat(bot, conversation, result)
 
     verify_initial_listeners(bot, expected_listeners, retry_count=verify_retry_count)
+    for conversation in expected_listeners:
+        if runtime_chat_state.get_listen_chat(bot, conversation):
+            bot._mark_context_repair_needed_after_restore(
+                conversation.who,
+                chat_type=conversation.chat_type,
+            )
     bot._listener_reconcile_last_at = time.time()
     _bot_log(bot, level="INFO", message=finish_message)
     return all(
@@ -948,6 +975,10 @@ def reconcile_listener_subwindows(bot, retry_count=3):
         )
         if sub_chat:
             reopened.append(conversation.who)
+            bot._mark_context_repair_needed_after_restore(
+                conversation.who,
+                chat_type=conversation.chat_type,
+            )
     return reopened
 
 
@@ -955,7 +986,17 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
     if not getattr(bot, "wx", None):
         return []
 
-    if not force and getattr(getattr(bot, "config", None), "AllListen_switch", False):
+    all_listen = getattr(getattr(bot, "config", None), "AllListen_switch", False)
+    if all_listen:
+        scan_state = global_scan_snapshot(bot)
+        if (
+            scan_state.get("fail_stopped")
+            or not scan_state.get("initial_drain_complete")
+            or not scan_state.get("last_scan_empty")
+        ):
+            return []
+
+    if not force and all_listen:
         if _has_due_listener_window_recovery_task(bot):
             return []
 
@@ -1065,6 +1106,251 @@ def verify_initial_listeners(bot, expected_chats, retry_count=3):
             _bot_log(bot, level="ERROR", message=f"{conversation.who} 初始化监听子窗口重试失败，已跳过运行缓存")
 
 
+def _update_global_scan_state(bot, **updates):
+    with bot._global_scan_state_lock:
+        bot._global_scan_state.update(updates)
+        return dict(bot._global_scan_state)
+
+
+def global_scan_snapshot(bot):
+    with bot._global_scan_state_lock:
+        state = dict(bot._global_scan_state)
+        degraded = dict(state.get("degraded_conversations") or {})
+    if state.get("fail_stopped"):
+        status = "failed"
+    elif degraded:
+        status = "degraded"
+    elif state.get("initial_drain_complete"):
+        status = "complete"
+    elif state.get("running"):
+        status = "scanning"
+    else:
+        status = "idle"
+    message = str(state.get("last_error") or "").strip()
+    if not message and degraded:
+        latest = next(reversed(degraded.values()))
+        message = (
+            f"{latest['conversation']} 的未读深度覆盖不完整："
+            f"扫描前 {latest['expected_count']} 条，实际取得 {latest['actual_count']} 条"
+        )
+    return {
+        **state,
+        "degraded_conversations": degraded,
+        "scan_coverage_status": status,
+        "scan_coverage_degraded": bool(degraded) or bool(state.get("fail_stopped")),
+        "scan_coverage_message": message,
+    }
+
+
+def _expected_unread_count(batch, conversation):
+    candidates = [
+        item
+        for item in (batch.get("unread_before") or [])
+        if str(item.get("name") or "").strip() == conversation.who
+    ]
+    exact = [
+        item
+        for item in candidates
+        if str(item.get("chat_type") or "").strip() == conversation.chat_type
+    ]
+    if len(exact) == 1:
+        candidates = exact
+    elif len(candidates) != 1:
+        return 0
+    try:
+        return max(0, int(candidates[0].get("new_count", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _mark_global_scan_degraded(bot, conversation, details):
+    snapshot = global_scan_snapshot(bot)
+    degraded = dict(snapshot.get("degraded_conversations") or {})
+    degraded[f"{conversation.chat_type}:{conversation.who}"] = dict(details)
+    _update_global_scan_state(bot, degraded_conversations=degraded)
+
+
+def _handle_global_scan_batch(bot, batch):
+    if not isinstance(batch, dict):
+        raise TypeError("全局扫描必须返回字典批次")
+    messages = list(batch.get("msg") or [])
+    if not messages:
+        return {"raw_count": 0, "new_fact_count": 0}
+    if any(not isinstance(message, MessageEnvelope) for message in messages):
+        raise TypeError("全局扫描边界只能返回 MessageEnvelope")
+    conversation = ConversationRef(
+        str(batch.get("chat_name") or "").strip(),
+        str(batch.get("chat_type") or "private").strip() or "private",
+    )
+    if any(
+        message._wxbot_ingress_source != "global"
+        or not str(getattr(message, "_wxbot_source_batch", "") or "").strip()
+        for message in messages
+    ):
+        raise ValueError("全局扫描批次缺少稳定来源身份")
+
+    accepted_items = bot._persist_ui_message_batch(conversation, messages)
+    for message in messages:
+        voice_enabled = bool(
+            bot.config.group_voice_recognition_switch
+            if conversation.chat_type == "group"
+            else bot.config.chat_voice_recognition_switch
+        )
+        if message.type == "voice" and not voice_enabled:
+            message._skip_ai_reply = True
+        bot._dispatch_persisted_ui_message(conversation, message)
+
+    expected_count = _expected_unread_count(batch, conversation)
+    actual_count = sum(1 for item in accepted_items if item.direction == "friend")
+    new_fact_count = sum(1 for item in accepted_items if item.is_new)
+    elapsed = float(batch["elapsed_seconds"])
+    max_quantity = int(batch["max_quantity"])
+    max_runtime = float(batch["max_runtime_seconds"])
+    reasons = []
+    if expected_count and actual_count < expected_count:
+        reasons.append("returned_less_than_unread")
+    if elapsed >= max_runtime:
+        reasons.append("runtime_limit")
+    if len(messages) >= max_quantity:
+        reasons.append("quantity_limit")
+    if reasons:
+        details = {
+            "conversation": conversation.who,
+            "chat_type": conversation.chat_type,
+            "expected_count": expected_count,
+            "actual_count": actual_count,
+            "raw_count": len(messages),
+            "elapsed_seconds": elapsed,
+            "reasons": reasons,
+        }
+        _mark_global_scan_degraded(bot, conversation, details)
+        _bot_log(
+            bot,
+            level="ERROR",
+            message=(
+                f"全局扫描 {conversation.who}：未读深度覆盖不完整，"
+                f"扫描前 {expected_count} 条，实际取得 {actual_count} 条，"
+                f"耗时 {elapsed:.2f}s，原因 {','.join(reasons)}；已取得消息仍正常处理"
+            ),
+        )
+
+    if conversation.who in bot.config.global_blacklist:
+        _bot_log(bot, message=f"{conversation.who} 为黑名单用户，已保存消息并跳过回复")
+    else:
+        cached = get_runtime_cached_subwindow(
+            bot,
+            conversation.who,
+            chat_type=conversation.chat_type,
+        )
+        if cached:
+            touch_dynamic_listener_entry(bot, conversation)
+        else:
+            ensure_listener_window_recovery_state(bot).request(
+                conversation.who,
+                chat_type=conversation.chat_type,
+                now=time.time(),
+            )
+    return {
+        "raw_count": len(messages),
+        "new_fact_count": new_fact_count,
+        "conversation": conversation,
+    }
+
+
+def _activate_deferred_listener_windows(bot):
+    refs = list(bot._global_scan_deferred_listener_refs)
+    bot._global_scan_deferred_listener_refs = []
+    supervisor = ensure_listener_window_recovery_state(bot)
+    now_ts = time.time()
+    for conversation in refs:
+        supervisor.request(
+            conversation.who,
+            chat_type=conversation.chat_type,
+            now=now_ts,
+        )
+    _update_global_scan_state(bot, initial_drain_complete=True, last_empty_at=now_ts)
+
+
+def _run_global_scan_pump(bot):
+    repeated_batches = 0
+    stop_event = bot._global_scan_stop
+    while not stop_event.is_set() and not _is_bot_stop_requested(bot):
+        try:
+            batch = bot.wx.GetNextNewMessage(
+                filter_mute=bot.config.AllListen_filter_mute,
+            )
+            result = _handle_global_scan_batch(bot, batch)
+        except Exception as exc:
+            if stop_event.is_set() or _is_bot_stop_requested(bot):
+                break
+            message = f"全局扫描已停止，避免继续清除未保存的微信未读：{exc}"
+            _update_global_scan_state(
+                bot,
+                running=False,
+                fail_stopped=True,
+                last_error=message,
+            )
+            _bot_log(bot, level="ERROR", message=message)
+            return
+
+        _update_global_scan_state(
+            bot,
+            last_success_at=time.time(),
+            last_scan_empty=result["raw_count"] == 0,
+        )
+        if result["raw_count"] == 0:
+            repeated_batches = 0
+            if not global_scan_snapshot(bot).get("initial_drain_complete"):
+                _activate_deferred_listener_windows(bot)
+            if stop_event.wait(GLOBAL_SCAN_EMPTY_INTERVAL_SECONDS):
+                break
+            continue
+        if result["new_fact_count"]:
+            repeated_batches = 0
+            continue
+        repeated_batches += 1
+        delay = min(
+            GLOBAL_SCAN_REPEAT_BACKOFF_MAX_SECONDS,
+            0.25 * (2 ** min(repeated_batches - 1, 5)),
+        )
+        if stop_event.wait(delay):
+            break
+    _update_global_scan_state(bot, running=False)
+
+
+def start_global_scan_pump(bot, deferred_listener_refs):
+    thread = bot._global_scan_thread
+    if thread is not None and thread.is_alive():
+        return thread
+    bot._global_scan_deferred_listener_refs = list(deferred_listener_refs or [])
+    bot._global_scan_stop.clear()
+    _update_global_scan_state(
+        bot,
+        running=True,
+        fail_stopped=False,
+        initial_drain_complete=False,
+        degraded_conversations={},
+        last_error="",
+        last_success_at=0.0,
+        last_empty_at=0.0,
+        last_scan_empty=False,
+    )
+    thread = threading.Thread(
+        target=_run_global_scan_pump,
+        args=(bot,),
+        name="wechat-global-scan",
+        daemon=True,
+    )
+    bot._global_scan_thread = thread
+    thread.start()
+    return thread
+
+
+def stop_global_scan_pump(bot):
+    bot._global_scan_stop.set()
+    return True
+
+
 def init_wx_listeners(bot):
     """Initialize WeChat client and listener registrations."""
     specs = listener_registration_specs(bot)
@@ -1087,16 +1373,24 @@ def init_wx_listeners(bot):
     bot._initialize_message_runtime(wx_id)
     bot._init_prompt_system(str(account_area_dir(bot.config.DATA_DIR, wx_id, "chat_memory", create=True)))
     bot._drain_message_recovery()
-    bot._register_ui_listener_names(listener_refs)
     bot._listen_chats = {}
-    for _label, conversation in specs:
-        chat = OwnedChat(
-            bot._ui_owner,
-            conversation.who,
-            conversation.chat_type,
-        )
-        runtime_chat_state.remember_listen_chat(bot, conversation, chat)
-    bot._ui_ingress_ready.set()
+    if getattr(bot.config, "AllListen_switch", False):
+        bot._ui_ingress_ready.set()
+        start_global_scan_pump(bot, listener_refs)
+    else:
+        bot._register_ui_listener_names(listener_refs)
+        for _label, conversation in specs:
+            chat = OwnedChat(
+                bot._ui_owner,
+                conversation.who,
+                conversation.chat_type,
+            )
+            runtime_chat_state.remember_listen_chat(bot, conversation, chat)
+            bot._mark_context_repair_needed_after_restore(
+                conversation.who,
+                chat_type=conversation.chat_type,
+            )
+        bot._ui_ingress_ready.set()
     bot._register_runtime_task_schedules()
     _bot_log(bot, level="DEBUG", message="监听器初始化完成")
     return True
@@ -1342,6 +1636,19 @@ def alllisten_mode(bot, last_time, timeout=10):
                 listen_name = conversation.who
                 if (conversation.chat_type, listen_name) in protected_listeners:
                     continue
+                pipelines = (
+                    getattr(bot, "_group_message_pipelines", {})
+                    if conversation.chat_type == "group"
+                    else getattr(bot, "_private_message_pipelines", {})
+                ) or {}
+                pipeline = pipelines.get(listen_name) if isinstance(pipelines, dict) else None
+                if isinstance(pipeline, dict) and (
+                    pipeline.get("open_messages")
+                    or pipeline.get("messages")
+                    or pipeline.get("queued_batches")
+                    or pipeline.get("worker_running")
+                ):
+                    continue
                 remove_fn = getattr(bot, "_remove_listen_chat_verified", None)
                 if callable(remove_fn):
                     removed = remove_fn(
@@ -1363,109 +1670,6 @@ def alllisten_mode(bot, last_time, timeout=10):
                         chat_type=conversation.chat_type,
                     )
                     _bot_log(bot, message=f"全局监听 {listen_name}：对话超时，已停止监听")
-
-    def get_next_new_message():
-        messages_new = bot.wx.GetNextNewMessage(
-            filter_mute=bot.config.AllListen_filter_mute,
-            download_media=bool(
-                getattr(bot.config, "chat_image_recognition_switch", False)
-                or getattr(bot.config, "group_image_recognition_switch", False)
-            ),
-        )
-        chat = messages_new.get("chat_name")
-        chat_type = messages_new.get("chat_type")
-        msgs = messages_new.get("msg")
-
-        if not msgs:
-            return
-
-        conversation = ConversationRef(str(chat or "").strip(), str(chat_type or "private").strip() or "private")
-        envelopes = []
-        for index, raw_message in enumerate(msgs):
-            message = raw_message
-            if not isinstance(message, MessageEnvelope):
-                message = MessageEnvelope.from_wx_message(
-                    raw_message,
-                    ingress_source="global",
-                    received_at=time.time(),
-                    window_order=index,
-                )
-            else:
-                message._wxbot_ingress_source = "global"
-            voice_recognition_enabled = bool(
-                getattr(
-                    bot.config,
-                    "group_voice_recognition_switch"
-                    if conversation.chat_type == "group"
-                    else "chat_voice_recognition_switch",
-                    False,
-                )
-            )
-            if message.type == "voice" and not voice_recognition_enabled:
-                message._skip_ai_reply = True
-            bot._enqueue_ui_message(conversation, message)
-            envelopes.append(message)
-
-        if chat in bot.config.global_blacklist:
-            _bot_log(bot, message=f"{chat} 为黑名单用户，已保存消息并跳过回复")
-            return
-
-        supervisor = ensure_listener_window_recovery_state(bot)
-        if supervisor.contains(
-            conversation.who,
-            chat_type=conversation.chat_type,
-        ):
-            return
-
-        is_listened_fn = getattr(bot, "is_chat_listened", None)
-        sub_chat = None
-        if callable(is_listened_fn) and is_listened_fn(
-            conversation.who,
-            chat_type=conversation.chat_type,
-        ):
-            sub_chat = get_cached_or_verified_subwindow(bot, conversation)
-            if sub_chat:
-                touch_dynamic_listener_entry(bot, conversation)
-        if not sub_chat:
-            add_chat_fn = getattr(bot, "add_chat_to_listen", None)
-            sub_chat = (
-                add_chat_fn(
-                    conversation.who,
-                    chat_type=conversation.chat_type,
-                )
-                if callable(add_chat_fn)
-                else add_chat_to_listen(bot, conversation)
-            )
-        if sub_chat:
-            supervisor.succeeded(
-                conversation.who,
-                chat_type=conversation.chat_type,
-            )
-            return
-
-        _forget_runtime_listener_caches(
-            bot,
-            conversation.who,
-            chat_type=conversation.chat_type,
-        )
-        remove_dynamic_listener_entries(bot, conversation)
-        add_result = _consume_last_dynamic_add_result(bot, conversation)
-        _queue_listener_window_recovery(
-            bot,
-            conversation,
-            reason=add_result.get("error", ""),
-            allow_rebuild=bool(add_result.get("stale")),
-        )
-        _bot_log(
-            bot,
-            level="INFO",
-            message=(
-                f"全局监听 {chat}：消息已进入处理队列；监听窗口不可用，"
-                f"将在 {LISTENER_WINDOW_RECOVERY_FIRST_DELAY_SECONDS}s 后重试"
-            ),
-        )
-
-    get_next_new_message()
 
     if time.time() - last_time >= timeout:
         remove_timeout_listen()

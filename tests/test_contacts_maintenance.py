@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from feature.contacts import check_contact_directory_auto_maintenance
 from feature.contacts import cleanup_orphaned_contact_auto_collector
 from feature.contacts import edit_friend_info_via_chat_profile
 from feature.contacts import has_active_contact_maintenance_conflict
+from feature.contacts import is_contact_directory_auto_maintenance_idle
 from feature.contacts import modify_friend_tags_via_chat_profile
 from feature.contacts import prepare_contact_directory_window
 from feature.contacts import repair_contact_profile_remarks
@@ -437,6 +439,71 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         )
 
         self.assertTrue(has_active_contact_maintenance_conflict(bot, now_ts=1008.0))
+
+    def test_active_contact_maintenance_conflict_includes_group_reply(self):
+        bot = SimpleNamespace(
+            _last_incoming_message_at=0.0,
+            _group_message_pipelines={
+                "测试群": {
+                    "open_messages": [],
+                    "queued_batches": [],
+                    "worker_running": True,
+                }
+            },
+        )
+
+        self.assertTrue(has_active_contact_maintenance_conflict(bot, now_ts=1008.0))
+
+    def test_active_contact_maintenance_conflict_includes_running_tail_repair(self):
+        bot = SimpleNamespace(
+            _last_incoming_message_at=0.0,
+            _memory_context_repair_state={
+                "private:张三": {
+                    "generation": 1,
+                    "inflight_generation": 1,
+                    "retry_at": 0.0,
+                }
+            },
+        )
+
+        self.assertTrue(has_active_contact_maintenance_conflict(bot, now_ts=1008.0))
+
+    def test_auto_maintenance_idle_requires_a_clean_empty_global_scan(self):
+        bot = SimpleNamespace(
+            config=SimpleNamespace(AllListen_switch=True),
+            _global_scan_state={
+                "initial_drain_complete": True,
+                "last_scan_empty": True,
+                "degraded_conversations": {},
+                "fail_stopped": False,
+            },
+            _global_scan_state_lock=threading.Lock(),
+            _ui_owner=SimpleNamespace(is_idle=lambda: True),
+            _memory_context_repair_state={},
+            _last_incoming_message_at=0.0,
+        )
+
+        self.assertTrue(is_contact_directory_auto_maintenance_idle(bot))
+        bot._global_scan_state["degraded_conversations"] = {
+            "private:张三": {"conversation": "张三", "expected_count": 3, "actual_count": 2}
+        }
+        self.assertFalse(is_contact_directory_auto_maintenance_idle(bot))
+
+    def test_auto_maintenance_idle_ignores_dormant_tail_marker_without_work(self):
+        bot = SimpleNamespace(
+            config=SimpleNamespace(AllListen_switch=False),
+            _ui_owner=SimpleNamespace(is_idle=lambda: True),
+            _memory_context_repair_state={
+                "private:张三": {
+                    "generation": 1,
+                    "inflight_generation": None,
+                    "retry_at": 0.0,
+                }
+            },
+            _last_incoming_message_at=0.0,
+        )
+
+        self.assertTrue(is_contact_directory_auto_maintenance_idle(bot))
 
     def test_auto_maintenance_runs_batch_without_legacy_lock(self):
         calls = []

@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -193,6 +194,8 @@ class RuntimeMetricsBotTests(unittest.TestCase):
         bot.callback_is_die = False
         bot._pause_chat_reply = False
         bot._pause_group_reply = False
+        bot._global_scan_state_lock = threading.Lock()
+        bot._global_scan_state = {}
         bot.config = SimpleNamespace(
             api_configs=[],
             group=[],

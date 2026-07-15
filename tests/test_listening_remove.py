@@ -1,10 +1,33 @@
 import unittest
+import threading
 from types import SimpleNamespace
 from unittest import mock
 
-from core.message_pipeline import ConversationRef
+from core.message_pipeline import ConversationRef, MessageEnvelope
 from feature import listening
 from wxbot_core import WXBot
+
+
+def scan_envelope(content, *, message_id="m1", message_type="text", sender="张三", batch="scan-1"):
+    message = MessageEnvelope(
+        content=content,
+        original_content=content,
+        type=message_type,
+        sender=sender,
+        attr="friend",
+        id=message_id,
+        _wxbot_ingress_source="global",
+        _wxbot_received_at=100.0,
+    )
+    message._wxbot_source_batch = batch
+    return message
+
+
+def set_scan_state(bot, **state):
+    bot._global_scan_stop = threading.Event()
+    bot._global_scan_state_lock = threading.Lock()
+    bot._global_scan_state = dict(state)
+    bot._global_scan_deferred_listener_refs = []
 
 
 class RemoveListenChatTests(unittest.TestCase):
@@ -13,6 +36,52 @@ class RemoveListenChatTests(unittest.TestCase):
         config = SimpleNamespace(
             DATA_DIR="data",
             AtMe="",
+            bind_account_wx_id=lambda _wx_id: order.append("bind"),
+        )
+        bot = SimpleNamespace(
+            config=config,
+            _bootstrap_ui_owner=lambda _listeners: {
+                "nickname": "机器人",
+                "wx_id": "wxid-test",
+            },
+            _voice_reply_state_path=lambda: "voice-state.json",
+            _set_material_outreach_namespace=lambda _wx_id: order.append("namespace"),
+            _initialize_message_runtime=lambda _wx_id: order.append("runtime"),
+            _init_prompt_system=lambda _path: order.append("prompt"),
+            _drain_message_recovery=lambda: order.append("recovery"),
+            _register_ui_listener_names=lambda _listeners: order.append("register"),
+            _mark_context_repair_needed_after_restore=lambda name, *, chat_type: order.append(
+                ("repair", chat_type, name)
+            ),
+            _register_runtime_task_schedules=lambda: order.append("schedules"),
+            _ui_ingress_ready=SimpleNamespace(set=lambda: order.append("ready")),
+            _ui_owner=object(),
+            _listen_chats={},
+        )
+        specs = [("群聊", ConversationRef("测试群", "group"))]
+
+        with mock.patch.object(listening, "listener_registration_specs", return_value=specs), mock.patch.object(
+            listening, "migrate_default_account", return_value=False
+        ), mock.patch.object(
+            listening, "load_voice_reply_state", return_value={}
+        ), mock.patch.object(
+            listening, "account_area_dir", return_value="memory"
+        ), mock.patch.object(listening, "_bot_log"):
+            self.assertTrue(listening.init_wx_listeners(bot))
+
+        self.assertLess(order.index("recovery"), order.index("register"))
+        self.assertLess(order.index("register"), order.index("ready"))
+        self.assertEqual(
+            [item for item in order if isinstance(item, tuple) and item[0] == "repair"],
+            [("repair", "group", "测试群")],
+        )
+
+    def test_global_listener_init_starts_scan_before_any_window_registration(self):
+        order = []
+        config = SimpleNamespace(
+            DATA_DIR="data",
+            AtMe="",
+            AllListen_switch=True,
             bind_account_wx_id=lambda _wx_id: order.append("bind"),
         )
         bot = SimpleNamespace(
@@ -40,11 +109,58 @@ class RemoveListenChatTests(unittest.TestCase):
             listening, "load_voice_reply_state", return_value={}
         ), mock.patch.object(
             listening, "account_area_dir", return_value="memory"
+        ), mock.patch.object(
+            listening,
+            "start_global_scan_pump",
+            side_effect=lambda _bot, refs: order.append(("scan", list(refs))),
         ), mock.patch.object(listening, "_bot_log"):
             self.assertTrue(listening.init_wx_listeners(bot))
 
-        self.assertLess(order.index("recovery"), order.index("register"))
-        self.assertLess(order.index("register"), order.index("ready"))
+        self.assertNotIn("register", order)
+        self.assertLess(order.index("ready"), next(
+            index for index, item in enumerate(order) if isinstance(item, tuple) and item[0] == "scan"
+        ))
+
+    def test_global_listener_rebuild_defers_windows_until_scan_is_empty(self):
+        calls = []
+        thread = SimpleNamespace(is_alive=lambda: True)
+        bot = SimpleNamespace(
+            config=SimpleNamespace(AllListen_switch=True),
+            wx=SimpleNamespace(
+                StopListening=lambda: calls.append("stop"),
+                StartListening=lambda: calls.append("start"),
+            ),
+            _listen_chats={"stale": object()},
+            _global_scan_thread=thread,
+            _global_scan_deferred_listener_refs=[],
+            _global_scan_state_lock=threading.Lock(),
+            _global_scan_state={"running": True, "initial_drain_complete": True},
+            _listener_reconcile_last_at=0.0,
+        )
+        specs = [("用户", ConversationRef("张三", "private"))]
+
+        with mock.patch.object(
+            listening,
+            "listener_registration_specs",
+            return_value=specs,
+        ), mock.patch.object(
+            listening,
+            "add_listen_chat_once",
+            side_effect=AssertionError("全局恢复不得在补扫前建窗"),
+        ), mock.patch.object(listening, "_bot_sleep"), mock.patch.object(
+            listening,
+            "_bot_log",
+        ):
+            self.assertTrue(listening.rebuild_listener_runtime(bot))
+
+        self.assertEqual(calls, ["stop", "start"])
+        self.assertEqual(bot._listen_chats, {})
+        self.assertEqual(
+            bot._global_scan_deferred_listener_refs,
+            [ConversationRef("张三", "private")],
+        )
+        self.assertFalse(bot._global_scan_state["initial_drain_complete"])
+        self.assertFalse(bot._global_scan_state["last_scan_empty"])
 
     def test_listener_specs_keep_same_named_private_and_group_distinct(self):
         bot = SimpleNamespace(
@@ -88,15 +204,9 @@ class RemoveListenChatTests(unittest.TestCase):
             ],
         )
 
-    def test_global_message_enters_ingress_before_window_repair(self):
-        received = []
-        message = SimpleNamespace(
-            id="m1",
-            type="text",
-            attr="friend",
-            sender="张三",
-            content="你好",
-        )
+    def test_global_batch_is_persisted_before_dispatch_and_window_repair(self):
+        order = []
+        message = scan_envelope("你好")
         bot = SimpleNamespace(
             all_Mode_listen_list=[],
             _listen_chats={},
@@ -106,45 +216,41 @@ class RemoveListenChatTests(unittest.TestCase):
                 chat_image_recognition_switch=False,
                 chat_voice_recognition_switch=False,
             ),
-            wx=SimpleNamespace(GetNextNewMessage=lambda **_kwargs: {
-                "chat_name": "张三",
-                "chat_type": "private",
-                "msg": [message],
-            }),
-            _enqueue_ui_message=lambda conversation, envelope: received.append(
-                (conversation.who, envelope.content)
+            _persist_ui_message_batch=lambda conversation, envelopes: order.append(
+                ("persist", conversation.who, [item.content for item in envelopes])
+            ) or [SimpleNamespace(direction="friend", is_new=True)],
+            _dispatch_persisted_ui_message=lambda conversation, envelope: order.append(
+                ("dispatch", conversation.who, envelope.content)
             ) or True,
-            is_chat_listened=lambda _name, **_kwargs: False,
-            add_chat_to_listen=lambda _name, **_kwargs: None,
         )
 
         with mock.patch.object(listening.time, "time", return_value=100.0):
-            listening.alllisten_mode(bot, last_time=9999999999)
+            listening._handle_global_scan_batch(bot, {
+                "chat_name": "张三",
+                "chat_type": "private",
+                "msg": [message],
+                "elapsed_seconds": 1.0,
+                "max_runtime_seconds": 10.0,
+                "max_quantity": 30,
+            })
 
-        self.assertEqual(received, [("张三", "你好")])
+        self.assertEqual(order, [
+            ("persist", "张三", ["你好"]),
+            ("dispatch", "张三", "你好"),
+        ])
         state = bot._listener_window_supervisor.snapshot()[0]
         self.assertEqual(state["conversation"], "张三")
-        self.assertEqual(state["next_retry_at"], 130.0)
+        self.assertEqual(state["next_retry_at"], 100.0)
         self.assertNotIn("messages", state)
 
     def test_global_group_media_uses_group_recognition_switches(self):
         received = []
-        poll_kwargs = []
-        message = SimpleNamespace(
-            id="group-voice",
-            type="voice",
-            attr="friend",
+        message = scan_envelope(
+            '语音3"秒',
+            message_id="group-voice",
+            message_type="voice",
             sender="群友A",
-            content='语音3"秒',
         )
-
-        def get_next_message(**kwargs):
-            poll_kwargs.append(kwargs)
-            return {
-                "chat_name": "测试群",
-                "chat_type": "group",
-                "msg": [message],
-            }
 
         bot = SimpleNamespace(
             all_Mode_listen_list=[],
@@ -157,18 +263,144 @@ class RemoveListenChatTests(unittest.TestCase):
                 chat_voice_recognition_switch=False,
                 group_voice_recognition_switch=True,
             ),
-            wx=SimpleNamespace(GetNextNewMessage=get_next_message),
-            _enqueue_ui_message=lambda conversation, envelope: received.append(
+            _persist_ui_message_batch=lambda _conversation, _envelopes: [
+                SimpleNamespace(direction="friend", is_new=True)
+            ],
+            _dispatch_persisted_ui_message=lambda conversation, envelope: received.append(
                 (conversation, envelope)
             ) or True,
         )
 
         with mock.patch.object(listening.time, "time", return_value=100.0):
-            listening.alllisten_mode(bot, last_time=9999999999)
+            listening._handle_global_scan_batch(bot, {
+                "chat_name": "测试群",
+                "chat_type": "group",
+                "msg": [message],
+                "elapsed_seconds": 1.0,
+                "max_runtime_seconds": 10.0,
+                "max_quantity": 30,
+            })
 
-        self.assertTrue(poll_kwargs[0]["download_media"])
         self.assertEqual(received[0][0], ConversationRef("测试群", "group"))
         self.assertFalse(getattr(received[0][1], "_skip_ai_reply", False))
+
+    def test_global_scan_marks_truncated_conversation_degraded(self):
+        logs = []
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[],
+            _listen_chats={},
+            config=SimpleNamespace(
+                global_blacklist=[],
+                chat_voice_recognition_switch=False,
+            ),
+            _persist_ui_message_batch=lambda _conversation, _messages: [
+                SimpleNamespace(direction="friend", is_new=True),
+                SimpleNamespace(direction="friend", is_new=True),
+            ],
+            _dispatch_persisted_ui_message=lambda *_args: True,
+        )
+        set_scan_state(bot)
+        messages = [
+            scan_envelope(str(index), message_id=f"m{index}")
+            for index in range(2)
+        ]
+
+        with mock.patch.object(
+            listening,
+            "_bot_log",
+            side_effect=lambda _bot, **kwargs: logs.append(kwargs.get("message", "")),
+        ):
+            listening._handle_global_scan_batch(bot, {
+                "chat_name": "张三",
+                "chat_type": "private",
+                "msg": messages,
+                "unread_before": [{"name": "张三", "chat_type": "private", "new_count": 3}],
+                "elapsed_seconds": 11.0,
+                "max_runtime_seconds": 10.0,
+                "max_quantity": 30,
+            })
+
+        state = listening.global_scan_snapshot(bot)
+        self.assertTrue(state["scan_coverage_degraded"])
+        details = state["degraded_conversations"]["private:张三"]
+        self.assertEqual(details["expected_count"], 3)
+        self.assertEqual(details["actual_count"], 2)
+        self.assertEqual(details["reasons"], ["returned_less_than_unread", "runtime_limit"])
+        self.assertIn("未读深度覆盖不完整", logs[0])
+
+    def test_global_scan_storage_failure_does_not_dispatch_or_request_window(self):
+        dispatched = []
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[],
+            _listen_chats={},
+            config=SimpleNamespace(global_blacklist=[], chat_voice_recognition_switch=False),
+            _persist_ui_message_batch=lambda *_args: (_ for _ in ()).throw(RuntimeError("disk full")),
+            _dispatch_persisted_ui_message=lambda *args: dispatched.append(args),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "disk full"):
+            listening._handle_global_scan_batch(bot, {
+                "chat_name": "张三",
+                "chat_type": "private",
+                "msg": [scan_envelope("你好")],
+            })
+
+        self.assertEqual(dispatched, [])
+        self.assertFalse(hasattr(bot, "_listener_window_supervisor"))
+
+    def test_global_scan_pump_fail_stops_after_storage_failure(self):
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[],
+            _listen_chats={},
+            config=SimpleNamespace(
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_voice_recognition_switch=False,
+            ),
+            wx=SimpleNamespace(GetNextNewMessage=lambda **_kwargs: {
+                "chat_name": "张三",
+                "chat_type": "private",
+                "msg": [scan_envelope("你好")],
+            }),
+            _persist_ui_message_batch=lambda *_args: (_ for _ in ()).throw(RuntimeError("disk full")),
+            _dispatch_persisted_ui_message=lambda *_args: True,
+            is_stop_requested=lambda: False,
+        )
+        set_scan_state(bot)
+        bot._global_scan_stop.clear()
+
+        with mock.patch.object(listening, "_bot_log"):
+            listening._run_global_scan_pump(bot)
+
+        state = listening.global_scan_snapshot(bot)
+        self.assertTrue(state["fail_stopped"])
+        self.assertEqual(state["scan_coverage_status"], "failed")
+        self.assertIn("避免继续清除未保存", state["last_error"])
+
+    def test_first_empty_scan_releases_deferred_fixed_windows(self):
+        bot = SimpleNamespace(
+            config=SimpleNamespace(AllListen_filter_mute=False),
+            is_stop_requested=lambda: False,
+            _global_scan_deferred_listener_refs=[ConversationRef("管理员", "private")],
+        )
+        set_scan_state(bot)
+        bot._global_scan_deferred_listener_refs = [ConversationRef("管理员", "private")]
+        bot._global_scan_stop.clear()
+
+        def poll(**_kwargs):
+            bot._global_scan_stop.set()
+            return {"chat_name": "", "chat_type": "", "msg": []}
+
+        bot.wx = SimpleNamespace(GetNextNewMessage=poll)
+        listening._update_global_scan_state(bot, running=True, initial_drain_complete=False)
+        listening._run_global_scan_pump(bot)
+
+        state = listening.global_scan_snapshot(bot)
+        self.assertTrue(state["initial_drain_complete"])
+        pending = bot._listener_window_supervisor.snapshot()
+        self.assertEqual([(item["chat_type"], item["conversation"]) for item in pending], [
+            ("private", "管理员")
+        ])
 
     def test_process_listen_message_prepares_media_before_routing(self):
         calls = []
@@ -497,6 +729,12 @@ class RemoveListenChatTests(unittest.TestCase):
             _listener_reconcile_interval_seconds=30,
             _listener_reconcile_last_at=0.0,
         )
+        set_scan_state(
+            bot,
+            running=True,
+            initial_drain_complete=True,
+            last_scan_empty=True,
+        )
         listening.ensure_listener_window_recovery_state(bot).request("张三", now=200.0)
 
         with mock.patch.object(listening.time, "time", return_value=100.0), mock.patch.object(
@@ -508,6 +746,27 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertEqual(reopened, ["管理员"])
         self.assertEqual(bot._listener_reconcile_last_at, 100.0)
+
+    def test_listener_reconcile_waits_until_the_latest_global_scan_is_empty(self):
+        bot = SimpleNamespace(
+            wx=object(),
+            config=SimpleNamespace(AllListen_switch=True),
+            _listener_reconcile_interval_seconds=30,
+            _listener_reconcile_last_at=0.0,
+        )
+        set_scan_state(
+            bot,
+            running=True,
+            initial_drain_complete=True,
+            last_scan_empty=False,
+        )
+
+        with mock.patch.object(
+            listening,
+            "reconcile_listener_subwindows",
+            side_effect=AssertionError("非空扫描后不得抢先建窗"),
+        ):
+            self.assertEqual(listening.maybe_reconcile_listener_subwindows(bot), [])
 
     def test_listener_reconcile_ignores_window_recovery_outside_alllisten_mode(self):
         bot = SimpleNamespace(

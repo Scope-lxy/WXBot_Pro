@@ -1,6 +1,6 @@
 # 微信 UI 并发实测结果
 
-本文记录 2026-07-10 对 wxautox4 / 微信真实 UI 操作的并发测试。结论用于约束 WXBot Pro 的 UI 调度，不代表 wxautox4 官方能力承诺，也不把一次成功当作永久安全保证。
+本文汇总 2026-07-10 至 2026-07-12 对 wxautox4 / 微信真实 UI 操作的并发测试。结论用于约束 WXBot Pro 的 UI 调度，不代表 wxautox4 官方能力承诺，也不把一次成功当作永久安全保证。
 
 ## 测试依据
 
@@ -9,6 +9,7 @@
 - `tools/probe_wx_ui_lane_matrix_v2.py`
 - `tools/probe_contact_callback_contract.py`
 - `tools/probe_contact_owner_queue.py`
+- `tools/probe_contact_worker_preemption.py`
 - `tools/probe_relationship_scan_timing.py`
 
 最新报告：
@@ -26,6 +27,12 @@
 每个并发操作线程都单独执行 `pythoncom.CoInitialize()`，并在该线程内创建自己的 `WeChat()`、重新取得目标子窗口。测试结果证明这种线程/对象归属模型下可以并发，不证明同一个 `bot.wx`、Chat 或 Message 对象能够跨线程安全复用；生产实现必须采用相同模型或另做专项验证。
 
 第一轮 v2 中语音 baseline 和“语音 + 文字”因为子进程未找到 ffmpeg 而失败，这两项不是微信 UI 冲突证据，已在第二轮修正环境后重测。其余原始失败和超时均保留，不用成功场景覆盖失败样本。
+
+## 结论速览
+
+- 生产只保留一个微信 UI owner；通讯录采集使用最小子进程，并在采集到恢复聊天页期间阻塞其他微信 UI 意图。
+- `GetFriendDetails(timeout=...)` 不能作为可靠的进程级超时边界，通讯录 worker 必须由父进程按 PID 终止并在结束后执行 `SwitchToChat` 恢复。
+- 已建立的子窗口可以并行完成部分轻量读写，但没有稳定吞吐收益；不要把实测并发上限当成生产调度目标。
 
 ## v2 实测结果
 

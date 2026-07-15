@@ -1,4 +1,5 @@
 import unittest
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, replace
 
 from core.inbound_coordinator import (
@@ -6,8 +7,6 @@ from core.inbound_coordinator import (
     InboundEvent,
     NativeDirectionClassifier,
 )
-
-
 class RecordingStore:
     def __init__(self):
         self.events = []
@@ -22,6 +21,10 @@ class RecordingStore:
             "is_new": True,
             "version": self.version,
         }
+
+    @contextmanager
+    def inbound_batch(self):
+        yield self.record_inbound
 
 
 def inbound_event(
@@ -60,6 +63,69 @@ def inbound_event(
 
 
 class InboundCoordinatorTests(unittest.TestCase):
+    def test_batch_preserves_order_and_identical_occurrences(self):
+        store = RecordingStore()
+        coordinator = InboundCoordinator(store)
+
+        accepted = coordinator.accept_batch([
+            inbound_event(content="相同", source_order=0),
+            inbound_event(content="相同", source_order=1),
+            inbound_event(content="第三条", source_order=2),
+        ])
+
+        self.assertEqual([item.event.content for item in accepted], ["相同", "相同", "第三条"])
+        self.assertEqual([item.version for item in accepted], [1, 2, 3])
+        self.assertEqual(len({item.event_id for item in accepted}), 3)
+
+    def test_failed_batch_does_not_advance_seen_or_handoff_state(self):
+        class FailingStore(RecordingStore):
+            def __init__(self):
+                super().__init__()
+                self.fail = True
+
+            @contextmanager
+            def inbound_batch(self):
+                if self.fail:
+                    raise RuntimeError("batch failed")
+                yield self.record_inbound
+
+        store = FailingStore()
+        coordinator = InboundCoordinator(store)
+        event = inbound_event(native_id="batch-1")
+
+        with self.assertRaisesRegex(RuntimeError, "batch failed"):
+            coordinator.accept_batch([event])
+
+        store.fail = False
+        accepted = coordinator.accept_batch([event])
+        callback = coordinator.accept(inbound_event(
+            source="subwindow",
+            source_batch="callback-1",
+            received_at=20,
+        ))
+        self.assertTrue(accepted[0].is_new)
+        self.assertEqual(len(store.events), 1)
+        self.assertEqual(callback.event_id, accepted[0].event_id)
+        self.assertTrue(callback.handoff)
+
+    def test_batch_requires_one_source_identity(self):
+        coordinator = InboundCoordinator(RecordingStore())
+
+        with self.assertRaisesRegex(ValueError, "share source and source_batch"):
+            coordinator.accept_batch([
+                inbound_event(source_batch="batch-1", source_order=0),
+                inbound_event(source_batch="batch-2", source_order=1),
+            ])
+
+    def test_batch_does_not_hide_conflicting_reuse_of_one_native_id(self):
+        coordinator = InboundCoordinator(RecordingStore())
+
+        with self.assertRaisesRegex(ValueError, "native_id was reused"):
+            coordinator.accept_batch([
+                inbound_event(native_id="same-id", content="one", source_order=0),
+                inbound_event(native_id="same-id", content="different", source_order=1),
+            ])
+
     def test_identical_content_occurrences_are_both_persisted(self):
         store = RecordingStore()
         coordinator = InboundCoordinator(store)

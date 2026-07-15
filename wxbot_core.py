@@ -473,6 +473,11 @@ class WXBot:
         self._stop_cleanup_done = False
         self._message_store = None
         self._inbound_coordinator = None
+        self._global_scan_thread = None
+        self._global_scan_stop = threading.Event()
+        self._global_scan_state_lock = threading.Lock()
+        self._global_scan_state = {}
+        self._global_scan_deferred_listener_refs = []
         self._reply_delivery_coordinator = None
         self._reply_echo_tracker = ReplyEchoTracker(
             text_ttl=DEFAULT_REPLY_TTL_SECONDS,
@@ -885,6 +890,27 @@ class WXBot:
             raise RuntimeError("消息事实库尚未初始化")
         event = self._build_inbound_event(conversation, message)
         accepted = coordinator.accept(event)
+        self._apply_inbound_accept(message, event, accepted)
+        return bool(accepted.is_new)
+
+    def _persist_ui_message_batch(self, conversation, messages):
+        if self.is_stop_requested():
+            return []
+        messages = list(messages)
+        if not isinstance(conversation, ConversationRef) or any(
+            not isinstance(message, MessageEnvelope) for message in messages
+        ):
+            raise TypeError("微信扫描只能提交同一会话的纯数据消息批次")
+        coordinator = getattr(self, "_inbound_coordinator", None)
+        if coordinator is None:
+            raise RuntimeError("消息事实库尚未初始化")
+        events = [self._build_inbound_event(conversation, message) for message in messages]
+        accepted_items = coordinator.accept_batch(events)
+        for message, event, accepted in zip(messages, events, accepted_items):
+            self._apply_inbound_accept(message, event, accepted)
+        return accepted_items
+
+    def _apply_inbound_accept(self, message, event, accepted):
         if event.related_delivery_id:
             self._reply_echo_tracker.acknowledge(event.related_delivery_id)
         message._wxbot_event_id = accepted.event_id
@@ -900,7 +926,7 @@ class WXBot:
         message._wxbot_should_dispatch = bool(
             accepted.is_new and accepted.direction != "bot_echo"
         )
-        return bool(accepted.is_new)
+        return message
 
     def _enrich_persisted_ui_message(self, _conversation, message):
         event_id = str(getattr(message, "_wxbot_event_id", "") or "").strip()
@@ -2899,6 +2925,9 @@ class WXBot:
     def _maybe_reconcile_listener_subwindows(self, force=False, retry_count=3):
         return listening.maybe_reconcile_listener_subwindows(self, force=force, retry_count=retry_count)
 
+    def _stop_global_scan_pump(self):
+        return listening.stop_global_scan_pump(self)
+
     def _remove_listen_chat_verified(
         self,
         nickname,
@@ -4471,6 +4500,11 @@ class WXBot:
             callback_result = None
 
             message_routing.prepare_message_media(self, msg, chat)
+            if getattr(msg, "_wxbot_media_prepared", False):
+                self._enrich_persisted_ui_message(
+                    ConversationRef(chat.who, getattr(chat, "chat_type", "private")),
+                    msg,
+                )
 
             inbound_direction = str(
                 getattr(msg, "_wxbot_inbound_direction", "") or ""
@@ -6641,31 +6675,59 @@ class WXBot:
         chat_type = str(chat_type or "").strip().lower()
         if not chat_name or chat_type not in {"private", "group"}:
             return False
+        switch_name = (
+            "group_context_repair_switch"
+            if chat_type == "group"
+            else "chat_context_repair_switch"
+        )
+        if not (
+            self.config.memory_switch
+            and getattr(self.config, switch_name)
+            and self.memory_manager
+        ):
+            return False
         self._ensure_message_runtime_state()
         with self._memory_context_repair_lock:
-            self._memory_context_repair_state[f"{chat_type}:{chat_name}"] = {
-                "dirty": True,
+            key = f"{chat_type}:{chat_name}"
+            current = self._memory_context_repair_state.get(key)
+            self._memory_context_repair_state[key] = {
+                "generation": current["generation"] + 1 if current else 1,
+                "inflight_generation": (
+                    current["inflight_generation"] if current else None
+                ),
                 "retry_at": 0.0,
             }
         return True
 
-    def _context_repair_should_run(self, repair_key):
+    def _claim_context_repair(self, repair_key):
+        self._ensure_message_runtime_state()
+        with self._memory_context_repair_lock:
+            state = self._memory_context_repair_state.get(repair_key)
+            if (
+                state is None
+                or state["inflight_generation"] is not None
+                or time.time() < state["retry_at"]
+            ):
+                return None
+            generation = state["generation"]
+            state["inflight_generation"] = generation
+            return generation
+
+    def _finish_context_repair_attempt(self, repair_key, generation, *, success):
         self._ensure_message_runtime_state()
         with self._memory_context_repair_lock:
             state = self._memory_context_repair_state.get(repair_key)
             if state is None:
-                return True
-            return bool(state.get("dirty", True)) and time.time() >= float(
-                state.get("retry_at", 0.0) or 0.0
-            )
-
-    def _finish_context_repair_attempt(self, repair_key, *, success):
-        self._ensure_message_runtime_state()
-        with self._memory_context_repair_lock:
-            self._memory_context_repair_state[repair_key] = {
-                "dirty": not success,
-                "retry_at": 0.0 if success else time.time() + DEFAULT_CONTEXT_REPAIR_RETRY_SECONDS,
-            }
+                return False
+            if state["inflight_generation"] == generation:
+                state["inflight_generation"] = None
+            if state["generation"] != generation:
+                return False
+            if success:
+                self._memory_context_repair_state.pop(repair_key)
+            else:
+                state["retry_at"] = time.time() + DEFAULT_CONTEXT_REPAIR_RETRY_SECONDS
+            return True
 
     def _read_visible_context_messages(self, chat, limit):
         get_all = getattr(chat, "GetAllMessage", None)
@@ -6726,7 +6788,8 @@ class WXBot:
         if not chat_name:
             return []
         repair_key = f"{chat_type}:{chat_name}"
-        if not self._context_repair_should_run(repair_key):
+        generation = self._claim_context_repair(repair_key)
+        if generation is None:
             return []
 
         try:
@@ -6737,7 +6800,11 @@ class WXBot:
                 chat_type=chat_type,
             )
             if not boundary.found:
-                self._finish_context_repair_attempt(repair_key, success=False)
+                self._finish_context_repair_attempt(
+                    repair_key,
+                    generation,
+                    success=False,
+                )
                 label = self._context_repair_log_label(chat_type, chat_name)
                 log(level="INFO", message=f"{label}：上下文补洞未能确认当前消息边界，稍后重试")
                 return []
@@ -6746,7 +6813,11 @@ class WXBot:
                 source="wechat_context_repair",
             )
             if not visible_entries:
-                self._finish_context_repair_attempt(repair_key, success=True)
+                self._finish_context_repair_attempt(
+                    repair_key,
+                    generation,
+                    success=True,
+                )
                 self._log_context_repair_result(chat_type, chat_name, "ui", 0)
                 return []
             current_event_ids = self._reply_event_ids(message)
@@ -6782,10 +6853,18 @@ class WXBot:
                     SimpleNamespace(who=chat_name, chat_type=chat_type),
                     SimpleNamespace(type="text", attr="friend", content="[上下文补洞]"),
                 )
-            self._finish_context_repair_attempt(repair_key, success=True)
+            self._finish_context_repair_attempt(
+                repair_key,
+                generation,
+                success=True,
+            )
             return list(result.get("history_messages") or [])
         except Exception as exc:
-            self._finish_context_repair_attempt(repair_key, success=False)
+            self._finish_context_repair_attempt(
+                repair_key,
+                generation,
+                success=False,
+            )
             label = self._context_repair_log_label(chat_type, chat_name)
             log(level="WARNING", message=f"{label}：上下文补洞失败，已继续原回复流程，详情：{exc}")
             return []
@@ -9134,6 +9213,7 @@ class WXBot:
             "pause_chat_reply":      self._pause_chat_reply or getattr(self.config, "chat_listen_only", False),
             "pause_group_reply":     self._pause_group_reply or getattr(self.config, "group_listen_only", False),
             **listening.listener_recovery_snapshot(self),
+            **listening.global_scan_snapshot(self),
         }
 
     def _request_wxbot_stop_cleanup(self):
@@ -9147,6 +9227,7 @@ class WXBot:
             self._ensure_stop_requested_event().set()
             self.run_flag = False
             cleanup_steps = [
+                ("停止全局消息扫描", self._stop_global_scan_pump),
                 ("取消私聊与语音定时器", self._cancel_pending_private_message_timers),
                 ("清理群聊业务队列", self._clear_group_message_pipelines),
                 ("停止会话记忆后台任务", self._clear_chat_memory_background_state),

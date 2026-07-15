@@ -473,6 +473,18 @@ class MessageStore:
         robot echo is history only and therefore does not advance the version.
         """
 
+        with self._transaction() as connection:
+            return self._record_inbound_locked(connection, event)
+
+    @contextmanager
+    def inbound_batch(self):
+        """Yield a recorder whose observations share one transaction."""
+        with self._transaction() as connection:
+            yield lambda event: self._record_inbound_locked(connection, event)
+
+    def _record_inbound_locked(self, connection, event):
+        """Record one inbound observation on the caller-owned transaction."""
+
         direction = _required_text(_event_value(event, "direction"), "direction").lower()
         if direction not in {"friend", "manual_self", "bot_echo", "system", "unknown"}:
             raise ValueError(f"unsupported inbound direction: {direction}")
@@ -485,97 +497,96 @@ class MessageStore:
         ).strip()
         if direction == "bot_echo" and related_delivery_id:
             event_id = self._delivery_event_id(related_delivery_id)
-            with self._transaction() as connection:
-                version = self._current_version(connection, conversation, chat_type)
-                existing = connection.execute(
-                    "SELECT * FROM chat_events WHERE delivery_id = ?",
-                    (related_delivery_id,),
-                ).fetchone()
-                if existing is not None and (
-                    existing["event_id"] != event_id
-                    or existing["conversation"] != conversation
-                    or existing["chat_type"] != chat_type
-                ):
-                    raise MessageStoreConflictError(
-                        f"delivery_id {related_delivery_id} belongs to a different event"
-                    )
-                if existing is not None:
-                    callback_type = str(_event_value(event, "message_type", "text") or "text")
-                    callback_content = str(_event_value(event, "content", "") or "")
-                    callback_original = str(
-                        _event_value(event, "original_content", "") or callback_content
-                    )
-                    preserve_voice_text = callback_type.lower() in {"voice", "audio"}
-                    if not callback_content:
-                        callback_content = str(existing["content"] or "")
-                    if not callback_original:
-                        callback_original = str(existing["original_content"] or callback_content)
-                    metadata = json.loads(existing["metadata_json"])
-                    callback_source = str(_event_value(event, "source", "") or "")
-                    if callback_source:
-                        metadata["callback_source"] = callback_source
-                    connection.execute(
-                        """
-                        UPDATE chat_events SET
-                            sender = ?,
-                            content = ?,
-                            original_content = ?,
-                            message_type = ?,
-                            native_attr = ?,
-                            native_id = ?,
-                            native_hash = ?,
-                            native_hash_text = ?,
-                            native_time = ?,
-                            metadata_json = ?,
-                            state_updated_at = ?
-                        WHERE delivery_id = ?
-                        """,
-                        (
-                            str(_event_value(event, "sender", "") or existing["sender"]),
-                            existing["content"] if preserve_voice_text else callback_content,
-                            existing["original_content"] if preserve_voice_text else callback_original,
-                            callback_type,
-                            str(_event_value(event, "native_attr", "self") or "self"),
-                            str(_event_value(event, "native_id", "") or ""),
-                            str(_event_value(event, "native_hash", "") or ""),
-                            str(_event_value(event, "native_hash_text", "") or ""),
-                            str(_event_value(event, "native_time", "") or ""),
-                            _json_object(metadata),
-                            stored_at,
-                            related_delivery_id,
-                        ),
-                    )
-                    connection.execute(
-                        "DELETE FROM reply_echo_expectations WHERE action_id = ?",
-                        (related_delivery_id,),
-                    )
-                    return {"event_id": event_id, "is_new": False, "version": version}
-                values = self._confirmed_outbound_values(
-                    related_delivery_id,
-                    conversation,
-                    str(_event_value(event, "content", "") or ""),
-                    received_at,
-                    str(_event_value(event, "sender", "") or "self"),
-                    chat_type,
-                    str(_event_value(event, "message_type", "text") or "text"),
-                    str(_event_value(event, "native_attr", "self") or "self"),
-                    {"callback_source": str(_event_value(event, "source", "") or "")},
-                    stored_at,
+            version = self._current_version(connection, conversation, chat_type)
+            existing = connection.execute(
+                "SELECT * FROM chat_events WHERE delivery_id = ?",
+                (related_delivery_id,),
+            ).fetchone()
+            if existing is not None and (
+                existing["event_id"] != event_id
+                or existing["conversation"] != conversation
+                or existing["chat_type"] != chat_type
+            ):
+                raise MessageStoreConflictError(
+                    f"delivery_id {related_delivery_id} belongs to a different event"
                 )
-                recorded = self._record_event_locked(
-                    connection,
-                    values,
-                    advances_version=False,
+            if existing is not None:
+                callback_type = str(_event_value(event, "message_type", "text") or "text")
+                callback_content = str(_event_value(event, "content", "") or "")
+                callback_original = str(
+                    _event_value(event, "original_content", "") or callback_content
+                )
+                preserve_voice_text = callback_type.lower() in {"voice", "audio"}
+                if not callback_content:
+                    callback_content = str(existing["content"] or "")
+                if not callback_original:
+                    callback_original = str(existing["original_content"] or callback_content)
+                metadata = json.loads(existing["metadata_json"])
+                callback_source = str(_event_value(event, "source", "") or "")
+                if callback_source:
+                    metadata["callback_source"] = callback_source
+                connection.execute(
+                    """
+                    UPDATE chat_events SET
+                        sender = ?,
+                        content = ?,
+                        original_content = ?,
+                        message_type = ?,
+                        native_attr = ?,
+                        native_id = ?,
+                        native_hash = ?,
+                        native_hash_text = ?,
+                        native_time = ?,
+                        metadata_json = ?,
+                        state_updated_at = ?
+                    WHERE delivery_id = ?
+                    """,
+                    (
+                        str(_event_value(event, "sender", "") or existing["sender"]),
+                        existing["content"] if preserve_voice_text else callback_content,
+                        existing["original_content"] if preserve_voice_text else callback_original,
+                        callback_type,
+                        str(_event_value(event, "native_attr", "self") or "self"),
+                        str(_event_value(event, "native_id", "") or ""),
+                        str(_event_value(event, "native_hash", "") or ""),
+                        str(_event_value(event, "native_hash_text", "") or ""),
+                        str(_event_value(event, "native_time", "") or ""),
+                        _json_object(metadata),
+                        stored_at,
+                        related_delivery_id,
+                    ),
                 )
                 connection.execute(
                     "DELETE FROM reply_echo_expectations WHERE action_id = ?",
                     (related_delivery_id,),
                 )
-                return {
-                    "event_id": recorded["event_id"],
-                    "is_new": recorded["is_new"],
-                    "version": version,
-                }
+                return {"event_id": event_id, "is_new": False, "version": version}
+            values = self._confirmed_outbound_values(
+                related_delivery_id,
+                conversation,
+                str(_event_value(event, "content", "") or ""),
+                received_at,
+                str(_event_value(event, "sender", "") or "self"),
+                chat_type,
+                str(_event_value(event, "message_type", "text") or "text"),
+                str(_event_value(event, "native_attr", "self") or "self"),
+                {"callback_source": str(_event_value(event, "source", "") or "")},
+                stored_at,
+            )
+            recorded = self._record_event_locked(
+                connection,
+                values,
+                advances_version=False,
+            )
+            connection.execute(
+                "DELETE FROM reply_echo_expectations WHERE action_id = ?",
+                (related_delivery_id,),
+            )
+            return {
+                "event_id": recorded["event_id"],
+                "is_new": recorded["is_new"],
+                "version": version,
+            }
 
         event_id, identity_kind, identity_value = self._logical_event_id(event)
         expires_at = _event_value(event, "reply_expires_at", None)
@@ -638,7 +649,8 @@ class MessageStore:
             "history_visible": 1,
             "metadata_json": _json_object(metadata),
         }
-        return self._record_event(
+        return self._record_event_locked(
+            connection,
             values,
             advances_version=(
                 direction == "manual_self"

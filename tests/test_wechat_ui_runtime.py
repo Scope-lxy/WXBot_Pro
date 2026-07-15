@@ -102,7 +102,7 @@ class FakeClient:
         return {"status": "成功"}
 
     def GetSession(self):
-        return [{"name": "张三", "content": "你好", "time": "10:30"}]
+        return [SimpleNamespace(name="张三", content="你好", time="10:30")]
 
     def GetAllSubWindow(self):
         return list(self.chats.values())
@@ -640,18 +640,80 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         self.assertEqual([message.content for _conversation, message in received], ["错误后的新消息"])
 
-    def test_global_poll_returns_pure_batch_and_prepares_media_inside_owner(self):
+    def test_global_poll_returns_unpersisted_pure_batch_and_scan_metadata(self):
         client = FakeClient()
+        client.GetSession = lambda: [SimpleNamespace(
+            name="张三",
+            chat_type="friend",
+            isnew=True,
+            new_count=3,
+            ismute=False,
+        )]
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
         runtime.bootstrap({"listeners": []})
 
-        batch = runtime.poll_messages({"mode": "next", "download_media": True})
+        batch = runtime.poll_messages({"mode": "next"})
 
         self.assertEqual(batch["chat_name"], "张三")
         self.assertEqual(batch["chat_type"], "private")
-        self.assertEqual(batch["msg"][0].content, "C:/temp/global.png")
-        self.assertTrue(batch["msg"][0]._wxbot_media_prepared)
+        self.assertEqual(batch["msg"][0].content, "[图片]")
+        self.assertFalse(hasattr(batch["msg"][0], "_wxbot_persisted"))
+        self.assertEqual(batch["unread_before"][0]["new_count"], 3)
+        self.assertEqual(batch["max_quantity"], 30)
+        self.assertEqual(batch["max_runtime_seconds"], 10.0)
         self.assertFalse(hasattr(batch["msg"][0], "download"))
+
+    def test_global_poll_does_not_clear_unread_when_snapshot_fails(self):
+        client = FakeClient()
+        get_next_called = []
+        client.GetSession = lambda: (_ for _ in ()).throw(RuntimeError("snapshot failed"))
+        client.GetNextNewMessage = lambda **_kwargs: get_next_called.append(True)
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with self.assertRaisesRegex(RuntimeError, "snapshot failed"):
+            runtime.poll_messages({"mode": "next"})
+
+        self.assertEqual(get_next_called, [])
+
+    def test_add_chat_reuses_current_runtime_registration(self):
+        client = FakeClient()
+        add_calls = []
+        original_add = client.AddListenChat
+
+        def add(nickname, callback):
+            add_calls.append(nickname)
+            return original_add(nickname, callback)
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        first = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+        second = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+
+        self.assertEqual(first, second)
+        self.assertEqual(add_calls, ["张三"])
+
+    def test_stop_listening_invalidates_runtime_window_registrations(self):
+        client = FakeClient()
+        add_calls = []
+        original_add = client.AddListenChat
+
+        def add(nickname, callback):
+            add_calls.append(nickname)
+            return original_add(nickname, callback)
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+        runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+
+        runtime.main_window({"operation": "stop_listening"})
+        runtime.main_window({"operation": "start_listening"})
+        runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+
+        self.assertEqual(add_calls, ["张三", "张三"])
 
     def test_contact_edit_verifies_target_and_returns_pure_result(self):
         client = FakeClient()

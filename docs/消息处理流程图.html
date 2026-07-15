@@ -122,11 +122,11 @@
       <section class="stage">
         <div class="stage-title"><span class="stage-number">01</span><h2>接收和安全入队</h2></div>
         <div class="flow-row">
-          <article class="node blue"><h3>微信监听回调</h3><p>私聊、群聊、自己账号或系统消息到达。先复制会话、方向、类型、发送者、原始观察身份、时间和可用正文。</p></article>
+          <article class="node blue"><h3>监听回调或全局扫描</h3><p>回调逐条复制纯数据；全局扫描返回一个会话的有序纯数据批次。wxautox Message 不离开 owner 边界。</p></article>
           <div class="arrow">-&gt;</div>
           <article class="node blue"><h3>识别方向与去重</h3><p>native ID 相同才做强去重；hash 或正文相同不能删除两次真实出现的消息。机器人回声关联到对应 delivery，人工 self 则推进会话版本。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="node violet"><h3>写 SQLite 后进入 FIFO</h3><p><code>chat_events</code> 是唯一事实源。图片也先保存占位事实再下载补充；独占事务进行中时只排队，不进入路由或抢占微信 UI。</p></article>
+          <article class="node violet"><h3>写 SQLite 后进入 FIFO</h3><p><code>chat_events</code> 是唯一事实源。扫描批次在同一事务提交，成功后才派发和建窗；图片先保存占位事实再下载补充。</p></article>
         </div>
         <div class="arrow down">v</div>
         <div class="two-column">
@@ -150,7 +150,7 @@
         <div class="flow-row">
           <article class="node violet"><h3>建立回复任务</h3><p>需要回复时建立 <code>reply_job</code>，绑定入站事件、会话版本和 15 分钟有效期；每个气泡再建立独立 delivery action。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="node blue"><h3>按需补齐当前可见上下文</h3><p>启动首答、窗口恢复或本地尾部缺消息时读取当前窗口一次，不滚动深历史；补入缺失的对方消息和手机手动回复。</p></article>
+          <article class="node blue"><h3>按代次补齐可见尾部</h3><p>窗口变为当前运行期可信可用后的首次回复读取当前窗口一次；没有标记时不读取，也不滚动深历史。</p></article>
           <div class="arrow">-&gt;</div>
           <article class="node blue"><h3>构造并生成回复</h3><p>组合人设、近况、记忆、最近聊天、图片视觉笔记和本轮消息。模型输出再经过清洗、准入、必要时重写或固定兜底。</p></article>
         </div>

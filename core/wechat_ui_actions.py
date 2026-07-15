@@ -291,6 +291,15 @@ class WeChatUIOwner:
                 self._condition.wait(self._poll_interval)
             return not self._contact_barrier_active and not self._stop_requested
 
+    def is_idle(self) -> bool:
+        with self._condition:
+            return bool(
+                not self._queue
+                and not self._contact_barrier_active
+                and self._contact_job is None
+                and not self._current_action.kind
+            )
+
     @property
     def is_running(self) -> bool:
         with self._condition:
@@ -343,12 +352,15 @@ class WeChatUIOwner:
         with self._condition:
             if not self._accepting:
                 raise RuntimeError("微信 UI owner 正在停止，不再接受新意图")
-            if intent.kind == UIIntentKind.POLL_MESSAGES and self._contact_barrier_active:
-                if self._poll_due_ticket is None or self._poll_due_ticket.done:
-                    self._poll_due_ticket = IntentTicket(intent)
-                    self._queue.append(self._poll_due_ticket)
+            coalesced_poll = (
+                intent.kind == UIIntentKind.POLL_MESSAGES
+                and str(intent.payload.get("mode") or "next") == "next"
+            )
+            if coalesced_poll and self._poll_due_ticket is not None and not self._poll_due_ticket.done:
                 return self._poll_due_ticket
             ticket = IntentTicket(intent)
+            if coalesced_poll:
+                self._poll_due_ticket = ticket
             self._queue.append(ticket)
             queued_behind_contact = self._contact_barrier_active
             self._condition.notify_all()
@@ -498,9 +510,6 @@ class WeChatUIOwner:
                 self._current_action = CurrentActionSnapshot()
 
     def _execute_ticket(self, ticket: IntentTicket) -> None:
-        with self._condition:
-            if ticket is self._poll_due_ticket:
-                self._poll_due_ticket = None
         starting_contact = ticket.intent.kind == UIIntentKind.CONTACT_START
         if starting_contact:
             with self._condition:
@@ -633,6 +642,10 @@ class WeChatUIOwner:
                     self._contact_barrier_active = False
                     self._condition.notify_all()
             ticket.set_error(exc)
+        finally:
+            with self._condition:
+                if ticket is self._poll_due_ticket and ticket.done:
+                    self._poll_due_ticket = None
 
     def _run(self) -> None:
         pythoncom = None
