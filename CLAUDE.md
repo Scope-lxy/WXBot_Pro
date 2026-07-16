@@ -21,6 +21,7 @@
 - 私聊 AI 拆分后的每个气泡都是独立可取消意图，不得用 `SendMsgBatch` 合成不可中断批次。对方新消息或人工 `self` 在纯数据入队时立即推进会话版本；已开始的单个气泡发完，尚未开始的剩余气泡取消。机器人 outbound echo 不推进版本。首条气泡不加额外延迟；私聊和群聊分别控制第二条及后续气泡是否使用固定标准间隔。
 - 好友申请、发送和素材转发等非幂等动作一旦进入提交且结果未知，必须标记 `uncertain`，禁止自动重发。通讯录 `contacts.json` 的读改写必须使用路径锁和原子替换，避免关系扫描与面板操作互相覆盖。
 - wxautox4 的私聊 `chat_type='friend'` 只允许在 `ConversationRef` 入口转换为内部 `private`；内部和 `message_store.sqlite3` 只接受 `private / group`。消息 `attr='friend'`、入站 `direction='friend'` 仍是方向语义，禁止全局替换。
+- 素材来源只配置会话名。启动和恢复时必须由微信实际子窗口自动识别 `private / group` 并缓存为运行期 `ConversationRef`；不得默认私聊，也不要求用户重复加入普通私聊或群聊监听名单。
 - 当前 AI 消息时间只在全局入站时从当前消息上方有限范围取得；失败就按无时间继续。禁止用处理时间、补洞结果或历史时间条替代，也不能因此阻断回复。
 - 消息事实、聊天记录、会话版本、回复任务和投递边界只写账号级 `message_store.sqlite3`。未完成回复固定 15 分钟有效期；启动只恢复仍有效且未 claim 的任务，遗留 `inflight` 转为 `uncertain` 并取消同轮剩余气泡，正常停止取消全部未 claim 工作。claim 前只有 SQLite `BUSY / LOCKED` 可自动重试，其他代码 / 数据 / 存储错误只失败一次；claim 后结果未知一律 `uncertain`。不要恢复待答 JSON、旧发送队列或旧 echo 列表。
 

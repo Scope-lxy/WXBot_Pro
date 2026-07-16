@@ -500,6 +500,7 @@ class WXBot:
         self._random_msg_state        = {}     # 随机定时消息运行状态缓存 {task_id: state_dict}
         self._material_runtime_messages = {}
         self._material_source_read_strategies = {}
+        self._material_source_listener_refs = {}
         self._random_material_outreach_state = {}
         self._runtime_task_reload_lock = threading.RLock()
         self._runtime_task_reload_requested = False
@@ -3563,6 +3564,9 @@ class WXBot:
 
     def _material_source_chat_type(self, source):
         source = str(source or "").strip()
+        conversation = (getattr(self, "_material_source_listener_refs", {}) or {}).get(source)
+        if isinstance(conversation, ConversationRef):
+            return conversation.chat_type
         return (
             "group"
             if getattr(self.config, "group_switch", False)
@@ -8424,14 +8428,14 @@ class WXBot:
 
     def _is_material_source_chat(self, chat):
         conversation = ConversationRef.from_wx_chat(chat)
+        detected = (getattr(self, "_material_source_listener_refs", {}) or {}).get(conversation.who)
         return bool(
             self._material_source_runtime_enabled()
             and is_material_source(
                 getattr(self.config, 'material_source_list', []),
                 conversation.who,
             )
-            and conversation.chat_type
-            == self._material_source_chat_type(conversation.who)
+            and (not isinstance(detected, ConversationRef) or conversation == detected)
         )
 
     def _current_ai_material_outreach_config(self):

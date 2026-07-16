@@ -827,6 +827,24 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(add_calls, ["张三"])
 
+    def test_add_chat_without_type_discovers_group_identity(self):
+        client = FakeClient()
+
+        def add(nickname, callback):
+            client.callback = callback
+            chat = FakeChat(nickname)
+            chat.chat_type = "group"
+            client.chats[nickname] = chat
+            return chat
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        identity = runtime.add_listen({"conversation": "【姐姐】素材库"})
+
+        self.assertEqual(identity, {"name": "【姐姐】素材库", "chat_type": "group"})
+
     def test_stop_listening_invalidates_runtime_window_registrations(self):
         client = FakeClient()
         add_calls = []

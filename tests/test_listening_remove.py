@@ -204,6 +204,63 @@ class RemoveListenChatTests(unittest.TestCase):
             ],
         )
 
+    def test_material_sources_auto_discover_actual_chat_types(self):
+        source_types = {
+            "文件传输助手": "private",
+            "素材好友": "private",
+            "【姐姐】素材库": "group",
+        }
+        add_calls = []
+
+        class FakeWeChat:
+            def AddListenChat(self, nickname=None):
+                add_calls.append(nickname)
+                return SimpleNamespace(
+                    who=nickname,
+                    chat_type=source_types[nickname],
+                    SendMsg=lambda *_args, **_kwargs: True,
+                )
+
+        bot = SimpleNamespace(
+            config=SimpleNamespace(
+                material_source_list=list(source_types),
+                listen_list=[],
+                group=[],
+                group_switch=True,
+            ),
+            wx=FakeWeChat(),
+            _material_source_runtime_enabled=lambda: True,
+            _listen_chats={},
+        )
+
+        with mock.patch.object(listening, "_bot_log"):
+            refs = listening.ensure_material_source_listeners(bot)
+
+        self.assertEqual(add_calls, list(source_types))
+        self.assertEqual(
+            [(ref.who, ref.chat_type) for ref in refs],
+            [("文件传输助手", "private"), ("素材好友", "private"), ("【姐姐】素材库", "group")],
+        )
+        self.assertEqual(
+            [(ref.who, ref.chat_type) for ref in listening.expected_listener_refs(bot)],
+            [("文件传输助手", "private"), ("素材好友", "private"), ("【姐姐】素材库", "group")],
+        )
+
+    def test_material_source_group_uses_detected_type_without_group_listener_config(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            material_source_list=["【姐姐】素材库"],
+            group_switch=True,
+            group=[],
+        )
+        bot._material_source_listener_refs = {
+            "【姐姐】素材库": ConversationRef("【姐姐】素材库", "group"),
+        }
+        chat = SimpleNamespace(who="【姐姐】素材库", chat_type="group")
+
+        self.assertEqual(bot._material_source_chat_type("【姐姐】素材库"), "group")
+        self.assertTrue(bot._is_material_source_chat(chat))
+
     def test_global_batch_is_persisted_before_dispatch_and_window_repair(self):
         order = []
         message = scan_envelope("你好")

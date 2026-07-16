@@ -180,6 +180,88 @@ def _conversation_ref(value, chat_type=None):
     return ConversationRef(str(value or "").strip(), chat_type or "private")
 
 
+def _material_source_listener_refs(bot):
+    refs = getattr(bot, "_material_source_listener_refs", None)
+    if not isinstance(refs, dict):
+        refs = {}
+        bot._material_source_listener_refs = refs
+    return refs
+
+
+def material_source_listener_names(bot):
+    enabled = getattr(bot, "_material_source_runtime_enabled", None)
+    if not callable(enabled) or not enabled():
+        return []
+    names = iter_material_outreach_listen_sources(
+        getattr(bot.config, "material_source_list", []),
+        listen_list=getattr(bot.config, "listen_list", []),
+        groups=getattr(bot.config, "group", []),
+        group_switch=getattr(bot.config, "group_switch", False),
+    )
+    return list(dict.fromkeys(str(name or "").strip() for name in names if str(name or "").strip()))
+
+
+def material_source_listener_conversations(bot):
+    refs = _material_source_listener_refs(bot)
+    return [
+        conversation
+        for name in material_source_listener_names(bot)
+        if isinstance((conversation := refs.get(name)), ConversationRef)
+    ]
+
+
+def _discover_material_source_listener(bot, name, *, allow_rebind=False):
+    name = str(name or "").strip()
+    if not name:
+        return None
+    refs = _material_source_listener_refs(bot)
+    known = refs.get(name)
+    if isinstance(known, ConversationRef):
+        chat = get_verified_subwindow(bot, known)
+        if chat:
+            runtime_chat_state.remember_listen_chat(bot, known, chat)
+            return known
+
+    def add_action():
+        with warn_slow_wechat_ui_action(f"AddListenChat({name})"):
+            return bot.wx.AddListenChat(nickname=name)
+
+    try:
+        result = (
+            run_with_wechat_rebind_retry(bot, add_action, attempts=2)
+            if allow_rebind
+            else add_action()
+        )
+    except Exception as exc:
+        _bot_log(bot, level="WARNING", message=f"素材来源 {name}：自动识别会话类型失败，详情：{exc}")
+        return None
+
+    conversation = ConversationRef.from_wx_chat(result) if result and not isinstance(result, dict) else None
+    if not conversation or conversation.who != name or not callable(getattr(result, "SendMsg", None)):
+        try:
+            result = bot.wx.GetSubWindow(nickname=name)
+        except Exception:
+            result = None
+        conversation = ConversationRef.from_wx_chat(result) if result and not isinstance(result, dict) else None
+    if not conversation or conversation.who != name or not callable(getattr(result, "SendMsg", None)):
+        _bot_log(bot, level="WARNING", message=f"素材来源 {name}：微信未返回可用监听窗口")
+        return None
+
+    refs[name] = conversation
+    runtime_chat_state.remember_listen_chat(bot, conversation, result)
+    _bot_log(bot, level="DEBUG", message=f"素材来源 {name}：已自动识别为{'群聊' if conversation.chat_type == 'group' else '私聊'}并加入监听")
+    return conversation
+
+
+def ensure_material_source_listeners(bot, *, allow_rebind=False):
+    conversations = []
+    for name in material_source_listener_names(bot):
+        conversation = _discover_material_source_listener(bot, name, allow_rebind=allow_rebind)
+        if conversation:
+            conversations.append(conversation)
+    return conversations
+
+
 def is_target_chat(chat, nickname, chat_type=None):
     expected = _conversation_ref(nickname, chat_type)
     actual = ConversationRef.from_wx_chat(chat) if chat and not isinstance(chat, dict) else None
@@ -707,11 +789,21 @@ def expected_listener_names(bot):
 
 
 def expected_listener_refs(bot):
-    return [
+    refs = [
         conversation
         for label, conversation in listener_registration_specs(bot)
         if label != "动态监听"
     ]
+    refs.extend(material_source_listener_conversations(bot))
+    unique_refs = []
+    seen = set()
+    for conversation in refs:
+        key = (conversation.chat_type, conversation.who)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_refs.append(conversation)
+    return unique_refs
 
 
 def listener_registration_specs(bot):
@@ -725,20 +817,6 @@ def listener_registration_specs(bot):
         specs.extend(
             ("群组", ConversationRef(str(item or "").strip(), "group"))
             for item in (getattr(bot.config, "group", []) or [])
-        )
-    material_source_runtime_enabled = getattr(bot, "_material_source_runtime_enabled", None)
-    if callable(material_source_runtime_enabled) and material_source_runtime_enabled():
-        specs.extend(
-            (
-                "素材投喂监听源",
-                ConversationRef(str(source or "").strip(), "private"),
-            )
-            for source in iter_material_outreach_listen_sources(
-                getattr(bot.config, "material_source_list", []),
-                listen_list=getattr(bot.config, "listen_list", []),
-                groups=getattr(bot.config, "group", []),
-                group_switch=getattr(bot.config, "group_switch", False),
-            )
         )
     for item in getattr(bot, "all_Mode_listen_list", []) or []:
         conversation = _dynamic_listener_entry_ref(item)
@@ -782,6 +860,7 @@ def rebuild_listener_runtime(
     _bot_log(bot, level="DEBUG", message="启动wxautox监听器...")
     if clear_runtime_cache:
         bot._listen_chats = {}
+        bot._material_source_listener_refs = {}
 
     bot.wx.StopListening()
     _bot_sleep(bot, 1)
@@ -820,6 +899,8 @@ def rebuild_listener_runtime(
         expected_listeners.append(conversation)
         if is_target_chat(result, conversation):
             runtime_chat_state.remember_listen_chat(bot, conversation, result)
+
+    expected_listeners.extend(ensure_material_source_listeners(bot, allow_rebind=True))
 
     verify_initial_listeners(bot, expected_listeners, retry_count=verify_retry_count)
     for conversation in expected_listeners:
@@ -955,6 +1036,7 @@ def reconcile_listener_subwindows(bot, retry_count=3):
     if not getattr(bot, "wx", None):
         return []
 
+    ensure_material_source_listeners(bot)
     expected = expected_listener_refs(bot)
     if not expected:
         return []
@@ -1260,6 +1342,7 @@ def _handle_global_scan_batch(bot, batch):
 def _activate_deferred_listener_windows(bot):
     refs = list(bot._global_scan_deferred_listener_refs)
     bot._global_scan_deferred_listener_refs = []
+    ensure_material_source_listeners(bot)
     supervisor = ensure_listener_window_recovery_state(bot)
     now_ts = time.time()
     for conversation in refs:
@@ -1374,12 +1457,14 @@ def init_wx_listeners(bot):
     bot._init_prompt_system(str(account_area_dir(bot.config.DATA_DIR, wx_id, "chat_memory", create=True)))
     bot._drain_message_recovery()
     bot._listen_chats = {}
+    bot._material_source_listener_refs = {}
     if getattr(bot.config, "AllListen_switch", False):
         bot._ui_ingress_ready.set()
         start_global_scan_pump(bot, listener_refs)
     else:
-        bot._register_ui_listener_names(listener_refs)
-        for _label, conversation in specs:
+        registered = list(bot._register_ui_listener_names(listener_refs) or listener_refs)
+        registered.extend(ensure_material_source_listeners(bot, allow_rebind=True))
+        for conversation in registered:
             chat = OwnedChat(
                 bot._ui_owner,
                 conversation.who,
