@@ -293,6 +293,13 @@ owner 在真实微信动作前通过 `task_version_provider` 复核配置或任�
 
 ## 验证命令
 
+wxautox4 实机测试时，微信主窗口必须保持可见，并使用 UTF-8 Python 进程；可用测试好友为阿英2、阿英3、阿英4、炳3、炳4：
+
+```powershell
+$env:PYTHONUTF8='1'
+.\venv\Scripts\python.exe -X utf8 .\tools\probe_wx_ui_lane_matrix_v2.py
+```
+
 ```powershell
 $files = @('wxbot_core.py','web_server.py') + (Get-ChildItem .\core\*.py | ForEach-Object { $_.FullName }) + (Get-ChildItem .\feature\*.py | ForEach-Object { $_.FullName }) + (Get-ChildItem .\extension\*.py | ForEach-Object { $_.FullName }); py -m py_compile @files
 venv\Scripts\python.exe -m unittest discover tests
