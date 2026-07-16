@@ -25,7 +25,7 @@ runtime/
 panel_logs/
 wxbot_logs/
 wxauto_logs/
-wxauto_save/
+wxbot_save/
 logs/
 backups/
 backup/

@@ -169,7 +169,7 @@ wxautox4 私聊窗口返回的 `chat_type='friend'` 只在 `ConversationRef` 入
 - `data/accounts/<wx_id>/friend_request/state.json`：好友申请设置、候选人和执行记录。
 - `data/accounts/<wx_id>/config/voice_reply_state.json`：语音回复运行态。
 - `data/accounts/default/`：只有没有运行中微信号、没有 `last_wx_id`、也没有历史账号数据时才使用。
-- `wxauto_save/`：微信下载原件和 AI 图片压缩副本缓存，不是长期数据真源。
+- `wxbot_save/`：微信下载原件和 AI 图片压缩副本缓存，不是长期数据真源。
 - `wxbot_logs/`：面板运行日志。
 - `backups/data_时间戳/`：面板一键备份产物。
 

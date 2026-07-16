@@ -134,7 +134,7 @@ from core.contact_profiles import (
     reconcile_contact_storage_names,
     sync_identity_calibration_from_directory,
 )
-from core.media import cleanup_wxauto_save_cache, existing_local_image_path, is_image_path
+from core.media import cleanup_media_cache, existing_local_image_path, is_image_path
 from core.message_pipeline import (
     ConversationRef,
     MessageEnvelope,
@@ -353,14 +353,14 @@ WxParam.FORCE_MESSAGE_XBIAS = True  # 每次启动强制重新获取 X 偏移量
 WxParam.DEFAULT_MESSAGE_XBIAS = 50
 WxParam.DEFAULT_MESSAGE_YBIAS = 30
 WxParam.LISTENER_EXCUTOR_WORKERS = 1  # 保持同一批消息的回调顺序
-WXAUTO_SAVE_DIR_NAME = "wxauto_save"
+WXBOT_SAVE_DIR_NAME = "wxbot_save"
 
 
 def _wxbot_runtime_base_dir():
     return os.path.dirname(sys.executable) if hasattr(sys, "_MEIPASS") else os.path.abspath(".")
 
 
-WxParam.DEFAULT_SAVE_PATH = os.path.join(_wxbot_runtime_base_dir(), WXAUTO_SAVE_DIR_NAME)
+WxParam.DEFAULT_SAVE_PATH = os.path.join(_wxbot_runtime_base_dir(), WXBOT_SAVE_DIR_NAME)
 
 
 def detect_local_ffmpeg_paths(base_dir=None):
@@ -547,7 +547,7 @@ class WXBot:
         self._chat_memory_dirty_lock = threading.Lock()
         self._chat_memory_dirty_chats = {}
         self._chat_memory_worker_running = False
-        self._start_wxauto_save_cache_cleanup()
+        self._start_media_cache_cleanup()
         set_thread_exception_observer(self._handle_background_thread_exception)
 
     def _handle_background_thread_exception(self, args):
@@ -1529,13 +1529,13 @@ class WXBot:
             self._stop_requested = event
         return event
 
-    def _start_wxauto_save_cache_cleanup(self):
+    def _start_media_cache_cleanup(self):
         def run_cleanup():
             try:
-                retention_days = int(getattr(self.config, "wxauto_save_cache_retention_days", 30) or 0)
+                retention_days = int(getattr(self.config, "media_cache_retention_days", 30) or 0)
                 if retention_days <= 0:
                     return
-                stats = cleanup_wxauto_save_cache(WxParam.DEFAULT_SAVE_PATH, retention_days=retention_days)
+                stats = cleanup_media_cache(WxParam.DEFAULT_SAVE_PATH, retention_days=retention_days)
                 if not stats or stats.get("skipped"):
                     return
                 deleted_files = int(stats.get("deleted_files") or 0)
@@ -1544,11 +1544,11 @@ class WXBot:
                 if deleted_files or deleted_dirs or failed:
                     log(
                         "INFO",
-                        "wxauto_save 缓存清理完成："
+                        "媒体缓存清理完成："
                         f"删除文件 {deleted_files} 个，清理空目录 {deleted_dirs} 个，失败 {failed} 个",
                     )
             except Exception as exc:
-                log("WARNING", f"wxauto_save 缓存清理失败（已跳过，不影响启动）：{exc}")
+                log("WARNING", f"媒体缓存清理失败（已跳过，不影响启动）：{exc}")
 
         threading.Thread(target=run_cleanup, name="wxauto-save-cache-cleanup", daemon=True).start()
 
@@ -9144,13 +9144,13 @@ class WXBot:
 
     def _existing_local_image_path(self, value: str) -> str:
         """返回真实存在的本地图片路径；用于合并队列把图片降级成文本时兜底识别。"""
-        return existing_local_image_path(value, self._wxauto_download_dir())
+        return existing_local_image_path(value, self._media_download_dir())
 
-    def _wxauto_download_dir(self):
+    def _media_download_dir(self):
         configured = str(getattr(WxParam, "DEFAULT_SAVE_PATH", "") or "").strip()
         if configured:
             return configured
-        return os.path.join(_wxbot_runtime_base_dir(), WXAUTO_SAVE_DIR_NAME)
+        return os.path.join(_wxbot_runtime_base_dir(), WXBOT_SAVE_DIR_NAME)
 
     def Pass_New_Friends(self):
         return listening.pass_new_friends(self)

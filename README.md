@@ -87,7 +87,7 @@
 - `tools/`：本地探针和复现脚本，只放临时、测试性质的辅助工具，不放正式运行文件。
 - `templates/`：Web 管理面板模板与静态资源。
 - `venv/tools/`：启动脚本维护的项目级外部工具目录，目前正式运行只使用 `ffmpeg/`。
-- `wxauto_save/`：微信下载原件和 AI 图片压缩副本缓存；机器人启动时会按面板配置后台清理，默认保留 30 天。
+- `wxbot_save/`：微信下载原件和 AI 图片压缩副本缓存；机器人启动时会按面板配置后台清理，默认保留 30 天。
 - `wxbot_logs/`：面板运行日志。
 - `backups/`：面板一键备份产物，不是运行时账号数据真源。
 
@@ -96,7 +96,7 @@
 - 微信主窗口需要保持可见，不要最小化。
 - 这是个人自用 fork，默认优先当前目录结构和当前使用方式，不额外维护旧版迁移壳。
 - 当前运行目录以 `data/`、`wxbot_logs/`、`backups/` 为准；跨设备继续使用时，优先复制这些真实数据目录。
-- 公开同步代码前，不要提交 `data/config/`、`data/prompt/`、`data/accounts/`、`wxauto_save/`、`wxbot_logs/`、`backups/` 等本地私有数据。
+- 公开同步代码前，不要提交 `data/config/`、`data/prompt/`、`data/accounts/`、`wxbot_save/`、`wxbot_logs/`、`backups/` 等本地私有数据。
 
 ## 迁移与打包
 

@@ -2143,7 +2143,7 @@ def dashboard():
     config.setdefault('group_context_repair_switch', True)
     config.setdefault('memory_max_count', 5000)
     config.setdefault('memory_context_count', 50)
-    config.setdefault('wxauto_save_cache_retention_days', 30)
+    config.setdefault('media_cache_retention_days', 30)
     config.setdefault('clean_ai_reply_switch', True)
     if isinstance(config.get('material_outreach_list'), list):
         config['material_outreach_list'] = [
@@ -2929,12 +2929,12 @@ def _coerce_int_range_fields(merged_config):
             merged_config['memory_context_count'] = merged_config['memory_max_count']
 
     try:
-        wxauto_retention_days = int(merged_config.get('wxauto_save_cache_retention_days', 30))
+        media_cache_retention_days = int(merged_config.get('media_cache_retention_days', 30))
     except (TypeError, ValueError):
-        wxauto_retention_days = 30
-    if wxauto_retention_days not in {0, 7, 30, 90, 180, 360}:
-        wxauto_retention_days = 30
-    merged_config['wxauto_save_cache_retention_days'] = wxauto_retention_days
+        media_cache_retention_days = 30
+    if media_cache_retention_days not in {0, 7, 30, 90, 180, 360}:
+        media_cache_retention_days = 30
+    merged_config['media_cache_retention_days'] = media_cache_retention_days
     if isinstance(merged_config.get('material_outreach_list'), list):
         merged_config['material_outreach_list'] = [
             normalize_material_outreach_task(task)
@@ -6730,7 +6730,7 @@ def main():
                 "group_context_repair_switch": True,
                 "memory_max_count": 5000,
                 "memory_context_count": 50,
-                "wxauto_save_cache_retention_days": 30,
+                "media_cache_retention_days": 30,
                 "clean_ai_reply_switch": True,
                 "chat_image_recognition_switch": False,
                 "chat_voice_recognition_switch": False,

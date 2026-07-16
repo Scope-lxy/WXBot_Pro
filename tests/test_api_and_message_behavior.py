@@ -36,7 +36,7 @@ from core.vision_bridge import VisionNote
 from feature import listening, message_routing
 from feature.voice_reply import group_voice_candidate
 from feature.scheduled_messages import execute_scheduled_message_task
-from wxbot_core import LONG_REPLY_SEGMENT_CHARS, WXAUTO_SAVE_DIR_NAME, WXBot, WxParam
+from wxbot_core import LONG_REPLY_SEGMENT_CHARS, WXBOT_SAVE_DIR_NAME, WXBot, WxParam
 
 
 def make_message_runtime_bot(data_dir):
@@ -1074,15 +1074,15 @@ class MessageBehaviorTests(unittest.TestCase):
         )
         self.assertEqual(waits, [4.0])
 
-    def test_wxauto_download_dir_follows_kernel_save_path(self):
+    def test_media_download_dir_follows_kernel_save_path(self):
         bot = WXBot.__new__(WXBot)
         original = getattr(WxParam, "DEFAULT_SAVE_PATH", "")
         try:
-            WxParam.DEFAULT_SAVE_PATH = r"C:\tmp\wxauto_custom"
-            self.assertEqual(bot._wxauto_download_dir(), r"C:\tmp\wxauto_custom")
+            WxParam.DEFAULT_SAVE_PATH = r"C:\tmp\wxbot_custom"
+            self.assertEqual(bot._media_download_dir(), r"C:\tmp\wxbot_custom")
 
             WxParam.DEFAULT_SAVE_PATH = ""
-            self.assertTrue(bot._wxauto_download_dir().endswith(WXAUTO_SAVE_DIR_NAME))
+            self.assertTrue(bot._media_download_dir().endswith(WXBOT_SAVE_DIR_NAME))
         finally:
             WxParam.DEFAULT_SAVE_PATH = original
 

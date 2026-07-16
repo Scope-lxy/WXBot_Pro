@@ -138,7 +138,7 @@ class WXBotConfig:
         self.memory_max_count     = 5000     # 单窗口最多存储条数（上限 5000）
         self.memory_context_count = 50       # AI 请求时带入最近聊天记录条数
 
-        self.wxauto_save_cache_retention_days = 30  # wxauto_save 缓存自动清理周期，0=不清理
+        self.media_cache_retention_days = 30  # 媒体缓存自动清理周期，0=不清理
         self.clean_ai_reply_switch = True  # AI 回复清洗开关
         self.current_account_wx_id = ""
 
@@ -262,7 +262,7 @@ class WXBotConfig:
                     "group_context_repair_switch": True,
                     "memory_max_count": 5000,
                     "memory_context_count": 50,
-                    "wxauto_save_cache_retention_days": 30,
+                    "media_cache_retention_days": 30,
                     "clean_ai_reply_switch": True,
                     "chat_image_recognition_switch": False,
                     "chat_voice_recognition_switch": False,
@@ -815,12 +815,12 @@ class WXBotConfig:
         )
         if self.memory_context_count > self.memory_max_count:
             self.memory_context_count = self.memory_max_count
-        self.wxauto_save_cache_retention_days = self._coerce_choice_int(
-            self.config.get('wxauto_save_cache_retention_days', 30),
+        self.media_cache_retention_days = self._coerce_choice_int(
+            self.config.get('media_cache_retention_days', 30),
             30,
             {0, 7, 30, 90, 180, 360},
         )
-        self.config['wxauto_save_cache_retention_days'] = self.wxauto_save_cache_retention_days
+        self.config['media_cache_retention_days'] = self.media_cache_retention_days
         self.clean_ai_reply_switch = bool(self.config.get('clean_ai_reply_switch', True))
 
         # 图片识别配置

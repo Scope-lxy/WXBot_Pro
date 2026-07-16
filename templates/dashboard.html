@@ -2976,17 +2976,17 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="cfg-page-form">
         <div class="row g-3">
           <div class="col-12 col-lg-4">
-            <label class="cfg-label" for="wxauto_save_cache_retention_days">自动清理时间</label>
-            {% set wxauto_cache_retention_days = config.get('wxauto_save_cache_retention_days', 30) | int %}
-            <select class="form-select" id="wxauto_save_cache_retention_days">
-              <option value="0" {% if wxauto_cache_retention_days == 0 %}selected{% endif %}>不清理</option>
-              <option value="7" {% if wxauto_cache_retention_days == 7 %}selected{% endif %}>7天</option>
-              <option value="30" {% if wxauto_cache_retention_days == 30 %}selected{% endif %}>30天</option>
-              <option value="90" {% if wxauto_cache_retention_days == 90 %}selected{% endif %}>90天</option>
-              <option value="180" {% if wxauto_cache_retention_days == 180 %}selected{% endif %}>180天</option>
-              <option value="360" {% if wxauto_cache_retention_days == 360 %}selected{% endif %}>360天</option>
+            <label class="cfg-label" for="media_cache_retention_days">自动清理时间</label>
+            {% set media_cache_retention_days = config.get('media_cache_retention_days', 30) | int %}
+            <select class="form-select" id="media_cache_retention_days">
+              <option value="0" {% if media_cache_retention_days == 0 %}selected{% endif %}>不清理</option>
+              <option value="7" {% if media_cache_retention_days == 7 %}selected{% endif %}>7天</option>
+              <option value="30" {% if media_cache_retention_days == 30 %}selected{% endif %}>30天</option>
+              <option value="90" {% if media_cache_retention_days == 90 %}selected{% endif %}>90天</option>
+              <option value="180" {% if media_cache_retention_days == 180 %}selected{% endif %}>180天</option>
+              <option value="360" {% if media_cache_retention_days == 360 %}selected{% endif %}>360天</option>
             </select>
-            <div class="cfg-hint">只清理 <code>wxauto_save</code> 缓存文件；聊天文字记录和配置不会被删除。</div>
+            <div class="cfg-hint">只清理 <code>wxbot_save</code> 缓存文件；聊天文字记录和配置不会被删除。</div>
           </div>
         </div>
       </div>
@@ -9987,7 +9987,7 @@ $(function(){
         var v=parseInt($('#memory_context_count').val(), 10);
         return isNaN(v) ? 50 : Math.max(1, Math.min(200, v));
       })(),
-      wxauto_save_cache_retention_days:parseInt($('#wxauto_save_cache_retention_days').val(),10)||0,
+      media_cache_retention_days:parseInt($('#media_cache_retention_days').val(),10)||0,
       chat_image_recognition_switch:$('#chat_image_recognition_switch').is(':checked'),
       chat_voice_recognition_switch:$('#chat_voice_recognition_switch').is(':checked'),
       chat_context_repair_switch:$('#chat_context_repair_switch').is(':checked'),

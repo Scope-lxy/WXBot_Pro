@@ -11,7 +11,8 @@ AI_COMPRESSED_IMAGE_DIRNAME = "compress_images"
 AI_IMAGE_MAX_LONG_SIDE = 2048
 AI_IMAGE_JPEG_QUALITY = 85
 AI_IMAGE_LOSSLESS_SOURCE_FORMATS = {"PNG", "BMP", "GIF"}
-WXAUTO_SAVE_CACHE_RETENTION_DAYS = 30
+MEDIA_CACHE_DIR_NAME = "wxbot_save"
+MEDIA_CACHE_RETENTION_DAYS = 30
 
 
 def is_image_path(value: str) -> bool:
@@ -69,7 +70,7 @@ def image_content_hash(image_path: str) -> str:
 def _ai_image_output_dir(image_path: str) -> str:
     path = Path(str(image_path or "")).resolve()
     for parent in [path.parent, *path.parents]:
-        if parent.name.lower() == "wxauto_save":
+        if parent.name.lower() == MEDIA_CACHE_DIR_NAME:
             return str(parent / AI_COMPRESSED_IMAGE_DIRNAME)
     return str(path.parent / AI_COMPRESSED_IMAGE_DIRNAME)
 
@@ -129,10 +130,10 @@ def prepare_ai_image_path(image_path: str) -> str:
         return path
 
 
-def cleanup_wxauto_save_cache(root_dir: str, *, retention_days: int = WXAUTO_SAVE_CACHE_RETENTION_DAYS) -> dict:
-    """Delete files older than the retention window under wxauto_save."""
+def cleanup_media_cache(root_dir: str, *, retention_days: int = MEDIA_CACHE_RETENTION_DAYS) -> dict:
+    """Delete files older than the retention window under wxbot_save."""
     root = Path(str(root_dir or "")).expanduser()
-    if not root.name or root.name.lower() != "wxauto_save":
+    if not root.name or root.name.lower() != MEDIA_CACHE_DIR_NAME:
         return {"scanned_files": 0, "deleted_files": 0, "deleted_dirs": 0, "failed": 0, "skipped": True}
     try:
         root = root.resolve()
@@ -141,7 +142,7 @@ def cleanup_wxauto_save_cache(root_dir: str, *, retention_days: int = WXAUTO_SAV
     if not root.is_dir():
         return {"scanned_files": 0, "deleted_files": 0, "deleted_dirs": 0, "failed": 0, "skipped": True}
 
-    retention_seconds = max(1, int(retention_days or WXAUTO_SAVE_CACHE_RETENTION_DAYS)) * 24 * 60 * 60
+    retention_seconds = max(1, int(retention_days or MEDIA_CACHE_RETENTION_DAYS)) * 24 * 60 * 60
     cutoff = time.time() - retention_seconds
     stats = {"scanned_files": 0, "deleted_files": 0, "deleted_dirs": 0, "failed": 0, "skipped": False}
 
