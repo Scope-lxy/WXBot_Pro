@@ -13,6 +13,7 @@
 - `message_store.sqlite3` 是消息事实、会话版本、回复和投递边界的唯一真源；发送、好友申请、素材转发一旦结果未知必须标记 `uncertain`，禁止自动重发。
 - 通讯录档案只保存联系人真源字段；`display_name` / `send_name` 只能作为运行记录快照。
 - 内部会话类型只能是 `private / group`；wxautox 的 `friend` 只在 `ConversationRef` 入口转换，不能混同消息方向语义。
+- 全局扫描无消息时必须返回正常空批次并进入空闲轮询；不得因空结果的 `chat_type=None` 记录或跳过“不支持会话”，只有携带实际消息的非 `private / group` 会话才跳过。
 - 素材来源只配置会话名。启动和恢复时必须按微信实际窗口自动识别 `private / group`，不得默认私聊或要求重复加入普通监听名单。
 - 生产环境不使用 `wechat-cli` 或本地数据库旁路，也不调用 `msg.to_text()`。
 

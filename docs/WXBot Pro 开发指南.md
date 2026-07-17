@@ -201,7 +201,7 @@ owner 按 FIFO 执行，已经开始的动作不可被后到任务抢占。AI �
 
 ### 全局扫描与动态监听
 
-黑名单模式只有一个全局扫描泵，任意时刻最多一个 `mode=next` 的 `POLL_MESSAGES` 在排队或执行。wxautox 返回 `official` 等非 `private / group` 会话时，必须在 UI 原始结果进入 `ConversationRef` 前明确跳过，不落库、不建窗，并按无新增事实退避；不得因此停止扫描泵。非空业务扫描批次在 owner 外通过 `InboundCoordinator.accept_batch()` 和一个 SQLite 事务保存，成功后才进入业务队列并登记建窗；下一次扫描进入 owner FIFO 尾部。空结果回到 3 秒低频，重复结果没有新增事实时指数退避到最多 5 秒。SQLite 提交失败必须 fail-stop，不能继续把微信未读标成已读。
+黑名单模式只有一个全局扫描泵，任意时刻最多一个 `mode=next` 的 `POLL_MESSAGES` 在排队或执行。wxautox 返回 `official` 等非 `private / group` 会话的真实消息时，必须在 UI 原始结果进入 `ConversationRef` 前明确跳过，不落库、不建窗，并按无新增事实退避；不得因此停止扫描泵。`GetNextNewMessage` 的 `msg` 和 callback 捕获均为空时，一律返回正常空批次，即使 wxautox 此时把 `client.chat_type` 留为 `None`；空批次不带“不支持会话”标记、不写日志，并进入 3 秒低频。非空业务扫描批次在 owner 外通过 `InboundCoordinator.accept_batch()` 和一个 SQLite 事务保存，成功后才进入业务队列并登记建窗；下一次扫描进入 owner FIFO 尾部。重复结果没有新增事实时指数退避到最多 5 秒。SQLite 提交失败必须 fail-stop，不能继续把微信未读标成已读。
 
 扫描前通过同一 owner 动作读取轻量未读快照。真实好友消息少于快照未读数、扫描耗时达到 wxautox4 的 10 秒上限，或返回达到 30 条上限时，保留会话级覆盖降级状态并在首页提示；已取得事实继续回复。第一阶段禁止自动 `deep`，也不修改 wxautox4 内置上限。
 
