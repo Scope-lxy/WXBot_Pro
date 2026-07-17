@@ -33,6 +33,7 @@ from core.reply_delivery import (
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.reply_count_store import ReplyCountStore
 from core.vision_bridge import VisionNote
+from core.wechat_ui_runtime import OwnedChat
 from feature import listening, message_routing
 from feature.voice_reply import group_voice_candidate
 from feature.scheduled_messages import execute_scheduled_message_task
@@ -4077,8 +4078,9 @@ class MessageBehaviorTests(unittest.TestCase):
         bot.config = SimpleNamespace(chat_message_merge_delay=20)
         bot.is_stop_requested = lambda: False
         sent_to_ai = []
-        bot.wx_send_ai = lambda _chat, message: sent_to_ai.append(message.content) or True
-        chat = SimpleNamespace(who="张三")
+        bot._ui_owner = object()
+        bot.wx_send_ai = lambda current_chat, message: sent_to_ai.append((current_chat, message.content)) or True
+        chat = ConversationRef("张三")
         first_batch = [
             SimpleNamespace(type="text", attr="friend", sender="张三", content="在吗", id="1"),
             SimpleNamespace(type="text", attr="friend", sender="张三", content="我想你", id="2"),
@@ -4096,8 +4098,36 @@ class MessageBehaviorTests(unittest.TestCase):
 
         self.assertTrue(bot._run_private_message_pipeline_worker(chat))
 
-        self.assertEqual(sent_to_ai, ["在吗\n我想你", "刚才忘了说"])
+        self.assertEqual([content for _chat, content in sent_to_ai], ["在吗\n我想你", "刚才忘了说"])
+        self.assertTrue(all(isinstance(current_chat, OwnedChat) for current_chat, _content in sent_to_ai))
+        self.assertTrue(all(current_chat.who == "张三" for current_chat, _content in sent_to_ai))
         self.assertFalse(bot._private_message_pipelines["张三"]["worker_running"])
+
+    def test_private_message_pipeline_rebuilds_owned_chat_before_sending_voice(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(chat_message_merge_delay=20)
+        bot.is_stop_requested = lambda: False
+        intents = []
+        bot._ui_owner = SimpleNamespace(
+            call=lambda intent, _timeout=None: intents.append(intent) or True,
+        )
+        bot.wx_send_ai = lambda current_chat, _message: current_chat.SendAudio(filepath="reply.mp3")
+        chat = ConversationRef("张三")
+
+        bot._ensure_message_runtime_state()
+        with bot._chat_merge_lock:
+            pipeline = bot._private_message_pipeline("张三")
+            pipeline["queued_batches"].append([
+                SimpleNamespace(type="voice", attr="friend", sender="张三", content="识别后的语音", id="1"),
+            ])
+            pipeline["worker_running"] = True
+
+        self.assertTrue(bot._run_private_message_pipeline_worker(chat))
+
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(intents[0].kind, wechat_ui_actions.UIIntentKind.SEND_AUDIO)
+        self.assertEqual(intents[0].payload["conversation"], "张三")
+        self.assertEqual(intents[0].payload["chat_type"], "private")
 
     def test_private_message_pipeline_merges_image_batch_with_followup_text(self):
         bot = WXBot.__new__(WXBot)
@@ -4241,6 +4271,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(chat_message_merge_delay=20)
         bot.is_stop_requested = lambda: False
+        bot._ui_owner = object()
         sent_to_ai = []
         bot.wx_send_ai = lambda _chat, message: sent_to_ai.append((message.type, message.content)) or True
 

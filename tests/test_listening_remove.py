@@ -300,6 +300,31 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(state["next_retry_at"], 100.0)
         self.assertNotIn("messages", state)
 
+    def test_global_batch_skips_unsupported_chat_type_without_persisting_or_repair(self):
+        persisted = []
+        logs = []
+        bot = SimpleNamespace(
+            _persist_ui_message_batch=lambda *args: persisted.append(args),
+            _dispatch_persisted_ui_message=lambda *_args: self.fail("不应派发不支持会话"),
+        )
+
+        with mock.patch.object(
+            listening,
+            "_bot_log",
+            side_effect=lambda _bot, **kwargs: logs.append(kwargs.get("message", "")),
+        ):
+            result = listening._handle_global_scan_batch(bot, {
+                "chat_name": "服务通知",
+                "ignored_unsupported_chat_type": "official",
+                "raw_message_count": 1,
+                "msg": [],
+            })
+
+        self.assertEqual(result, {"raw_count": 1, "new_fact_count": 0})
+        self.assertEqual(persisted, [])
+        self.assertFalse(hasattr(bot, "_listener_window_supervisor"))
+        self.assertIn("已跳过不支持的会话类型 official", logs[0])
+
     def test_global_group_media_uses_group_recognition_switches(self):
         received = []
         message = scan_envelope(
@@ -433,6 +458,39 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertTrue(state["fail_stopped"])
         self.assertEqual(state["scan_coverage_status"], "failed")
         self.assertIn("避免继续清除未保存", state["last_error"])
+
+    def test_global_scan_pump_keeps_running_after_unsupported_chat_type(self):
+        bot = SimpleNamespace(
+            config=SimpleNamespace(AllListen_filter_mute=False),
+            is_stop_requested=lambda: False,
+            _global_scan_deferred_listener_refs=[],
+        )
+        set_scan_state(bot)
+        batches = [
+            {
+                "chat_name": "服务通知",
+                "ignored_unsupported_chat_type": "official",
+                "raw_message_count": 1,
+                "msg": [],
+            },
+            {"chat_name": "", "chat_type": "", "msg": []},
+        ]
+
+        def poll(**_kwargs):
+            batch = batches.pop(0)
+            if not batches:
+                bot._global_scan_stop.set()
+            return batch
+
+        bot.wx = SimpleNamespace(GetNextNewMessage=poll)
+        listening._update_global_scan_state(bot, running=True, initial_drain_complete=False)
+
+        with mock.patch.object(listening, "_bot_log"):
+            listening._run_global_scan_pump(bot)
+
+        state = listening.global_scan_snapshot(bot)
+        self.assertFalse(state.get("fail_stopped", False))
+        self.assertTrue(state["initial_drain_complete"])
 
     def test_first_empty_scan_releases_deferred_fixed_windows(self):
         bot = SimpleNamespace(

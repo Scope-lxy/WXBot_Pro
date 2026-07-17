@@ -7164,9 +7164,11 @@ class WXBot:
         return pipeline
 
     def _run_private_message_pipeline_worker(self, chat):
-        name = str(getattr(chat, "who", "") or "").strip()
+        conversation = ConversationRef.from_wx_chat(chat)
+        name = conversation.who
         if not name:
             return True
+        chat = OwnedChat(self._ui_owner, conversation.who, conversation.chat_type)
         com_ready = False
         pythoncom_module = globals().get("pythoncom", None)
         if pythoncom_module is not None:

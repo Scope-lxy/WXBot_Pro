@@ -790,11 +790,37 @@ class WeChatUIRuntime:
         if not isinstance(result, dict):
             raise TypeError("全局未读扫描未返回字典结果")
         chat_name = str(result.get("chat_name") or "").strip()
+        raw_messages = list(result.get("msg") or captured)
+        if not raw_messages:
+            return {
+                "chat_name": "",
+                "chat_type": "",
+                "msg": [],
+                "unread_before": unread_before,
+                "elapsed_seconds": elapsed_seconds,
+                "max_quantity": int(WxParam.GET_NEXT_MAX_QUANTITY),
+                "max_runtime_seconds": float(WxParam.GET_NEXT_MAX_RUNTIME),
+            }
+        raw_chat_type = str(
+            result.get("chat_type") or getattr(self._client, "chat_type", "private")
+        ).strip().lower()
+        chat_type = "private" if raw_chat_type == "friend" else raw_chat_type
+        if chat_type not in {"private", "group"}:
+            return {
+                "chat_name": chat_name,
+                "chat_type": "",
+                "msg": [],
+                "unread_before": unread_before,
+                "elapsed_seconds": elapsed_seconds,
+                "max_quantity": int(WxParam.GET_NEXT_MAX_QUANTITY),
+                "max_runtime_seconds": float(WxParam.GET_NEXT_MAX_RUNTIME),
+                "ignored_unsupported_chat_type": raw_chat_type or "unknown",
+                "raw_message_count": len(raw_messages),
+            }
         conversation = ConversationRef(
             chat_name,
-            result.get("chat_type") or getattr(self._client, "chat_type", "private"),
+            chat_type,
         )
-        raw_messages = list(result.get("msg") or captured)
         try:
             timed_message_index, message_time = self._current_message_time(raw_messages)
         except Exception:

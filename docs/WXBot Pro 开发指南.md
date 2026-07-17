@@ -104,6 +104,8 @@
 
 wxautox4 私聊窗口返回的 `chat_type='friend'` 只在 `ConversationRef` 入口转换一次；项目内部和 `message_store.sqlite3` 的会话类型固定为 `private / group`。消息自身的 `attr='friend'` 和入站方向 `direction='friend'` 仍表示“对方发来”，不能与会话类型混用，也不能全局替换。
 
+私聊合并、语音补转写和恢复队列只传递 `ConversationRef` 等纯数据；进入私聊业务 worker 后，必须用该会话身份重建 `OwnedChat(self._ui_owner, who, chat_type)`，再进入 AI / 发送链路，禁止把 `ConversationRef` 当作可发送的聊天对象。
+
 私聊 `self` 消息会先排除机器人自己回复的回显；确认是手动回复后，写入本地聊天记录、推进 SQLite 会话版本、清理旧 AI 回复，不主动触发 AI。下一条好友消息会重新进入 AI 流程，并在 history 中带上这条手动回复。
 
 机器人自己发出的消息由持久化 `ReplyEchoTracker` 关联微信 `self` 回调，机器人回调不推进会话版本。每个气泡先按 delivery ID、会话类型、会话名、动作类型和内容登记为不可匹配的 `reserved`；UI owner 真正调用 handler 前转为 `active`，执行期间不受 TTL 限制，handler 返回或抛错后进入 grace。可按正文精确匹配的文字 / 引用保留到本轮回复的 15 分钟有效期，只有类型可模糊匹配的语音 / 文件仍限制为 60 秒，明确在调用前取消则直接删除。callback 可能早于 `SendMsg()` 返回，因此 callback 确认和发送成功确认必须幂等地收敛到 SQLite 中同一个 outbound 事件；文本、图片和文件采用 callback 实际可见正文，语音保留 TTS 语义正文，结果不得依赖二者到达顺序。迟到回声可以把对应 `uncertain` 动作纠正为 `done`，但不能恢复已取消的后续气泡。不得恢复旧 echo 列表、补写 timer、history fallback 队列或停止时等待补写线程。
@@ -199,7 +201,7 @@ owner 按 FIFO 执行，已经开始的动作不可被后到任务抢占。AI �
 
 ### 全局扫描与动态监听
 
-黑名单模式只有一个全局扫描泵，任意时刻最多一个 `mode=next` 的 `POLL_MESSAGES` 在排队或执行。非空扫描批次在 owner 外通过 `InboundCoordinator.accept_batch()` 和一个 SQLite 事务保存，成功后才进入业务队列并登记建窗；下一次扫描进入 owner FIFO 尾部。空结果回到 3 秒低频，重复结果没有新增事实时指数退避到最多 5 秒。SQLite 提交失败必须 fail-stop，不能继续把微信未读标成已读。
+黑名单模式只有一个全局扫描泵，任意时刻最多一个 `mode=next` 的 `POLL_MESSAGES` 在排队或执行。wxautox 返回 `official` 等非 `private / group` 会话时，必须在 UI 原始结果进入 `ConversationRef` 前明确跳过，不落库、不建窗，并按无新增事实退避；不得因此停止扫描泵。非空业务扫描批次在 owner 外通过 `InboundCoordinator.accept_batch()` 和一个 SQLite 事务保存，成功后才进入业务队列并登记建窗；下一次扫描进入 owner FIFO 尾部。空结果回到 3 秒低频，重复结果没有新增事实时指数退避到最多 5 秒。SQLite 提交失败必须 fail-stop，不能继续把微信未读标成已读。
 
 扫描前通过同一 owner 动作读取轻量未读快照。真实好友消息少于快照未读数、扫描耗时达到 wxautox4 的 10 秒上限，或返回达到 30 条上限时，保留会话级覆盖降级状态并在首页提示；已取得事实继续回复。第一阶段禁止自动 `deep`，也不修改 wxautox4 内置上限。
 

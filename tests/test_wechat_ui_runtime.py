@@ -686,6 +686,52 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(batch["max_runtime_seconds"], 10.0)
         self.assertFalse(hasattr(batch["msg"][0], "download"))
 
+    def test_global_poll_skips_unsupported_chat_type_before_internal_conversion(self):
+        client = FakeClient()
+        raw_message = SimpleNamespace(
+            id="official-1",
+            type="text",
+            attr="system",
+            sender="服务通知",
+            content="通知内容",
+        )
+        client.GetSession = lambda: [SimpleNamespace(
+            name="服务通知",
+            chat_type="official",
+            isnew=True,
+            new_count=1,
+            ismute=False,
+        )]
+        client.GetNextNewMessage = lambda **_kwargs: {
+            "chat_name": "服务通知",
+            "chat_type": "official",
+            "msg": [raw_message],
+        }
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        batch = runtime.poll_messages({"mode": "next"})
+
+        self.assertEqual(batch["ignored_unsupported_chat_type"], "official")
+        self.assertEqual(batch["raw_message_count"], 1)
+        self.assertEqual(batch["msg"], [])
+        self.assertEqual(batch["unread_before"][0]["chat_type"], "")
+
+    def test_global_poll_returns_empty_batch_when_no_messages(self):
+        client = FakeClient()
+        client.chat_type = None
+        client.GetSession = lambda: []
+        client.GetNextNewMessage = lambda **_kwargs: {}
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        batch = runtime.poll_messages({"mode": "next"})
+
+        self.assertEqual(batch["chat_name"], "")
+        self.assertEqual(batch["chat_type"], "")
+        self.assertEqual(batch["msg"], [])
+        self.assertNotIn("ignored_unsupported_chat_type", batch)
+
     def test_global_poll_prefers_preceding_time_from_returned_batch(self):
         messages = [
             SimpleNamespace(type="time", attr="system", content="00:07", time="2026-07-16 00:07:00"),

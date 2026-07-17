@@ -1255,6 +1255,18 @@ def _mark_global_scan_degraded(bot, conversation, details):
 def _handle_global_scan_batch(bot, batch):
     if not isinstance(batch, dict):
         raise TypeError("全局扫描必须返回字典批次")
+    ignored_chat_type = str(batch.get("ignored_unsupported_chat_type") or "").strip()
+    if ignored_chat_type:
+        chat_name = str(batch.get("chat_name") or "").strip() or "未知会话"
+        _bot_log(
+            bot,
+            level="INFO",
+            message=f"全局扫描 {chat_name}：已跳过不支持的会话类型 {ignored_chat_type}",
+        )
+        return {
+            "raw_count": max(1, int(batch.get("raw_message_count") or 0)),
+            "new_fact_count": 0,
+        }
     messages = list(batch.get("msg") or [])
     if not messages:
         return {"raw_count": 0, "new_fact_count": 0}

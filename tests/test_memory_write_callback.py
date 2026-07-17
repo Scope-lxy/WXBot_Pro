@@ -444,6 +444,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
         bot._handle_material_source_message = lambda _chat, _msg: False
         bot.callback_is_die = False
         bot.wx = SimpleNamespace(nickname="bot")
+        bot._ui_owner = object()
         bot.is_err = lambda *args, **kwargs: self.fail(f"unexpected error: {args}")
         bot.is_stop_requested = lambda: False
         bot._schedule_private_message_timer = lambda *_args, **_kwargs: SimpleNamespace(cancel=lambda: None)
