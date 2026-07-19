@@ -134,6 +134,19 @@ def persist_private_inbound(store, chat, message):
 
 
 class ApiBehaviorTests(unittest.TestCase):
+    def test_missing_api_error_reply_log_names_the_conversation(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(api_error_reply="")
+
+        with mock.patch("wxbot_core.log") as log_mock:
+            parts = bot._api_error_reply_parts(conversation="张三", chat_type="private")
+
+        self.assertEqual(parts, [])
+        self.assertEqual(
+            log_mock.call_args.kwargs["message"],
+            "私聊 张三：AI 回复失败，未配置失败固定回复，本次未发送回复",
+        )
+
     def test_material_source_skip_terminalizes_persisted_inbound(self):
         bot = WXBot.__new__(WXBot)
         bot._test_message_store_tempdir = tempfile.TemporaryDirectory()

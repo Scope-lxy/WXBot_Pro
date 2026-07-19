@@ -31,6 +31,9 @@ from core.wechat_ui_actions import (
 
 
 MESSAGE_TIME_CONTROL_SCAN_LIMIT = 30
+CONTACT_EDIT_CHAT_VERIFY_ATTEMPTS = 9
+CONTACT_EDIT_CHAT_VERIFY_INTERVAL_SECONDS = 0.2
+CONTACT_EDIT_FORCE_WAIT_SECONDS = 0.8
 
 
 def _required_internal_chat_type(chat_type):
@@ -1205,21 +1208,61 @@ class WeChatUIRuntime:
         chat_with = getattr(self._client, "ChatWith", None)
         if not callable(chat_with):
             raise RuntimeError("当前微信内核不支持打开好友聊天窗口")
-        bring_wechat_main_window_to_front(wait=0.3)
-        chat_with(who=target, exact=True)
-        bring_wechat_main_window_to_front(wait=0.3)
-        move_cursor_to_wechat_main_window_center(wait=0.05)
-
         chat_info_getter = getattr(self._client, "ChatInfo", None)
-        chat_info = dict(chat_info_getter() or {}) if callable(chat_info_getter) else {}
-        chat_type = str(chat_info.get("chat_type") or "").strip()
-        chat_name = str(chat_info.get("chat_name") or "").strip()
         expected_names = {str(name or "").strip() for name in payload.get("expected_names") or ()}
         expected_names.add(target)
-        if chat_type and chat_type != "friend":
-            raise RuntimeError(f"当前会话不是好友会话：{chat_type}")
-        if chat_name and chat_name not in expected_names:
-            raise RuntimeError(f"当前会话不是目标好友：{chat_name}")
+        search_names = [target]
+        contact_key = str(payload.get("contact_key") or "").strip()
+        if ":" in contact_key:
+            key_type, key_value = contact_key.split(":", 1)
+            key_value = key_value.strip()
+            if key_type in {"wechat_id", "wxid"} and key_value and key_value not in search_names:
+                search_names.append(key_value)
+                expected_names.add(key_value)
+
+        chat_info = {}
+
+        def wait_for_target_chat():
+            nonlocal chat_info
+            for attempt in range(CONTACT_EDIT_CHAT_VERIFY_ATTEMPTS):
+                chat_info = dict(chat_info_getter() or {}) if callable(chat_info_getter) else {}
+                chat_type = str(chat_info.get("chat_type") or "").strip()
+                chat_name = str(chat_info.get("chat_name") or "").strip()
+                if chat_type == "friend" and chat_name in expected_names:
+                    return True
+                if attempt + 1 < CONTACT_EDIT_CHAT_VERIFY_ATTEMPTS:
+                    time.sleep(CONTACT_EDIT_CHAT_VERIFY_INTERVAL_SECONDS)
+            return False
+
+        target_ready = False
+        for force in (False, True):
+            for search_name in search_names:
+                bring_wechat_main_window_to_front(wait=0.3)
+                if force:
+                    chat_with(
+                        who=search_name,
+                        exact=True,
+                        force=True,
+                        force_wait=CONTACT_EDIT_FORCE_WAIT_SECONDS,
+                    )
+                else:
+                    chat_with(who=search_name, exact=True)
+                bring_wechat_main_window_to_front(wait=0.3)
+                move_cursor_to_wechat_main_window_center(wait=0.05)
+                if wait_for_target_chat():
+                    target_ready = True
+                    break
+            if target_ready:
+                break
+
+        if not target_ready:
+            chat_type = str(chat_info.get("chat_type") or "").strip()
+            chat_name = str(chat_info.get("chat_name") or "").strip()
+            if chat_name:
+                raise RuntimeError(f"当前会话不是目标好友：{chat_name}")
+            if chat_type:
+                raise RuntimeError(f"未能打开目标好友页面，当前会话类型：{chat_type}")
+            raise RuntimeError("未能打开并确认目标好友页面")
 
         add_tags = list(payload.get("add_tags") or [])
         remove_tags = list(payload.get("remove_tags") or [])

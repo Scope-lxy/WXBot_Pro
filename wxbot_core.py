@@ -4993,7 +4993,7 @@ class WXBot:
             if keyword_plan or isinstance(e, sqlite3.DatabaseError):
                 raise
             print(traceback.format_exc())
-            log(level="ERROR", message=str(e) + f"\n{API_ERROR_REPLY_TEXT}")
+            log(level="ERROR", message=f"私聊 {chat.who}：{e}\n{API_ERROR_REPLY_TEXT}")
             api_error_reply = True
             if self.config.api_error_reply_once and user_key:
                 user_data = self._reply_once_user_data(user_key)
@@ -5009,7 +5009,7 @@ class WXBot:
                     return True
                 api_error_should_mark = True
             api_error_reply = True
-            parts = self._api_error_reply_parts()
+            parts = self._api_error_reply_parts(conversation=chat.who, chat_type="private")
         else:
             preprocess_result = self._preprocess_ai_reply_for_send(
                 reply,
@@ -5030,7 +5030,7 @@ class WXBot:
                         return True
                     api_error_should_mark = True
                 api_error_reply = True
-                parts = self._api_error_reply_parts()
+                parts = self._api_error_reply_parts(conversation=chat.who, chat_type="private")
             else:
                 reply = preprocess_result["reply"]
                 preprocess_fallback_should_mark = bool(preprocess_result.get("mark_fallback"))
@@ -5429,7 +5429,7 @@ class WXBot:
                 if isinstance(e, sqlite3.DatabaseError):
                     raise
                 print(traceback.format_exc())
-                log(level="ERROR", message=str(e) + "\n群组中调用AI回复错误！！")
+                log(level="ERROR", message=f"群聊 {chat.who}：{e}\n群组中调用AI回复错误！！")
                 reply = API_ERROR_REPLY_TEXT
             group_api_error_reply = False
             # 接口调用失败时替换为配置的固定回复；留空则静默
@@ -5443,7 +5443,7 @@ class WXBot:
                         self._cancel_unfinished_reply_job(message, "API error notice already sent")
                         return True
                     group_api_error_should_mark = True
-                parts = self._api_error_reply_parts()
+                parts = self._api_error_reply_parts(conversation=chat.who, chat_type="group")
             else:
                 group_api_error_should_mark = False
                 group_user_key = self._get_group_reply_once_key(chat, message)
@@ -5469,7 +5469,7 @@ class WXBot:
                             self._cancel_unfinished_reply_job(message, "API error notice already sent")
                             return True
                         group_api_error_should_mark = True
-                    parts = self._api_error_reply_parts()
+                    parts = self._api_error_reply_parts(conversation=chat.who, chat_type="group")
                 else:
                     reply = preprocess_result["reply"]
                     group_preprocess_fallback_should_mark = bool(preprocess_result.get("mark_fallback"))
@@ -6796,7 +6796,6 @@ class WXBot:
             raise RuntimeError("当前聊天窗口不支持 GetAllMessage")
         with warn_slow_wechat_ui_action(
             f"上下文补洞 GetAllMessage({getattr(chat, 'who', '')})",
-            level="WARNING",
         ):
             messages = list(get_all() or [])
         limit = max(1, min(50, int(limit or DEFAULT_VISIBLE_LIMIT)))
@@ -7595,11 +7594,14 @@ class WXBot:
                     updated = True
         return updated
 
-    def _api_error_reply_parts(self):
+    def _api_error_reply_parts(self, *, conversation="", chat_type=""):
         reply = str(getattr(self.config, 'api_error_reply', '') or '').strip()
         if reply:
             return [reply]
-        log(level="WARNING", message="AI 回复失败，未配置失败固定回复，本次未发送回复")
+        conversation = str(conversation or "").strip()
+        scene = "群聊" if str(chat_type or "").strip().lower() == "group" else "私聊"
+        prefix = f"{scene} {conversation}：" if conversation else ""
+        log(level="WARNING", message=f"{prefix}AI 回复失败，未配置失败固定回复，本次未发送回复")
         return []
 
     def _reply_preprocess_max_chars(self):
@@ -8366,7 +8368,10 @@ class WXBot:
                         api_user_data = self._reply_once_user_data(user_key)
                         if api_user_data.get("api_err_notified"):
                             return True, True
-                    parts = self._api_error_reply_parts()
+                    parts = self._api_error_reply_parts(
+                        conversation=getattr(chat, "who", ""),
+                        chat_type=chat_type,
+                    )
                     sent_reply_items = []
                     send_success, result = self._send_text_reply_limit_parts(
                         chat,

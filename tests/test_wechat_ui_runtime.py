@@ -927,6 +927,87 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(result["status"], "成功")
         self.assertEqual(client.edit_kwargs["remark"], "客户-张三")
 
+    def test_contact_edit_waits_until_target_friend_page_is_ready(self):
+        class DelayedClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.chat_info_calls = 0
+
+            def ChatInfo(self):
+                self.chat_info_calls += 1
+                if self.chat_info_calls < 3:
+                    return {"chat_type": "friend", "chat_name": "旧会话"}
+                return {"chat_type": "friend", "chat_name": self.current_chat}
+
+        client = DelayedClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with patch("core.wechat_ui_runtime.time.sleep", return_value=None):
+            result = runtime.edit_contact({
+                "target": "张三",
+                "expected_names": ["张三"],
+                "add_tags": ["客户"],
+                "remove_tags": [],
+            })
+
+        self.assertEqual(result["status"], "成功")
+        self.assertEqual(client.chat_info_calls, 3)
+        self.assertEqual(client.edit_kwargs["add_tags"], ["客户"])
+
+    def test_contact_edit_falls_back_to_wechat_id_when_name_search_does_not_switch(self):
+        class WechatIdClient(FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.current_chat = "旧会话"
+                self.searches = []
+
+            def ChatWith(self, who=None, exact=True, **_kwargs):
+                self.searches.append(who)
+                if who == "wxid_zhangsan":
+                    self.current_chat = "张三"
+                return True
+
+        client = WechatIdClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with patch("core.wechat_ui_runtime.time.sleep", return_value=None):
+            result = runtime.edit_contact({
+                "target": "张三",
+                "contact_key": "wechat_id:wxid_zhangsan",
+                "expected_names": ["张三"],
+                "add_tags": ["客户"],
+                "remove_tags": [],
+            })
+
+        self.assertEqual(result["status"], "成功")
+        self.assertEqual(client.searches, ["张三", "wxid_zhangsan"])
+
+    def test_contact_edit_never_edits_when_target_friend_page_cannot_be_confirmed(self):
+        class MissingTargetClient(FakeClient):
+            def ChatWith(self, who=None, exact=True, **_kwargs):
+                return True
+
+            def ChatInfo(self):
+                return {}
+
+            def EditFriendInfo(self, **kwargs):
+                raise AssertionError("目标好友页未确认时不得修改标签")
+
+        client = MissingTargetClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with patch("core.wechat_ui_runtime.time.sleep", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "未能打开并确认目标好友页面"):
+                runtime.edit_contact({
+                    "target": "张三",
+                    "expected_names": ["张三"],
+                    "add_tags": ["客户"],
+                    "remove_tags": [],
+                })
+
     def test_contact_edit_preserves_legacy_window_focus_sequence_inside_owner(self):
         events = []
 
