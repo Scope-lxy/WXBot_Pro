@@ -55,8 +55,15 @@ from core.account_storage import (
     known_account_ids,
     preferred_account_id,
 )
-from core.config import coerce_float_range, sanitize_api_capability_map, set_api_capability
-from core.config import api_supports_capability
+from core.config import (
+    api_config_by_id,
+    api_supports_capability,
+    coerce_float_range,
+    new_api_config_id,
+    sanitize_api_capability_map,
+    set_api_capability,
+    validate_api_config_references,
+)
 from core.runtime_metrics import RuntimeMetricsStore
 from core.memory import MemoryManager, resolve_memory_storage_name
 from core.chat_history_format import format_memory_record_for_display
@@ -2087,9 +2094,9 @@ def dashboard():
         {"sdk": "DusAPI", "key": "", "url": "https://api.dusapi.com", "model": "gpt-5"},
         {"sdk": "DusAPI", "key": "", "url": "https://api.dusapi.com", "model": "claude-sonnet-4-6"},
     ])
-    config.setdefault('api_index', 0)
+    config.setdefault('api_id', '')
     config.setdefault('api_capability_map', {})
-    config.setdefault('backup_chat_api_index', -1)
+    config.setdefault('backup_chat_api_id', '')
     config.setdefault('backup_chat_api_failover_threshold', 3)
 
     # —— 新增字段默认值（关键）——
@@ -2159,10 +2166,10 @@ def dashboard():
     config.setdefault('chat_voice_recognition_switch', False)
     config.setdefault('chat_message_merge_delay', 20)
     config.setdefault('chat_image_recognition_switch', False)   # 私聊图片识别开关
-    config.setdefault('chat_image_recognition_api',    0)        # 私聊识别接口索引
+    config.setdefault('chat_image_recognition_api_id', '')
     config.setdefault('group_image_recognition_switch', False)  # 群组图片识别开关
     config.setdefault('group_voice_recognition_switch', False)  # 群组语音转文字开关
-    config.setdefault('group_image_recognition_api',   0)        # 群组识别接口索引
+    config.setdefault('group_image_recognition_api_id', '')
     config.setdefault('siver_panel_enabled', False)
     config.setdefault('siver_panel_activation_code', '')
     config.setdefault('siver_panel_activation_code_applied_hash', '')
@@ -2331,12 +2338,8 @@ def _current_api_snapshot(cfg):
     api_configs = list((cfg or {}).get('api_configs') or [])
     if not api_configs:
         return {'sdk': '', 'model': '', 'current_interface': '未连接'}
-    try:
-        index = int((cfg or {}).get('api_index', 0) or 0)
-    except Exception:
-        index = 0
-    index = max(0, min(index, len(api_configs) - 1))
-    current = api_configs[index] if api_configs else {}
+    current = api_config_by_id(api_configs, (cfg or {}).get('api_id')) or {}
+    index = next((i for i, item in enumerate(api_configs) if item is current), -1)
     return {
         'sdk': str(current.get('sdk', '') or '').strip(),
         'model': str(current.get('model', '') or '').strip(),
@@ -2481,9 +2484,9 @@ def _dashboard_config_status_snapshot(cfg):
 
 
 
-def _api_config_supports_vision(cfg, index):
+def _api_config_supports_vision(cfg, api_id):
     cfg = cfg if isinstance(cfg, dict) else {}
-    return api_supports_capability(cfg.get('api_capability_map'), index, 'vision')
+    return api_supports_capability(cfg.get('api_capability_map'), api_id, 'vision')
 
 
 
@@ -2962,58 +2965,20 @@ def _coerce_int_range_fields(merged_config):
 
 
 def _coerce_backup_chat_api_fields(merged_config):
-    api_configs = merged_config.get('api_configs')
-    if not isinstance(api_configs, list):
-        api_configs = []
-
-    try:
-        primary_index = int(merged_config.get('api_index', 0))
-    except (TypeError, ValueError):
-        primary_index = 0
-    if api_configs:
-        primary_index = max(0, min(len(api_configs) - 1, primary_index))
-    else:
-        primary_index = 0
-    merged_config['api_index'] = primary_index
-
-    try:
-        backup_index = int(merged_config.get('backup_chat_api_index', -1))
-    except (TypeError, ValueError):
-        backup_index = -1
-    if (
-        len(api_configs) < 2
-        or backup_index < 0
-        or backup_index >= len(api_configs)
-        or backup_index == primary_index
-    ):
-        backup_index = -1
-    merged_config['backup_chat_api_index'] = backup_index
-
-
-def _normalize_api_config_items(merged_config):
-    api_configs = merged_config.get('api_configs')
-    if not isinstance(api_configs, list):
-        return
-    normalized = []
-    for item in api_configs:
-        if not isinstance(item, dict):
-            continue
-        clean = dict(item)
-        clean['sdk'] = str(clean.get('sdk') or '').strip()
-        clean['model'] = str(clean.get('model') or '').strip()
-        clean['url'] = str(clean.get('url') or '').strip()
-        clean['key'] = str(clean.get('key') or '').strip()
-        if clean['sdk'] == 'OpenAI SDK':
-            clean['api_protocol'] = normalize_api_protocol(clean.get('api_protocol'))
-        else:
-            clean.pop('api_protocol', None)
-        clean['reasoning_effort'] = normalize_reasoning_effort(clean.get('reasoning_effort'))
-        normalized.append(clean)
-    merged_config['api_configs'] = normalized
+    known_api_ids = {
+        str(item.get('id') or '').strip()
+        for item in merged_config.get('api_configs', []) or []
+        if isinstance(item, dict) and str(item.get('id') or '').strip()
+    }
+    capability_map = sanitize_api_capability_map(merged_config.get('api_capability_map'))
+    merged_config['api_capability_map'] = {
+        api_id: capabilities
+        for api_id, capabilities in capability_map.items()
+        if api_id in known_api_ids
+    }
 
 
 def _coerce_dict_fields(merged_config):
-    _normalize_api_config_items(merged_config)
     normalize_voice_reply_config(merged_config)
     # keyword_dict 支持：dict / JSON字符串 / list[{key, value}]
     if 'keyword_dict' in merged_config:
@@ -3060,36 +3025,29 @@ def _coerce_dict_fields(merged_config):
             merged_config.get('new_friend_msg')
         )
 
-    # group_api_map: 值必须为 int 接口索引，非法值自动过滤
+    # 聊天接口绑定保存稳定 ID，不随接口排序或删除变化。
     if 'group_api_map' in merged_config:
         gam = merged_config['group_api_map']
         if isinstance(gam, dict):
             clean = {}
             for k, v in gam.items():
                 k = str(k).strip()
-                try:
-                    vi = int(v)
-                    if k and vi >= 0:
-                        clean[k] = vi
-                except (ValueError, TypeError):
-                    pass
+                api_id = str(v or '').strip()
+                if k and api_id:
+                    clean[k] = api_id
             merged_config['group_api_map'] = clean
         else:
             merged_config['group_api_map'] = {}
 
-    # chat_api_map: 同 group_api_map，适用于私聊白名单用户
     if 'chat_api_map' in merged_config:
         cam = merged_config['chat_api_map']
         if isinstance(cam, dict):
             clean = {}
             for k, v in cam.items():
                 k = str(k).strip()
-                try:
-                    vi = int(v)
-                    if k and vi >= -1:
-                        clean[k] = vi
-                except (ValueError, TypeError):
-                    pass
+                api_id = str(v or '').strip()
+                if k and api_id:
+                    clean[k] = api_id
             merged_config['chat_api_map'] = clean
         else:
             merged_config['chat_api_map'] = {}
@@ -3185,6 +3143,9 @@ def save_config(config_data):
         _coerce_int_range_fields(merged_config)
         _coerce_backup_chat_api_fields(merged_config)
         _coerce_dict_fields(merged_config)
+        api_reference_error = validate_api_config_references(merged_config)
+        if api_reference_error:
+            raise ValueError(api_reference_error)
         merged_config['new_friend_reply_switch'] = new_friend_welcome_message_has_content(merged_config.get('new_friend_msg'))
         if 'keyword_dict' in (config_data or {}):
             _validate_keyword_rules_have_content(merged_config.get('keyword_dict', {}))
@@ -3263,6 +3224,9 @@ def save_config_route():
         _coerce_int_range_fields(merged_config)
         _coerce_backup_chat_api_fields(merged_config)
         _coerce_dict_fields(merged_config)
+        api_reference_error = validate_api_config_references(merged_config)
+        if api_reference_error:
+            raise ValueError(api_reference_error)
         if 'keyword_dict' in (config_data or {}):
             _validate_keyword_rules_have_content(merged_config.get('keyword_dict', {}))
         merged_config.update(normalize_ai_material_outreach_config(merged_config))
@@ -3281,10 +3245,14 @@ def save_config_route():
             if bot_thread and bot_thread.is_alive() and bot:
                 api_runtime_fields = {
                     'api_configs',
-                    'api_index',
+                    'api_id',
                     'api_capability_map',
-                    'backup_chat_api_index',
+                    'backup_chat_api_id',
                     'backup_chat_api_failover_threshold',
+                    'chat_api_map',
+                    'group_api_map',
+                    'chat_image_recognition_api_id',
+                    'group_image_recognition_api_id',
                 }
                 if hasattr(bot, 'apply_runtime_api_config_update') and any(
                     field in (config_data or {}) for field in api_runtime_fields
@@ -3305,14 +3273,13 @@ def save_config_route():
         return jsonify({'status': 'error', 'message': str(e)})
 
 
-def _build_temp_api_config(cfg, *, interface_index=None):
+def _build_temp_api_config(cfg):
     """用于测试单个接口配置的健康检查快照，不读写 config.json。"""
     return build_api_config_snapshot(
         cfg,
         prompt=API_TEXT_TEST_PROMPT,
         max_retries=0,
         max_output_tokens=API_TEST_MAX_OUTPUT_TOKENS,
-        interface_index=interface_index,
     )
 
 
@@ -3349,13 +3316,7 @@ def _get_active_api_config(config):
     config = config if isinstance(config, dict) else {}
     api_configs = config.get('api_configs')
     if isinstance(api_configs, list) and api_configs:
-        try:
-            index = int(config.get('api_index', 0))
-        except (TypeError, ValueError):
-            index = 0
-        index = max(0, min(len(api_configs) - 1, index))
-        cfg = api_configs[index]
-        return cfg if isinstance(cfg, dict) else {}
+        return api_config_by_id(api_configs, config.get('api_id')) or {}
     return {}
 
 
@@ -3364,10 +3325,7 @@ def _get_chat_api_config(config, chat_name):
     api_configs = config.get('api_configs')
     if not isinstance(api_configs, list) or not api_configs:
         return _get_active_api_config(config)
-    try:
-        index = int(config.get('api_index', 0))
-    except (TypeError, ValueError):
-        index = 0
+    cfg = api_config_by_id(api_configs, config.get('api_id'))
     listen_list = config.get('listen_list', []) or []
     chat_api_map = config.get('chat_api_map', {}) or {}
     if (
@@ -3376,12 +3334,9 @@ def _get_chat_api_config(config, chat_name):
         and isinstance(chat_api_map, dict)
         and chat_name in chat_api_map
     ):
-        try:
-            index = int(chat_api_map.get(chat_name))
-        except (TypeError, ValueError):
-            pass
-    index = max(0, min(len(api_configs) - 1, index))
-    cfg = api_configs[index]
+        mapped_cfg = api_config_by_id(api_configs, chat_api_map.get(chat_name))
+        if mapped_cfg is not None:
+            cfg = mapped_cfg
     return cfg if isinstance(cfg, dict) else {}
 
 
@@ -3536,15 +3491,15 @@ def _run_api_image_test(api, sdk):
                 pass
 
 
-def _set_api_capability(config, index, capability, supported):
-    return set_api_capability(config, index, capability, supported)
+def _set_api_capability(config, api_id, capability, supported):
+    return set_api_capability(config, api_id, capability, supported)
 
 
-def _persist_api_capability(index, capability, supported):
+def _persist_api_capability(api_id, capability, supported):
     config = read_config()
     if not isinstance(config, dict):
         return False
-    _set_api_capability(config, index, capability, supported)
+    _set_api_capability(config, api_id, capability, supported)
     try:
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config, f, ensure_ascii=False, indent=4)
@@ -3582,14 +3537,11 @@ def test_api_config_route():
     try:
         data = request.get_json() or {}
         cfg = data.get('api_config') or {}
-        try:
-            api_index = int(data.get('api_index', 0))
-        except (TypeError, ValueError):
-            api_index = 0
+        api_id = str(data.get('api_id') or cfg.get('id') or '').strip()
         if not isinstance(cfg, dict):
             return jsonify({'status': 'error', 'message': '接口配置格式无效'})
 
-        tmp_config = _build_temp_api_config(cfg, interface_index=api_index)
+        tmp_config = _build_temp_api_config(cfg)
         if not tmp_config.key:
             return jsonify({'status': 'error', 'message': 'API Key 不能为空'})
         if not tmp_config.url:
@@ -3601,7 +3553,7 @@ def test_api_config_route():
         text_started = time.time()
         reply = api.chat(API_TEST_MESSAGE, stream=False, prompt=tmp_config.prompt, history=[])
         text_elapsed_ms = int((time.time() - text_started) * 1000)
-        log('INFO', f'接口测试文本测试完成：接口 {api_index + 1}，耗时 {text_elapsed_ms} ms')
+        log('INFO', f'接口测试文本测试完成：模型 {tmp_config.model}，耗时 {text_elapsed_ms} ms')
         raw_reply = str(reply or "")
         cleaned_reply = clean_ai_reply_text(raw_reply)
         cleaned = cleaned_reply != raw_reply
@@ -3616,8 +3568,8 @@ def test_api_config_route():
         image_started = time.time()
         image_test = _run_api_image_test(api, tmp_config.sdk)
         image_elapsed_ms = int((time.time() - image_started) * 1000)
-        log('INFO', f'接口测试图片测试完成：接口 {api_index + 1}，结果 {image_test.get("status")}，耗时 {image_elapsed_ms} ms')
-        _persist_api_capability(api_index, 'vision', image_test.get('status') == 'success')
+        log('INFO', f'接口测试图片测试完成：模型 {tmp_config.model}，结果 {image_test.get("status")}，耗时 {image_elapsed_ms} ms')
+        _persist_api_capability(api_id, 'vision', image_test.get('status') == 'success')
         elapsed_ms = int((time.time() - started) * 1000)
         return jsonify({
             'status': 'success',
@@ -6674,12 +6626,15 @@ def main():
     log('INFO', '服务器启动中...')
     try:
         if not os.path.exists(CONFIG_FILE):
+            default_api_configs = [
+                {"id": new_api_config_id(), "sdk": "DusAPI", "key": "your-api-key", "url": "https://api.dusapi.com", "model": "gpt-5.4"},
+                {"id": new_api_config_id(), "sdk": "DusAPI", "key": "your-api-key", "url": "https://api.dusapi.com", "model": "claude-sonnet-4-6"},
+            ]
+            default_api_id = default_api_configs[0]["id"]
             default_config = {
-                "api_configs": [
-                    {"sdk": "DusAPI", "key": "your-api-key", "url": "https://api.dusapi.com", "model": "gpt-5.4"},
-                    {"sdk": "DusAPI", "key": "your-api-key", "url": "https://api.dusapi.com", "model": "claude-sonnet-4-6"},
-                ],
-                "api_index": 0,
+                "api_configs": default_api_configs,
+                "api_id": default_api_id,
+                "backup_chat_api_id": "",
                 "api_capability_map": {},
                 "admin": "文件传输助手",
                 "AllListen_switch": False,
@@ -6735,10 +6690,10 @@ def main():
                 "chat_image_recognition_switch": False,
                 "chat_voice_recognition_switch": False,
                 "chat_message_merge_delay": 20,
-                "chat_image_recognition_api": 0,
+                "chat_image_recognition_api_id": default_api_id,
                 "group_image_recognition_switch": False,
                 "group_voice_recognition_switch": False,
-                "group_image_recognition_api": 0,
+                "group_image_recognition_api_id": default_api_id,
                 "default_prompt": "默认",
                 "chat_prompt_map": {},
                 "chat_api_map": {},

@@ -74,7 +74,12 @@ from core.prompt_system import (
     PromptSystem,
     SystemPromptStore,
 )
-from core.config import api_supports_capability, coerce_float_range, coerce_int_range
+from core.config import (
+    api_config_by_id,
+    api_supports_capability,
+    coerce_float_range,
+    coerce_int_range,
+)
 from core.account_storage import (
     DEFAULT_ACCOUNT_ID,
     account_file,
@@ -489,9 +494,9 @@ class WXBot:
 
         # 根据当前默认接口快照选择对应的 AI 接口
         self.api = self._init_api()
-        self.api_cache = {}                     # 群组专属接口缓存 {api_index: api_instance}
+        self.api_cache = {}                     # 专属接口缓存 {api_id: api_instance}
         self._chat_api_failover_lock = threading.RLock()
-        self.active_chat_api_index = int(getattr(self.config, 'api_index', 0) or 0)
+        self.active_chat_api_id = str(getattr(self.config, 'api_id', '') or '').strip()
         self.chat_api_fail_count = 0
         self.chat_api_using_backup = False
         self.next_primary_chat_api_probe_at = None
@@ -2111,13 +2116,11 @@ class WXBot:
         api_config = getattr(self.config, "current_api_config", None)
         if not isinstance(api_config, APIConfigSnapshot):
             api_configs = getattr(self.config, "api_configs", []) or []
-            api_index = int(getattr(self.config, "api_index", 0) or 0) if api_configs else 0
-            current = api_configs[api_index] if api_configs and 0 <= api_index < len(api_configs) else {}
+            current = api_config_by_id(api_configs, getattr(self.config, "api_id", "")) or {}
             api_config = build_api_config_snapshot(
                 current,
                 prompt="",
                 max_retries=getattr(self.config, "max_retries", 5),
-                interface_index=api_index,
             )
             self.config.current_api_config = api_config
         sdk = api_config.sdk
@@ -2130,25 +2133,22 @@ class WXBot:
         else:
             raise ValueError(f"不支持的聊天接口 SDK：{sdk or '（空）'}")
 
-    def _init_api_by_index(self, idx):
+    def _init_api_by_id(self, api_id):
         """
-        根据指定接口索引实例化 AI 接口对象。
+        根据指定接口 ID 实例化 AI 接口对象。
         会创建一个只含接口相关字段的轻量代理配置对象，避免干扰主配置。
         """
-        configs = self.config.api_configs
-        if idx < 0 or idx >= len(configs):
-            log(level="WARNING", message=f"接口索引 {idx} 超出范围，回退到默认接口")
-            return self.api
-        cfg = configs[idx]
+        cfg = api_config_by_id(getattr(self.config, "api_configs", []), api_id)
+        if cfg is None:
+            raise ValueError(f"接口 ID 不存在：{api_id}")
         tmp = build_api_config_snapshot(
             cfg,
             prompt='',
             max_retries=getattr(self.config, "max_retries", 5),
-            interface_index=idx,
         )
         sdk = tmp.sdk
 
-        log(level="DEBUG", message=f"聊天接口已就绪：接口{idx + 1}，{sdk}，模型 {tmp.model}")
+        log(level="DEBUG", message=f"聊天接口已就绪：{sdk}，模型 {tmp.model}")
         if sdk == "OpenAI SDK":
             return OpenAIAPI(tmp)
         elif sdk == "DusAPI":
@@ -2226,17 +2226,21 @@ class WXBot:
             return
         for field in (
             'api_configs',
-            'api_index',
+            'api_id',
             'api_capability_map',
-            'backup_chat_api_index',
+            'backup_chat_api_id',
             'backup_chat_api_failover_threshold',
+            'chat_api_map',
+            'group_api_map',
+            'chat_image_recognition_api_id',
+            'group_image_recognition_api_id',
         ):
             if field in merged_config:
                 self.config.config[field] = merged_config[field]
         self._sync_runtime_api_config_fields_from_config()
         self.api = self._init_api()
         self.api_cache = {}
-        self._reset_chat_api_failover_state(active_index=self._get_primary_chat_api_index())
+        self._reset_chat_api_failover_state(active_api_id=self._get_primary_chat_api_id())
         log(message="运行中聊天接口配置已同步，主/备接口状态已重置为主接口")
 
     def _consume_runtime_task_reload_request(self):
@@ -5157,7 +5161,7 @@ class WXBot:
                 getattr(self.config, 'memory_max_count', 5000),
                 chat_type='private',
             )
-            api = self._get_other_api(self._get_chat_api_index(chat.who))
+            api = self._get_other_api(self._get_chat_api_id(chat.who))
             updated = system.update_memory(
                 str(getattr(chat, "who", "") or "").strip(),
                 messages,
@@ -5585,8 +5589,8 @@ class WXBot:
     def _ensure_chat_api_failover_state(self):
         if not hasattr(self, '_chat_api_failover_lock'):
             self._chat_api_failover_lock = threading.RLock()
-        if not hasattr(self, 'active_chat_api_index'):
-            self.active_chat_api_index = int(getattr(self.config, 'api_index', 0) or 0)
+        if not hasattr(self, 'active_chat_api_id'):
+            self.active_chat_api_id = str(getattr(self.config, 'api_id', '') or '').strip()
         if not hasattr(self, 'chat_api_fail_count'):
             self.chat_api_fail_count = 0
         if not hasattr(self, 'chat_api_using_backup'):
@@ -5598,97 +5602,31 @@ class WXBot:
         return time.time()
 
     def _sync_runtime_api_config_fields_from_config(self):
-        config_data = getattr(self.config, 'config', {}) or {}
-        api_configs = config_data.get('api_configs', getattr(self.config, 'api_configs', []))
-        if not isinstance(api_configs, list):
-            api_configs = []
-        self.config.api_configs = api_configs
+        self.config.update_global_config()
 
-        try:
-            api_index = int(config_data.get('api_index', getattr(self.config, 'api_index', 0)))
-        except (TypeError, ValueError):
-            api_index = 0
-        if api_configs:
-            api_index = max(0, min(len(api_configs) - 1, api_index))
-        else:
-            api_index = 0
-        self.config.api_index = api_index
-        self.config.config['api_index'] = api_index
-
-        api_capability_map = config_data.get('api_capability_map', getattr(self.config, 'api_capability_map', {}))
-        if not isinstance(api_capability_map, dict):
-            api_capability_map = {}
-        self.config.api_capability_map = api_capability_map
-        self.config.config['api_capability_map'] = api_capability_map
-
-        try:
-            backup_index = int(
-                config_data.get('backup_chat_api_index', getattr(self.config, 'backup_chat_api_index', -1))
-            )
-        except (TypeError, ValueError):
-            backup_index = -1
-        if (
-            len(api_configs) < 2
-            or backup_index < 0
-            or backup_index >= len(api_configs)
-            or backup_index == api_index
-        ):
-            backup_index = -1
-        self.config.backup_chat_api_index = backup_index
-        self.config.config['backup_chat_api_index'] = backup_index
-
-        self.config.backup_chat_api_failover_threshold = coerce_int_range(
-            config_data.get(
-                'backup_chat_api_failover_threshold',
-                getattr(self.config, 'backup_chat_api_failover_threshold', 3),
-            ),
-            3,
-            1,
-            10,
-        )
-        self.config.config['backup_chat_api_failover_threshold'] = self.config.backup_chat_api_failover_threshold
-
-        current = api_configs[api_index] if api_configs else {}
-        self.config.prompt = ''
-        self.config.current_api_config = build_api_config_snapshot(
-            current,
-            prompt=self.config.prompt,
-            max_retries=getattr(self.config, 'max_retries', 5),
-            interface_index=api_index,
-        )
-
-    def _reset_chat_api_failover_state(self, *, active_index=None):
+    def _reset_chat_api_failover_state(self, *, active_api_id=None):
         self._ensure_chat_api_failover_state()
         with self._chat_api_failover_lock:
             self.chat_api_fail_count = 0
             self.chat_api_using_backup = False
             self.next_primary_chat_api_probe_at = None
-            if active_index is None:
-                active_index = self._get_primary_chat_api_index()
-            self.active_chat_api_index = active_index
+            if active_api_id is None:
+                active_api_id = self._get_primary_chat_api_id()
+            self.active_chat_api_id = active_api_id
 
-    def _get_primary_chat_api_index(self):
-        try:
-            index = int(getattr(self.config, 'api_index', 0))
-        except (TypeError, ValueError):
-            index = 0
-        return max(0, index)
+    def _get_primary_chat_api_id(self):
+        api_id = str(getattr(self.config, 'api_id', '') or '').strip()
+        if api_config_by_id(getattr(self.config, 'api_configs', []), api_id) is None:
+            return ''
+        return api_id
 
-    def _get_backup_chat_api_index(self):
-        try:
-            index = int(getattr(self.config, 'backup_chat_api_index', -1))
-        except (TypeError, ValueError):
-            index = -1
-        api_configs = getattr(self.config, 'api_configs', []) or []
-        if (
-            not isinstance(api_configs, list)
-            or len(api_configs) < 2
-            or index < 0
-            or index >= len(api_configs)
-            or index == self._get_primary_chat_api_index()
-        ):
-            return -1
-        return index
+    def _get_backup_chat_api_id(self):
+        api_id = str(getattr(self.config, 'backup_chat_api_id', '') or '').strip()
+        if not api_id or api_id == self._get_primary_chat_api_id():
+            return ''
+        if api_config_by_id(getattr(self.config, 'api_configs', []), api_id) is None:
+            return ''
+        return api_id
 
     def _get_backup_chat_api_failover_threshold(self):
         try:
@@ -5697,43 +5635,39 @@ class WXBot:
             threshold = 3
         return max(1, min(10, threshold))
 
-    def _get_active_default_chat_api_index(self):
+    def _get_active_default_chat_api_id(self):
         self._ensure_chat_api_failover_state()
         with self._chat_api_failover_lock:
             if self.chat_api_using_backup:
-                backup_index = self._get_backup_chat_api_index()
-                if backup_index >= 0:
-                    self.active_chat_api_index = backup_index
-                    return backup_index
+                backup_api_id = self._get_backup_chat_api_id()
+                if backup_api_id:
+                    self.active_chat_api_id = backup_api_id
+                    return backup_api_id
                 self.chat_api_using_backup = False
-            primary_index = self._get_primary_chat_api_index()
+            primary_api_id = self._get_primary_chat_api_id()
             if not self.chat_api_using_backup:
-                self.active_chat_api_index = primary_index
-            return self.active_chat_api_index
+                self.active_chat_api_id = primary_api_id
+            return self.active_chat_api_id
 
-    def _get_chat_api_name(self, index):
-        try:
-            fallback_index = int(index)
-        except (TypeError, ValueError):
-            fallback_index = 0
-        return format_api_display_name(
-            getattr(self.config, 'api_configs', []) or [],
-            index,
-            fallback=f"接口 {fallback_index + 1}",
-        )
+    def _get_chat_api_name(self, api_id):
+        api_configs = getattr(self.config, 'api_configs', []) or []
+        target = api_config_by_id(api_configs, api_id)
+        if target is None:
+            return '未连接'
+        for index, item in enumerate(api_configs):
+            if item is target:
+                return format_api_display_name(api_configs, index, fallback='未连接')
+        return '未连接'
 
     def _get_current_chat_api_display_name(self):
         api_configs = getattr(self.config, "api_configs", []) or []
         if not isinstance(api_configs, list) or not api_configs:
             return "未连接"
         try:
-            index = self._get_active_default_chat_api_index()
+            api_id = self._get_active_default_chat_api_id()
         except Exception:
-            try:
-                index = int(getattr(self, "active_chat_api_index", getattr(self.config, "api_index", 0)) or 0)
-            except (TypeError, ValueError):
-                index = 0
-        return format_api_display_name(api_configs, index, fallback="未连接")
+            api_id = str(getattr(self, 'active_chat_api_id', getattr(self.config, 'api_id', '')) or '').strip()
+        return self._get_chat_api_name(api_id)
 
     def _record_primary_chat_api_success(self):
         self._ensure_chat_api_failover_state()
@@ -5742,7 +5676,7 @@ class WXBot:
                 return
             self.chat_api_fail_count = 0
             self.next_primary_chat_api_probe_at = None
-            self.active_chat_api_index = self._get_primary_chat_api_index()
+            self.active_chat_api_id = self._get_primary_chat_api_id()
 
     def _record_primary_chat_api_failure(self):
         self._ensure_chat_api_failover_state()
@@ -5750,21 +5684,21 @@ class WXBot:
             if self.chat_api_using_backup:
                 return
             self.chat_api_fail_count += 1
-            primary_index = self._get_primary_chat_api_index()
+            primary_api_id = self._get_primary_chat_api_id()
             threshold = self._get_backup_chat_api_failover_threshold()
-            log(message=f"主聊天接口调用失败 {self.chat_api_fail_count}/{threshold}，接口：{self._get_chat_api_name(primary_index)}")
+            log(message=f"主聊天接口调用失败 {self.chat_api_fail_count}/{threshold}，接口：{self._get_chat_api_name(primary_api_id)}")
             if self.chat_api_fail_count < threshold:
                 return
-            backup_index = self._get_backup_chat_api_index()
-            if backup_index < 0:
+            backup_api_id = self._get_backup_chat_api_id()
+            if not backup_api_id:
                 return
             self.chat_api_using_backup = True
-            self.active_chat_api_index = backup_index
+            self.active_chat_api_id = backup_api_id
             self.chat_api_fail_count = 0
             self.next_primary_chat_api_probe_at = (
                 self._get_chat_api_failover_now() + PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS
             )
-            log(message=f"主聊天接口连续失败达到阈值，已切换到备用聊天接口：{self._get_chat_api_name(backup_index)}")
+            log(message=f"主聊天接口连续失败达到阈值，已切换到备用聊天接口：{self._get_chat_api_name(backup_api_id)}")
 
     def _record_api_request_by_type(self, request_type):
         if str(request_type or "").strip() == "other":
@@ -5774,15 +5708,15 @@ class WXBot:
 
     def _retry_current_message_with_backup(self, *args, request_type="chat", **kwargs):
         self._ensure_chat_api_failover_state()
-        backup_index = self._get_backup_chat_api_index()
-        if backup_index < 0:
+        backup_api_id = self._get_backup_chat_api_id()
+        if not backup_api_id:
             return False, None
         with self._chat_api_failover_lock:
-            should_retry = self.chat_api_using_backup and self.active_chat_api_index == backup_index
+            should_retry = self.chat_api_using_backup and self.active_chat_api_id == backup_api_id
         if not should_retry:
             return False, None
-        log(message=f"主聊天接口失败，当前消息改用备用接口：{self._get_chat_api_name(backup_index)}")
-        backup_api = self._get_api_instance_by_index(backup_index)
+        log(message=f"主聊天接口失败，当前消息改用备用接口：{self._get_chat_api_name(backup_api_id)}")
+        backup_api = self._get_api_instance_by_id(backup_api_id)
         try:
             self._record_api_request_by_type(request_type)
             result = backup_api.chat(*args, **kwargs)
@@ -5796,13 +5730,13 @@ class WXBot:
 
     def _try_restore_primary_chat_api(self, *args, request_type="chat", **kwargs):
         self._ensure_chat_api_failover_state()
-        primary_index = self._get_primary_chat_api_index()
-        backup_index = self._get_backup_chat_api_index()
-        if backup_index < 0:
+        primary_api_id = self._get_primary_chat_api_id()
+        backup_api_id = self._get_backup_chat_api_id()
+        if not backup_api_id:
             return False, None
 
         with self._chat_api_failover_lock:
-            if not self.chat_api_using_backup or self.active_chat_api_index != backup_index:
+            if not self.chat_api_using_backup or self.active_chat_api_id != backup_api_id:
                 return False, None
             now = self._get_chat_api_failover_now()
             probe_at = self.next_primary_chat_api_probe_at
@@ -5810,7 +5744,7 @@ class WXBot:
                 return False, None
             self.next_primary_chat_api_probe_at = now + PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS
 
-        log(message=f"已到主聊天接口恢复检测时间，开始探测：{self._get_chat_api_name(primary_index)}")
+        log(message=f"已到主聊天接口恢复检测时间，开始探测：{self._get_chat_api_name(primary_api_id)}")
         try:
             self._record_api_request_by_type(request_type)
             result = self.api.chat(*args, **kwargs)
@@ -5825,25 +5759,25 @@ class WXBot:
         with self._chat_api_failover_lock:
             self.chat_api_using_backup = False
             self.chat_api_fail_count = 0
-            self.active_chat_api_index = primary_index
+            self.active_chat_api_id = primary_api_id
             self.next_primary_chat_api_probe_at = None
-        log(message=f"主聊天接口恢复探测成功，已切回主聊天接口：{self._get_chat_api_name(primary_index)}")
+        log(message=f"主聊天接口恢复探测成功，已切回主聊天接口：{self._get_chat_api_name(primary_api_id)}")
         return True, result
 
-    def _get_api_instance_by_index(self, index):
-        primary_index = self._get_primary_chat_api_index()
-        if index == primary_index:
+    def _get_api_instance_by_id(self, api_id):
+        primary_api_id = self._get_primary_chat_api_id()
+        if api_id == primary_api_id:
             return self.api
-        if index not in self.api_cache:
-            self.api_cache[index] = self._init_api_by_index(index)
-        return self.api_cache[index]
+        if api_id not in self.api_cache:
+            self.api_cache[api_id] = self._init_api_by_id(api_id)
+        return self.api_cache[api_id]
 
-    def _wrap_chat_api_for_failover(self, api, *, index, tracked_default, request_type="chat"):
+    def _wrap_chat_api_for_failover(self, api, *, api_id, tracked_default, request_type="chat"):
         if not tracked_default:
             return self._wrap_api_request_counter(api, request_type)
 
         def chat_callable(*args, **kwargs):
-            if self.chat_api_using_backup and index == self._get_backup_chat_api_index():
+            if self.chat_api_using_backup and api_id == self._get_backup_chat_api_id():
                 restored, result = self._try_restore_primary_chat_api(*args, request_type=request_type, **kwargs)
                 if restored:
                     return result
@@ -5852,19 +5786,19 @@ class WXBot:
                 self._record_api_request_by_type(request_type)
                 result = api.chat(*args, **kwargs)
             except Exception:
-                if not self.chat_api_using_backup and index == self._get_primary_chat_api_index():
+                if not self.chat_api_using_backup and api_id == self._get_primary_chat_api_id():
                     self._record_primary_chat_api_failure()
                     retried, retry_result = self._retry_current_message_with_backup(*args, request_type=request_type, **kwargs)
                     if retried:
                         return retry_result
                 raise
             if is_api_error_reply(result):
-                if not self.chat_api_using_backup and index == self._get_primary_chat_api_index():
+                if not self.chat_api_using_backup and api_id == self._get_primary_chat_api_id():
                     self._record_primary_chat_api_failure()
                     retried, retry_result = self._retry_current_message_with_backup(*args, request_type=request_type, **kwargs)
                     if retried:
                         return retry_result
-            elif not self.chat_api_using_backup and index == self._get_primary_chat_api_index():
+            elif not self.chat_api_using_backup and api_id == self._get_primary_chat_api_id():
                 self._record_primary_chat_api_success()
             return result
 
@@ -5872,37 +5806,27 @@ class WXBot:
 
     def _resolve_chat_api_selection(self, user_name):
         if self._is_private_whitelist_user(user_name):
-            idx = (getattr(self.config, 'chat_api_map', {}) or {}).get(user_name)
-            if idx is not None:
-                try:
-                    idx = int(idx)
-                    if idx >= 0:
-                        return idx, False
-                except (TypeError, ValueError):
-                    pass
-        return self._get_active_default_chat_api_index(), True
+            api_id = (getattr(self.config, 'chat_api_map', {}) or {}).get(user_name)
+            if api_config_by_id(getattr(self.config, 'api_configs', []), api_id) is not None:
+                return api_id, False
+        return self._get_active_default_chat_api_id(), True
 
     def _resolve_group_api_selection(self, group_name):
-        idx = (getattr(self.config, 'group_api_map', {}) or {}).get(group_name)
-        if idx is not None:
-            try:
-                idx = int(idx)
-                if idx >= 0:
-                    return idx, False
-            except (TypeError, ValueError):
-                pass
-        return self._get_active_default_chat_api_index(), True
+        api_id = (getattr(self.config, 'group_api_map', {}) or {}).get(group_name)
+        if api_config_by_id(getattr(self.config, 'api_configs', []), api_id) is not None:
+            return api_id, False
+        return self._get_active_default_chat_api_id(), True
 
     def _get_chat_api(self, user_name):
         """获取私聊用户对应的 AI 接口实例（白名单模式查 chat_api_map，否则用默认接口/备用接口）。"""
-        idx, tracked_default = self._resolve_chat_api_selection(user_name)
-        api = self._get_api_instance_by_index(idx)
-        return self._wrap_chat_api_for_failover(api, index=idx, tracked_default=tracked_default)
+        api_id, tracked_default = self._resolve_chat_api_selection(user_name)
+        api = self._get_api_instance_by_id(api_id)
+        return self._wrap_chat_api_for_failover(api, api_id=api_id, tracked_default=tracked_default)
 
-    def _get_chat_api_index(self, user_name):
-        """获取本轮私聊最终回复接口索引；白名单专属接口优先，否则跟随主/备聊天接口。"""
-        idx, _tracked_default = self._resolve_chat_api_selection(user_name)
-        return idx
+    def _get_chat_api_id(self, user_name):
+        """获取本轮私聊最终回复接口 ID；白名单专属接口优先，否则跟随主/备聊天接口。"""
+        api_id, _tracked_default = self._resolve_chat_api_selection(user_name)
+        return api_id
 
     def _get_group_api(self, group_name):
         """
@@ -5910,35 +5834,32 @@ class WXBot:
         - 若配置了 group_api_map 映射，则返回对应接口（惰性初始化并缓存）
         - 否则返回当前活动的主/备聊天接口
         """
-        idx, tracked_default = self._resolve_group_api_selection(group_name)
-        api = self._get_api_instance_by_index(idx)
-        return self._wrap_chat_api_for_failover(api, index=idx, tracked_default=tracked_default)
+        api_id, tracked_default = self._resolve_group_api_selection(group_name)
+        api = self._get_api_instance_by_id(api_id)
+        return self._wrap_chat_api_for_failover(api, api_id=api_id, tracked_default=tracked_default)
 
-    def _get_other_api(self, index=None):
-        try:
-            idx = int(index)
-        except (TypeError, ValueError):
-            idx = self._get_active_default_chat_api_index()
-        api = self._get_api_instance_by_index(idx)
+    def _get_other_api(self, api_id=None):
+        api_id = str(api_id or '').strip() or self._get_active_default_chat_api_id()
+        api = self._get_api_instance_by_id(api_id)
         return self._wrap_api_request_counter(api, "other")
 
-    def _get_group_api_index(self, group_name):
-        """Return the final reply API index for this group."""
-        idx, _tracked_default = self._resolve_group_api_selection(group_name)
-        return idx
+    def _get_group_api_id(self, group_name):
+        """Return the final reply API ID for this group."""
+        api_id, _tracked_default = self._resolve_group_api_selection(group_name)
+        return api_id
 
-    def _api_supports_capability(self, index, capability):
+    def _api_supports_capability(self, api_id, capability):
         return api_supports_capability(
             getattr(self.config, 'api_capability_map', {}) or {},
-            index,
+            api_id,
             capability,
         )
 
     def _chat_reply_api_supports_vision(self, user_name):
-        return self._api_supports_capability(self._get_chat_api_index(user_name), "vision")
+        return self._api_supports_capability(self._get_chat_api_id(user_name), "vision")
 
     def _group_reply_api_supports_vision(self, group_name):
-        return self._api_supports_capability(self._get_group_api_index(group_name), "vision")
+        return self._api_supports_capability(self._get_group_api_id(group_name), "vision")
 
     def _is_private_whitelist_user(self, user_name):
         listen_list = getattr(self.config, 'listen_list', []) or []
@@ -6027,7 +5948,7 @@ class WXBot:
         history,
         final_api,
         final_api_supports_vision,
-        recognition_api_index,
+        recognition_api_id,
         image_path="",
         image_paths=None,
         attached_text="",
@@ -6047,9 +5968,9 @@ class WXBot:
             recognition_api=(
                 None if final_api_supports_vision
                 else self._wrap_chat_api_for_failover(
-                    self._get_api_instance_by_index(recognition_api_index),
-                    index=recognition_api_index,
-                    tracked_default=recognition_api_index == self._get_primary_chat_api_index(),
+                    self._get_api_instance_by_id(recognition_api_id),
+                    api_id=recognition_api_id,
+                    tracked_default=recognition_api_id == self._get_primary_chat_api_id(),
                     request_type="chat",
                 )
             ),
@@ -6065,12 +5986,6 @@ class WXBot:
                 notes,
                 chat_type=chat_type,
             ),
-            final_api_index=(
-                self._get_chat_api_index(chat_name)
-                if chat_type == 'private'
-                else self._get_group_api_index(chat_name)
-            ),
-            recognition_api_index=recognition_api_index,
         ))
 
     def _reply_private_image_message(
@@ -6111,7 +6026,7 @@ class WXBot:
             history=history,
             final_api=self._get_chat_api(chat.who),
             final_api_supports_vision=self._chat_reply_api_supports_vision(chat.who),
-            recognition_api_index=self.config.chat_image_recognition_api,
+            recognition_api_id=self.config.chat_image_recognition_api_id,
             image_path=normalized_paths[0] if len(normalized_paths) == 1 else "",
             image_paths=normalized_paths,
             attached_text=attached_text,
@@ -6121,13 +6036,13 @@ class WXBot:
 
     def _get_image_recognition_api_for_chat(self, chat_type):
         if str(chat_type or "").strip().lower() == "group":
-            api_index = getattr(self.config, "group_image_recognition_api", 0)
+            api_id = getattr(self.config, "group_image_recognition_api_id", "")
         else:
-            api_index = getattr(self.config, "chat_image_recognition_api", 0)
+            api_id = getattr(self.config, "chat_image_recognition_api_id", "")
         return self._wrap_chat_api_for_failover(
-            self._get_api_instance_by_index(api_index),
-            index=api_index,
-            tracked_default=api_index == self._get_primary_chat_api_index(),
+            self._get_api_instance_by_id(api_id),
+            api_id=api_id,
+            tracked_default=api_id == self._get_primary_chat_api_id(),
             request_type="chat",
         )
 
@@ -6221,7 +6136,7 @@ class WXBot:
             history=history,
             final_api=self._get_group_api(chat.who),
             final_api_supports_vision=self._group_reply_api_supports_vision(chat.who),
-            recognition_api_index=self.config.group_image_recognition_api,
+            recognition_api_id=self.config.group_image_recognition_api_id,
             image_path=normalized_paths[0] if len(normalized_paths) == 1 else "",
             image_paths=normalized_paths,
             attached_text=attached_text,
@@ -8461,9 +8376,9 @@ class WXBot:
         return normalize_ai_auto_outreach_runtime_config(raw)
 
     def _get_default_chat_api(self):
-        index = self._get_active_default_chat_api_index()
-        api = self._get_api_instance_by_index(index)
-        return self._wrap_chat_api_for_failover(api, index=index, tracked_default=True)
+        api_id = self._get_active_default_chat_api_id()
+        api = self._get_api_instance_by_id(api_id)
+        return self._wrap_chat_api_for_failover(api, api_id=api_id, tracked_default=True)
 
     def _load_ai_detection_state(self):
         runtime = self._load_material_outreach_runtime()
@@ -9225,13 +9140,17 @@ class WXBot:
         current_interface = self._get_current_chat_api_display_name()
         current_api = getattr(self.config, "current_api_config", None)
         if not isinstance(current_api, APIConfigSnapshot):
-            api_index = int(getattr(self.config, "api_index", 0) or 0) if api_configs else 0
-            current = api_configs[api_index] if api_configs and 0 <= api_index < len(api_configs) else {}
+            current = api_config_by_id(api_configs, getattr(self.config, "api_id", "")) or {}
             current_api = build_api_config_snapshot(current)
-        active_index = self._get_active_default_chat_api_index() if api_configs else 0
+        active_api_id = self._get_active_default_chat_api_id() if api_configs else ''
+        active_index = next(
+            (index for index, item in enumerate(api_configs) if str(item.get('id') or '').strip() == active_api_id),
+            -1,
+        )
         active_model = ""
-        if api_configs:
-            active_model = str((api_configs[active_index] or {}).get("model", "") or "").strip()
+        active_config = api_config_by_id(api_configs, active_api_id) or {}
+        if active_config:
+            active_model = str(active_config.get("model", "") or "").strip()
         metrics_today = self.runtime_metrics_today()
         received_messages = int((metrics_today or {}).get("received_messages", 0) or 0)
         replied_messages = int((metrics_today or {}).get("reply_count", 0) or 0)
@@ -9247,7 +9166,7 @@ class WXBot:
             "api_name":           current_api.sdk,
             "model":              active_model,
             "current_interface":  current_interface,
-            "api_index":          active_index + 1,
+            "api_index":          active_index + 1 if active_index >= 0 else 0,
             "api_total":          len(self.config.api_configs),
             "listen_mode":        "黑名单" if self.config.AllListen_switch else "白名单",
             "listen_count":       len(self.config.global_blacklist if self.config.AllListen_switch else self.config.listen_list),

@@ -21,8 +21,6 @@ class ImageReplyRequest:
     image_senders: Optional[list[str]] = None
     visual_notes: Optional[list[str]] = None
     on_visual_notes: Optional[Callable[[list[str], list[str]], None]] = None
-    final_api_index: int = 0
-    recognition_api_index: int = 0
     message_time: str = ""
 
 

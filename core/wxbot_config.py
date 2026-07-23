@@ -11,7 +11,12 @@ from datetime import datetime
 
 from core.account_storage import DEFAULT_ACCOUNT_ID, account_module_file, ensure_default_account, resolve_account_id
 from core.api import APIConfigSnapshot, build_api_config_snapshot, default_tts_config, normalize_tts_settings
-from core.config import coerce_float_range, coerce_int_range
+from core.config import (
+    api_config_by_id,
+    coerce_float_range,
+    coerce_int_range,
+    new_api_config_id,
+)
 from core.logger import log
 from feature.ai_material_outreach import normalize_ai_material_outreach_config
 from feature.contacts import (
@@ -64,8 +69,8 @@ class WXBotConfig:
 
         # ---------- AI 接口配置 ----------
         self.api_configs = []           # 接口配置列表，每项含 sdk/key/url/model
-        self.api_index = 0              # 当前使用的接口索引
-        self.backup_chat_api_index = -1
+        self.api_id = ""
+        self.backup_chat_api_id = ""
         self.backup_chat_api_failover_threshold = 3
         self.current_api_config = APIConfigSnapshot()
         self.prompt   = ""
@@ -73,7 +78,7 @@ class WXBotConfig:
 
         # ---------- 群聊配置 ----------
         self.group = []                 # 监听的群聊列表
-        self.group_api_map = {}         # 群聊专属接口映射 {群名: api_index}
+        self.group_api_map = {}         # 群聊专属接口映射 {群名: api_id}
         self.group_tts_map = {}         # 群聊专属 TTS 接口映射 {群名: tts_index}
         self.group_switch = False       # 群机器人总开关
         self.group_listen_only = False   # 群聊只监听不 AI 回复
@@ -199,12 +204,15 @@ class WXBotConfig:
         """若配置文件不存在，则创建一份包含默认值的配置文件"""
         try:
             if not os.path.exists(self.CONFIG_FILE):
+                default_api_configs = [
+                    {"id": new_api_config_id(), "sdk": "DusAPI", "key": "your-api-key", "url": "https://api.dusapi.com", "model": "gpt-5.4"},
+                    {"id": new_api_config_id(), "sdk": "DusAPI", "key": "your-api-key", "url": "https://api.dusapi.com", "model": "claude-sonnet-4-6"},
+                ]
+                default_api_id = default_api_configs[0]["id"]
                 base_config = {
-                    "api_configs": [
-                        {"sdk": "DusAPI", "key": "your-api-key", "url": "https://api.dusapi.com", "model": "gpt-5.4"},
-                        {"sdk": "DusAPI", "key": "your-api-key", "url": "https://api.dusapi.com", "model": "claude-sonnet-4-6"},
-                    ],
-                    "api_index": 0,
+                    "api_configs": default_api_configs,
+                    "api_id": default_api_id,
+                    "backup_chat_api_id": "",
                     "api_capability_map": {},
                     "AllListen_switch": False,
                     "AllListen_filter_mute": True,
@@ -267,10 +275,10 @@ class WXBotConfig:
                     "chat_image_recognition_switch": False,
                     "chat_voice_recognition_switch": False,
                     "chat_message_merge_delay": 20,
-                    "chat_image_recognition_api": 0,
+                    "chat_image_recognition_api_id": default_api_id,
                     "group_image_recognition_switch": False,
                     "group_voice_recognition_switch": False,
-                    "group_image_recognition_api": 0,
+                    "group_image_recognition_api_id": default_api_id,
                     "api_error_reply": "",
                     "api_error_reply_once": False,
                     "reply_preprocess_fallback_reply": "",
@@ -663,24 +671,11 @@ class WXBotConfig:
 
     def update_global_config(self):
         """将 self.config 字典中的各配置项同步到对应实例属性"""
-        self.api_configs = self.config.get('api_configs', [
-            {"sdk": "DusAPI", "key": "", "url": "https://api.dusapi.com", "model": "gpt-5"},
-            {"sdk": "DusAPI", "key": "", "url": "https://api.dusapi.com", "model": "claude-sonnet-4-6"},
-        ])
-        self.api_index = self.config.get('api_index', 0)
-        if self.api_index >= len(self.api_configs):
-            self.api_index = 0
-        try:
-            self.backup_chat_api_index = int(self.config.get('backup_chat_api_index', -1))
-        except (TypeError, ValueError):
-            self.backup_chat_api_index = -1
-        if (
-            len(self.api_configs) < 2
-            or self.backup_chat_api_index < 0
-            or self.backup_chat_api_index >= len(self.api_configs)
-            or self.backup_chat_api_index == self.api_index
-        ):
-            self.backup_chat_api_index = -1
+        self.api_configs = self.config.get('api_configs', [])
+        self.api_id = str(self.config.get('api_id') or '').strip()
+        self.backup_chat_api_id = str(self.config.get('backup_chat_api_id') or '').strip()
+        if self.backup_chat_api_id == self.api_id:
+            self.backup_chat_api_id = ''
         self.backup_chat_api_failover_threshold = self._coerce_int_range(
             self.config.get('backup_chat_api_failover_threshold', 3), 3, 1, 10
         )
@@ -690,13 +685,12 @@ class WXBotConfig:
             self.config['api_capability_map'] = {}
 
         # 当前默认聊天接口快照
-        _cur = self.api_configs[self.api_index] if self.api_configs else {}
+        _cur = api_config_by_id(self.api_configs, self.api_id) or {}
         self.prompt   = ""
         self.current_api_config = build_api_config_snapshot(
             _cur,
             prompt=self.prompt,
             max_retries=getattr(self, "max_retries", 5),
-            interface_index=self.api_index,
         )
 
         # 微信基础配置
@@ -829,10 +823,10 @@ class WXBotConfig:
         self.chat_message_merge_delay = coerce_int_range(
             self.config.get('chat_message_merge_delay', 20), 20, 1, 60
         )
-        self.chat_image_recognition_api     = int(self.config.get('chat_image_recognition_api', 0))
+        self.chat_image_recognition_api_id = str(self.config.get('chat_image_recognition_api_id') or '').strip()
         self.group_image_recognition_switch = bool(self.config.get('group_image_recognition_switch', False))
         self.group_voice_recognition_switch = bool(self.config.get('group_voice_recognition_switch', False))
-        self.group_image_recognition_api    = int(self.config.get('group_image_recognition_api', 0))
+        self.group_image_recognition_api_id = str(self.config.get('group_image_recognition_api_id') or '').strip()
 
         # 多 Prompt 配置
         self.default_prompt   = self.config.get('default_prompt', '默认')

@@ -146,10 +146,10 @@ class RuntimeMetricsBotTests(unittest.TestCase):
         bot = WXBot.__new__(WXBot)
         calls = []
         bot._metric_increment = lambda key, amount=1, now=None: calls.append((key, amount))
-        bot._get_api_instance_by_index = lambda _idx: SimpleNamespace(chat=lambda *_args, **_kwargs: "识别结果")
-        bot._get_primary_chat_api_index = lambda: 0
-        bot._get_chat_api_index = lambda _chat_name: 0
-        bot._get_group_api_index = lambda _chat_name: 0
+        bot._get_api_instance_by_id = lambda _api_id: SimpleNamespace(chat=lambda *_args, **_kwargs: "识别结果")
+        bot._get_primary_chat_api_id = lambda: "api_primary"
+        bot._get_chat_api_id = lambda _chat_name: "api_primary"
+        bot._get_group_api_id = lambda _chat_name: "api_primary"
         bot._remember_visual_notes = lambda *_args, **_kwargs: None
 
         class FakeImagePipeline:
@@ -170,7 +170,7 @@ class RuntimeMetricsBotTests(unittest.TestCase):
             history=[],
             final_api=final_api,
             final_api_supports_vision=False,
-            recognition_api_index=1,
+            recognition_api_id="api_recognition",
             image_path="C:/tmp/a.png",
         )
 
@@ -216,7 +216,7 @@ class RuntimeMetricsBotTests(unittest.TestCase):
             "chat_api_calls": 5,
         }
         bot._get_current_chat_api_display_name = lambda: "未连接"
-        bot._get_active_default_chat_api_index = lambda: 0
+        bot._get_active_default_chat_api_id = lambda: ""
 
         status = bot.get_status()
 
@@ -230,8 +230,8 @@ class RuntimeMetricsBotTests(unittest.TestCase):
         bot = WXBot.__new__(WXBot)
         calls = []
         bot._metric_increment = lambda key, amount=1, now=None: calls.append((key, amount))
-        bot._resolve_chat_api_selection = lambda _user_name: (0, True)
-        bot._get_api_instance_by_index = lambda _idx: SimpleNamespace(chat=lambda *_args, **_kwargs: "先这样啦")
+        bot._resolve_chat_api_selection = lambda _user_name: ("api_primary", True)
+        bot._get_api_instance_by_id = lambda _api_id: SimpleNamespace(chat=lambda *_args, **_kwargs: "先这样啦")
         bot._wrap_chat_api_for_failover = lambda api, **_kwargs: bot._wrap_api_request_counter(api, "chat")
         bot._build_text_reply_limit_ai_prompt = lambda _chat_name, **_kwargs: "closing prompt"
         bot._text_reply_limit_history = lambda _chat_name, **_kwargs: []

@@ -507,10 +507,10 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
       <div id="api_configs_container">
         {% for cfg in config.get('api_configs', []) %}
-        <div class="api-config-item{% if loop.index0 == config.get('api_index', 0) %} is-active{% endif %}">
+        <div class="api-config-item{% if cfg.get('id') == config.get('api_id') %} is-active{% endif %}" data-api-id="{{ cfg.get('id', '') }}">
           <div class="api-card-head">
             <div class="api-card-title">
-              <input type="radio" class="api-radio" name="api_index_radio" {% if loop.index0 == config.get('api_index', 0) %}checked{% endif %}>
+              <input type="radio" class="api-radio" name="api_index_radio" {% if cfg.get('id') == config.get('api_id') %}checked{% endif %}>
               <span class="api-config-num">接口 {{ loop.index }}</span>
               <span class="api-active-badge">当前使用</span>
             </div>
@@ -575,6 +575,35 @@ html.icons-pref-local [class*=" bi-"]::before {
         <button type="button" id="btn-save-api-config" class="ui-btn ui-btn--primary ui-btn--l2">
           <i class="bi bi-save"></i> 保存配置
         </button>
+      </div>
+    </div>
+    <div class="cfg-card" id="image-recognition-api-card">
+      <div class="ui-head ui-head--page">
+        <i class="bi bi-image"></i>
+        <h5>辅助识图接口</h5>
+        <span class="desc">聊天接口不支持图片时，先由这里选择的接口理解图片</span>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="cfg-label" for="chat_image_recognition_api_id">私聊辅助识图接口</label>
+          <select class="form-select" id="chat_image_recognition_api_id" title="私聊辅助识图接口">
+            {% for cfg in config.api_configs %}
+            <option value="{{ cfg.get('id', '') }}" {% if config.get('chat_image_recognition_api_id') == cfg.get('id') %}selected{% endif %}>
+              接口 {{ loop.index }} · {{ cfg.get('model', '未命名模型') }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="cfg-label" for="group_image_recognition_api_id">群聊辅助识图接口</label>
+          <select class="form-select" id="group_image_recognition_api_id" title="群聊辅助识图接口">
+            {% for cfg in config.api_configs %}
+            <option value="{{ cfg.get('id', '') }}" {% if config.get('group_image_recognition_api_id') == cfg.get('id') %}selected{% endif %}>
+              接口 {{ loop.index }} · {{ cfg.get('model', '未命名模型') }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
       </div>
     </div>
     {% set tts_configs = config.get('tts_configs', []) %}
@@ -674,16 +703,16 @@ html.icons-pref-local [class*=" bi-"]::before {
         <h5>备用接口设置</h5>
         <span class="desc">主聊天接口连续失败后自动切换，主接口恢复后会自动切回</span>
       </div>
-      {% set current_api_index = config.get('api_index', 0) | int %}
-      {% set backup_chat_api_index = config.get('backup_chat_api_index', -1) | int %}
+      {% set current_api_id = config.get('api_id', '') %}
+      {% set backup_chat_api_id = config.get('backup_chat_api_id', '') %}
       <div class="row g-3">
         <div class="col-12 col-md-6">
-          <label class="cfg-label" for="backup_chat_api_index">备用聊天接口</label>
-          <select class="form-select" id="backup_chat_api_index">
-            <option value="-1" {% if backup_chat_api_index < 0 %}selected{% endif %}>未选择</option>
+          <label class="cfg-label" for="backup_chat_api_id">备用聊天接口</label>
+          <select class="form-select" id="backup_chat_api_id">
+            <option value="" {% if not backup_chat_api_id %}selected{% endif %}>未选择</option>
             {% for cfg in config.get('api_configs', []) %}
-              {% if loop.index0 != current_api_index %}
-              <option value="{{ loop.index0 }}" {% if loop.index0 == backup_chat_api_index %}selected{% endif %}>
+              {% if cfg.get('id') != current_api_id %}
+              <option value="{{ cfg.get('id', '') }}" {% if cfg.get('id') == backup_chat_api_id %}selected{% endif %}>
                 接口 {{ loop.index }} · {{ cfg.get('model', '未命名模型') }}
               </option>
               {% endif %}
@@ -928,9 +957,9 @@ html.icons-pref-local [class*=" bi-"]::before {
                     {% endfor %}
                   </select>
                   <select class="form-select chat-api-select" title="专属接口（默认=全局配置接口）">
-                    <option value="-1">默认聊天接口</option>
+                    <option value="">默认聊天接口</option>
                     {% for cfg in config.api_configs %}
-                    <option value="{{ loop.index0 }}" {% if config.chat_api_map.get(item) == loop.index0 %}selected{% endif %}>接口{{ loop.index }}: {{ cfg.model }}</option>
+                    <option value="{{ cfg.get('id', '') }}" {% if config.chat_api_map.get(item) == cfg.get('id') %}selected{% endif %}>接口{{ loop.index }}: {{ cfg.model }}</option>
                     {% endfor %}
                   </select>
                   <select class="form-select chat-tts-select" title="专属语音接口（默认=全局语音接口）">
@@ -982,16 +1011,6 @@ html.icons-pref-local [class*=" bi-"]::before {
         <i class="bi bi-image"></i>
         <h5>内容识别</h5>
         <span class="desc">设置私聊图片、语音和上下文补洞</span>
-        <div class="ui-head__actions">
-          <select class="form-select ui-head-select recognition-api-select" id="chat_image_recognition_api" name="chat_image_recognition_api" title="辅助识图接口">
-            {% for cfg in config.api_configs %}
-            <option value="{{ loop.index0 }}"
-              {% if config.chat_image_recognition_api == loop.index0 %}selected{% endif %}>
-              辅助识图接口：{{ cfg.model }}
-            </option>
-            {% endfor %}
-          </select>
-        </div>
       </div>
       <div class="recognition-card-grid">
         <div class="switch-row switch-row--inline-desc recognition-inline-row">
@@ -1254,9 +1273,9 @@ html.icons-pref-local [class*=" bi-"]::before {
                 {% endfor %}
               </select>
               <select class="form-select group-api-select" title="该群调用的AI接口（默认跟随全局配置）">
-                <option value="-1" {% if config.group_api_map.get(g) is none or config.group_api_map.get(g) == -1 %}selected{% endif %}>默认聊天接口</option>
+                <option value="" {% if not config.group_api_map.get(g) %}selected{% endif %}>默认聊天接口</option>
                 {% for cfg in config.api_configs %}
-                <option value="{{ loop.index0 }}" {% if config.group_api_map.get(g) == loop.index0 %}selected{% endif %}>接口{{ loop.index }}: {{ cfg.model }}</option>
+                <option value="{{ cfg.get('id', '') }}" {% if config.group_api_map.get(g) == cfg.get('id') %}selected{% endif %}>接口{{ loop.index }}: {{ cfg.model }}</option>
                 {% endfor %}
               </select>
               <select class="form-select group-tts-select" title="该群专属语音接口（默认=全局语音接口）">
@@ -1317,16 +1336,6 @@ html.icons-pref-local [class*=" bi-"]::before {
         <i class="bi bi-image"></i>
         <h5>内容识别</h5>
         <span class="desc">设置群聊图片、语音和上下文补洞</span>
-        <div class="ui-head__actions">
-          <select class="form-select ui-head-select recognition-api-select" id="group_image_recognition_api" name="group_image_recognition_api" title="辅助识图接口">
-            {% for cfg in config.api_configs %}
-            <option value="{{ loop.index0 }}"
-              {% if config.group_image_recognition_api == loop.index0 %}selected{% endif %}>
-              辅助识图接口：{{ cfg.model }}
-            </option>
-            {% endfor %}
-          </select>
-        </div>
       </div>
       <div class="recognition-card-grid">
         <div class="switch-row switch-row--inline-desc recognition-inline-row">
@@ -6589,6 +6598,7 @@ $(function(){
     var keyToUse = resolveMaskedKeyInputValue($k);
     var sdk = $item.find('.api-sdk-select').val();
     var config = {
+      id: String($item.data('api-id') || ''),
       sdk: sdk,
       model: $item.find('.api-model-input').val(),
       url: $item.find('.api-url-input').val(),
@@ -6618,6 +6628,10 @@ $(function(){
     syncApiProtocolVisibility($item);
   });
 
+  $(document).on('input', '.api-model-input', function(){
+    syncApiReferenceOptions();
+  });
+
   // ===== 接口配置：单选框高亮 + 当前使用 badge =====
   $(document).on('change', '.api-radio', function(){
       $('#api_configs_container .api-config-item').removeClass('is-active');
@@ -6638,17 +6652,44 @@ $(function(){
       saveConfig();
     });
 
+  function apiReferenceLabels(apiId){
+    var labels = [];
+    if($('#api_configs_container .api-config-item').filter(function(){
+      return $(this).data('api-id') === apiId && $(this).find('.api-radio').is(':checked');
+    }).length){
+      labels.push('当前聊天接口');
+    }
+    if(String($('#backup_chat_api_id').val() || '') === apiId) labels.push('备用聊天接口');
+    if(String($('#chat_image_recognition_api_id').val() || '') === apiId) labels.push('私聊辅助识图接口');
+    if(String($('#group_image_recognition_api_id').val() || '') === apiId) labels.push('群聊辅助识图接口');
+    $('#listen_whitelist_container .listen-item').each(function(){
+      if(String($(this).find('.chat-api-select').val() || '') === apiId){
+        var name = $(this).find('.listen-whitelist-name').val().trim() || '未命名好友';
+        labels.push('私聊「' + name + '」专属接口');
+      }
+    });
+    $('#group_container .list-item').each(function(){
+      if(String($(this).find('.group-api-select').val() || '') === apiId){
+        var name = $(this).find('input[name="group"]').val().trim() || '未命名群聊';
+        labels.push('群聊「' + name + '」专属接口');
+      }
+    });
+    return labels;
+  }
+
   // ===== 接口配置：删除当前卡片（至少保留 2 个）=====
   $(document).on('click', '.btn-remove-api-card', function(){
       if($('#api_configs_container .api-config-item').length <= 2){ svModal.alert('至少保留 2 个接口配置'); return; }
       var $item = $(this).closest('.api-config-item');
-      var wasActive = $item.find('.api-radio').is(':checked');
-      $item.remove();
-      if(wasActive){
-        $('#api_configs_container .api-config-item').first().find('.api-radio').prop('checked', true).trigger('change');
+      var apiId = String($item.data('api-id') || '');
+      var references = apiReferenceLabels(apiId);
+      if(references.length){
+        svModal.alert('无法删除该接口：它仍被以下位置使用：\n' + references.join('、') + '。请先改为其他接口或解除绑定。');
+        return;
       }
+      $item.remove();
       renumberApiConfigs();
-      syncBackupChatApiOptions();
+      syncApiReferenceOptions();
     });
 
   $(document).on('click', '.btn-remove-tts-card', function(){
@@ -6736,7 +6777,7 @@ $(function(){
       contentType: 'application/json',
       dataType: 'json',
       timeout: 140000,
-      data: JSON.stringify({api_config: apiConfig, api_index: idx - 1}),
+      data: JSON.stringify({api_config: apiConfig, api_id: apiConfig.id}),
       success: function(res){
         if(res.status === 'success'){
           var d = res.data || {};
@@ -6763,9 +6804,17 @@ $(function(){
   });
 
   // ===== 接口配置：添加 =====
+  function newApiConfigId(){
+    if(window.crypto && typeof window.crypto.randomUUID === 'function'){
+      return 'api_' + window.crypto.randomUUID().replace(/-/g, '');
+    }
+    return 'api_' + Date.now().toString(36) + Math.random().toString(36).slice(2);
+  }
+
   $('#btn-add-api-config').click(function(){
+    var apiId = newApiConfigId();
     var html=
-      '<div class="api-config-item">'+
+      '<div class="api-config-item" data-api-id="'+apiId+'">'+
         '<div class="api-card-head">'+
           '<div class="api-card-title">'+
             '<input type="radio" class="api-radio" name="api_index_radio">'+
@@ -6811,7 +6860,7 @@ $(function(){
       '</div>';
     $('#api_configs_container').append(html);
     renumberApiConfigs();
-    syncBackupChatApiOptions();
+    syncApiReferenceOptions();
   });
 
   $(document).on('change', '.tts-sdk-select', function(){
@@ -6965,30 +7014,61 @@ $(function(){
       }
     }
 
-    function syncBackupChatApiOptions(){
-      var $select = $('#backup_chat_api_index');
-      if(!$select.length) return;
-      var previousValue = String($select.val() || '-1');
-      var activeIndex = 0;
-      $('#api_configs_container .api-config-item').each(function(i){
-        if($(this).find('.api-radio').is(':checked')) activeIndex = i;
-      });
-      var options = ['<option value="-1">未选择</option>'];
-      $('#api_configs_container .api-config-item').each(function(i){
-        if(i === activeIndex) return;
-        var model = $(this).find('.api-model-input').val() || '未命名模型';
-        options.push('<option value="'+i+'">接口 ' + (i + 1) + ' · ' + apiTestEscape(model) + '</option>');
-      });
-    $select.html(options.join(''));
-    if($select.find('option[value="'+previousValue+'"]').length){
-      $select.val(previousValue);
+  function apiConfigItemsFromEditor(){
+    return $('#api_configs_container .api-config-item').map(function(){
+      return {
+        id: String($(this).data('api-id') || ''),
+        model: String($(this).find('.api-model-input').val() || '')
+      };
+    }).get().filter(function(item){ return !!item.id; });
+  }
+
+  function buildApiReferenceOptions(items, selectedId, defaultLabel, excludedId){
+    var options = [];
+    if(defaultLabel) options.push('<option value="">' + apiTestEscape(defaultLabel) + '</option>');
+    items.forEach(function(item, index){
+      if(item.id === excludedId) return;
+      var selected = item.id === selectedId ? ' selected' : '';
+      options.push('<option value="' + apiTestEscape(item.id) + '"' + selected + '>' +
+        '接口 ' + (index + 1) + ' · ' + apiTestEscape(item.model || '未命名模型') + '</option>');
+    });
+    return options.join('');
+  }
+
+  function refreshApiReferenceSelect($select, items, defaultLabel, excludedId){
+    if(!$select.length) return;
+    var previousId = String($select.val() || '');
+    $select.html(buildApiReferenceOptions(items, previousId, defaultLabel, excludedId));
+    if($select.find('option[value="'+previousId+'"]').length){
+      $select.val(previousId);
+    } else if(defaultLabel){
+      $select.val('');
     } else {
-      $select.val('-1');
+      $select.prop('selectedIndex', 0);
     }
   }
 
-  // ===== 群组专属接口：接口列表数据（Jinja2 注入，供动态添加群组行使用）=====
-  var apiConfigsList = {{ config.api_configs | tojson }};
+  function syncApiReferenceOptions(){
+    var items = apiConfigItemsFromEditor();
+    var primaryId = String($('#api_configs_container .api-radio:checked').closest('.api-config-item').data('api-id') || '');
+    refreshApiReferenceSelect($('#backup_chat_api_id'), items, '未选择', primaryId);
+    $('.chat-api-select').each(function(){
+      refreshApiReferenceSelect($(this), items, '默认聊天接口');
+    });
+    $('.group-api-select').each(function(){
+      refreshApiReferenceSelect($(this), items, '默认聊天接口');
+    });
+    refreshApiReferenceSelect($('#chat_image_recognition_api_id'), items, '');
+    refreshApiReferenceSelect($('#group_image_recognition_api_id'), items, '');
+    apiConfigsList = items;
+  }
+
+  function syncBackupChatApiOptions(){
+    syncApiReferenceOptions();
+  }
+
+  // ===== 群组专属接口：接口列表数据（供动态添加群组行使用）=====
+  var apiConfigsList = apiConfigItemsFromEditor();
   var ttsSdkOptions = {{ tts_sdk_options | tojson }};
   var ttsModelOptionsBySdk = {{ tts_model_options_by_sdk | tojson }};
   var ttsSdkDefaultUrls = {
@@ -7011,11 +7091,11 @@ $(function(){
   });
   renumberTtsConfigs();
 
-  function buildGroupApiOpts(selectedIdx){
-    var s = '<option value="-1"'+(selectedIdx===-1?' selected':'')+'>默认聊天接口</option>';
+  function buildGroupApiOpts(selectedApiId){
+    var s = '<option value=""'+(!selectedApiId?' selected':'')+'>默认聊天接口</option>';
     apiConfigsList.forEach(function(c,i){
-      var sel=(i===selectedIdx)?' selected':'';
-      s+='<option value="'+i+'"'+sel+'>接口'+(i+1)+': '+((c.model||'').substring(0,20))+'</option>';
+      var sel=(c.id===selectedApiId)?' selected':'';
+      s+='<option value="'+apiTestEscape(c.id)+'"'+sel+'>接口'+(i+1)+': '+apiTestEscape((c.model||'').substring(0,20))+'</option>';
     });
     return s;
   }
@@ -7028,7 +7108,7 @@ $(function(){
           buildPromptOpts('')+
         '</select>'+
         '<select class="form-select group-api-select" title="该群调用的AI接口（选默认则跟随全局配置）">'+
-          buildGroupApiOpts(-1)+
+          buildGroupApiOpts('')+
         '</select>'+
         '<select class="form-select group-tts-select" title="该群专属语音接口">'+
           buildTtsOpts(-1)+
@@ -7220,11 +7300,11 @@ $(function(){
     });
     return s;
   }
-  function buildChatApiOpts(selectedIdx) {
-    var s = '<option value="-1"'+(selectedIdx===-1?' selected':'')+'>默认聊天接口</option>';
+  function buildChatApiOpts(selectedApiId) {
+    var s = '<option value=""'+(!selectedApiId?' selected':'')+'>默认聊天接口</option>';
     apiConfigsList.forEach(function(c,i){
-      var sel=(i===selectedIdx)?' selected':'';
-      s+='<option value="'+i+'"'+sel+'>接口'+(i+1)+': '+((c.model||'').substring(0,20))+'</option>';
+      var sel=(c.id===selectedApiId)?' selected':'';
+      s+='<option value="'+apiTestEscape(c.id)+'"'+sel+'>接口'+(i+1)+': '+apiTestEscape((c.model||'').substring(0,20))+'</option>';
     });
     return s;
   }
@@ -7479,12 +7559,12 @@ $(function(){
   // ===== Listen Tab：规则列表 =====
   function buildListenItem(name){
     name = name || '';
-    var apiIndex = parseInt(chatApiMapInitial[name], 10);
+    var apiId = String(chatApiMapInitial[name] || '');
     var ttsIndex = parseInt(chatTtsMapInitial[name], 10);
     return '<div class="list-item listen-item listen-rule-row">'+
       '<input type="text" class="form-control listen-whitelist-name" name="listen_list" value="'+escapeHtml(name)+'" placeholder="好友昵称或备注">'+
       '<select class="form-select chat-prompt-select" title="好友人设">'+buildPromptOpts(chatPromptMapInitial[name] || '')+'</select>'+
-      '<select class="form-select chat-api-select" title="专属接口">'+buildChatApiOpts(!isNaN(apiIndex) && apiIndex >= 0 ? apiIndex : -1)+'</select>'+
+      '<select class="form-select chat-api-select" title="专属接口">'+buildChatApiOpts(apiId)+'</select>'+
       '<select class="form-select chat-tts-select" title="专属语音接口">'+buildTtsOpts(!isNaN(ttsIndex) && ttsIndex >= 0 ? ttsIndex : -1)+'</select>'+
       '<button type="button" class="btn-rm btn-remove-item"><i class="bi bi-x-lg"></i></button>'+
       '</div>';
@@ -7524,8 +7604,8 @@ $(function(){
     $('#listen_whitelist_container .listen-item').each(function(){
       var uname = $(this).find('.listen-whitelist-name').val().trim();
       if (!uname) return;
-      var av = parseInt($(this).find('.chat-api-select').val(), 10);
-      if (!isNaN(av) && av >= 0) chatApiMapInitial[uname] = av;
+      var av = String($(this).find('.chat-api-select').val() || '');
+      if (av) chatApiMapInitial[uname] = av;
       var tv = parseInt($(this).find('.chat-tts-select').val(), 10);
       if (!isNaN(tv) && tv >= 0) chatTtsMapInitial[uname] = tv;
     });
@@ -9880,17 +9960,18 @@ $(function(){
     }
     // 收集接口配置列表
     var api_configs=[];
-    var api_index=0;
+    var api_id='';
     var _keyUpdates=[];
     var tts_configs = [];
     var tts_index = 0;
     $('#api_configs_container .api-config-item').each(function(i){
-      if($(this).find('.api-radio').is(':checked')) api_index=i;
+      if($(this).find('.api-radio').is(':checked')) api_id=String($(this).data('api-id') || '');
       var $k=$(this).find('.api-key-input');
       var keyToSave = resolveMaskedKeyInputValue($k);
       var sdkToSave = $(this).find('.api-sdk-select').val();
       _keyUpdates.push({$el:$k, key:keyToSave});
       var apiItem = {
+        id: String($(this).data('api-id') || ''),
         sdk:sdkToSave,
         model:$(this).find('.api-model-input').val(),
         url:$(this).find('.api-url-input').val(),
@@ -9927,8 +10008,8 @@ $(function(){
       api_configs:api_configs,
       tts_configs:tts_configs,
       tts_index:tts_index,
-      api_index:api_index,
-      backup_chat_api_index:parseInt($('#backup_chat_api_index').val(), 10),
+      api_id:api_id,
+      backup_chat_api_id:String($('#backup_chat_api_id').val() || ''),
       backup_chat_api_failover_threshold:parseInt($('#backup_chat_api_failover_threshold').val(), 10)||3,
       AllListen_switch:$('#AllListen_switch').is(':checked'),
       AllListen_filter_mute:$('#AllListen_filter_mute').is(':checked'),
@@ -9997,7 +10078,7 @@ $(function(){
       chat_voice_reply_limit_count:Math.max(0,parseInt($('#chat_voice_reply_limit_count').val())||0),
       chat_voice_reply_limit_hours:Math.max(0,parseInt($('#chat_voice_reply_limit_hours').val())||0),
       chat_message_merge_delay:Math.max(1,Math.min(60,parseInt($('#chat_message_merge_delay').val())||20)),
-      chat_image_recognition_api:parseInt($('#chat_image_recognition_api').val())||0,
+      chat_image_recognition_api_id:String($('#chat_image_recognition_api_id').val() || ''),
       group_voice_recognition_switch:$('#group_voice_recognition_switch').is(':checked'),
       group_context_repair_switch:$('#group_context_repair_switch').is(':checked'),
       group_voice_reply_switch:$('#group_voice_reply_switch').is(':checked'),
@@ -10006,7 +10087,7 @@ $(function(){
       group_voice_reply_limit_count:Math.max(0,parseInt($('#group_voice_reply_limit_count').val())||0),
       group_voice_reply_limit_hours:Math.max(0,parseInt($('#group_voice_reply_limit_hours').val())||0),
       group_image_recognition_switch:$('#group_image_recognition_switch').is(':checked'),
-      group_image_recognition_api:parseInt($('#group_image_recognition_api').val())||0,
+      group_image_recognition_api_id:String($('#group_image_recognition_api_id').val() || ''),
       api_error_reply:$('#api_error_reply').val().trim(),
       api_error_reply_once:$('#api_error_reply_once').is(':checked'),
       clean_ai_reply_switch:$('#clean_ai_reply_switch').val() !== 'false',
@@ -10045,8 +10126,8 @@ $(function(){
     $('#listen_whitelist_container .listen-item').each(function(){
       var uname = $(this).find('.listen-whitelist-name').val().trim();
       if (!uname) return;
-      var av = parseInt($(this).find('.chat-api-select').val(), 10);
-      if (!isNaN(av) && av >= 0) configData.chat_api_map[uname] = av;
+      var av = String($(this).find('.chat-api-select').val() || '');
+      if (av) configData.chat_api_map[uname] = av;
       var tv = parseInt($(this).find('.chat-tts-select').val(), 10);
       if (!isNaN(tv) && tv >= 0) configData.chat_tts_map[uname] = tv;
     });
@@ -10056,8 +10137,8 @@ $(function(){
       var name=$(this).find('input[name="group"]').val().trim();
       if(!name) return;
       configData.group.push(name);
-      var idx=parseInt($(this).find('.group-api-select').val());
-      if(!isNaN(idx) && idx>=0){ configData.group_api_map[name]=idx; }
+      var apiId=String($(this).find('.group-api-select').val() || '');
+      if(apiId){ configData.group_api_map[name]=apiId; }
       var ttsIdx=parseInt($(this).find('.group-tts-select').val());
       if(!isNaN(ttsIdx) && ttsIdx>=0){ configData.group_tts_map[name]=ttsIdx; }
       var gpv=$(this).find('.group-prompt-select').val();

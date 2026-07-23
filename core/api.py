@@ -170,7 +170,6 @@ class APIConfigSnapshot:
     key: str = ""
     url: str = ""
     model: str = ""
-    interface_index: int | None = None
     prompt: str = ""
     max_retries: int = 5
     max_output_tokens: int = DEFAULT_CHAT_MAX_OUTPUT_TOKENS
@@ -178,20 +177,15 @@ class APIConfigSnapshot:
     api_protocol: str = DEFAULT_API_PROTOCOL
 
 
-def build_api_config_snapshot(config=None, *, prompt="", max_retries=5, max_output_tokens=DEFAULT_CHAT_MAX_OUTPUT_TOKENS, interface_index=None):
+def build_api_config_snapshot(config=None, *, prompt="", max_retries=5, max_output_tokens=DEFAULT_CHAT_MAX_OUTPUT_TOKENS):
     config = config if isinstance(config, dict) else {}
     if max_retries is None:
         max_retries = 5
-    try:
-        clean_interface_index = int(interface_index) if interface_index is not None else None
-    except (TypeError, ValueError):
-        clean_interface_index = None
     return APIConfigSnapshot(
         sdk=str(config.get("sdk", "") or "").strip(),
         key=str(config.get("key", "") or "").strip(),
         url=str(config.get("url", "") or "").strip().rstrip("/"),
         model=str(config.get("model", "") or "").strip(),
-        interface_index=clean_interface_index,
         prompt=str(prompt or ""),
         max_retries=max(0, int(max_retries)),
         max_output_tokens=max(1, int(max_output_tokens or DEFAULT_CHAT_MAX_OUTPUT_TOKENS)),
@@ -225,10 +219,7 @@ def _api_log_label(config, _api_name="", *, model=None):
         or str(getattr(config, "sdk", "") or "").strip()
         or "未知接口"
     )
-    index = getattr(config, "interface_index", None)
-    if index is None:
-        return f"接口：{name}"
-    return f"接口{int(index) + 1}：{name}"
+    return f"接口：{name}"
 
 
 class OpenAIAPI:

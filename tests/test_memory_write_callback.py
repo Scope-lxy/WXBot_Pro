@@ -904,7 +904,7 @@ class MemoryWriteCallbackTests(unittest.TestCase):
             update_memory=lambda *_args, **_kwargs: True,
         )
         bot._get_other_api = lambda *_args, **_kwargs: object()
-        bot._get_chat_api_index = lambda *_args, **_kwargs: 0
+        bot._get_chat_api_id = lambda *_args, **_kwargs: "api_primary"
 
         logs = []
         with mock.patch("wxbot_core.log", side_effect=lambda **kwargs: logs.append((kwargs.get("level", "INFO"), kwargs.get("message", "")))):

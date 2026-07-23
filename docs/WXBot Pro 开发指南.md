@@ -60,7 +60,7 @@
 
 - 登录态、session、首页和日志拉取。
 - `config.json`、`admin.json`、`email.json` 等配置读写。
-- 接口连通性测试和视觉能力测试，并写入 `api_capability_map`。
+- 接口连通性测试和视觉能力测试，并按稳定 API ID 写入 `api_capability_map`；接口列表序号只能用于展示，不能作为任何保存引用。
 - Prompt、人设近况、会话记忆、聊天记录、通讯录、素材转发、备份等页面 API。
 - 统一任务工作台 API：`/api/task-workbench/<module>` 与 `/api/task-workbench/<module>/runtime`。
 - 素材池管理 API：`DELETE /material_outreach/materials` 只清空当前所选微信号的 `materials.json` 和同账号运行时素材句柄，不删除任务配置、运行队列或历史转发记录。

@@ -66,13 +66,14 @@ class WXBotConfigLegacyPromptTests(unittest.TestCase):
                         {
                             "api_configs": [
                                 {
+                                    "id": "api_test",
                                     "sdk": "DusAPI",
                                     "key": "test-key",
                                     "url": "https://api.example.com",
                                     "model": "test-model",
                                 }
                             ],
-                            "api_index": 0,
+                            "api_id": "api_test",
                             "prompt": "旧版系统提示词",
                             "default_prompt": "默认",
                         },

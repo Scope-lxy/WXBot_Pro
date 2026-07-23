@@ -337,7 +337,6 @@ class ApiBehaviorTests(unittest.TestCase):
         api = OpenAIAPI.__new__(OpenAIAPI)
         api.config = build_api_config_snapshot(
             {"sdk": "OpenAI", "model": "configured-model", "api_protocol": "chat_completions"},
-            interface_index=0,
         )
         api.DS_NOW_MOD = api.config.model
         api.last_protocol_status = {"status": "unknown"}
@@ -352,7 +351,6 @@ class ApiBehaviorTests(unittest.TestCase):
         api = OpenAIAPI.__new__(OpenAIAPI)
         api.config = build_api_config_snapshot(
             {"sdk": "OpenAI", "model": "configured-model", "api_protocol": "chat_completions"},
-            interface_index=0,
         )
         api.DS_NOW_MOD = api.config.model
         api.last_protocol_status = {"status": "unknown"}
@@ -368,7 +366,7 @@ class ApiBehaviorTests(unittest.TestCase):
         self.assertEqual(result, API_ERROR_REPLY_TEXT)
         self.assertEqual(api.last_protocol_status, {"status": "failed"})
         fake_log.assert_called_once()
-        self.assertIn("接口1：actual-model", fake_log.call_args.kwargs["message"])
+        self.assertIn("接口：actual-model", fake_log.call_args.kwargs["message"])
 
     def test_openai_chat_empty_content_logs_request_and_response_for_debugging(self):
         api = OpenAIAPI.__new__(OpenAIAPI)
@@ -376,7 +374,6 @@ class ApiBehaviorTests(unittest.TestCase):
             {"sdk": "OpenAI", "model": "configured-model", "api_protocol": "chat_completions"},
             prompt="系统提示",
             max_retries=0,
-            interface_index=3,
         )
         api.DS_NOW_MOD = api.config.model
         api.last_protocol_status = {"status": "unknown"}
@@ -397,7 +394,7 @@ class ApiBehaviorTests(unittest.TestCase):
             if "API空响应诊断" in call.kwargs.get("message", "")
         ]
         self.assertEqual(len(debug_messages), 1)
-        self.assertIn("接口4：configured-model", debug_messages[0])
+        self.assertIn("接口：configured-model", debug_messages[0])
         self.assertIn("动画表情 [早上好]", debug_messages[0])
         self.assertIn("chatcmpl-test", debug_messages[0])
 
@@ -407,7 +404,6 @@ class ApiBehaviorTests(unittest.TestCase):
             {"sdk": "OpenAI", "model": "configured-model", "api_protocol": "chat_completions"},
             prompt="系统提示",
             max_retries=0,
-            interface_index=3,
         )
         api.DS_NOW_MOD = api.config.model
         api.last_protocol_status = {"status": "unknown"}
@@ -433,7 +429,6 @@ class ApiBehaviorTests(unittest.TestCase):
             {"sdk": "OpenAI", "model": "configured-model", "api_protocol": "chat_completions"},
             prompt="系统提示",
             max_retries=0,
-            interface_index=3,
         )
         api.DS_NOW_MOD = api.config.model
         api.last_protocol_status = {"status": "unknown"}
@@ -460,7 +455,6 @@ class ApiBehaviorTests(unittest.TestCase):
                     "reasoning_effort": "high",
                 },
                 max_retries=0,
-                interface_index=1,
             )
         )
         captured_payloads = []
@@ -693,7 +687,7 @@ class MessageBehaviorTests(unittest.TestCase):
 
     def test_private_image_reply_generates_visual_note_before_final_reply(self):
         bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(chat_image_recognition_api=0)
+        bot.config = SimpleNamespace(chat_image_recognition_api_id="api_recognition")
         note = "图片概览：一张自拍。\n可见文字：无。\n关键细节：戴着帽子。\n不确定项：无。"
         generated = []
         remembered = []
@@ -745,7 +739,7 @@ class MessageBehaviorTests(unittest.TestCase):
 
     def test_group_image_reply_generates_visual_note_before_final_reply(self):
         bot = WXBot.__new__(WXBot)
-        bot.config = SimpleNamespace(group_image_recognition_api=0)
+        bot.config = SimpleNamespace(group_image_recognition_api_id="api_recognition")
         note = "图片概览：一张活动海报。\n可见文字：周六 19:00。\n关键细节：地点在东门。\n不确定项：无。"
         generated = []
         remembered = []
@@ -3596,7 +3590,7 @@ class MessageBehaviorTests(unittest.TestCase):
             group_reply_at=True,
             group_listen_only=False,
             group_image_recognition_switch=True,
-            group_image_recognition_api=0,
+            group_image_recognition_api_id="api_recognition",
             group_split_reply_switch=False,
             group_split_max_count=4,
             group_split_max_chars=100,
