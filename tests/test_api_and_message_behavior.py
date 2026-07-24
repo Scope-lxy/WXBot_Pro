@@ -366,6 +366,7 @@ class ApiBehaviorTests(unittest.TestCase):
         self.assertEqual(result, API_ERROR_REPLY_TEXT)
         self.assertEqual(api.last_protocol_status, {"status": "failed"})
         fake_log.assert_called_once()
+        self.assertEqual(fake_log.call_args.kwargs["level"], "WARNING")
         self.assertIn("接口：actual-model", fake_log.call_args.kwargs["message"])
 
     def test_openai_chat_empty_content_logs_request_and_response_for_debugging(self):
@@ -394,6 +395,19 @@ class ApiBehaviorTests(unittest.TestCase):
             if "API空响应诊断" in call.kwargs.get("message", "")
         ]
         self.assertEqual(len(debug_messages), 1)
+        self.assertEqual(
+            next(
+                call.kwargs["level"]
+                for call in fake_log.call_args_list
+                if "API空响应诊断" in call.kwargs.get("message", "")
+            ),
+            "DEBUG",
+        )
+        self.assertTrue(any(
+            call.kwargs.get("level") == "WARNING"
+            and "API调用失败" in call.kwargs.get("message", "")
+            for call in fake_log.call_args_list
+        ))
         self.assertIn("接口：configured-model", debug_messages[0])
         self.assertIn("动画表情 [早上好]", debug_messages[0])
         self.assertIn("chatcmpl-test", debug_messages[0])
@@ -1485,7 +1499,7 @@ class MessageBehaviorTests(unittest.TestCase):
         pipeline = bot._private_message_pipelines["张三"]
         self.assertEqual([msg.content for msg in pipeline["open_messages"]], ['语音8"秒我刚说的是这个'])
 
-    def test_text_reply_limit_logs_warning_when_capacity_is_hit(self):
+    def test_text_reply_limit_logs_info_when_capacity_is_hit(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
@@ -1510,9 +1524,9 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertTrue(handled)
             self.assertTrue(result)
             self.assertEqual(sent, ["先休息一下"])
-            self.assertTrue(any(level == "WARNING" and "触发回复上限" in message for level, message in logs))
+            self.assertTrue(any(level == "INFO" and "触发回复上限" in message for level, message in logs))
 
-    def test_text_reply_limit_warning_is_deduped_per_window(self):
+    def test_text_reply_limit_info_is_deduped_per_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
@@ -1538,10 +1552,10 @@ class MessageBehaviorTests(unittest.TestCase):
                     self.assertTrue(result)
 
             self.assertEqual(sent, ["先休息一下", "先休息一下"])
-            warning_logs = [message for level, message in logs if level == "WARNING" and "触发回复上限" in message]
-            self.assertEqual(len(warning_logs), 1)
+            info_logs = [message for level, message in logs if level == "INFO" and "触发回复上限" in message]
+            self.assertEqual(len(info_logs), 1)
 
-    def test_text_reply_limit_warning_logs_again_for_new_window(self):
+    def test_text_reply_limit_info_logs_again_for_new_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)
             bot.config = SimpleNamespace(
@@ -1569,8 +1583,8 @@ class MessageBehaviorTests(unittest.TestCase):
                 self.assertTrue(handled)
                 self.assertTrue(result)
 
-            warning_logs = [message for level, message in logs if level == "WARNING" and "触发回复上限" in message]
-            self.assertEqual(len(warning_logs), 2)
+            info_logs = [message for level, message in logs if level == "INFO" and "触发回复上限" in message]
+            self.assertEqual(len(info_logs), 2)
 
     def test_group_text_reply_limit_isolated_by_group_and_sender(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1897,10 +1911,15 @@ class MessageBehaviorTests(unittest.TestCase):
                     content="图片",
                 )
 
-                message_routing.prepare_message_media(bot, msg, chat)
+                with mock.patch("feature.message_routing._bot_log") as bot_log:
+                    message_routing.prepare_message_media(bot, msg, chat)
 
                 self.assertTrue(getattr(msg, "_skip_ai_reply", False))
                 self.assertEqual(msg.content, "图片")
+                level = bot_log.call_args.kwargs.get("level")
+                if level is None:
+                    level = bot_log.call_args.args[1]
+                self.assertEqual(level, "WARNING")
 
     def test_prepare_pending_voice_never_calls_to_text_and_queues_snapshot_reread(self):
         queued = []

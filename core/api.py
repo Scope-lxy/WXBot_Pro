@@ -303,7 +303,7 @@ class OpenAIAPI:
             except Exception as e:
                 error_type = type(e).__name__
                 error_msg = _truncate_log_text(str(e), 500)
-                log(level="ERROR", message=f"API调用失败（{self._log_label('Responses API', model=model)}），错误类型：{error_type}，详情：{error_msg}")
+                log(level="WARNING", message=f"API调用失败（{self._log_label('Responses API', model=model)}），错误类型：{error_type}，详情：{error_msg}")
                 self.last_protocol_status = {"status": "failed"}
                 return API_ERROR_REPLY_TEXT
 
@@ -314,7 +314,7 @@ class OpenAIAPI:
         except Exception as e:
             error_type = type(e).__name__
             error_msg = _truncate_log_text(str(e), 500)
-            log(level="ERROR", message=f"API调用失败（{self._log_label('Chat Completions', model=model)}），错误类型：{error_type}，详情：{error_msg}")
+            log(level="WARNING", message=f"API调用失败（{self._log_label('Chat Completions', model=model)}），错误类型：{error_type}，详情：{error_msg}")
             self.last_protocol_status = {"status": "failed"}
             return API_ERROR_REPLY_TEXT
 
@@ -377,7 +377,7 @@ class OpenAIAPI:
                 output = reasoning_content
                 return output
             log(
-                level="ERROR",
+                level="DEBUG",
                 message=(
                     f"API空响应诊断（{self._log_label('Chat Completions', model=model)}，非流式）："
                     f"request={_format_api_debug_payload({'model': model, 'messages': messages})}；"
@@ -387,7 +387,7 @@ class OpenAIAPI:
             raise ValueError("Chat Completions 非流式响应内容为空")
 
         log(
-            level="ERROR",
+            level="DEBUG",
             message=(
                 f"API空响应诊断（{self._log_label('Chat Completions', model=model)}，非流式）："
                 f"request={_format_api_debug_payload({'model': model, 'messages': messages})}；"
@@ -670,7 +670,7 @@ class DusAPI:
                             log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI Claude', model=model)}，流式），重试：第 {attempt + 1} 次失败，{delay}s 后重试，详情：{type(e).__name__}: {e}")
                             time.sleep(delay)
                         else:
-                            log(level="ERROR", message=f"API调用失败（{self._log_label('DusAPI Claude', model=model)}，流式），已重试 {max_retries} 次，最终失败：{last_error}")
+                            log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI Claude', model=model)}，流式），已重试 {max_retries} 次，最终失败：{last_error}")
                 return API_ERROR_REPLY_TEXT
 
             for attempt in range(max_retries + 1):
@@ -688,7 +688,7 @@ class DusAPI:
                         log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI Claude', model=model)}），重试：第 {attempt + 1} 次失败，{delay}s 后重试，详情：{type(e).__name__}: {e}")
                         time.sleep(delay)
                     else:
-                        log(level="ERROR", message=f"API调用失败（{self._log_label('DusAPI Claude', model=model)}），已重试 {max_retries} 次，最终失败：{last_error}")
+                        log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI Claude', model=model)}），已重试 {max_retries} 次，最终失败：{last_error}")
             return API_ERROR_REPLY_TEXT
 
         if "gpt" in model.lower():
@@ -736,7 +736,7 @@ class DusAPI:
                             log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI GPT', model=model)}，流式），重试：第 {attempt + 1} 次失败，{delay}s 后重试，详情：{type(e).__name__}: {e}")
                             time.sleep(delay)
                         else:
-                            log(level="ERROR", message=f"API调用失败（{self._log_label('DusAPI GPT', model=model)}，流式），已重试 {max_retries} 次，最终失败：{last_error}")
+                            log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI GPT', model=model)}，流式），已重试 {max_retries} 次，最终失败：{last_error}")
                 return API_ERROR_REPLY_TEXT
 
             for attempt in range(max_retries + 1):
@@ -759,7 +759,7 @@ class DusAPI:
                         log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI GPT', model=model)}），重试：第 {attempt + 1} 次失败，{delay}s 后重试，详情：{type(e).__name__}: {e}")
                         time.sleep(delay)
                     else:
-                        log(level="ERROR", message=f"API调用失败（{self._log_label('DusAPI GPT', model=model)}），已重试 {max_retries} 次，最终失败：{last_error}")
+                        log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI GPT', model=model)}），已重试 {max_retries} 次，最终失败：{last_error}")
             return API_ERROR_REPLY_TEXT
 
         log(level="WARNING", message=f"DusAPI 未识别的模型名称：{model}，无法路由到对应协议")

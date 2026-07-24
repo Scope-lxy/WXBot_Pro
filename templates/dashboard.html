@@ -577,35 +577,6 @@ html.icons-pref-local [class*=" bi-"]::before {
         </button>
       </div>
     </div>
-    <div class="cfg-card" id="image-recognition-api-card">
-      <div class="ui-head ui-head--page">
-        <i class="bi bi-image"></i>
-        <h5>辅助识图接口</h5>
-        <span class="desc">聊天接口不支持图片时，先由这里选择的接口理解图片</span>
-      </div>
-      <div class="row g-3">
-        <div class="col-12 col-md-6">
-          <label class="cfg-label" for="chat_image_recognition_api_id">私聊辅助识图接口</label>
-          <select class="form-select" id="chat_image_recognition_api_id" title="私聊辅助识图接口">
-            {% for cfg in config.api_configs %}
-            <option value="{{ cfg.get('id', '') }}" {% if config.get('chat_image_recognition_api_id') == cfg.get('id') %}selected{% endif %}>
-              接口 {{ loop.index }} · {{ cfg.get('model', '未命名模型') }}
-            </option>
-            {% endfor %}
-          </select>
-        </div>
-        <div class="col-12 col-md-6">
-          <label class="cfg-label" for="group_image_recognition_api_id">群聊辅助识图接口</label>
-          <select class="form-select" id="group_image_recognition_api_id" title="群聊辅助识图接口">
-            {% for cfg in config.api_configs %}
-            <option value="{{ cfg.get('id', '') }}" {% if config.get('group_image_recognition_api_id') == cfg.get('id') %}selected{% endif %}>
-              接口 {{ loop.index }} · {{ cfg.get('model', '未命名模型') }}
-            </option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
-    </div>
     {% set tts_configs = config.get('tts_configs', []) %}
     <div class="cfg-card">
       <div class="ui-head ui-head--page">
@@ -695,6 +666,35 @@ html.icons-pref-local [class*=" bi-"]::before {
         <button type="button" id="btn-save-tts-config" class="ui-btn ui-btn--primary ui-btn--l2">
           <i class="bi bi-save"></i> 保存配置
         </button>
+      </div>
+    </div>
+    <div class="cfg-card" id="image-recognition-api-card">
+      <div class="ui-head ui-head--page">
+        <i class="bi bi-image"></i>
+        <h5>辅助识图接口</h5>
+        <span class="desc">聊天接口不支持图片时，先由这里选择的接口理解图片</span>
+      </div>
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="cfg-label" for="chat_image_recognition_api_id">私聊辅助识图接口</label>
+          <select class="form-select" id="chat_image_recognition_api_id" title="私聊辅助识图接口">
+            {% for cfg in config.api_configs %}
+            <option value="{{ cfg.get('id', '') }}" {% if config.get('chat_image_recognition_api_id') == cfg.get('id') %}selected{% endif %}>
+              接口 {{ loop.index }} · {{ cfg.get('model', '未命名模型') }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="cfg-label" for="group_image_recognition_api_id">群聊辅助识图接口</label>
+          <select class="form-select" id="group_image_recognition_api_id" title="群聊辅助识图接口">
+            {% for cfg in config.api_configs %}
+            <option value="{{ cfg.get('id', '') }}" {% if config.get('group_image_recognition_api_id') == cfg.get('id') %}selected{% endif %}>
+              接口 {{ loop.index }} · {{ cfg.get('model', '未命名模型') }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
       </div>
     </div>
     <div class="cfg-card" id="backup-chat-api-card">

@@ -691,11 +691,17 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
             now=now_ts,
         )
         delay = max(0, int(float(state["next_retry_at"]) - now_ts))
-        if state["degraded"]:
+        if state["entered_degraded"]:
             _bot_log(
                 bot,
-                level="ERROR",
+                level="WARNING",
                 message=f"全局监听 {name}：监听窗口持续不可用，已标记降级，将在 {delay}s 后继续尝试；不会重绑微信客户端",
+            )
+        elif state["degraded"]:
+            _bot_log(
+                bot,
+                level="DEBUG",
+                message=f"全局监听 {name}：监听窗口仍处于降级，将在 {delay}s 后继续尝试",
             )
         else:
             _bot_log(
@@ -1320,7 +1326,7 @@ def _handle_global_scan_batch(bot, batch):
         _mark_global_scan_degraded(bot, conversation, details)
         _bot_log(
             bot,
-            level="ERROR",
+            level="WARNING",
             message=(
                 f"全局扫描 {conversation.who}：未读深度覆盖不完整，"
                 f"扫描前 {expected_count} 条，实际取得 {actual_count} 条，"

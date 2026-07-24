@@ -138,6 +138,7 @@ class ListenerWindowSupervisor:
             if item is None:
                 item = WindowRetry(name, normalized_type, now, now)
                 self._items[key] = item
+            was_degraded = item.degraded
             item.inflight = False
             item.attempts += 1
             item.allow_rebuild = item.allow_rebuild or bool(allow_rebuild)
@@ -151,7 +152,9 @@ class ListenerWindowSupervisor:
             else:
                 delay = self._retry_interval
             item.next_retry_at = now + delay
-            return asdict(item)
+            state = asdict(item)
+            state["entered_degraded"] = item.degraded and not was_degraded
+            return state
 
     def snapshot(self):
         with self._lock:

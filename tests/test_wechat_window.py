@@ -1,9 +1,11 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from core.wechat_ui_actions import UI_CALL_WAIT_TIMEOUT, UIIntentKind
 from core.wechat_ui_runtime import UIClientFacade
 from core.wechat_window import rebind_wechat_client, run_with_wechat_rebind_retry
+from wxbot_core import WXBot
 
 
 class WeChatWindowTests(unittest.TestCase):
@@ -51,6 +53,48 @@ class WeChatWindowTests(unittest.TestCase):
         self.assertEqual(result, "ok")
         self.assertEqual(action.call_count, 2)
         rebind.assert_called_once_with(bot)
+
+    def test_known_com_error_rebinds_once_and_retries(self):
+        action = Mock(side_effect=[OSError(-2147220991, "事件无法调用任何订户"), "ok"])
+        bot = object()
+
+        with patch("core.wechat_window.rebind_wechat_client") as rebind:
+            result = run_with_wechat_rebind_retry(bot, action, attempts=2)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(action.call_count, 2)
+        rebind.assert_called_once_with(bot)
+
+    def test_media_download_rebinds_once_and_retries(self):
+        class FakeOwner:
+            owner_thread_id = None
+
+            def __init__(self):
+                self.intents = []
+                self.downloads = 0
+
+            def call(self, intent, _timeout):
+                self.intents.append(intent.kind)
+                if intent.kind == UIIntentKind.REBIND:
+                    return {"nickname": "测试账号", "wx_id": "wxid-test"}
+                self.downloads += 1
+                if self.downloads == 1:
+                    raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
+                return r"C:\\temp\\image.png"
+
+        bot = WXBot.__new__(WXBot)
+        bot._ui_owner = FakeOwner()
+        bot._ui_runtime = object()
+        result = bot._ui_download_message(
+            SimpleNamespace(who="张三", chat_type="private"),
+            SimpleNamespace(type="image", attr="friend", sender="张三", content="图片"),
+        )
+
+        self.assertEqual(result, r"C:\\temp\\image.png")
+        self.assertEqual(
+            bot._ui_owner.intents,
+            [UIIntentKind.DOWNLOAD_MEDIA, UIIntentKind.REBIND, UIIntentKind.DOWNLOAD_MEDIA],
+        )
 
 
 if __name__ == "__main__":

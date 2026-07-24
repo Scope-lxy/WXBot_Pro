@@ -1416,9 +1416,13 @@ class WXBot:
         payload = self._ui_message_payload(chat, message)
         payload["quote_image"] = bool(quote_image)
         payload["allow_history_fallback"] = False
-        return self._ui_owner.call(
-            wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.DOWNLOAD_MEDIA, payload),
-            wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
+        return run_with_wechat_rebind_retry(
+            self,
+            lambda: self._ui_owner.call(
+                wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.DOWNLOAD_MEDIA, payload),
+                wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
+            ),
+            attempts=2,
         )
 
     def _ui_forward_message(
@@ -6768,7 +6772,11 @@ class WXBot:
             return []
 
         try:
-            visible_messages = self._read_visible_context_messages(chat, DEFAULT_VISIBLE_LIMIT)
+            visible_messages = run_with_wechat_rebind_retry(
+                self,
+                lambda: self._read_visible_context_messages(chat, DEFAULT_VISIBLE_LIMIT),
+                attempts=2,
+            )
             boundary = snapshot_before_current(
                 visible_messages,
                 message,
@@ -7980,7 +7988,7 @@ class WXBot:
                 )
                 if delivery is not None:
                     if delivery.status == DeliveryStatus.UNCERTAIN:
-                        log(level="ERROR", message="语音回复已提交但结果未知，已禁止自动降级文字")
+                        log(level="WARNING", message="语音回复已提交但结果未知，已禁止自动降级文字")
                     if delivery.completed:
                         limiter.mark_sent(state_key, now=now, limit_hours=limit_hours)
                         return True
@@ -8269,7 +8277,7 @@ class WXBot:
             limit_hours=limit_hours,
         ):
             log(
-                level="WARNING",
+                level="INFO",
                 message=f"{scene_label} {target_label} 触发回复上限：{limit_hours} 小时最多 {max_round} 轮",
             )
         reply_text = ""

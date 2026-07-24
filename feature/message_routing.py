@@ -196,7 +196,7 @@ def prepare_message_media(bot, msg, chat) -> None:
                 if down_path:
                     msg.content = str(down_path)
                 else:
-                    _bot_log(bot, "ERROR", "消息处理：图片下载失败，详情：未返回文件路径")
+                    _bot_log(bot, "WARNING", "消息处理：图片下载失败，详情：未返回文件路径")
                     msg._skip_ai_reply = True
             elif msg.type == "quote":
                 down_path = bot._ui_download_message(chat, msg, quote_image=True)
@@ -205,7 +205,7 @@ def prepare_message_media(bot, msg, chat) -> None:
                 else:
                     _bot_log(bot, "INFO", "引用内容不是图片或视频")
     except Exception as exc:
-        _bot_log(bot, level="ERROR", message=f"消息处理：图片下载失败，请尝试将 Windows 屏幕缩放设置为 100%，详情：{exc}")
+        _bot_log(bot, level="WARNING", message=f"消息处理：图片下载失败，请尝试将 Windows 屏幕缩放设置为 100%，详情：{exc}")
         if msg.type == "image":
             msg._skip_ai_reply = True
 
