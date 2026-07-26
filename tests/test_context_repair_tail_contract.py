@@ -460,7 +460,7 @@ class WXBotContractTests(unittest.TestCase):
             self.assertEqual([item["content"] for item in repaired], ["漏掉"])
             self.assertEqual([item["content"] for item in history], ["张三: 漏掉"])
 
-    def test_context_repair_rebinds_once_after_invalid_window_handle(self):
+    def test_context_repair_continues_after_invalid_window_handle(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = self.make_bot(tmp)
             bot.memory_manager.message_store.append_history([
@@ -468,18 +468,15 @@ class WXBotContractTests(unittest.TestCase):
             ])
             current = self.current_message()
             chat = FakeChat(visible=[])
-            chat.GetAllMessage = Mock(side_effect=[
-                OSError(1400, "MoveWindow", "无效的窗口句柄。"),
-                [bubble("漏掉"), current],
-            ])
+            chat.GetAllMessage = Mock(side_effect=OSError(1400, "MoveWindow", "无效的窗口句柄。"))
             bot._mark_context_repair_needed_after_restore("张三", chat_type="private")
 
             with patch("core.wechat_window.rebind_wechat_client") as rebind:
                 repaired = bot._repair_context_before_ai(chat, current, chat_type="private")
 
-            self.assertEqual([item["content"] for item in repaired], ["漏掉"])
-            self.assertEqual(chat.GetAllMessage.call_count, 2)
-            rebind.assert_called_once_with(bot)
+            self.assertEqual(repaired, [])
+            self.assertEqual(chat.GetAllMessage.call_count, 1)
+            rebind.assert_not_called()
 
     def test_successful_scan_runs_once_until_window_restore(self):
         with tempfile.TemporaryDirectory() as tmp:

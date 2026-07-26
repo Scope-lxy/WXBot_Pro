@@ -123,7 +123,6 @@ from core.memory_context_repair import (
     snapshot_before_current,
 )
 from core.reply_count_store import ReplyCountStore
-from core.wechat_window import run_with_wechat_rebind_retry
 from core.runtime_metrics import RuntimeMetricsStore
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.prompting import (
@@ -1416,13 +1415,9 @@ class WXBot:
         payload = self._ui_message_payload(chat, message)
         payload["quote_image"] = bool(quote_image)
         payload["allow_history_fallback"] = False
-        return run_with_wechat_rebind_retry(
-            self,
-            lambda: self._ui_owner.call(
-                wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.DOWNLOAD_MEDIA, payload),
-                wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
-            ),
-            attempts=2,
+        return self._ui_owner.call(
+            wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.DOWNLOAD_MEDIA, payload),
+            wechat_ui_actions.UI_CALL_WAIT_TIMEOUT,
         )
 
     def _ui_forward_message(
@@ -6772,11 +6767,7 @@ class WXBot:
             return []
 
         try:
-            visible_messages = run_with_wechat_rebind_retry(
-                self,
-                lambda: self._read_visible_context_messages(chat, DEFAULT_VISIBLE_LIMIT),
-                attempts=2,
-            )
+            visible_messages = self._read_visible_context_messages(chat, DEFAULT_VISIBLE_LIMIT)
             boundary = snapshot_before_current(
                 visible_messages,
                 message,

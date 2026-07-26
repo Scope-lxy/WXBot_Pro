@@ -184,11 +184,7 @@ def is_wechat_client_binding_failure(exc) -> bool:
     numeric_args = {item for item in (getattr(exc, "args", ()) or ()) if isinstance(item, int)}
     if winerror == 1400 or 1400 in numeric_args:
         return True
-    if hresult in {-2147417848, -2147023174, -2147220991} or numeric_args.intersection({
-        -2147417848,
-        -2147023174,
-        -2147220991,
-    }):
+    if hresult in {-2147417848, -2147023174} or numeric_args.intersection({-2147417848, -2147023174}):
         return True
     return any(marker in text for marker in (
         "无效的窗口句柄",
