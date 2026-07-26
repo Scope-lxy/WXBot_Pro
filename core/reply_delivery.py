@@ -138,11 +138,12 @@ class DeliveryNotStarted(RuntimeError):
 
     def __init__(self, status: DeliveryStatus, message: str = "") -> None:
         if status not in {
+            DeliveryStatus.BLOCKED,
             DeliveryStatus.CANCELLED,
             DeliveryStatus.STALE,
             DeliveryStatus.EXPIRED,
         }:
-            raise ValueError("not-started status must be cancelled, stale, or expired")
+            raise ValueError("not-started status must be blocked, cancelled, stale, or expired")
         self.status = status
         super().__init__(str(message or status.value))
 
@@ -538,6 +539,8 @@ class ReplyDeliveryStore(Protocol):
 
     def finish(self, action_id: str, status: str = "uncertain", error: str = "") -> None: ...
 
+    def release_unstarted_claim(self, action_id: str) -> bool: ...
+
     def delivery_action_status(self, action_id: str) -> str: ...
 
     def cancel_pending(
@@ -617,10 +620,6 @@ class ReplyDeliveryCoordinator:
 
     def stop(self) -> None:
         self._stopping.set()
-        with self._lock:
-            known = tuple(self._known)
-        for turn_id in known:
-            self._cancel_pending(turn_id, DeliveryStatus.CANCELLED, "reply coordinator stopped")
 
     def _deliver_registered(self, turn: ReplyTurn, context: Any) -> DeliveryResult:
         completed = 0
@@ -632,6 +631,13 @@ class ReplyDeliveryCoordinator:
 
             prepared = self._prepare(turn, action, action_id, context)
             if not prepared:
+                if self._stopping.is_set():
+                    return DeliveryResult(
+                        DeliveryStatus.BLOCKED,
+                        completed,
+                        action_id,
+                        "reply coordinator stopped",
+                    )
                 reason = "reply preparation stopped before delivery claim"
                 self._cancel_pending(turn.turn_id, DeliveryStatus.CANCELLED, reason)
                 return DeliveryResult(
@@ -677,6 +683,18 @@ class ReplyDeliveryCoordinator:
                         continue
                     return frozen
             except DeliveryNotStarted as exc:
+                if exc.status == DeliveryStatus.BLOCKED:
+                    try:
+                        released = bool(self._store.release_unstarted_claim(action_id))
+                    except Exception:
+                        released = False
+                    if released:
+                        return DeliveryResult(
+                            DeliveryStatus.BLOCKED,
+                            completed,
+                            action_id,
+                            str(exc),
+                        )
                 try:
                     final_status = self._store.finish(
                         action_id,
@@ -755,8 +773,15 @@ class ReplyDeliveryCoordinator:
     ) -> DeliveryResult | None:
         with self._lock:
             cancelled = turn.turn_id in self._cancelled
-        if self._stopping.is_set() or cancelled:
-            reason = "reply coordinator stopped" if self._stopping.is_set() else "reply turn cancelled"
+        if self._stopping.is_set():
+            return DeliveryResult(
+                DeliveryStatus.BLOCKED,
+                completed,
+                action_id,
+                "reply coordinator stopped",
+            )
+        if cancelled:
+            reason = "reply turn cancelled"
             self._cancel_pending(turn.turn_id, DeliveryStatus.CANCELLED, reason)
             return DeliveryResult(DeliveryStatus.CANCELLED, completed, action_id, reason)
 

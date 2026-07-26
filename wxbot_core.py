@@ -793,33 +793,94 @@ class WXBot:
         message._wxbot_event_ids = (message._wxbot_event_id,)
         message._wxbot_event_version = int(event.get("conversation_version", 0) or 0)
         message._wxbot_reply_expires_at = float(event.get("reply_expires_at", 0.0) or 0.0)
-        message._wxbot_startup_recovery = True
         if image_paths:
             message._wxbot_media_prepared = True
         return message
 
-    def _drain_message_recovery(self):
-        recovery = list(getattr(self, "_pending_message_recovery", []) or [])
-        self._pending_message_recovery = []
-        recovered = 0
+    @staticmethod
+    def _message_recovery_conversation(item):
+        events = list((item or {}).get("events") or [])
+        if not events:
+            return None
+        conversation = str(events[0].get("conversation", "") or "").strip()
+        chat_type = str(events[0].get("chat_type", "private") or "private").strip()
+        if not conversation or chat_type not in {"private", "group"}:
+            return None
+        return ConversationRef(conversation, chat_type)
+
+    def _stage_message_recovery_for_global_scan(self, recovery):
+        waiting = getattr(self, "_startup_recovery_waiting", None)
+        if not isinstance(waiting, dict):
+            waiting = {}
+            self._startup_recovery_waiting = waiting
+        staged = 0
         for item in recovery:
+            conversation = self._message_recovery_conversation(item)
+            if conversation is None:
+                continue
+            key = (conversation.chat_type, conversation.who)
+            waiting.setdefault(key, []).append(item)
+            staged += len(item.get("events") or [])
+        self._startup_recovery_scan_snapshot_seen = False
+        return staged
+
+    @staticmethod
+    def _recovery_unread_keys(unread_before):
+        unread_keys = set()
+        unread_names = set()
+        for item in unread_before or ():
+            name = str(item.get("name", "") or "").strip()
+            chat_type = str(item.get("chat_type", "") or "").strip()
+            if not name:
+                continue
+            unread_names.add(name)
+            if chat_type in {"private", "group"}:
+                unread_keys.add((chat_type, name))
+        return unread_keys, unread_names
+
+    def _release_message_recovery_from_global_scan(self, unread_before, conversation=None, *, final=False):
+        waiting = getattr(self, "_startup_recovery_waiting", None)
+        if not isinstance(waiting, dict) or not waiting:
+            return 0
+        released = []
+        if not bool(getattr(self, "_startup_recovery_scan_snapshot_seen", False)):
+            unread_keys, unread_names = self._recovery_unread_keys(unread_before)
+            for key, items in list(waiting.items()):
+                if key in unread_keys or key[1] in unread_names:
+                    continue
+                released.extend(items)
+                waiting.pop(key, None)
+            self._startup_recovery_scan_snapshot_seen = True
+        if isinstance(conversation, ConversationRef):
+            released.extend(waiting.pop((conversation.chat_type, conversation.who), []))
+        if final:
+            unread_keys, unread_names = self._recovery_unread_keys(unread_before)
+            for key, items in list(waiting.items()):
+                if key in unread_keys or key[1] in unread_names:
+                    continue
+                released.extend(items)
+                waiting.pop(key, None)
+        return self._enqueue_message_recovery(released)
+
+    def _enqueue_message_recovery(self, recovery):
+        recovered = 0
+        for item in recovery or ():
             events = list(item.get("events") or [])
             if not events:
                 continue
             job = item.get("job") if isinstance(item.get("job"), dict) else None
             conversation = str(events[0].get("conversation", "") or "")
             chat_type = str(events[0].get("chat_type", "private") or "private")
-            messages = [self._restore_message_envelope(event) for event in events]
             if job:
-                for message in messages:
-                    turn_id = str(job.get("turn_id", "") or "")
-                    message._wxbot_recovery_turn_id = turn_id
-                    message._wxbot_reply_turn_id = turn_id
-                    message._wxbot_recovery_route_source = str(
-                        job.get("route_source", "") or ""
+                turn_id = str(job.get("turn_id", "") or "").strip()
+                store = getattr(self, "_message_store", None)
+                if not turn_id or store is None or not store.discard_recoverable_reply_job(turn_id):
+                    log(
+                        level="WARNING",
+                        message=f"消息恢复 {conversation}：旧回复任务无法安全重建，已跳过",
                     )
-                    message._wxbot_event_version = int(job.get("expected_version", 0) or 0)
-                    message._wxbot_reply_expires_at = float(job.get("expires_at", 0.0) or 0.0)
+                    continue
+            messages = [self._restore_message_envelope(event) for event in events]
             chat = OwnedChat(self._ui_owner, conversation, chat_type)
             for message in messages:
                 message_routing.prepare_message_media(self, message, chat)
@@ -830,7 +891,8 @@ class WXBot:
                 and not getattr(message, "_wxbot_pending_voice_key", "")
                 for message in messages
             ):
-                self._cancel_unfinished_reply_job(messages[0], "recovered media is no longer replyable")
+                for message in messages:
+                    self._mark_inbound_no_reply(message)
                 continue
             replyable = []
             for message in messages:
@@ -869,20 +931,22 @@ class WXBot:
                     pipeline["open_kind"] = kinds.pop() if len(kinds) == 1 else "mixed"
                 recovered += 1
                 continue
-            if chat_type == "private" and len(messages) > 1 and not has_pending_voice:
-                message = self._build_merged_private_message(messages)
-                message._wxbot_recovery_turn_id = str((job or {}).get("turn_id", "") or "")
-                message._wxbot_reply_turn_id = message._wxbot_recovery_turn_id
-                message._wxbot_recovery_route_source = str(
-                    (job or {}).get("route_source", "") or ""
-                )
-                message._wxbot_startup_recovery = True
-                messages = [message]
             for message in messages:
                 self._ui_ingress_queue.put((ConversationRef(conversation, chat_type), message))
                 recovered += 1
+        return recovered
+
+    def _drain_message_recovery(self, *, defer_for_global_scan=False):
+        recovery = list(getattr(self, "_pending_message_recovery", []) or [])
+        self._pending_message_recovery = []
+        if defer_for_global_scan:
+            staged = self._stage_message_recovery_for_global_scan(recovery)
+            if staged:
+                log(level="INFO", message=f"消息恢复：等待扫描确认 {staged} 条未完成消息")
+            return staged
+        recovered = self._enqueue_message_recovery(recovery)
         if recovered:
-            log(level="WARNING", message=f"消息恢复：已重新排队 {recovered} 个未完成会话")
+            log(level="INFO", message=f"消息恢复：已重新进入普通处理队列 {recovered} 条消息")
         return recovered
 
     def _persist_ui_message(self, conversation, message):
@@ -1010,7 +1074,6 @@ class WXBot:
         if not isinstance(conversation, ConversationRef) or conversation.chat_type != "group":
             raise ValueError("group business queue requires a group ConversationRef")
         if self.is_stop_requested():
-            self._cancel_failed_reply_attempt(message, "robot stopped before group message processing")
             return True
         with self._chat_merge_lock:
             pipeline = self._group_message_pipelines.get(conversation.who)
@@ -4470,9 +4533,6 @@ class WXBot:
         """
         if self.is_stop_requested():
             return True
-        if getattr(msg, "_wxbot_startup_recovery", False):
-            message_routing.prepare_message_media(self, msg, chat)
-            return self.process_message(chat, msg)
         try:
             received_at = getattr(msg, "_wxbot_received_at", None) or datetime.now()
             self._last_incoming_message_at = time.time()
@@ -4682,7 +4742,6 @@ class WXBot:
         route_source = str(
             route_source
             or getattr(message, "_wxbot_reply_route_source", "")
-            or getattr(message, "_wxbot_recovery_route_source", "")
             or ""
         ).strip()
         raw_expected_version = getattr(message, "_wxbot_event_version", None)
@@ -4693,14 +4752,12 @@ class WXBot:
         expires_at = float(getattr(message, "_wxbot_reply_expires_at", 0.0) or 0.0)
         if expires_at <= 0:
             expires_at = self._received_timestamp(getattr(message, "_wxbot_received_at", 0.0)) + DEFAULT_REPLY_TTL_SECONDS
-        turn_id = str(getattr(message, "_wxbot_recovery_turn_id", "") or "").strip()
-        if not turn_id:
-            identity = json.dumps(
-                ["wxbot-reply-v1", chat_type, conversation, event_ids],
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-            turn_id = "turn_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        identity = json.dumps(
+            ["wxbot-reply-v1", chat_type, conversation, event_ids],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        turn_id = "turn_" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
         store.create_reply_job(
             turn_id,
             conversation=conversation,
@@ -4727,7 +4784,6 @@ class WXBot:
 
     def _reply_job_can_generate(self, chat, message, *, chat_type, route_source):
         if self.is_stop_requested():
-            self._cancel_failed_reply_attempt(message, "robot stopped before reply generation")
             return False
         turn_id = self._ensure_reply_job(
             chat,
@@ -4738,7 +4794,6 @@ class WXBot:
         if not turn_id:
             return True
         if self.is_stop_requested():
-            self._cancel_unfinished_reply_job(message, "robot stopped before reply generation")
             return False
         return self._message_store.mark_reply_job_generating(turn_id) == "generating"
 
@@ -4776,13 +4831,6 @@ class WXBot:
         if store is not None and event_ids:
             store.mark_inbound_events(event_ids, "handled")
 
-    @staticmethod
-    def _recovery_route_matches(message, route_source):
-        expected = str(
-            getattr(message, "_wxbot_recovery_route_source", "") or ""
-        ).strip()
-        return not expected or expected == route_source
-
     def wx_send_ai(self, chat, message):
         if not self._private_reply_can_continue(chat):
             if self.is_stop_requested():
@@ -4808,9 +4856,6 @@ class WXBot:
             if keyword_plan
             else "private_ai"
         )
-        if not self._recovery_route_matches(message, route_source):
-            self._cancel_unfinished_reply_job(message, "reply route changed during restart")
-            return True
         message._wxbot_reply_route_source = route_source
         if not self._reply_job_can_generate(
             chat,
@@ -4837,7 +4882,8 @@ class WXBot:
             keyword_plan=keyword_plan,
             user_key=user_key,
         )
-        self._cancel_unfinished_reply_job(message, "routing completed without a delivery")
+        if not self.is_stop_requested():
+            self._cancel_unfinished_reply_job(message, "routing completed without a delivery")
         return result
 
     def _wx_send_ai_once(self, chat, message, *, keyword_plan, user_key):
@@ -5284,12 +5330,9 @@ class WXBot:
         route = message_routing.route_process_message(self, chat, message)
         action = route.get("action", "skip")
         if action == "skip":
-            if getattr(message, "_wxbot_recovery_route_source", ""):
-                self._cancel_unfinished_reply_job(message, "reply route is no longer available")
-            elif self._is_unresolved_pending_voice_message(message):
+            if self._is_unresolved_pending_voice_message(message):
                 return True
-            else:
-                self._mark_inbound_no_reply(message)
+            self._mark_inbound_no_reply(message)
             return True
         group_user_key = ""
         if action in {"group_keyword_reply", "group_ai"}:
@@ -5305,9 +5348,6 @@ class WXBot:
                 if action == "group_keyword_reply"
                 else "group_ai"
             )
-            if not self._recovery_route_matches(message, route_source):
-                self._cancel_unfinished_reply_job(message, "reply route changed during restart")
-                return True
             message._wxbot_reply_route_source = route_source
             if not self._reply_job_can_generate(
                 chat,
@@ -7141,7 +7181,6 @@ class WXBot:
         self._ensure_message_runtime_state()
         if self.is_stop_requested():
             return True
-        is_recovery = bool(getattr(message, "_wxbot_startup_recovery", False))
         if getattr(message, '_voice_transcription_failed', False):
             log(message=f"私聊 {chat.who}：语音识别失败，未得到有效文字，已静默忽略")
             self._mark_inbound_no_reply(message)
@@ -7149,20 +7188,6 @@ class WXBot:
         if self._should_skip_private_ai_message(message):
             if not str(getattr(message, "_wxbot_pending_voice_key", "") or "").strip():
                 self._mark_inbound_no_reply(message)
-            return True
-        if is_recovery:
-            with self._chat_merge_lock:
-                pipeline = self._private_message_pipeline(chat.who)
-                if not pipeline:
-                    return True
-                if self._private_pipeline_has_unresolved_voice_locked(pipeline):
-                    batch_kind = self._private_message_batch_kind(message)
-                    open_kind = str(pipeline.get("open_kind") or "text").strip().lower()
-                    pipeline["open_kind"] = open_kind if open_kind == batch_kind else "mixed"
-                    pipeline["open_messages"].append(message)
-                    return True
-                self._enqueue_private_message_batch_locked(pipeline, [message])
-                self._start_private_message_worker_locked(chat, pipeline)
             return True
         base_delay = self._private_message_merge_delay()
         batch_kind = self._private_message_batch_kind(message)
@@ -7814,17 +7839,20 @@ class WXBot:
         except wechat_ui_actions.IntentCancelled as exc:
             if tracker is not None:
                 tracker.discard(action_id)
-            current_version = self._message_store.conversation_version(
-                turn.conversation,
-                chat_type=turn.chat_type,
-            )
-            status = (
-                DeliveryStatus.STALE
-                if current_version != turn.expected_version
-                else DeliveryStatus.EXPIRED
-                if time.time() >= turn.expires_at
-                else DeliveryStatus.CANCELLED
-            )
+            if self.is_stop_requested():
+                status = DeliveryStatus.BLOCKED
+            else:
+                current_version = self._message_store.conversation_version(
+                    turn.conversation,
+                    chat_type=turn.chat_type,
+                )
+                status = (
+                    DeliveryStatus.STALE
+                    if current_version != turn.expected_version
+                    else DeliveryStatus.EXPIRED
+                    if time.time() >= turn.expires_at
+                    else DeliveryStatus.CANCELLED
+                )
             raise DeliveryNotStarted(status, str(exc)) from exc
         return ReplyCountStore.was_send_success(result)
 
@@ -7855,8 +7883,7 @@ class WXBot:
             self._cancel_unfinished_reply_job(message, "reply contains no deliverable actions")
             return None
         if self.is_stop_requested():
-            self._cancel_failed_reply_attempt(message, "robot stopped before reply delivery")
-            return DeliveryResult(DeliveryStatus.CANCELLED)
+            return DeliveryResult(DeliveryStatus.BLOCKED)
         coordinator = getattr(self, "_reply_delivery_coordinator", None)
         turn = self._reply_turn(chat, message, actions, chat_type=chat_type)
         if coordinator is None or turn is None:
@@ -7880,13 +7907,14 @@ class WXBot:
             if result.status not in {DeliveryStatus.RETRY, DeliveryStatus.BLOCKED}:
                 break
             if self.is_stop_requested():
-                coordinator.cancel(turn.turn_id, "robot stopped before reply target recovered")
-                break
+                return result
             if retry_budget <= 0 or time.time() >= turn.expires_at:
                 result = coordinator.deliver(turn, context)
                 break
             retry_delay = 30.0 if retry_delay == 0 else 60.0
         if result is None or result.status in {DeliveryStatus.RETRY, DeliveryStatus.BLOCKED}:
+            if self.is_stop_requested():
+                return result
             coordinator.cancel(turn.turn_id, "reply target did not recover before reply TTL")
             return result
         if isinstance(sent_items, list) and result.completed:
@@ -9221,9 +9249,6 @@ class WXBot:
             coordinator = getattr(self, "_reply_delivery_coordinator", None)
             if coordinator is not None:
                 cleanup_steps.append(("停止回复投递", coordinator.stop))
-            store = getattr(self, "_message_store", None)
-            if store is not None:
-                cleanup_steps.append(("取消未提交回复", store.cancel_unclaimed_on_shutdown))
             owner = getattr(self, "_ui_owner", None)
             if owner is not None:
                 cleanup_steps.append(("取消待执行微信动作", owner.cancel_pending))

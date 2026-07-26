@@ -62,6 +62,12 @@ class FakeStore:
             if action_id.startswith(f"{turn_id}:") and current == "pending":
                 self.actions[action_id] = status
 
+    def release_unstarted_claim(self, action_id):
+        if self.actions.get(action_id) != "inflight":
+            return False
+        self.actions[action_id] = "pending"
+        return True
+
 
 def make_turn(*actions, version=3, expires_at=200.0):
     return ReplyTurn(
@@ -362,7 +368,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         self.assertEqual(result.status, DeliveryStatus.CANCELLED)
         self.assertEqual(store.actions["turn-1:0"], "cancelled")
 
-    def test_stop_during_send_finishes_current_bubble_and_cancels_remainder(self):
+    def test_stop_during_send_finishes_current_bubble_and_preserves_remainder(self):
         store = FakeStore()
         coordinator = None
 
@@ -376,9 +382,9 @@ class ReplyDeliveryTests(unittest.TestCase):
             make_turn(ReplyAction("text", "first"), ReplyAction("text", "second"))
         )
 
-        self.assertEqual(result.status, DeliveryStatus.CANCELLED)
+        self.assertEqual(result.status, DeliveryStatus.BLOCKED)
         self.assertEqual(result.completed, 1)
-        self.assertEqual(store.actions, {"turn-1:0": "done", "turn-1:1": "cancelled"})
+        self.assertEqual(store.actions, {"turn-1:0": "done", "turn-1:1": "pending"})
 
     def test_echo_tracker_consumes_only_the_matching_conversation_and_content(self):
         now = {"value": 10.0}
@@ -751,7 +757,7 @@ class ReplyDeliveryTests(unittest.TestCase):
         self.assertEqual(result.status, DeliveryStatus.CANCELLED)
         self.assertEqual(store.actions["turn-1:0"], "cancelled")
 
-    def test_stop_can_cancel_an_active_turn_from_another_thread(self):
+    def test_stop_preserves_an_active_turn_from_another_thread(self):
         store = FakeStore()
         entered = threading.Event()
         release = threading.Event()
@@ -773,8 +779,8 @@ class ReplyDeliveryTests(unittest.TestCase):
         thread.join(1)
 
         self.assertFalse(thread.is_alive())
-        self.assertEqual(results[0].status, DeliveryStatus.CANCELLED)
-        self.assertEqual(store.actions, {"turn-1:0": "done", "turn-1:1": "cancelled"})
+        self.assertEqual(results[0].status, DeliveryStatus.BLOCKED)
+        self.assertEqual(store.actions, {"turn-1:0": "done", "turn-1:1": "pending"})
 
 
 if __name__ == "__main__":

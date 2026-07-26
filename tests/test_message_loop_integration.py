@@ -457,7 +457,7 @@ class MessageLoopIntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(sqlite3.OperationalError, "database is locked"):
             bot._mark_inbound_no_reply(message)
 
-    def test_stop_before_group_generation_cancels_event_without_creating_job(self):
+    def test_stop_before_group_generation_keeps_event_pending_without_creating_job(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_delivery_bot(tmp)
             received_at = time.time()
@@ -493,7 +493,36 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             self.assertFalse(result)
             self.assertEqual(
                 bot._message_store.get_event(stored["event_id"])["processing_state"],
-                "cancelled",
+                "pending",
+            )
+
+    def test_stop_before_group_queue_keeps_event_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            received_at = time.time()
+            bot._message_store.append_inbound_once(
+                "group-stop-queue-1",
+                "Team",
+                content="question",
+                received_at=received_at,
+                expires_at=received_at + 600,
+                chat_type="group",
+                message_attr="group",
+            )
+            event = bot._message_store.get_event("group-stop-queue-1")
+            message = MessageEnvelope(content="question", sender="Bob", attr="group")
+            message._wxbot_event_id = event["event_id"]
+            message._wxbot_event_ids = (event["event_id"],)
+            bot._stop_requested.set()
+
+            self.assertTrue(
+                bot._enqueue_group_message_for_business(
+                    ConversationRef("Team", "group"), message
+                )
+            )
+            self.assertEqual(
+                bot._message_store.get_event(event["event_id"])["processing_state"],
+                "pending",
             )
 
     def test_raw_friend_chat_reaches_private_reply_delivery_end_to_end(self):
@@ -572,6 +601,32 @@ class MessageLoopIntegrationTests(unittest.TestCase):
 
         self.assertEqual(message.content, "C:/cached/image.jpg")
         self.assertTrue(message._wxbot_media_prepared)
+
+    def test_recovered_message_uses_the_normal_callback_pipeline(self):
+        bot = WXBot.__new__(WXBot)
+        bot._stop_requested = threading.Event()
+        bot._handle_material_source_message = lambda *_args: False
+        bot._mark_chat_memory_dirty = mock.Mock()
+        bot.process_message = mock.Mock(side_effect=AssertionError("恢复消息不得跳过私聊合并"))
+        message = WXBot._restore_message_envelope({
+            "event_id": "event-1",
+            "conversation_version": 1,
+            "reply_expires_at": time.time() + 600,
+            "message_type": "text",
+            "content": "question",
+            "native_attr": "friend",
+        })
+        chat = SimpleNamespace(who="Alice", chat_type="private")
+
+        with mock.patch("wxbot_core.message_routing.prepare_message_media"), mock.patch(
+            "wxbot_core.message_routing.handle_friend_message_callback",
+            return_value=True,
+        ) as handle:
+            self.assertTrue(bot.message_handle_callback(message, chat))
+
+        self.assertFalse(hasattr(message, "_wxbot_startup_recovery"))
+        handle.assert_called_once()
+        bot.process_message.assert_not_called()
 
     def test_recovery_merge_does_not_rebind_unreplyable_media(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -679,6 +734,131 @@ class MessageLoopIntegrationTests(unittest.TestCase):
                 ["first text", '语音8"秒'],
             )
             self.assertTrue(bot._ui_ingress_queue.empty())
+
+    def test_global_scan_recovery_waits_for_the_matching_unread_conversation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            bot._ui_owner = object()
+            received_at = time.time()
+            bot._message_store.append_inbound_once(
+                "recovery-1",
+                "Alice",
+                content="earlier question",
+                received_at=received_at,
+                expires_at=received_at + 600,
+            )
+            event = bot._message_store.get_event("recovery-1")
+            bot._message_store.create_reply_job(
+                "recovery-turn",
+                conversation="Alice",
+                expected_version=bot._message_store.conversation_version("Alice"),
+                expires_at=received_at + 600,
+                event_ids=[event["event_id"]],
+            )
+            bot._stage_message_recovery_for_global_scan([{
+                "job": bot._message_store.get_reply_job("recovery-turn"),
+                "events": [event],
+            }])
+
+            with mock.patch("wxbot_core.message_routing.prepare_message_media"):
+                self.assertEqual(
+                    bot._release_message_recovery_from_global_scan([
+                        {"name": "Alice", "chat_type": "private", "new_count": 1}
+                    ]),
+                    0,
+                )
+                self.assertTrue(bot._ui_ingress_queue.empty())
+                self.assertIsNotNone(bot._message_store.get_reply_job("recovery-turn"))
+
+                self.assertEqual(
+                    bot._release_message_recovery_from_global_scan(
+                        [{"name": "Alice", "chat_type": "private", "new_count": 1}],
+                        ConversationRef("Alice", "private"),
+                    ),
+                    1,
+                )
+
+            conversation, message = bot._ui_ingress_queue.get_nowait()
+            self.assertEqual(conversation, ConversationRef("Alice", "private"))
+            self.assertEqual(message.content, "earlier question")
+            self.assertIsNone(bot._message_store.get_reply_job("recovery-turn"))
+            self.assertEqual(
+                bot._message_store.get_event(event["event_id"])["processing_state"],
+                "pending",
+            )
+            self.assertEqual(
+                bot._release_message_recovery_from_global_scan(
+                    (), ConversationRef("Alice", "private")
+                ),
+                0,
+            )
+
+    def test_global_scan_recovery_without_unread_enters_the_normal_queue_immediately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            bot._ui_owner = object()
+            received_at = time.time()
+            bot._message_store.append_inbound_once(
+                "recovery-1",
+                "Alice",
+                content="earlier question",
+                received_at=received_at,
+                expires_at=received_at + 600,
+            )
+            event = bot._message_store.get_event("recovery-1")
+            bot._stage_message_recovery_for_global_scan([{
+                "job": None,
+                "events": [event],
+            }])
+
+            with mock.patch("wxbot_core.message_routing.prepare_message_media"):
+                self.assertEqual(
+                    bot._release_message_recovery_from_global_scan([
+                        {"name": "Bob", "chat_type": "private", "new_count": 1}
+                    ]),
+                    1,
+                )
+
+            conversation, message = bot._ui_ingress_queue.get_nowait()
+            self.assertEqual(conversation, ConversationRef("Alice", "private"))
+            self.assertEqual(message.content, "earlier question")
+
+    def test_global_scan_recovery_releases_remaining_items_after_initial_drain(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            bot._ui_owner = object()
+            received_at = time.time()
+            bot._message_store.append_inbound_once(
+                "recovery-1",
+                "Alice",
+                content="earlier question",
+                received_at=received_at,
+                expires_at=received_at + 600,
+            )
+            event = bot._message_store.get_event("recovery-1")
+            bot._stage_message_recovery_for_global_scan([{
+                "job": None,
+                "events": [event],
+            }])
+
+            with mock.patch("wxbot_core.message_routing.prepare_message_media"):
+                self.assertEqual(
+                    bot._release_message_recovery_from_global_scan([
+                        {"name": "Alice", "chat_type": "private", "new_count": 1}
+                    ]),
+                    0,
+                )
+                self.assertEqual(
+                    bot._release_message_recovery_from_global_scan([
+                        {"name": "Alice", "chat_type": "private", "new_count": 1}
+                    ], final=True),
+                    0,
+                )
+                self.assertEqual(bot._release_message_recovery_from_global_scan((), final=True), 1)
+
+            conversation, message = bot._ui_ingress_queue.get_nowait()
+            self.assertEqual(conversation, ConversationRef("Alice", "private"))
+            self.assertEqual(message.content, "earlier question")
 
     def test_sqlite_busy_retries_in_process_and_sends_once_after_recovery(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1103,6 +1283,41 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             self.assertEqual(result.status, DeliveryStatus.STALE)
             self.assertEqual(store.delivery_action_status("turn-1:0"), "stale")
             self.assertEqual(store.get_reply_job("turn-1")["status"], "stale")
+
+    def test_owner_stop_before_handler_releases_the_delivery_claim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "wxid_owner_stop")
+            event = store.append_inbound_once(
+                "event-1",
+                "Alice",
+                content="question",
+                received_at=100,
+                expires_at=1000,
+                now=100,
+            )
+            turn = ReplyTurn(
+                turn_id="turn-1",
+                conversation="Alice",
+                expected_version=1,
+                expires_at=1000,
+                event_ids=(event["event_id"],),
+                actions=(ReplyAction("text", "answer"),),
+            )
+            coordinator = ReplyDeliveryCoordinator(
+                store=store,
+                version_provider=lambda *_args: 1,
+                prepare=lambda *_args: True,
+                sender=lambda *_args: (_ for _ in ()).throw(
+                    DeliveryNotStarted(DeliveryStatus.BLOCKED, "owner stopped before handler")
+                ),
+                clock=lambda: 110,
+            )
+
+            result = coordinator.deliver(turn)
+
+            self.assertEqual(result.status, DeliveryStatus.BLOCKED)
+            self.assertEqual(store.delivery_action_status("turn-1:0"), "pending")
+            self.assertEqual(store.get_reply_job("turn-1")["status"], "pending")
 
     def test_owner_expiry_rejection_maps_to_not_started_expired(self):
         with tempfile.TemporaryDirectory() as tmp:

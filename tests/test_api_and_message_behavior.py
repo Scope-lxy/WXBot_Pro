@@ -224,45 +224,6 @@ class ApiBehaviorTests(unittest.TestCase):
                 user_key="",
             )
 
-    def test_recovered_keyword_job_never_falls_through_to_ai(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            bot = WXBot.__new__(WXBot)
-            bot.config = SimpleNamespace(
-                chat_keyword_switch=False,
-                keyword_dict={},
-                chat_text_reply_limit_switch=False,
-            )
-            bot._message_store = MessageStore(tmp, "route-recovery")
-            bot._private_reply_can_continue = lambda _chat: True
-            bot._get_chat_api = lambda _name: self.fail("关键词恢复不得改走 AI")
-            chat = SimpleNamespace(who="张三", chat_type="private")
-            message = MessageEnvelope(
-                id="keyword-1",
-                attr="friend",
-                sender="张三",
-                type="text",
-                content="旧关键词",
-            )
-            stored = persist_private_inbound(bot._message_store, chat, message)
-            bot._message_store.create_reply_job(
-                "keyword-turn",
-                conversation="张三",
-                chat_type="private",
-                route_source="private_keyword",
-                expected_version=stored["version"],
-                expires_at=time.time() + 600,
-                event_ids=[stored["event_id"]],
-            )
-            message._wxbot_reply_turn_id = "keyword-turn"
-            message._wxbot_recovery_route_source = "private_keyword"
-
-            self.assertTrue(bot.wx_send_ai(chat, message))
-
-            self.assertEqual(
-                bot._message_store.get_reply_job("keyword-turn")["status"],
-                "cancelled",
-            )
-
     def test_skipped_private_media_reaches_not_required_terminal_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_message_runtime_bot(tmp)
@@ -1188,7 +1149,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._clear_group_message_pipelines.assert_called_once_with()
         bot._clear_chat_memory_background_state.assert_called_once_with()
         bot._reply_delivery_coordinator.stop.assert_called_once_with()
-        bot._message_store.cancel_unclaimed_on_shutdown.assert_called_once_with()
+        bot._message_store.cancel_unclaimed_on_shutdown.assert_not_called()
         owner.cancel_pending.assert_called_once_with()
         owner.call_shutdown.assert_called_once_with(wechat_ui_actions.UI_CALL_WAIT_TIMEOUT)
         owner.stop.assert_called_once_with(cancel_pending=True)
@@ -1218,7 +1179,7 @@ class MessageBehaviorTests(unittest.TestCase):
         bot._clear_group_message_pipelines.assert_called_once_with()
         bot._clear_chat_memory_background_state.assert_called_once_with()
         bot._reply_delivery_coordinator.stop.assert_called_once_with()
-        bot._message_store.cancel_unclaimed_on_shutdown.assert_called_once_with()
+        bot._message_store.cancel_unclaimed_on_shutdown.assert_not_called()
         bot._ui_owner.cancel_pending.assert_called_once_with()
         self.assertFalse(bot._stop_cleanup_done)
 

@@ -48,7 +48,7 @@ class RemoveListenChatTests(unittest.TestCase):
             _set_material_outreach_namespace=lambda _wx_id: order.append("namespace"),
             _initialize_message_runtime=lambda _wx_id: order.append("runtime"),
             _init_prompt_system=lambda _path: order.append("prompt"),
-            _drain_message_recovery=lambda: order.append("recovery"),
+            _drain_message_recovery=lambda **_kwargs: order.append("recovery"),
             _register_ui_listener_names=lambda _listeners: order.append("register"),
             _mark_context_repair_needed_after_restore=lambda name, *, chat_type: order.append(
                 ("repair", chat_type, name)
@@ -94,7 +94,7 @@ class RemoveListenChatTests(unittest.TestCase):
             _set_material_outreach_namespace=lambda _wx_id: order.append("namespace"),
             _initialize_message_runtime=lambda _wx_id: order.append("runtime"),
             _init_prompt_system=lambda _path: order.append("prompt"),
-            _drain_message_recovery=lambda: order.append("recovery"),
+            _drain_message_recovery=lambda **_kwargs: order.append("recovery"),
             _register_ui_listener_names=lambda _listeners: order.append("register"),
             _register_runtime_task_schedules=lambda: order.append("schedules"),
             _ui_ingress_ready=SimpleNamespace(set=lambda: order.append("ready")),
@@ -261,7 +261,7 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(bot._material_source_chat_type("【姐姐】素材库"), "group")
         self.assertTrue(bot._is_material_source_chat(chat))
 
-    def test_global_batch_is_persisted_before_dispatch_and_window_repair(self):
+    def test_global_batch_is_persisted_before_dispatch_without_startup_window_repair(self):
         order = []
         message = scan_envelope("你好")
         bot = SimpleNamespace(
@@ -276,10 +276,14 @@ class RemoveListenChatTests(unittest.TestCase):
             _persist_ui_message_batch=lambda conversation, envelopes: order.append(
                 ("persist", conversation.who, [item.content for item in envelopes])
             ) or [SimpleNamespace(direction="friend", is_new=True)],
+            _release_message_recovery_from_global_scan=lambda _unread, conversation=None, **_kwargs: order.append(
+                ("release", conversation.who if conversation else "")
+            ),
             _dispatch_persisted_ui_message=lambda conversation, envelope: order.append(
                 ("dispatch", conversation.who, envelope.content)
             ) or True,
         )
+        set_scan_state(bot, initial_drain_complete=False)
 
         with mock.patch.object(listening.time, "time", return_value=100.0):
             listening._handle_global_scan_batch(bot, {
@@ -293,8 +297,39 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertEqual(order, [
             ("persist", "张三", ["你好"]),
+            ("release", "张三"),
             ("dispatch", "张三", "你好"),
         ])
+        self.assertFalse(hasattr(bot, "_listener_window_supervisor"))
+
+    def test_global_batch_requests_window_repair_after_initial_drain(self):
+        message = scan_envelope("你好")
+        bot = SimpleNamespace(
+            all_Mode_listen_list=[],
+            _listen_chats={},
+            config=SimpleNamespace(
+                AllListen_filter_mute=False,
+                global_blacklist=[],
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=False,
+            ),
+            _persist_ui_message_batch=lambda _conversation, _envelopes: [
+                SimpleNamespace(direction="friend", is_new=True)
+            ],
+            _dispatch_persisted_ui_message=lambda *_args: True,
+        )
+        set_scan_state(bot, initial_drain_complete=True)
+
+        with mock.patch.object(listening.time, "time", return_value=100.0):
+            listening._handle_global_scan_batch(bot, {
+                "chat_name": "张三",
+                "chat_type": "private",
+                "msg": [message],
+                "elapsed_seconds": 1.0,
+                "max_runtime_seconds": 10.0,
+                "max_quantity": 30,
+            })
+
         state = bot._listener_window_supervisor.snapshot()[0]
         self.assertEqual(state["conversation"], "张三")
         self.assertEqual(state["next_retry_at"], 100.0)

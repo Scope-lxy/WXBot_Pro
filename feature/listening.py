@@ -1261,8 +1261,11 @@ def _mark_global_scan_degraded(bot, conversation, details):
 def _handle_global_scan_batch(bot, batch):
     if not isinstance(batch, dict):
         raise TypeError("全局扫描必须返回字典批次")
+    release_recovery = getattr(bot, "_release_message_recovery_from_global_scan", None)
     ignored_chat_type = str(batch.get("ignored_unsupported_chat_type") or "").strip()
     if ignored_chat_type:
+        if callable(release_recovery):
+            release_recovery(batch.get("unread_before") or ())
         chat_name = str(batch.get("chat_name") or "").strip() or "未知会话"
         _bot_log(
             bot,
@@ -1275,6 +1278,8 @@ def _handle_global_scan_batch(bot, batch):
         }
     messages = list(batch.get("msg") or [])
     if not messages:
+        if callable(release_recovery):
+            release_recovery(batch.get("unread_before") or ())
         return {"raw_count": 0, "new_fact_count": 0}
     if any(not isinstance(message, MessageEnvelope) for message in messages):
         raise TypeError("全局扫描边界只能返回 MessageEnvelope")
@@ -1290,6 +1295,8 @@ def _handle_global_scan_batch(bot, batch):
         raise ValueError("全局扫描批次缺少稳定来源身份")
 
     accepted_items = bot._persist_ui_message_batch(conversation, messages)
+    if callable(release_recovery):
+        release_recovery(batch.get("unread_before") or (), conversation)
     for message in messages:
         voice_enabled = bool(
             bot.config.group_voice_recognition_switch
@@ -1336,7 +1343,7 @@ def _handle_global_scan_batch(bot, batch):
 
     if conversation.who in bot.config.global_blacklist:
         _bot_log(bot, message=f"{conversation.who} 为黑名单用户，已保存消息并跳过回复")
-    else:
+    elif global_scan_snapshot(bot).get("initial_drain_complete"):
         cached = get_runtime_cached_subwindow(
             bot,
             conversation.who,
@@ -1401,6 +1408,9 @@ def _run_global_scan_pump(bot):
         )
         if result["raw_count"] == 0:
             repeated_batches = 0
+            release_recovery = getattr(bot, "_release_message_recovery_from_global_scan", None)
+            if callable(release_recovery):
+                release_recovery(batch.get("unread_before") or (), final=True)
             if not global_scan_snapshot(bot).get("initial_drain_complete"):
                 _activate_deferred_listener_windows(bot)
             if stop_event.wait(GLOBAL_SCAN_EMPTY_INTERVAL_SECONDS):
@@ -1473,13 +1483,14 @@ def init_wx_listeners(bot):
     bot._set_material_outreach_namespace(wx_id)
     bot._initialize_message_runtime(wx_id)
     bot._init_prompt_system(str(account_area_dir(bot.config.DATA_DIR, wx_id, "chat_memory", create=True)))
-    bot._drain_message_recovery()
     bot._listen_chats = {}
     bot._material_source_listener_refs = {}
     if getattr(bot.config, "AllListen_switch", False):
+        bot._drain_message_recovery(defer_for_global_scan=True)
         bot._ui_ingress_ready.set()
         start_global_scan_pump(bot, listener_refs)
     else:
+        bot._drain_message_recovery()
         registered = list(bot._register_ui_listener_names(listener_refs) or listener_refs)
         registered.extend(ensure_material_source_listeners(bot, allow_rebind=True))
         for conversation in registered:

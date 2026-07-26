@@ -572,20 +572,41 @@ class MessageStoreTests(unittest.TestCase):
             ["uncertain", "cancelled"],
         )
 
-    def test_clean_shutdown_cancels_unclaimed_jobs_and_unrouted_inbound(self):
+    def test_discard_recoverable_reply_job_keeps_inbound_fact_for_rebuild(self):
         job_event = self.record("job")
         self.register("turn-1", [job_event["event_id"]], version=1)
-        pending_event = self.record("pending", received_at=120)
 
-        result = self.store.cancel_unclaimed_on_shutdown(now=130)
+        self.assertTrue(self.store.discard_recoverable_reply_job("turn-1"))
 
-        self.assertEqual(result["cancelled_job_ids"], ["turn-1"])
-        self.assertEqual(result["cancelled_pending_events"], 1)
-        self.assertEqual(self.store.get_reply_job("turn-1")["status"], "cancelled_shutdown")
+        self.assertIsNone(self.store.get_reply_job("turn-1"))
         self.assertEqual(
-            self.store.get_event(pending_event["event_id"])["processing_state"],
-            "cancelled",
+            self.store.get_event(job_event["event_id"])["processing_state"],
+            "pending",
         )
+        self.assertEqual(
+            [item["event_id"] for item in self.store.recover_pending_inbound(now=200)],
+            [job_event["event_id"]],
+        )
+        self.store.create_reply_job(
+            "turn-1",
+            conversation="Alice",
+            expected_version=1,
+            expires_at=1000,
+            event_ids=[job_event["event_id"]],
+        )
+        self.assertEqual(self.store.get_reply_job("turn-1")["status"], "pending")
+
+    def test_release_unstarted_claim_returns_action_to_pending(self):
+        event = self.record("msg-1")
+        self.register("turn-1", [event["event_id"]], version=1)
+        self.store.conditional_claim(
+            "turn-1:0", conversation="Alice", expected_version=1, expires_at=1000, now=120
+        )
+
+        self.assertTrue(self.store.release_unstarted_claim("turn-1:0", now=121))
+
+        self.assertEqual(self.store.delivery_action_status("turn-1:0"), "pending")
+        self.assertEqual(self.store.get_reply_job("turn-1")["status"], "pending")
 
     def test_illegal_finish_transition_is_rejected(self):
         event = self.record("msg-1")

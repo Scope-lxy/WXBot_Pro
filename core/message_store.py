@@ -2386,6 +2386,77 @@ class MessageStore:
             )
             return status
 
+    def release_unstarted_claim(self, action_id, *, now=None):
+        """Return a stop-cancelled UI action to pending before it reached WeChat."""
+
+        action_id = _required_text(action_id, "action_id")
+        current = _now(now)
+        with self._transaction() as connection:
+            action = connection.execute(
+                "SELECT turn_id, status FROM delivery_actions WHERE action_id = ?",
+                (action_id,),
+            ).fetchone()
+            if action is None or str(action["status"]) != "inflight":
+                return False
+            turn_id = str(action["turn_id"])
+            cursor = connection.execute(
+                """
+                UPDATE delivery_actions SET
+                    status = 'pending', claimed_at = NULL, finished_at = NULL, error = ''
+                WHERE action_id = ? AND status = 'inflight'
+                """,
+                (action_id,),
+            )
+            if cursor.rowcount != 1:
+                return False
+            connection.execute(
+                """
+                UPDATE reply_jobs SET
+                    status = 'pending', updated_at = ?, finished_at = NULL, error = ''
+                WHERE turn_id = ? AND status = 'inflight'
+                """,
+                (current, turn_id),
+            )
+            return True
+
+    def discard_recoverable_reply_job(self, turn_id):
+        """Discard a reply plan that never crossed a delivery boundary.
+
+        The inbound facts remain intact so startup can rebuild one normal reply
+        turn, potentially combined with newly scanned messages.
+        """
+
+        turn_id = _required_text(turn_id, "turn_id")
+        current = _now()
+        with self._transaction() as connection:
+            job = connection.execute(
+                "SELECT status FROM reply_jobs WHERE turn_id = ?",
+                (turn_id,),
+            ).fetchone()
+            if job is None or str(job["status"]) not in {"pending", "generating"}:
+                return False
+            active_action = connection.execute(
+                """
+                SELECT 1 FROM delivery_actions
+                WHERE turn_id = ? AND status NOT IN ('pending') LIMIT 1
+                """,
+                (turn_id,),
+            ).fetchone()
+            if active_action is not None:
+                return False
+            connection.execute(
+                """
+                UPDATE chat_events SET processing_state = 'pending', state_updated_at = ?
+                WHERE event_id IN (
+                    SELECT event_id FROM reply_job_events WHERE turn_id = ?
+                ) AND processing_state = 'handled'
+                """,
+                (current, turn_id),
+            )
+            connection.execute("DELETE FROM delivery_actions WHERE turn_id = ?", (turn_id,))
+            connection.execute("DELETE FROM reply_jobs WHERE turn_id = ?", (turn_id,))
+            return True
+
     def cancel_pending(self, turn_id, status="cancelled", error="", *, now=None):
         turn_id = _required_text(turn_id, "turn_id")
         current = _now(now)
@@ -2535,49 +2606,6 @@ class MessageStore:
             "expired_job_ids": expired_job_ids,
             "uncertain_action_ids": uncertain_action_ids,
             "cancelled_job_ids": cancelled_job_ids,
-        }
-
-    def cancel_unclaimed_on_shutdown(self, *, now=None):
-        """Cancel work that never crossed the non-idempotent delivery boundary."""
-
-        current = _now(now)
-        cancelled_job_ids = []
-        with self._transaction() as connection:
-            jobs = connection.execute(
-                """
-                SELECT turn_id FROM reply_jobs
-                WHERE status IN ('pending', 'generating')
-                ORDER BY created_at, turn_id
-                """
-            ).fetchall()
-            for job in jobs:
-                turn_id = str(job["turn_id"])
-                self._cancel_pending_locked(
-                    connection,
-                    turn_id,
-                    "cancelled",
-                    "clean shutdown before delivery claim",
-                    current,
-                )
-                connection.execute(
-                    """
-                    UPDATE reply_jobs SET status = 'cancelled_shutdown'
-                    WHERE turn_id = ? AND status = 'cancelled'
-                    """,
-                    (turn_id,),
-                )
-                cancelled_job_ids.append(turn_id)
-            cursor = connection.execute(
-                """
-                UPDATE chat_events SET
-                    processing_state = 'cancelled', state_updated_at = ?
-                WHERE direction = 'friend' AND processing_state = 'pending'
-                """,
-                (current,),
-            )
-        return {
-            "cancelled_job_ids": cancelled_job_ids,
-            "cancelled_pending_events": cursor.rowcount,
         }
 
     def begin_ui_delivery(self, delivery_id, kind, payload, *, now=None):
