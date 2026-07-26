@@ -1261,11 +1261,9 @@ def _mark_global_scan_degraded(bot, conversation, details):
 def _handle_global_scan_batch(bot, batch):
     if not isinstance(batch, dict):
         raise TypeError("全局扫描必须返回字典批次")
-    release_recovery = getattr(bot, "_release_message_recovery_from_global_scan", None)
     ignored_chat_type = str(batch.get("ignored_unsupported_chat_type") or "").strip()
     if ignored_chat_type:
-        if callable(release_recovery):
-            release_recovery(batch.get("unread_before") or ())
+        bot._release_message_recovery_from_global_scan(batch.get("unread_before") or ())
         chat_name = str(batch.get("chat_name") or "").strip() or "未知会话"
         _bot_log(
             bot,
@@ -1278,8 +1276,7 @@ def _handle_global_scan_batch(bot, batch):
         }
     messages = list(batch.get("msg") or [])
     if not messages:
-        if callable(release_recovery):
-            release_recovery(batch.get("unread_before") or ())
+        bot._release_message_recovery_from_global_scan(batch.get("unread_before") or ())
         return {"raw_count": 0, "new_fact_count": 0}
     if any(not isinstance(message, MessageEnvelope) for message in messages):
         raise TypeError("全局扫描边界只能返回 MessageEnvelope")
@@ -1295,8 +1292,9 @@ def _handle_global_scan_batch(bot, batch):
         raise ValueError("全局扫描批次缺少稳定来源身份")
 
     accepted_items = bot._persist_ui_message_batch(conversation, messages)
-    if callable(release_recovery):
-        release_recovery(batch.get("unread_before") or (), conversation)
+    bot._release_message_recovery_from_global_scan(
+        batch.get("unread_before") or (), conversation
+    )
     for message in messages:
         voice_enabled = bool(
             bot.config.group_voice_recognition_switch
@@ -1408,9 +1406,9 @@ def _run_global_scan_pump(bot):
         )
         if result["raw_count"] == 0:
             repeated_batches = 0
-            release_recovery = getattr(bot, "_release_message_recovery_from_global_scan", None)
-            if callable(release_recovery):
-                release_recovery(batch.get("unread_before") or (), final=True)
+            bot._release_message_recovery_from_global_scan(
+                batch.get("unread_before") or (), final=True
+            )
             if not global_scan_snapshot(bot).get("initial_drain_complete"):
                 _activate_deferred_listener_windows(bot)
             if stop_event.wait(GLOBAL_SCAN_EMPTY_INTERVAL_SECONDS):

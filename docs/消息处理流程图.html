@@ -173,7 +173,7 @@
         <div class="outcome">
           <article class="node amber"><h3>版本已变化</h3><p>已开始的单个气泡可完成；尚未开始的剩余气泡取消。取消内容不记为“已回复”。</p></article>
           <article class="node red"><h3>已提交但结果未知</h3><p>标记 <code>uncertain</code>，保留证据并禁止自动重发，避免真实好友收到重复消息。</p></article>
-          <article class="node violet"><h3>进程中断</h3><p>有效期内且未 claim 的任务可重新生成；遗留 <code>inflight</code> 转为 <code>uncertain</code>，同轮剩余气泡取消，绝不自动重发。</p></article>
+          <article class="node violet"><h3>停止或进程中断</h3><p>15 分钟内且未 claim 的原始消息会重新合并、生成和校验；遗留 <code>inflight</code> 转为 <code>uncertain</code>，同轮剩余气泡取消，绝不自动重发。</p></article>
         </div>
       </section>
     </div>

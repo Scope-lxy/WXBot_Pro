@@ -15,7 +15,7 @@ from core.account_storage import account_file
 from core.memory_context_repair import build_tail_repair_plan
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DEFAULT_REPLY_TTL_SECONDS = 15 * 60
 
 ACTION_STATES = {"pending", "inflight", "done", "uncertain", "cancelled", "stale", "expired"}
@@ -119,7 +119,7 @@ class MessageStore:
         connection = self._connect()
         try:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, 2, 3, SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, SCHEMA_VERSION}:
                 raise MessageStoreSchemaError(
                     f"unsupported message store schema {version}; expected {SCHEMA_VERSION}"
                 )
@@ -174,7 +174,6 @@ class MessageStore:
                     turn_id TEXT PRIMARY KEY,
                     conversation TEXT NOT NULL,
                     chat_type TEXT NOT NULL,
-                    route_source TEXT NOT NULL DEFAULT '',
                     expected_version INTEGER NOT NULL CHECK (expected_version >= 0),
                     expires_at REAL NOT NULL,
                     action_count INTEGER NOT NULL DEFAULT 0 CHECK (action_count >= 0),
@@ -239,13 +238,6 @@ class MessageStore:
 
                 """
             )
-            reply_job_columns = {
-                str(row[1]) for row in connection.execute("PRAGMA table_info(reply_jobs)")
-            }
-            if "route_source" not in reply_job_columns:
-                connection.execute(
-                    "ALTER TABLE reply_jobs ADD COLUMN route_source TEXT NOT NULL DEFAULT ''"
-                )
             chat_event_columns = {
                 str(row[1]) for row in connection.execute("PRAGMA table_info(chat_events)")
             }
@@ -1829,7 +1821,6 @@ class MessageStore:
         turn_id,
         conversation,
         chat_type,
-        route_source,
         expected_version,
         expires_at,
         event_ids,
@@ -1844,7 +1835,6 @@ class MessageStore:
             same = (
                 existing["conversation"] == conversation
                 and existing["chat_type"] == chat_type
-                and (not route_source or existing["route_source"] == route_source)
                 and int(existing["expected_version"]) == expected_version
                 and float(existing["expires_at"]) == expires_at
                 and existing_ids == event_ids
@@ -1859,15 +1849,14 @@ class MessageStore:
         connection.execute(
             """
             INSERT INTO reply_jobs(
-                turn_id, conversation, chat_type, route_source, expected_version, expires_at,
+                turn_id, conversation, chat_type, expected_version, expires_at,
                 action_count, status, created_at, updated_at, finished_at, error
-            ) VALUES (?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, NULL, '')
+            ) VALUES (?, ?, ?, ?, ?, 0, 'pending', ?, ?, NULL, '')
             """,
             (
                 turn_id,
                 conversation,
                 chat_type,
-                route_source,
                 expected_version,
                 expires_at,
                 current,
@@ -1899,13 +1888,11 @@ class MessageStore:
         expires_at,
         event_ids,
         chat_type="private",
-        route_source="",
         now=None,
     ):
         turn_id = _required_text(turn_id, "turn_id")
         conversation = _required_text(conversation, "conversation")
         chat_type = _required_chat_type(chat_type)
-        route_source = str(route_source or "").strip()
         expected_version = int(expected_version)
         if expected_version < 0:
             raise ValueError("expected_version must not be negative")
@@ -1918,7 +1905,6 @@ class MessageStore:
                 turn_id,
                 conversation,
                 chat_type,
-                route_source,
                 expected_version,
                 expires_at,
                 event_ids,
@@ -2038,7 +2024,6 @@ class MessageStore:
         event_ids,
         action_count,
         chat_type="private",
-        route_source="",
         now=None,
     ):
         """Atomically register a generated reply and all of its bubbles."""
@@ -2046,7 +2031,6 @@ class MessageStore:
         turn_id = _required_text(turn_id, "turn_id")
         conversation = _required_text(conversation, "conversation")
         chat_type = _required_chat_type(chat_type)
-        route_source = str(route_source or "").strip()
         expected_version = int(expected_version)
         if expected_version < 0:
             raise ValueError("expected_version must not be negative")
@@ -2065,7 +2049,6 @@ class MessageStore:
                 turn_id,
                 conversation,
                 chat_type,
-                route_source,
                 expected_version,
                 expires_at,
                 event_ids,

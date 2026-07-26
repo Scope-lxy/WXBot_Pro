@@ -10,6 +10,7 @@ from core.message_store import (
     MessageStoreConflictError,
     MessageStoreTransitionError,
 )
+from tools.cleanup_message_store_route_source import cleanup_route_source_columns
 
 
 def inbound(
@@ -60,7 +61,7 @@ class MessageStoreTests(unittest.TestCase):
     def record(self, native_id, **kwargs):
         return self.store.record_inbound(inbound(native_id, **kwargs))
 
-    def test_schema_one_database_adds_route_source_column(self):
+    def test_schema_four_database_keeps_route_source_until_explicit_cleanup(self):
         legacy_path = Path(self.store.path)
         legacy_path.unlink()
         connection = sqlite3.connect(legacy_path)
@@ -71,6 +72,7 @@ class MessageStoreTests(unittest.TestCase):
                     turn_id TEXT PRIMARY KEY,
                     conversation TEXT NOT NULL,
                     chat_type TEXT NOT NULL,
+                    route_source TEXT NOT NULL DEFAULT '',
                     expected_version INTEGER NOT NULL,
                     expires_at REAL NOT NULL,
                     action_count INTEGER NOT NULL DEFAULT 0,
@@ -82,7 +84,7 @@ class MessageStoreTests(unittest.TestCase):
                 )
                 """
             )
-            connection.execute("PRAGMA user_version = 1")
+            connection.execute("PRAGMA user_version = 4")
             connection.commit()
         finally:
             connection.close()
@@ -102,7 +104,19 @@ class MessageStoreTests(unittest.TestCase):
 
         self.assertIn("route_source", columns)
         self.assertIsNotNone(echo_table)
-        self.assertEqual(version, 4)
+        self.assertEqual(version, 5)
+
+        cleaned = cleanup_route_source_columns(self.temp.name)
+        self.assertEqual(cleaned, [(legacy_path, True)])
+
+        connection = sqlite3.connect(migrated.path)
+        try:
+            columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(reply_jobs)")
+            }
+        finally:
+            connection.close()
+        self.assertNotIn("route_source", columns)
 
     def test_merge_conversations_moves_sqlite_history(self):
         self.record("old-1", content="旧消息")
@@ -535,7 +549,6 @@ class MessageStoreTests(unittest.TestCase):
         self.store.create_reply_job(
             "replay-turn",
             conversation="Alice",
-            route_source="private_keyword",
             expected_version=1,
             expires_at=1000,
             event_ids=[replay_event["event_id"]],
@@ -563,7 +576,6 @@ class MessageStoreTests(unittest.TestCase):
             [job["turn_id"] for job in recovered["replay_jobs"]],
             ["replay-turn"],
         )
-        self.assertEqual(recovered["replay_jobs"][0]["route_source"], "private_keyword")
         self.assertEqual(recovered["uncertain_action_ids"], ["claimed-turn:0"])
         self.assertEqual(recovered["expired_job_ids"], ["expired-turn"])
         self.assertEqual(self.store.get_reply_job("claimed-turn")["status"], "uncertain")

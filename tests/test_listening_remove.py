@@ -316,6 +316,7 @@ class RemoveListenChatTests(unittest.TestCase):
             _persist_ui_message_batch=lambda _conversation, _envelopes: [
                 SimpleNamespace(direction="friend", is_new=True)
             ],
+            _release_message_recovery_from_global_scan=lambda *_args, **_kwargs: 0,
             _dispatch_persisted_ui_message=lambda *_args: True,
         )
         set_scan_state(bot, initial_drain_complete=True)
@@ -340,6 +341,7 @@ class RemoveListenChatTests(unittest.TestCase):
         logs = []
         bot = SimpleNamespace(
             _persist_ui_message_batch=lambda *args: persisted.append(args),
+            _release_message_recovery_from_global_scan=lambda *_args, **_kwargs: 0,
             _dispatch_persisted_ui_message=lambda *_args: self.fail("不应派发不支持会话"),
         )
 
@@ -383,6 +385,7 @@ class RemoveListenChatTests(unittest.TestCase):
             _persist_ui_message_batch=lambda _conversation, _envelopes: [
                 SimpleNamespace(direction="friend", is_new=True)
             ],
+            _release_message_recovery_from_global_scan=lambda *_args, **_kwargs: 0,
             _dispatch_persisted_ui_message=lambda conversation, envelope: received.append(
                 (conversation, envelope)
             ) or True,
@@ -414,6 +417,7 @@ class RemoveListenChatTests(unittest.TestCase):
                 SimpleNamespace(direction="friend", is_new=True),
                 SimpleNamespace(direction="friend", is_new=True),
             ],
+            _release_message_recovery_from_global_scan=lambda *_args, **_kwargs: 0,
             _dispatch_persisted_ui_message=lambda *_args: True,
         )
         set_scan_state(bot)
@@ -503,6 +507,7 @@ class RemoveListenChatTests(unittest.TestCase):
             config=SimpleNamespace(AllListen_filter_mute=False),
             is_stop_requested=lambda: False,
             _global_scan_deferred_listener_refs=[],
+            _release_message_recovery_from_global_scan=lambda *_args, **_kwargs: 0,
         )
         set_scan_state(bot)
         batches = [
@@ -536,6 +541,7 @@ class RemoveListenChatTests(unittest.TestCase):
             config=SimpleNamespace(AllListen_filter_mute=False),
             is_stop_requested=lambda: False,
             _global_scan_deferred_listener_refs=[ConversationRef("管理员", "private")],
+            _release_message_recovery_from_global_scan=lambda *_args, **_kwargs: 0,
         )
         set_scan_state(bot)
         bot._global_scan_deferred_listener_refs = [ConversationRef("管理员", "private")]

@@ -4733,17 +4733,12 @@ class WXBot:
             log(level="WARNING", message=f"读取当前消息时间失败，已按无时间继续：{exc}")
             return ""
 
-    def _ensure_reply_job(self, chat, message, *, chat_type="private", route_source=""):
+    def _ensure_reply_job(self, chat, message, *, chat_type="private"):
         store = getattr(self, "_message_store", None)
         event_ids = self._reply_event_ids(message)
         if store is None or not event_ids:
             return ""
         conversation = str(getattr(chat, "who", "") or "").strip()
-        route_source = str(
-            route_source
-            or getattr(message, "_wxbot_reply_route_source", "")
-            or ""
-        ).strip()
         raw_expected_version = getattr(message, "_wxbot_event_version", None)
         if raw_expected_version is None:
             expected_version = store.conversation_version(conversation, chat_type=chat_type)
@@ -4765,12 +4760,10 @@ class WXBot:
             expected_version=expected_version,
             expires_at=expires_at,
             event_ids=event_ids,
-            route_source=route_source,
         )
         message._wxbot_reply_turn_id = turn_id
         message._wxbot_event_version = expected_version
         message._wxbot_reply_expires_at = expires_at
-        message._wxbot_reply_route_source = route_source
         return turn_id
 
     def _cancel_unfinished_reply_job(self, message, reason, *, status="cancelled"):
@@ -4782,14 +4775,13 @@ class WXBot:
         if job and job.get("status") in {"pending", "generating"}:
             store.cancel_pending(turn_id, status, reason)
 
-    def _reply_job_can_generate(self, chat, message, *, chat_type, route_source):
+    def _reply_job_can_generate(self, chat, message, *, chat_type):
         if self.is_stop_requested():
             return False
         turn_id = self._ensure_reply_job(
             chat,
             message,
             chat_type=chat_type,
-            route_source=route_source,
         )
         if not turn_id:
             return True
@@ -4849,19 +4841,10 @@ class WXBot:
             message_body,
         )
         limit_reached = self._text_reply_limit_reached(user_key, chat_type="private")
-        route_source = (
-            "private_limit"
-            if limit_reached
-            else "private_keyword"
-            if keyword_plan
-            else "private_ai"
-        )
-        message._wxbot_reply_route_source = route_source
         if not self._reply_job_can_generate(
             chat,
             message,
             chat_type="private",
-            route_source=route_source,
         ):
             return True
         if limit_reached:
@@ -5341,19 +5324,10 @@ class WXBot:
                 group_user_key,
                 chat_type="group",
             )
-            route_source = (
-                "group_limit"
-                if limit_reached
-                else "group_keyword"
-                if action == "group_keyword_reply"
-                else "group_ai"
-            )
-            message._wxbot_reply_route_source = route_source
             if not self._reply_job_can_generate(
                 chat,
                 message,
                 chat_type="group",
-                route_source=route_source,
             ):
                 return True
             if limit_reached:

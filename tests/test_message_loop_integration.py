@@ -436,7 +436,6 @@ class MessageLoopIntegrationTests(unittest.TestCase):
                 FakeChat("Team", lambda **_kwargs: True, chat_type="group"),
                 message,
                 chat_type="group",
-                route_source="group_ai",
             )
 
             self.assertEqual(bot._message_store.get_reply_job(turn_id)["expected_version"], 0)
@@ -487,7 +486,6 @@ class MessageLoopIntegrationTests(unittest.TestCase):
                 FakeChat("Team", lambda **_kwargs: True, chat_type="group"),
                 message,
                 chat_type="group",
-                route_source="group_ai",
             )
 
             self.assertFalse(result)
@@ -670,7 +668,6 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             turn_id = bot._ensure_reply_job(
                 FakeChat("Alice", lambda **_kwargs: True),
                 message,
-                route_source="private_ai",
             )
 
             self.assertEqual(recovered, 1)
@@ -991,7 +988,6 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             turn_id = bot._ensure_reply_job(
                 FakeChat("Alice", lambda **_kwargs: True),
                 inbound,
-                route_source="private_ai",
             )
             scheduled = []
             bot._schedule_private_message_retry = (
@@ -1116,7 +1112,6 @@ class MessageLoopIntegrationTests(unittest.TestCase):
                 FakeChat("Team", lambda **_kwargs: self.fail("empty reply must not send")),
                 inbound,
                 chat_type="group",
-                route_source="group_ai",
             )
 
             result = bot._deliver_reply_actions(
@@ -1328,7 +1323,6 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             turn_id = bot._ensure_reply_job(
                 FakeChat("Alice", lambda **_kwargs: True),
                 inbound,
-                route_source="private_ai",
             )
             turn = ReplyTurn(
                 turn_id=turn_id,
@@ -1363,7 +1357,6 @@ class MessageLoopIntegrationTests(unittest.TestCase):
             turn_id = bot._ensure_reply_job(
                 FakeChat("Alice", lambda **_kwargs: True),
                 inbound,
-                route_source="private_ai",
             )
             from core.reply_delivery import ReplyTurn
 
