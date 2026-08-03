@@ -27,7 +27,7 @@
 
 ## 代码结构
 
-- `打开软件.bat`：启动入口。创建或复用 Python 3.12 `venv`，安装依赖后运行 `web_server.py`。
+- `打开软件.bat`：启动入口。优先用 `runtime/python/` 的 Python 3.12 创建或复用 `venv/`，安装依赖后运行 `web_server.py`；`runtime/python/` 是发布包携带的基础运行时，`venv/` 是本机可重建的依赖环境。
 - `web_server.py`：Flask 面板和管理 API，负责登录、配置读写、接口测试、备份、页面 API，以及启动 / 停止机器人。
 - `templates/dashboard.html`：面板主体。
 - `wxbot_core.py`：机器人运行时总编排，负责监听业务、AI 回复、统一任务扫描和向 UI owner 提交纯数据意图。
@@ -163,7 +163,7 @@ wxautox4 私聊窗口返回的 `chat_type='friend'` 只在 `ConversationRef` 入
 - `data/config/admin.json`：面板账号密码。
 - `data/config/email.json`：邮件通知配置。
 - `data/config/reply_count.json`：私聊好友与群聊成员的回复次数限制计数；群聊键由群名和发言人共同组成。
-- `data/config/runtime_metrics_v1.json`：状态面板和数据图表使用的小时级运行统计。
+- `data/config/runtime_metrics_v1.json`：状态面板和数据图表使用的小时级运行统计。文件存在但读取失败时必须保留原文件并拒绝写入，不能重建为空统计；机器人每次启动只记录一次存储错误，恢复写入后才允许再次记录。
 - `data/prompt/`：人格模板和人格近况文件。
 - `data/system_prompts/`：系统 Prompt 片段及其备份。
 - `data/accounts/<wx_id>/message_store.sqlite3`：消息事实、聊天记录、会话版本、回复任务、逐气泡投递状态和非幂等 UI 提交围栏的唯一真源。旧版 `memory/*_memory.json` 不再由生产代码读取；已有本地数据使用 `tools/migrate_legacy_message_history.py` 一次性迁入，验证后移除旧目录，不保留长期双读兼容层。

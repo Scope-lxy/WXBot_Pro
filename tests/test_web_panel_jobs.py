@@ -212,12 +212,43 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertEqual(dashboard.count('id="chat_keyword_reply_quote"'), 1)
         self.assertEqual(dashboard.count('id="group_keyword_reply_quote"'), 1)
         self.assertEqual(dashboard.count('id="group_keyword_reply_at_msg"'), 1)
-        self.assertIn("私聊关键词回复时引用原消息", dashboard)
-        self.assertIn("群聊关键词回复时引用原消息", dashboard)
-        self.assertIn("群聊关键词回复时@发言人", dashboard)
+        self.assertIn(
+            '<label for="chat_keyword_reply_quote"><span class="switch-title">回复时引用</span></label>',
+            dashboard,
+        )
+        self.assertIn(
+            '<label for="group_keyword_reply_quote"><span class="switch-title">回复时引用</span></label>',
+            dashboard,
+        )
+        self.assertIn("<span class=\"switch-title\">仅被@时触发</span>", dashboard)
+        self.assertIn("<span class=\"switch-title\">回复时@对方</span>", dashboard)
+        self.assertEqual(dashboard.count('class="keyword-trigger-grid"'), 1)
         self.assertIn("chat_keyword_reply_quote:$('#chat_keyword_reply_quote').is(':checked')", dashboard)
         self.assertIn("group_keyword_reply_quote:$('#group_keyword_reply_quote').is(':checked')", dashboard)
         self.assertIn("group_keyword_reply_at_msg:$('#group_keyword_reply_at_msg').is(':checked')", dashboard)
+        private_quote_position = dashboard.index('id="chat_keyword_reply_quote"')
+        divider_position = dashboard.index(
+            '<div class="detail-config-separator" aria-hidden="true"></div>',
+            private_quote_position,
+        )
+        group_switch_position = dashboard.index('id="group_keyword_switch"')
+        self.assertLess(private_quote_position, divider_position)
+        self.assertLess(divider_position, group_switch_position)
+        self.assertLess(dashboard.index('id="group_keyword_at_only"'), dashboard.index('class="keyword-trigger-grid"'))
+        self.assertEqual(
+            [
+                dashboard.index('id="group_keyword_switch"'),
+                dashboard.index('id="group_keyword_at_only"'),
+                dashboard.index('id="group_keyword_reply_quote"'),
+                dashboard.index('id="group_keyword_reply_at_msg"'),
+            ],
+            sorted([
+                dashboard.index('id="group_keyword_switch"'),
+                dashboard.index('id="group_keyword_at_only"'),
+                dashboard.index('id="group_keyword_reply_quote"'),
+                dashboard.index('id="group_keyword_reply_at_msg"'),
+            ]),
+        )
 
         config = {
             "chat_keyword_reply_quote": "true",

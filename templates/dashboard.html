@@ -1840,23 +1840,26 @@ html.icons-pref-local [class*=" bi-"]::before {
           </div>
           <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="chat_keyword_reply_quote" name="chat_keyword_reply_quote" {% if config.chat_keyword_reply_quote %}checked{% endif %}>
-            <label for="chat_keyword_reply_quote"><span class="switch-title">私聊关键词回复时引用原消息</span></label>
+            <label for="chat_keyword_reply_quote"><span class="switch-title">回复时引用</span></label>
           </div>
+          <div class="detail-config-separator" aria-hidden="true"></div>
           <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="group_keyword_switch" name="group_keyword_switch" {% if config.group_keyword_switch %}checked{% endif %}>
             <label for="group_keyword_switch"><span class="switch-title">群聊关键词回复</span></label>
           </div>
           <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
-            <input class="form-check-input" type="checkbox" id="group_keyword_reply_quote" name="group_keyword_reply_quote" {% if config.group_keyword_reply_quote %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
-            <label for="group_keyword_reply_quote"><span class="switch-title">群聊关键词回复时引用原消息</span></label>
-          </div>
-          <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
-            <input class="form-check-input" type="checkbox" id="group_keyword_reply_at_msg" name="group_keyword_reply_at_msg" {% if config.group_keyword_reply_at_msg %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
-            <label for="group_keyword_reply_at_msg"><span class="switch-title">群聊关键词回复时@发言人</span></label>
-          </div>
-          <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
             <input class="form-check-input" type="checkbox" id="group_keyword_at_only" name="group_keyword_at_only" {% if config.group_keyword_at_only %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
-            <label for="group_keyword_at_only"><span class="switch-title">群聊仅在被@时触发</span></label>
+            <label for="group_keyword_at_only"><span class="switch-title">仅被@时触发</span></label>
+          </div>
+          <div class="keyword-trigger-grid">
+            <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
+              <input class="form-check-input" type="checkbox" id="group_keyword_reply_quote" name="group_keyword_reply_quote" {% if config.group_keyword_reply_quote %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
+              <label for="group_keyword_reply_quote"><span class="switch-title">回复时引用</span></label>
+            </div>
+            <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
+              <input class="form-check-input" type="checkbox" id="group_keyword_reply_at_msg" name="group_keyword_reply_at_msg" {% if config.group_keyword_reply_at_msg %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
+              <label for="group_keyword_reply_at_msg"><span class="switch-title">回复时@对方</span></label>
+            </div>
           </div>
         </div>
       </div>
@@ -10913,7 +10916,7 @@ $(function(){
     return Array.isArray(points) ? points : [];
   }
   function runtimeMetricRangeDays(){
-    return runtimeMetricsState.granularity === 'hourly' ? 3 : 15;
+    return runtimeMetricsState.granularity === 'hourly' ? 2 : 15;
   }
   function runtimeMetricPointTimeText(point){
     var key = String((point && point.key) || '');
@@ -10927,10 +10930,10 @@ $(function(){
     var key = String((point && point.key) || '');
     if(runtimeMetricsState.granularity === 'hourly'){
       var hour = key.slice(11, 13);
-      if(['00', '04', '08', '12', '16', '20'].indexOf(hour) === -1) return '';
+      var previousKey = index > 0 ? String((runtimeMetricPoints()[index - 1] || {}).key || '') : '';
       return {
-        hour: hour === '00' ? '24' : hour,
-        date: hour === '04' ? key.slice(5, 10) : ''
+        hour: hour,
+        date: index === 0 || previousKey.slice(0, 10) !== key.slice(0, 10) ? key.slice(5, 10) : ''
       };
     }
     if(total > 16 && index !== 0 && index !== total - 1 && index % 5 !== 0) return '';
@@ -11139,7 +11142,8 @@ $(function(){
     if(runtimeMetricsState.loading) return $.Deferred().resolve().promise();
     runtimeMetricsState.loading = true;
     var days = runtimeMetricRangeDays();
-    return $.getJSON('/api/runtime-metrics?days=' + encodeURIComponent(days))
+    var hourlyBucketHours = runtimeMetricsState.granularity === 'hourly' ? 3 : 1;
+    return $.getJSON('/api/runtime-metrics?days=' + encodeURIComponent(days) + '&hourly_bucket_hours=' + encodeURIComponent(hourlyBucketHours))
       .done(function(payload){
         runtimeMetricsState.payload = payload || {};
         runtimeMetricsState.days = days;

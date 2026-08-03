@@ -3,8 +3,9 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from core.runtime_metrics import RuntimeMetricsStore
+from core.runtime_metrics import RuntimeMetricsStorageError, RuntimeMetricsStore
 from wxbot_core import WXBot
 
 
@@ -59,14 +60,18 @@ class RuntimeMetricsStoreTests(unittest.TestCase):
         self.assertEqual(payload["today"]["relationship_blocked_today"], 4)
         self.assertEqual(payload["today"]["relationship_deleted_today"], 1)
 
-    def test_corrupt_file_returns_empty_payload(self):
+    def test_corrupt_file_is_not_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "runtime_metrics.json"
             path.write_text("{broken", encoding="utf-8")
-            payload = RuntimeMetricsStore(path).series_payload(now="2026-06-20T12:00:00", days=1)
+            store = RuntimeMetricsStore(path)
 
-        self.assertEqual(payload["status"], "success")
-        self.assertEqual(payload["today"]["api_calls"], 0)
+            with self.assertRaises(RuntimeMetricsStorageError):
+                store.increment("api_calls", now="2026-06-20T12:00:00")
+            with self.assertRaises(RuntimeMetricsStorageError):
+                store.series_payload(now="2026-06-20T12:00:00", days=1)
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "{broken")
 
     def test_default_retention_keeps_monthly_daily_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -80,8 +85,55 @@ class RuntimeMetricsStoreTests(unittest.TestCase):
         self.assertEqual(payload["daily"][0]["api_calls"], 1)
         self.assertEqual(payload["today"]["api_calls"], 1)
 
+    def test_hourly_series_merges_three_hours_and_deduplicates_set_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = RuntimeMetricsStore(Path(tmp) / "runtime_metrics.json")
+
+            store.increment("api_calls", amount=2, now="2026-06-20T00:10:00")
+            store.increment("api_calls", amount=3, now="2026-06-20T01:10:00")
+            store.increment("reply_count", now="2026-06-20T02:10:00")
+            store.add_unique("active_private_chats", "阿英2", now="2026-06-20T00:10:00")
+            store.add_unique("active_private_chats", "阿英2", now="2026-06-20T01:10:00")
+            store.add_unique("active_private_chats", "小王", now="2026-06-20T02:10:00")
+            payload = store.series_payload(
+                now="2026-06-20T23:00:00",
+                days=1,
+                hourly_bucket_hours=3,
+            )
+
+        self.assertEqual(len(payload["hourly"]), 8)
+        first_bucket = payload["hourly"][0]
+        self.assertEqual(first_bucket["key"], "2026-06-20T00")
+        self.assertEqual(first_bucket["api_calls"], 5)
+        self.assertEqual(first_bucket["reply_count"], 1)
+        self.assertEqual(first_bucket["private_active_count"], 2)
+
 
 class RuntimeMetricsBotTests(unittest.TestCase):
+    def test_metric_storage_error_is_logged_once_until_the_store_recovers(self):
+        bot = WXBot.__new__(WXBot)
+        bot._runtime_metrics_store = lambda: SimpleNamespace(
+            increment=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeMetricsStorageError("运行统计文件无法读取")
+            )
+        )
+
+        with patch("wxbot_core.log") as logger:
+            bot._metric_increment("api_calls")
+            bot._metric_increment("api_calls")
+            self.assertEqual(logger.call_count, 1)
+
+            bot._runtime_metrics_store = lambda: SimpleNamespace(increment=lambda *_args, **_kwargs: None)
+            bot._metric_increment("api_calls")
+
+            bot._runtime_metrics_store = lambda: SimpleNamespace(
+                increment=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    RuntimeMetricsStorageError("运行统计文件无法读取")
+                )
+            )
+            bot._metric_increment("api_calls")
+            self.assertEqual(logger.call_count, 2)
+
     def test_metric_failures_do_not_escape_record_reply(self):
         bot = WXBot.__new__(WXBot)
         bot.msg_replied_count = 0

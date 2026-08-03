@@ -489,6 +489,8 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .new-friend-block .ui-head { margin-bottom: var(--ui-l2-body-gap); padding-bottom: var(--ui-l2-head-divider-gap); height: auto; overflow: visible; }
 .keyword-trigger-card .switch-row { width: 100%; min-height: 44px; margin-bottom: 0; padding: 10px 14px; background: #fff; border: 1px solid var(--layer-border-subtle); border-radius: 6px; }
 .keyword-trigger-card .switch-row + .switch-row { margin-top: var(--ui-panel-gap); }
+.keyword-trigger-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-panel-gap); margin-top: var(--ui-panel-gap); }
+.keyword-trigger-card .keyword-trigger-grid .switch-row + .switch-row { margin-top: 0; }
 .keyword-trigger-dependent.is-muted { opacity: .58; }
 .keyword-rule-list { display: grid; gap: 10px; }
 .keyword-empty,
@@ -1211,6 +1213,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .group-welcome-head { background: var(--muted-bg); }
 @media (max-width: 900px) {
   .group-switch-grid { grid-template-columns: 1fr; }
+  .keyword-trigger-grid { grid-template-columns: 1fr; }
 }
 .new-friend-card > .ui-head.ui-head--page { margin-bottom: var(--ui-l1-body-gap); padding-bottom: var(--ui-l1-head-divider-gap); }
 .contact-maintenance-pill-label { color: inherit; font-weight: 700; }

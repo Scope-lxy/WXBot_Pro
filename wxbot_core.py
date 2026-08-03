@@ -123,7 +123,7 @@ from core.memory_context_repair import (
     snapshot_before_current,
 )
 from core.reply_count_store import ReplyCountStore
-from core.runtime_metrics import RuntimeMetricsStore
+from core.runtime_metrics import RuntimeMetricsStorageError, RuntimeMetricsStore
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.prompting import (
     IMAGE_DESCRIPTION_SYSTEM_PROMPT,
@@ -1688,23 +1688,42 @@ class WXBot:
         self._runtime_metrics_store_instance = store
         return store
 
-    def get_runtime_metrics_series(self, now=None, days=7):
+    def get_runtime_metrics_series(self, now=None, days=7, hourly_bucket_hours=1):
         try:
-            return self._runtime_metrics_store().series_payload(now=now, days=days)
+            return self._runtime_metrics_store().series_payload(
+                now=now,
+                days=days,
+                hourly_bucket_hours=hourly_bucket_hours,
+            )
         except Exception:
             return {"status": "success", "updated_at": "", "range_days": days, "hourly": [], "daily": [], "today": {}}
 
     def _metric_increment(self, key, amount=1, now=None):
         try:
             self._runtime_metrics_store().increment(key, amount=amount, now=now)
+        except RuntimeMetricsStorageError as exc:
+            self._report_runtime_metrics_storage_error(exc)
         except Exception:
             pass
+        else:
+            self._runtime_metrics_storage_error = ""
 
     def _metric_add_unique(self, key, identity, now=None):
         try:
             self._runtime_metrics_store().add_unique(key, identity, now=now)
+        except RuntimeMetricsStorageError as exc:
+            self._report_runtime_metrics_storage_error(exc)
         except Exception:
             pass
+        else:
+            self._runtime_metrics_storage_error = ""
+
+    def _report_runtime_metrics_storage_error(self, exc):
+        message = str(exc)
+        if message == getattr(self, "_runtime_metrics_storage_error", ""):
+            return
+        self._runtime_metrics_storage_error = message
+        log("ERROR", message)
 
     def _metric_record_active_chat(self, chat_name, *, chat_type="private", now=None):
         key = "active_group_chats" if str(chat_type or "").strip() == "group" else "active_private_chats"
@@ -1719,8 +1738,12 @@ class WXBot:
                 },
                 now=now,
             )
+        except RuntimeMetricsStorageError as exc:
+            self._report_runtime_metrics_storage_error(exc)
         except Exception:
             pass
+        else:
+            self._runtime_metrics_storage_error = ""
 
     def runtime_metrics_today(self, now=None):
         try:

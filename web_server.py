@@ -6,7 +6,7 @@
 机器人管理网页
 使用 Flask 框架开发，提供机器人控制、配置管理等功能
 """
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
+from flask import Flask, cli as flask_cli, render_template, request, jsonify, session, redirect, url_for, send_file
 import json
 import os
 import re
@@ -1838,6 +1838,11 @@ def _parse_hhmm_config(value, field_name):
     except ValueError:
         return None, f'{field_name} 格式无效: {value}，应为 HH:MM'
 
+
+def _format_hhmm(hour, minute):
+    return f'{hour:02d}:{minute:02d}'
+
+
 def _normalize_schedule_task_lists(config):
     if not isinstance(config, dict):
         return config
@@ -2703,21 +2708,32 @@ def _runtime_metric_count(today, key):
         return 0
 
 
-def _dashboard_runtime_metrics_payload(days=1, runtime_bot=None):
+def _dashboard_runtime_metrics_payload(days=1, hourly_bucket_hours=1, runtime_bot=None):
     try:
         days = int(days or 1)
     except (TypeError, ValueError):
         days = 1
     days = max(1, min(365, days))
+    try:
+        hourly_bucket_hours = int(hourly_bucket_hours or 1)
+    except (TypeError, ValueError):
+        hourly_bucket_hours = 1
+    hourly_bucket_hours = max(1, min(24, hourly_bucket_hours))
     if runtime_bot is not None and hasattr(runtime_bot, 'get_runtime_metrics_series'):
         try:
-            payload = runtime_bot.get_runtime_metrics_series(days=days)
+            payload = runtime_bot.get_runtime_metrics_series(
+                days=days,
+                hourly_bucket_hours=hourly_bucket_hours,
+            )
             if isinstance(payload, dict):
                 return payload
         except Exception:
             pass
     try:
-        return RuntimeMetricsStore(os.path.join(CONFIG_DIR, 'runtime_metrics_v1.json')).series_payload(days=days)
+        return RuntimeMetricsStore(os.path.join(CONFIG_DIR, 'runtime_metrics_v1.json')).series_payload(
+            days=days,
+            hourly_bucket_hours=hourly_bucket_hours,
+        )
     except Exception:
         return None
 
@@ -4553,8 +4569,14 @@ def api_runtime_metrics():
         days = 7
     days = max(1, min(365, days))
     try:
+        hourly_bucket_hours = int(request.args.get('hourly_bucket_hours', 1) or 1)
+    except (TypeError, ValueError):
+        hourly_bucket_hours = 1
+    hourly_bucket_hours = max(1, min(24, hourly_bucket_hours))
+    try:
         payload = _dashboard_runtime_metrics_payload(
             days=days,
+            hourly_bucket_hours=hourly_bucket_hours,
             runtime_bot=bot if bot_thread and bot_thread.is_alive() and bot else None,
         )
         if isinstance(payload, dict):
@@ -6546,7 +6568,7 @@ def time_start_stop():
         if stop_time:
             stop_hour, stop_minute = stop_time
         if everyday_start_stop_bot_switch:
-            log('INFO', f'启动定时启停线程，启动时间：{start_hour}:{start_minute}，停止时间：{stop_hour}:{stop_minute}')
+            log('INFO', f'启动定时启停线程，启动时间：{_format_hhmm(start_hour, start_minute)}，停止时间：{_format_hhmm(stop_hour, stop_minute)}')
         else:
             log('DEBUG', '定时启停未启用')
 
@@ -6560,7 +6582,7 @@ def time_start_stop():
                 if stop_time:
                     stop_hour, stop_minute = stop_time
                 if everyday_start_stop_bot_switch:
-                    log('INFO', f'配置更新，启动定时启停线程，启动时间：{start_hour}:{start_minute}，停止时间：{stop_hour}:{stop_minute}')
+                    log('INFO', f'配置更新，启动定时启停线程，启动时间：{_format_hhmm(start_hour, start_minute)}，停止时间：{_format_hhmm(stop_hour, stop_minute)}')
                 else:
                     log('DEBUG', '配置更新，定时启停未启用')
             if everyday_start_stop_bot_switch:
@@ -6647,6 +6669,13 @@ def _quiet_noisy_third_party_loggers():
             wx_logger.setLevel(logging.DEBUG)
     except Exception:
         pass
+
+
+def _show_localized_server_banner(debug, app_import_path):
+    if flask_cli.is_running_from_reloader():
+        return
+    flask_cli.click.echo(' * 正在启动 WXBot Pro 面板服务')
+    flask_cli.click.echo(f" * 调试模式：{'开启' if debug else '关闭'}")
 
 
 def main():
@@ -6805,7 +6834,12 @@ def main():
             siver_panel_manager.set_local_port_provider(get_panel_server_port)
             siver_panel_manager.start()
         # 启动服务器
-        app.run(host='127.0.0.1', port=free_port, debug=False, threaded=True)
+        original_server_banner = flask_cli.show_server_banner
+        flask_cli.show_server_banner = _show_localized_server_banner
+        try:
+            app.run(host='127.0.0.1', port=free_port, debug=False, threaded=True)
+        finally:
+            flask_cli.show_server_banner = original_server_banner
     except Exception as e:
         log('ERROR', f'服务器启动失败: {str(e)}')
     finally:

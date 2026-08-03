@@ -2,16 +2,30 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 import hashlib
 import json
+import os
 import threading
+import time
 from pathlib import Path
 from typing import Any
+
+from core.atomic_storage import replace_with_retry
 
 
 SCHEMA_VERSION = 1
 DEFAULT_RETENTION_DAYS = 365
+FILE_LOCK_TIMEOUT_SECONDS = 5
+
+
+class RuntimeMetricsStorageError(RuntimeError):
+    pass
+
+
+_path_locks = {}
+_path_locks_lock = threading.Lock()
 
 METRIC_KEYS = (
     "received_messages",
@@ -65,6 +79,12 @@ def _day_key(now: Any = None) -> str:
     return _coerce_now(now).date().isoformat()
 
 
+def _path_lock(path: Path):
+    key = os.path.normcase(os.path.abspath(str(path)))
+    with _path_locks_lock:
+        return _path_locks.setdefault(key, threading.RLock())
+
+
 def _hash_identity(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -100,6 +120,19 @@ def _normalize_bucket(raw: Any) -> dict[str, Any]:
     return bucket
 
 
+def _merge_bucket(target: dict[str, Any], raw_bucket: Any) -> None:
+    bucket = _normalize_bucket(raw_bucket)
+    for metric in METRIC_KEYS:
+        target[metric] = int(target.get(metric, 0) or 0) + int(bucket.get(metric, 0) or 0)
+    for set_key in SET_KEYS:
+        values = target.setdefault(set_key, [])
+        seen = set(values)
+        for value in bucket.get(set_key) or []:
+            if value not in seen:
+                values.append(value)
+                seen.add(value)
+
+
 def _normalize_payload(raw: Any) -> dict[str, Any]:
     source = raw if isinstance(raw, dict) else {}
     hours = {}
@@ -119,7 +152,7 @@ class RuntimeMetricsStore:
     def __init__(self, path, *, retention_days: int = DEFAULT_RETENTION_DAYS):
         self.path = Path(path)
         self.retention_days = max(1, int(retention_days or DEFAULT_RETENTION_DAYS))
-        self._lock = threading.RLock()
+        self._lock = _path_lock(self.path)
 
     def increment(self, key: str, *, amount: int = 1, now: Any = None) -> dict[str, Any]:
         key = str(key or "").strip()
@@ -132,7 +165,7 @@ class RuntimeMetricsStore:
         if step <= 0:
             return self.load()
         current = _coerce_now(now)
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._load_normalized()
             bucket = payload["hours"].setdefault(_hour_key(current), _empty_bucket())
             bucket[key] = int(bucket.get(key, 0) or 0) + step
@@ -149,7 +182,7 @@ class RuntimeMetricsStore:
         if not digest:
             return self.load()
         current = _coerce_now(now)
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._load_normalized()
             bucket = payload["hours"].setdefault(_hour_key(current), _empty_bucket())
             values = bucket.setdefault(key, [])
@@ -173,7 +206,7 @@ class RuntimeMetricsStore:
                     updates[key] = 0
         if not updates:
             return self.load()
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._load_normalized()
             for existing_hour, bucket in payload["hours"].items():
                 if str(existing_hour).startswith(today):
@@ -187,20 +220,31 @@ class RuntimeMetricsStore:
             return json.loads(json.dumps(payload, ensure_ascii=False))
 
     def load(self) -> dict[str, Any]:
-        with self._lock:
+        with self._lock, self._file_lock():
             return json.loads(json.dumps(self._load_normalized(), ensure_ascii=False))
 
-    def series_payload(self, *, now: Any = None, days: int = 7) -> dict[str, Any]:
+    def series_payload(
+        self,
+        *,
+        now: Any = None,
+        days: int = 7,
+        hourly_bucket_hours: int = 1,
+    ) -> dict[str, Any]:
         current = _coerce_now(now)
         days = max(1, min(self.retention_days, int(days or 7)))
+        hourly_bucket_hours = max(1, min(24, int(hourly_bucket_hours or 1)))
         start = (current.replace(minute=0, second=0, microsecond=0) - timedelta(hours=(days * 24) - 1))
-        with self._lock:
+        with self._lock, self._file_lock():
             payload = self._load_normalized()
         hourly = []
-        for index in range(days * 24):
+        for index in range(0, days * 24, hourly_bucket_hours):
             hour_dt = start + timedelta(hours=index)
             key = hour_dt.isoformat(timespec="hours")
-            hourly.append(self._point_from_bucket(key, payload["hours"].get(key)))
+            bucket = _empty_bucket()
+            for offset in range(min(hourly_bucket_hours, (days * 24) - index)):
+                source_key = (hour_dt + timedelta(hours=offset)).isoformat(timespec="hours")
+                _merge_bucket(bucket, payload["hours"].get(source_key))
+            hourly.append(self._point_from_bucket(key, bucket))
         day_start = current.date() - timedelta(days=days - 1)
         daily_buckets = {
             (day_start + timedelta(days=index)).isoformat(): _empty_bucket()
@@ -211,16 +255,7 @@ class RuntimeMetricsStore:
             if day not in daily_buckets:
                 continue
             target = daily_buckets[day]
-            bucket = _normalize_bucket(raw_bucket)
-            for metric in METRIC_KEYS:
-                target[metric] = int(target.get(metric, 0) or 0) + int(bucket.get(metric, 0) or 0)
-            for set_key in SET_KEYS:
-                values = target.setdefault(set_key, [])
-                seen = set(values)
-                for value in bucket.get(set_key) or []:
-                    if value not in seen:
-                        values.append(value)
-                        seen.add(value)
+            _merge_bucket(target, raw_bucket)
         daily = [self._point_from_bucket(key, daily_buckets.get(key)) for key in sorted(daily_buckets)]
         today_key = current.date().isoformat()
         today = next((point for point in daily if point["key"] == today_key), self._point_from_bucket(today_key, {}))
@@ -250,14 +285,82 @@ class RuntimeMetricsStore:
             return _normalize_payload({})
         try:
             return _normalize_payload(json.loads(self.path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            return _normalize_payload({})
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise RuntimeMetricsStorageError(
+                f"运行统计文件无法读取，已阻止覆盖：{self.path}"
+            ) from exc
+
+    @contextmanager
+    def _file_lock(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.path.with_name(f"{self.path.name}.lock")
+        deadline = time.monotonic() + FILE_LOCK_TIMEOUT_SECONDS
+        handle = None
+        locked = False
+        try:
+            while handle is None:
+                try:
+                    if not lock_path.exists() or lock_path.stat().st_size == 0:
+                        with open(lock_path, "ab") as seed:
+                            if seed.tell() == 0:
+                                seed.write(b"0")
+                                seed.flush()
+                    handle = open(lock_path, "a+b")
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeMetricsStorageError(
+                            f"运行统计锁文件无法打开：{self.path}"
+                        ) from exc
+                    time.sleep(0.05)
+            handle.seek(0)
+            while True:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except OSError as exc:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeMetricsStorageError(
+                            f"运行统计文件正被其他进程使用：{self.path}"
+                        ) from exc
+                    time.sleep(0.05)
+            yield
+        finally:
+            try:
+                if locked and handle is not None:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle, fcntl.LOCK_UN)
+            finally:
+                if handle is not None:
+                    handle.close()
 
     def _write(self, payload: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = self.path.with_name(f"{self.path.name}.tmp")
-        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp_path.replace(self.path)
+        temp_path = self.path.with_name(
+            f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            replace_with_retry(temp_path, self.path)
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def _prune(self, payload: dict[str, Any], current: datetime) -> None:
         cutoff = current.replace(minute=0, second=0, microsecond=0) - timedelta(days=self.retention_days)

@@ -10,6 +10,8 @@ set "FFMPEG_RELEASE_PATH=https://github.com/BtbN/FFmpeg-Builds/releases/latest/d
 set PIP_DEPENDENCIES="flask" "pywin32" "openai" "requests" "schedule" "wxautox4>=40.1.14" "cozepy" "websockets" "Pillow"
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
+set "WXBOT_STARTUP_TEXT=5q2j5Zyo5ZCv5YqoIFdYQm90IFByby4uLg=="
+set "WXBOT_WORKDIR_LABEL=5bel5L2c55uu5b2V77ya"
 
 if /i "%~1"=="--create-venv-only" (
     call :create_venv
@@ -59,8 +61,7 @@ if errorlevel 1 (
     echo [WARNING] Failed to prepare ffmpeg/ffprobe. Voice replies may fall back to text.
 )
 
-echo Starting WXBot Pro...
-echo Working directory: %cd%
+powershell -NoProfile -Command "$u=[System.Text.Encoding]::UTF8; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); Write-Output ($u.GetString([Convert]::FromBase64String($env:WXBOT_STARTUP_TEXT))); Write-Output (($u.GetString([Convert]::FromBase64String($env:WXBOT_WORKDIR_LABEL))) + (Get-Location).Path)"
 
 :run_server
 "venv\Scripts\python.exe" web_server.py
@@ -200,7 +201,6 @@ exit /b 0
 :local_ffmpeg
 if exist "%LOCAL_FFMPEG_EXE%" if exist "%LOCAL_FFPROBE_EXE%" (
     set "PATH=%LOCAL_FFMPEG_BIN%;%PATH%"
-    echo Using project-local ffmpeg: %LOCAL_FFMPEG_BIN%
     exit /b 0
 )
 

@@ -9,6 +9,9 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from threading import RLock, get_ident
 from typing import Any, Callable
+
+# wxautox4 41.1.1 must initialize its public UI entry before compiled message modules.
+from wxautox4 import WeChat
 from wxautox4.msgs.msg import parse_msg
 from wxautox4.param import WxParam
 
@@ -262,8 +265,6 @@ class WeChatUIRuntime:
 
     @staticmethod
     def _default_client_factory(version):
-        from wxautox4 import WeChat
-
         return WeChat(version=version)
 
     def handlers(self):

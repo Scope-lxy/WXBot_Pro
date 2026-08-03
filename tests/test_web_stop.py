@@ -10,6 +10,10 @@ import web_server
 
 
 class WebStopTests(unittest.TestCase):
+    def test_scheduled_time_log_format_keeps_leading_zeroes(self):
+        self.assertEqual(web_server._format_hhmm(4, 0), '04:00')
+        self.assertEqual(web_server._format_hhmm(23, 59), '23:59')
+
     def test_runtime_health_exposes_only_local_operational_state(self):
         old_bot = web_server.bot
         old_thread = web_server.bot_thread
