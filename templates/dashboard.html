@@ -148,7 +148,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-arrow-repeat"></i>
         <h5>版本更新</h5>
-        <span class="desc" id="update-last-check">每 6 小时自动检查</span>
+        <span class="desc" id="update-last-check">打开面板及每 6 小时自动检查</span>
         <div class="ui-head__actions">
           <button type="button" id="btn-check-update" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2">检查更新</button>
         </div>
@@ -246,6 +246,10 @@ html.icons-pref-local [class*=" bi-"]::before {
               <div>内核库未授权，机器人将无法正常工作。<span id="activate-version-fail" style="margin-left:10px;"></span></div>
             </div>
           </div>
+        </div>
+        <div id="activate-version-warning" class="page-inline-notice" style="display:none;border-color:#f59e0b;background:#fffbeb;color:#92400e;">
+          <i class="bi bi-arrow-up-circle page-inline-notice__icon"></i>
+          <div class="page-inline-notice__content"></div>
         </div>
         <!-- 检测失败 -->
         <div id="activate-error" style="display:none;color:var(--muted);font-size:13px;padding:4px 0;">
@@ -1835,8 +1839,20 @@ html.icons-pref-local [class*=" bi-"]::before {
             <label for="chat_keyword_switch"><span class="switch-title">私聊关键词回复</span></label>
           </div>
           <div class="switch-row">
+            <input class="form-check-input" type="checkbox" id="chat_keyword_reply_quote" name="chat_keyword_reply_quote" {% if config.chat_keyword_reply_quote %}checked{% endif %}>
+            <label for="chat_keyword_reply_quote"><span class="switch-title">私聊关键词回复时引用原消息</span></label>
+          </div>
+          <div class="switch-row">
             <input class="form-check-input" type="checkbox" id="group_keyword_switch" name="group_keyword_switch" {% if config.group_keyword_switch %}checked{% endif %}>
             <label for="group_keyword_switch"><span class="switch-title">群聊关键词回复</span></label>
+          </div>
+          <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
+            <input class="form-check-input" type="checkbox" id="group_keyword_reply_quote" name="group_keyword_reply_quote" {% if config.group_keyword_reply_quote %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
+            <label for="group_keyword_reply_quote"><span class="switch-title">群聊关键词回复时引用原消息</span></label>
+          </div>
+          <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
+            <input class="form-check-input" type="checkbox" id="group_keyword_reply_at_msg" name="group_keyword_reply_at_msg" {% if config.group_keyword_reply_at_msg %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
+            <label for="group_keyword_reply_at_msg"><span class="switch-title">群聊关键词回复时@发言人</span></label>
           </div>
           <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
             <input class="form-check-input" type="checkbox" id="group_keyword_at_only" name="group_keyword_at_only" {% if config.group_keyword_at_only %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
@@ -8749,11 +8765,13 @@ $(function(){
     var groupEnabled = $('#group_keyword_switch').is(':checked');
     $('.keyword-trigger-dependent').toggleClass('is-muted', !groupEnabled);
     $('#group_keyword_at_only').prop('disabled', !groupEnabled);
+    $('#group_keyword_reply_quote').prop('disabled', !groupEnabled);
+    $('#group_keyword_reply_at_msg').prop('disabled', !groupEnabled);
     syncKeywordSummaryPills();
   }
   syncKeywordTriggerControls();
   $('#group_keyword_switch').on('change', syncKeywordTriggerControls);
-  $(document).on('change', '#chat_keyword_switch, #group_keyword_switch, #group_keyword_at_only', syncKeywordSummaryPills);
+  $(document).on('change', '#chat_keyword_switch, #chat_keyword_reply_quote, #group_keyword_switch, #group_keyword_at_only, #group_keyword_reply_quote, #group_keyword_reply_at_msg', syncKeywordSummaryPills);
   $(document).on('input change', '#keyword_container input[name="keyword_key"]', syncKeywordSummaryPills);
 
   $('#btn-add-keyword').click(function(){
@@ -10032,6 +10050,9 @@ $(function(){
       chat_keyword_switch:$('#chat_keyword_switch').is(':checked'),
       group_keyword_switch:$('#group_keyword_switch').is(':checked'),
       group_keyword_at_only:$('#group_keyword_at_only').is(':checked'),
+      chat_keyword_reply_quote:$('#chat_keyword_reply_quote').is(':checked'),
+      group_keyword_reply_quote:$('#group_keyword_reply_quote').is(':checked'),
+      group_keyword_reply_at_msg:$('#group_keyword_reply_at_msg').is(':checked'),
       group_welcome_msg:$('#group_welcome_msg').val(),
       default_prompt:$('#default_prompt_select').val()||'默认',
       listen_list:[], global_blacklist:[], group:[], group_api_map:{}, group_tts_map:{}, group_prompt_map:{}, new_friend_msg:{text:'', files:[]},
@@ -11426,6 +11447,7 @@ $(function(){
       setConfigSnapshotBaseline(buildConfigSaveContext().configData);
     }catch(e){}
   }, 0);
+  checkUpdate(false);
   setInterval(function(){ checkUpdate(false); }, 6 * 60 * 60 * 1000); // 每 6 小时自动检查一次
 
   // ===== Account Panel =====
@@ -11976,9 +11998,17 @@ $(function(){
     return '<div style="text-align:center;margin-top:12px;font-size:12.5px;color:#64748b;line-height:1.8;">' + rows.join('<br>') + '</div>';
   }
 
-  function renderWxautoxVersion(version) {
+  function renderWxautoxVersion(version, compatibility) {
     var text = version ? '当前版本：' + version : '当前版本：未检测到';
     $('#activate-version-ok, #activate-version-fail').text(text);
+    var $warning = $('#activate-version-warning');
+    if (compatibility && compatibility.needs_upgrade) {
+      var verified = String(compatibility.verified_version || '已验证版本');
+      $warning.find('.page-inline-notice__content').text('当前 wxautox4 低于已验证版本 ' + verified + '，请点击“检查更新”完成升级后重启软件。');
+      $warning.show();
+    } else {
+      $warning.hide().find('.page-inline-notice__content').empty();
+    }
   }
 
   window.checkActivate = function(manual) {
@@ -11995,7 +12025,7 @@ $(function(){
         $('#activate-checking').hide();
         if (res.status !== 'success') { $('#activate-error').show(); return; }
         _activateStatus = res.data.activated;
-        renderWxautoxVersion(res.data.wxautox4_version);
+        renderWxautoxVersion(res.data.wxautox4_version, res.data.wxautox4_compatibility);
         if (_activateStatus) {
           $('#activate-ok').css('display', 'grid');
         } else {

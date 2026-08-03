@@ -98,6 +98,9 @@ class WXBotConfig:
         self.chat_keyword_switch = False    # 私聊关键词回复开关
         self.group_keyword_switch = False   # 群聊关键词回复开关
         self.group_keyword_at_only = False  # 群聊关键词仅被@时触发
+        self.chat_keyword_reply_quote = False  # 私聊关键词回复是否引用原消息
+        self.group_keyword_reply_quote = False  # 群聊关键词回复是否引用原消息
+        self.group_keyword_reply_at_msg = False  # 群聊关键词回复是否@发言人
         self.keyword_dict = {}              # 关键词 -> 回复内容 字典
 
         # ---------- 多 Prompt 配置 ----------
@@ -243,6 +246,9 @@ class WXBotConfig:
                     "chat_keyword_switch": False,
                     "group_keyword_switch": False,
                     "group_keyword_at_only": False,
+                    "chat_keyword_reply_quote": False,
+                    "group_keyword_reply_quote": False,
+                    "group_keyword_reply_at_msg": False,
                     "keyword_dict": {},
                     "default_prompt": "默认",
                     "chat_prompt_map": {},
@@ -743,6 +749,9 @@ class WXBotConfig:
         self.chat_keyword_switch   = bool(self.config.get('chat_keyword_switch', False))
         self.group_keyword_switch  = bool(self.config.get('group_keyword_switch', False))
         self.group_keyword_at_only = bool(self.config.get('group_keyword_at_only', False))
+        self.chat_keyword_reply_quote = bool(self.config.get('chat_keyword_reply_quote', False))
+        self.group_keyword_reply_quote = bool(self.config.get('group_keyword_reply_quote', False))
+        self.group_keyword_reply_at_msg = bool(self.config.get('group_keyword_reply_at_msg', False))
         self.keyword_dict          = self.config.get('keyword_dict', {})
 
         # 定时消息配置

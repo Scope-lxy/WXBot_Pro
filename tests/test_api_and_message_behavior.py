@@ -1824,6 +1824,184 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(sent, [("text", "关键词回复"), ("file", image_path)])
 
+    def test_keyword_group_reply_mentions_sender(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", group=["测试群"])
+        bot._ensure_message_runtime_state()
+        sent = []
+
+        class Chat:
+            who = "测试群"
+            chat_type = "group"
+
+            def SendMsg(self, msg=None, at=None, **_kwargs):
+                sent.append(("text", msg, at))
+                return True
+
+        chat = Chat()
+        message = SimpleNamespace(
+            type="text",
+            attr="group",
+            sender="张三",
+            content="关键词",
+            id="keyword-group-1",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            configure_group_reply_runtime(bot, tmp)
+            stored = bot._message_store.record_inbound({
+                "conversation": chat.who,
+                "chat_type": "group",
+                "direction": "friend",
+                "sender": message.sender,
+                "content": message.content,
+                "original_content": message.content,
+                "message_type": message.type,
+                "native_attr": message.attr,
+                "native_id": message.id,
+                "received_at": time.time(),
+                "source": "test",
+                "source_batch": "keyword-group",
+                "source_order": 0,
+            })
+            message._wxbot_event_id = stored["event_id"]
+            message._wxbot_event_ids = (stored["event_id"],)
+            message._wxbot_event_version = stored["version"]
+            message._wxbot_reply_expires_at = time.time() + 900
+            success, result = bot._send_keyword_reply_actions(
+                chat,
+                [{"type": "text", "content": "关键词回复"}],
+                message=message,
+                at="张三",
+            )
+
+        self.assertTrue(success)
+        self.assertTrue(result)
+        self.assertEqual(sent, [("text", "关键词回复", "张三")])
+
+    def test_keyword_private_reply_quotes_source_message(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", group=[])
+        bot._ensure_message_runtime_state()
+        bot._private_reply_can_continue = lambda *_args, **_kwargs: True
+        sent = []
+
+        class Chat:
+            who = "张三"
+            chat_type = "private"
+
+            def SendMsg(self, msg=None, **_kwargs):
+                sent.append(("text", msg))
+                return True
+
+        chat = Chat()
+        with tempfile.TemporaryDirectory() as tmp:
+            message = SimpleNamespace(
+                type="text",
+                attr="friend",
+                sender="张三",
+                content="关键词",
+                id="keyword-quote-1",
+            )
+            configure_persisted_private_reply(bot, chat, message, tmp)
+            bot._ui_quote_message = lambda _chat, _message, content, **_kwargs: (
+                sent.append(("quote", content)) or True
+            )
+
+            success, result = bot._send_keyword_reply_actions(
+                chat,
+                [{"type": "text", "content": "关键词回复"}],
+                message=message,
+                quote_first=True,
+            )
+
+        self.assertTrue(success)
+        self.assertTrue(result)
+        self.assertEqual(sent, [("quote", "关键词回复")])
+
+    def test_keyword_group_reply_quotes_source_message_and_mentions_sender(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(cmd="文件传输助手", group=["测试群"])
+        bot._ensure_message_runtime_state()
+        sent = []
+
+        class Chat:
+            who = "测试群"
+            chat_type = "group"
+
+        chat = Chat()
+        message = SimpleNamespace(
+            type="text",
+            attr="group",
+            sender="张三",
+            content="关键词",
+            id="keyword-group-quote-1",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            configure_group_reply_runtime(bot, tmp)
+            stored = bot._message_store.record_inbound({
+                "conversation": chat.who,
+                "chat_type": "group",
+                "direction": "friend",
+                "sender": message.sender,
+                "content": message.content,
+                "original_content": message.content,
+                "message_type": message.type,
+                "native_attr": message.attr,
+                "native_id": message.id,
+                "received_at": time.time(),
+                "source": "test",
+                "source_batch": "keyword-group-quote",
+                "source_order": 0,
+            })
+            message._wxbot_event_id = stored["event_id"]
+            message._wxbot_event_ids = (stored["event_id"],)
+            message._wxbot_event_version = stored["version"]
+            message._wxbot_reply_expires_at = time.time() + 900
+            bot._ui_quote_message = lambda _chat, _message, content, **kwargs: (
+                sent.append(("quote", content, kwargs.get("at"))) or True
+            )
+
+            success, result = bot._send_keyword_reply_actions(
+                chat,
+                [{"type": "text", "content": "关键词回复"}],
+                message=message,
+                at="张三",
+                quote_first=True,
+            )
+
+        self.assertTrue(success)
+        self.assertTrue(result)
+        self.assertEqual(sent, [("quote", "关键词回复", "张三")])
+
+    def test_keyword_group_route_uses_independent_quote_and_mention_settings(self):
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            group_keyword_reply_quote=True,
+            group_keyword_reply_at_msg=True,
+            group_text_reply_limit_switch=False,
+        )
+        bot._get_group_reply_once_key = lambda *_args: "测试群:张三"
+        bot._text_reply_limit_reached = lambda *_args, **_kwargs: False
+        bot._reply_job_can_generate = lambda *_args, **_kwargs: True
+        bot._record_reply_metric_success = lambda *_args, **_kwargs: None
+        bot._record_keyword_reply_success = lambda *_args, **_kwargs: None
+        bot._cancel_unfinished_reply_job = lambda *_args, **_kwargs: None
+        sent = {}
+        bot._send_keyword_reply_actions = lambda *_args, **kwargs: (
+            sent.update(kwargs) or (True, True)
+        )
+        chat = SimpleNamespace(who="测试群", chat_type="group")
+        message = SimpleNamespace(content="关键词", sender="张三")
+
+        with mock.patch.object(message_routing, "route_process_message", return_value={
+            "action": "group_keyword_reply",
+            "reply_actions": [{"type": "text", "content": "关键词回复"}],
+        }), mock.patch("wxbot_core.time.sleep"):
+            self.assertTrue(bot.process_message(chat, message))
+
+        self.assertTrue(sent["quote_first"])
+        self.assertEqual(sent["at"], "张三")
+
     def test_prepare_voice_uses_existing_wechat_auto_text_without_reconverting(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(

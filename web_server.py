@@ -41,6 +41,8 @@ from core.api import (
 from wxbot_core import WXBot, version as BOT_VERSION
 from core.logger import log
 import core.logger as logger
+
+WXAUTOX_VERIFIED_VERSION = '41.1.1.post1'
 from core.prompt_system import ChatMemoryExtractor, ChatMemoryStore, PromptSystem, PERSONA_STATUS_SUFFIX, SystemPromptStore
 from core.account_storage import (
     DEFAULT_ACCOUNT_ID,
@@ -2218,6 +2220,9 @@ def dashboard():
     config.setdefault('chat_split_max_count', 4)          # 私聊最多条数
     config.setdefault('group_reply_at_msg', True)          # 群聊回复是否@发言人
     config.setdefault('group_reply_quote', True)           # 群聊回复是否引用消息
+    config.setdefault('chat_keyword_reply_quote', False)   # 私聊关键词回复是否引用原消息
+    config.setdefault('group_keyword_reply_quote', False)  # 群聊关键词回复是否引用原消息
+    config.setdefault('group_keyword_reply_at_msg', False) # 群聊关键词回复是否@发言人
     config.setdefault('group_split_reply_switch', False)  # 群聊拆分多条回复开关
     config.setdefault('group_split_reply_delay_switch', True)
     config.setdefault('group_split_max_chars', 100)       # 群聊单条最大字数
@@ -2788,6 +2793,9 @@ def _coerce_bool_fields(merged_config):
         'group_reply_at',
         'group_reply_at_msg',
         'group_reply_quote',
+        'chat_keyword_reply_quote',
+        'group_keyword_reply_quote',
+        'group_keyword_reply_at_msg',
         'group_welcome',
         'new_friend_switch',
         'new_friend_archive_switch',
@@ -4098,9 +4106,11 @@ def check_activate():
     try:
         from wxautox4.utils.useful import check_license
         activated = check_license()
+        wxautox4_version = _get_wxautox_version()
         return jsonify({'status': 'success', 'data': {
             'activated': bool(activated),
-            'wxautox4_version': _get_wxautox_version(),
+            'wxautox4_version': wxautox4_version,
+            'wxautox4_compatibility': _wxautox_compatibility_status(wxautox4_version),
         }})
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)})
@@ -4157,6 +4167,32 @@ def _version_update_available(local_version, remote_version):
     if not local_norm or not remote_norm:
         return False
     return local_norm != remote_norm
+
+
+def _wxautox_version_sort_key(value):
+    normalized = _normalize_version_for_compare(value).lower()
+    match = re.fullmatch(r'(\d+(?:\.\d+)*)(?:\.post(\d+))?', normalized)
+    if not match:
+        return None
+    release = tuple(int(part) for part in match.group(1).split('.'))
+    post = int(match.group(2)) if match.group(2) is not None else -1
+    return (*release, post)
+
+
+def _wxautox_compatibility_status(version=''):
+    current_version = str(version or _get_wxautox_version() or '').strip()
+    current_key = _wxautox_version_sort_key(current_version)
+    verified_key = _wxautox_version_sort_key(WXAUTOX_VERIFIED_VERSION)
+    needs_upgrade = bool(
+        current_key is not None
+        and verified_key is not None
+        and current_key < verified_key
+    )
+    return {
+        'current_version': current_version,
+        'verified_version': WXAUTOX_VERIFIED_VERSION,
+        'needs_upgrade': needs_upgrade,
+    }
 
 
 def _parse_latest_wxautox_version_from_pip_output(output):
@@ -6650,6 +6686,9 @@ def main():
                 "group_reply_at": False,
                 "group_reply_at_msg": True,
                 "group_reply_quote": True,
+                "chat_keyword_reply_quote": False,
+                "group_keyword_reply_quote": False,
+                "group_keyword_reply_at_msg": False,
                 "group_welcome": False,
                 "group_welcome_msg": "欢迎新朋友！请先查看群公告！",
                 "new_friend_switch": False,

@@ -2,8 +2,8 @@
 # Siver微信机器人 siver_wxbot - 面向对象版本 - wxautox4版本
 # 作者：https://www.siver.top
 
-version = "V4.7.27"
-version_log = "V4.7.27 - 合并远程访问凭据恢复与内外网访问优化，保留本地接口测试能力"
+version = "V4.7.30"
+version_log = "V4.7.30 - 关键词回复支持引用和群内@发言人，增加已验证 wxautox4 版本提示"
 custom_build = True
 update_feed_url = "https://wxbot.siverking.online/version.json"
 update_source_name = "官方版本源"
@@ -1407,6 +1407,9 @@ class WXBot:
                 "chat_keyword_switch",
                 "group_keyword_switch",
                 "group_keyword_at_only",
+                "chat_keyword_reply_quote",
+                "group_keyword_reply_quote",
+                "group_keyword_reply_at_msg",
                 "keyword_dict",
             ),
             "group_welcome": (
@@ -4895,6 +4898,7 @@ class WXBot:
                     chat,
                     reply_actions,
                     message=message,
+                    quote_first=bool(getattr(self.config, "chat_keyword_reply_quote", False)),
                 )
                 if send_success and getattr(self.config, "chat_text_reply_limit_switch", False) and user_key:
                     self.reply_count_store.increment_ai_count(
@@ -5349,6 +5353,12 @@ class WXBot:
                 chat,
                 reply_actions,
                 message=message,
+                quote_first=bool(getattr(self.config, "group_keyword_reply_quote", False)),
+                at=(
+                    str(getattr(message, "sender", "") or "").strip()
+                    if bool(getattr(self.config, "group_keyword_reply_at_msg", False))
+                    else ""
+                ),
             )
             if send_success:
                 if getattr(self.config, "group_text_reply_limit_switch", False) and group_user_key:
@@ -8031,6 +8041,7 @@ class WXBot:
         *,
         at=None,
         message=None,
+        quote_first=False,
     ):
         planned = []
         for item in actions or []:
@@ -8053,6 +8064,12 @@ class WXBot:
         if not planned:
             log(level="ERROR", message=f"关键词回复命中但没有可发送内容，已停止处理：{chat.who}")
             return False, False
+
+        if quote_first:
+            for index, action in enumerate(planned):
+                if action.kind == ReplyKind.TEXT:
+                    planned[index] = ReplyAction(ReplyKind.QUOTE, action.content, ReplySource.KEYWORD)
+                    break
 
         is_group = getattr(chat, "chat_type", "") == "group" or chat.who in getattr(self.config, "group", [])
         if not is_group and not self._private_reply_can_continue(chat):

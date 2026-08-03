@@ -195,7 +195,6 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertNotIn("hidden", quote_control)
         self.assertIn('<span class="switch-title">回复时引用</span>', dashboard)
         self.assertIn('<span class="switch-title">入群欢迎消息</span>', dashboard)
-        self.assertNotIn("回复时引用原消息", dashboard)
         self.assertNotIn("启用入群欢迎消息", dashboard)
         control_order = [
             dashboard.index('id="group_reply_at"'),
@@ -205,6 +204,42 @@ class WebPanelJobTests(unittest.TestCase):
         ]
         self.assertEqual(control_order, sorted(control_order))
         self.assertIn("group_reply_quote:$('#group_reply_quote').is(':checked')", dashboard)
+
+    def test_keyword_reply_quote_and_group_mention_controls_are_saved(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+
+        self.assertEqual(dashboard.count('id="chat_keyword_reply_quote"'), 1)
+        self.assertEqual(dashboard.count('id="group_keyword_reply_quote"'), 1)
+        self.assertEqual(dashboard.count('id="group_keyword_reply_at_msg"'), 1)
+        self.assertIn("私聊关键词回复时引用原消息", dashboard)
+        self.assertIn("群聊关键词回复时引用原消息", dashboard)
+        self.assertIn("群聊关键词回复时@发言人", dashboard)
+        self.assertIn("chat_keyword_reply_quote:$('#chat_keyword_reply_quote').is(':checked')", dashboard)
+        self.assertIn("group_keyword_reply_quote:$('#group_keyword_reply_quote').is(':checked')", dashboard)
+        self.assertIn("group_keyword_reply_at_msg:$('#group_keyword_reply_at_msg').is(':checked')", dashboard)
+
+        config = {
+            "chat_keyword_reply_quote": "true",
+            "group_keyword_reply_quote": "true",
+            "group_keyword_reply_at_msg": "false",
+        }
+        web_server._coerce_bool_fields(config)
+        self.assertIs(config["chat_keyword_reply_quote"], True)
+        self.assertIs(config["group_keyword_reply_quote"], True)
+        self.assertIs(config["group_keyword_reply_at_msg"], False)
+
+    def test_update_check_runs_when_dashboard_opens(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+
+        initial_check = dashboard.index("  checkUpdate(false);\n  setInterval(function(){ checkUpdate(false); }")
+        self.assertGreater(initial_check, dashboard.index("function checkUpdate(manual)"))
+
+    def test_wxautox4_compatibility_only_warns_below_verified_version(self):
+        self.assertTrue(web_server._wxautox_compatibility_status("41.1.1")["needs_upgrade"])
+        self.assertFalse(web_server._wxautox_compatibility_status("41.1.1.post1")["needs_upgrade"])
+        self.assertFalse(web_server._wxautox_compatibility_status("41.1.2")["needs_upgrade"])
 
     def test_split_reply_delay_dropdown_values_are_coerced_to_booleans(self):
         config = {
