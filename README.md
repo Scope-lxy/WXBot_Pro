@@ -16,7 +16,7 @@
 - `docs/人设编写规范模板.md`：基础人设和人设近况模板。
 - `AGENTS.md` / `CLAUDE.md`：给 AI 协作工具的项目规则，两份文件必须保持一致。
 
-项目说明只维护根目录 Markdown 和 `docs/`。`data/` 下的 Markdown 是运行 Prompt，不属于项目文档。
+项目说明只维护根目录 Markdown 和 `docs/`；`data/` 下的 Markdown 是运行 Prompt，不属于项目文档。
 
 ## 快速启动
 
@@ -26,9 +26,7 @@
 .\打开软件.bat
 ```
 
-脚本会创建或复用 `venv/`、安装依赖并启动面板；默认地址是 `http://127.0.0.1:10001`，端口被占用时自动顺延。缺少 `ffmpeg` / `ffprobe` 时，脚本会下载到 `venv/tools/ffmpeg/`。
-
-`runtime/python/` 是发布包携带的基础 Python；`venv/` 是本机可重建的项目依赖环境。发布包不携带本机 `venv/`，首次启动时会用 `runtime/python/` 创建它。
+脚本会用发布包内的 `runtime/python/` 创建或复用本机 `venv/`，安装依赖并启动面板；默认地址是 `http://127.0.0.1:10001`，端口被占用时自动顺延。缺少 `ffmpeg` / `ffprobe` 时，脚本会下载到 `venv/tools/ffmpeg/`。
 
 真实运行链路：
 
