@@ -627,6 +627,7 @@ class WechatUiActionsTests(unittest.TestCase):
             lambda: snapshot,
             lambda current: timed_out.set(),
             poll_interval=0.01,
+            recovery_grace_seconds=0.01,
         )
 
         watchdog.start()

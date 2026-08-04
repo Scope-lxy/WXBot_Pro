@@ -272,6 +272,39 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertFalse(web_server._wxautox_compatibility_status("41.1.1.post1")["needs_upgrade"])
         self.assertFalse(web_server._wxautox_compatibility_status("41.1.2")["needs_upgrade"])
 
+    def test_ui_stall_recovery_only_schedules_one_automatic_bot_start(self):
+        class ImmediateTimer:
+            def __init__(self, _delay, target):
+                self._target = target
+                self.daemon = False
+
+            def start(self):
+                self._target()
+
+        previous = web_server.ui_stall_recovery_start_scheduled
+        web_server.ui_stall_recovery_start_scheduled = False
+        try:
+            self.assertTrue(web_server._ui_stall_recovery_requested([
+                "web_server.py", web_server.UI_STALL_RECOVERY_ARGUMENT,
+            ]))
+            self.assertFalse(web_server._ui_stall_recovery_requested(["web_server.py"]))
+            with mock.patch.object(web_server, "_ui_stall_recovery_requested", return_value=True), mock.patch.object(
+                web_server.threading, "Timer", ImmediateTimer
+            ), mock.patch.object(web_server, "_auto_start_bot_after_ui_stall") as auto_start:
+                self.assertTrue(web_server._schedule_bot_start_after_ui_stall())
+                self.assertFalse(web_server._schedule_bot_start_after_ui_stall())
+            auto_start.assert_called_once_with()
+        finally:
+            web_server.ui_stall_recovery_start_scheduled = previous
+
+    def test_ui_stall_recovery_auto_start_uses_normal_bot_start_path(self):
+        with mock.patch.object(web_server, "bot_thread", None), mock.patch.object(
+            web_server, "_start_bot_runtime", return_value={"status": "success"}
+        ) as start_runtime:
+            web_server._auto_start_bot_after_ui_stall()
+
+        start_runtime.assert_called_once_with(wait_timeout=web_server.BOT_START_WAIT_TIMEOUT_SECONDS)
+
     def test_split_reply_delay_dropdown_values_are_coerced_to_booleans(self):
         config = {
             "chat_split_reply_delay_switch": "false",

@@ -43,6 +43,8 @@ from core.logger import log
 import core.logger as logger
 
 WXAUTOX_VERIFIED_VERSION = '41.1.1.post1'
+UI_STALL_RECOVERY_ARGUMENT = '--resume-after-ui-stall'
+UI_STALL_RECOVERY_BOT_START_DELAY_SECONDS = 2.0
 from core.prompt_system import ChatMemoryExtractor, ChatMemoryStore, PromptSystem, PERSONA_STATUS_SUFFIX, SystemPromptStore
 from core.account_storage import (
     DEFAULT_ACCOUNT_ID,
@@ -3797,6 +3799,8 @@ relationship_full_scan_thread = None
 relationship_full_scan_thread_lock = threading.Lock()
 panel_wechat_jobs = {}
 panel_wechat_jobs_lock = threading.Lock()
+ui_stall_recovery_start_lock = threading.Lock()
+ui_stall_recovery_start_scheduled = False
 
 
 def _start_panel_wechat_job(name, target):
@@ -3965,6 +3969,40 @@ def _start_bot_runtime(wait_timeout=None):
         return snapshot
     _prevent_sleep()
     return _get_bot_startup_state_snapshot()
+
+
+def _ui_stall_recovery_requested(argv=None):
+    arguments = sys.argv if argv is None else argv
+    return UI_STALL_RECOVERY_ARGUMENT in arguments
+
+
+def _auto_start_bot_after_ui_stall():
+    if bot_thread and bot_thread.is_alive():
+        log('INFO', 'UI 卡死恢复后机器人已在运行，无需重复启动')
+        return
+    log('INFO', '面板恢复完成，正在自动启动机器人')
+    result = _start_bot_runtime(wait_timeout=BOT_START_WAIT_TIMEOUT_SECONDS)
+    if result.get('status') == 'success':
+        log('INFO', 'UI 卡死恢复后机器人已自动启动')
+    elif result.get('status') == 'pending':
+        log('INFO', 'UI 卡死恢复后机器人正在启动，等待微信监听初始化完成')
+    else:
+        log('ERROR', f"UI 卡死恢复后自动启动机器人失败：{result.get('message') or '未知错误'}")
+
+
+def _schedule_bot_start_after_ui_stall():
+    global ui_stall_recovery_start_scheduled
+    if not _ui_stall_recovery_requested():
+        return False
+    with ui_stall_recovery_start_lock:
+        if ui_stall_recovery_start_scheduled:
+            return False
+        ui_stall_recovery_start_scheduled = True
+    timer = threading.Timer(UI_STALL_RECOVERY_BOT_START_DELAY_SECONDS, _auto_start_bot_after_ui_stall)
+    timer.daemon = True
+    timer.start()
+    log('WARNING', '微信 UI 卡死后面板已恢复，将自动启动机器人')
+    return True
 
 
 def _stop_running_bot_and_wait(wait_timeout=BOT_STOP_WAIT_TIMEOUT_SECONDS):
@@ -6833,6 +6871,7 @@ def main():
         if siver_panel_manager is not None:
             siver_panel_manager.set_local_port_provider(get_panel_server_port)
             siver_panel_manager.start()
+        _schedule_bot_start_after_ui_stall()
         # 启动服务器
         original_server_banner = flask_cli.show_server_banner
         flask_cli.show_server_banner = _show_localized_server_banner

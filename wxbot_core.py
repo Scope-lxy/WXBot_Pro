@@ -1194,7 +1194,11 @@ class WXBot:
                 terminate_contact()
             except Exception as exc:
                 log(level="ERROR", message=f"卡死退出前终止通讯录采集器失败：{exc}")
-        if self.is_stop_requested() or snapshot.kind == wechat_ui_actions.UIIntentKind.SHUTDOWN.value:
+        stopped_by_user = (
+            self.is_stop_requested()
+            or snapshot.kind == wechat_ui_actions.UIIntentKind.SHUTDOWN.value
+        )
+        if stopped_by_user:
             try:
                 runtime_dir = os.path.abspath("runtime")
                 os.makedirs(runtime_dir, exist_ok=True)
@@ -1202,7 +1206,11 @@ class WXBot:
                     handle.write(str(time.time() + 300))
             except Exception as exc:
                 log(level="ERROR", message=f"写入用户停止恢复标记失败：{exc}")
-        os._exit(wechat_ui_actions.UI_STUCK_EXIT_CODE)
+        os._exit(
+            wechat_ui_actions.UI_STUCK_STOPPED_EXIT_CODE
+            if stopped_by_user
+            else wechat_ui_actions.UI_STUCK_EXIT_CODE
+        )
 
     def _activate_reply_echoes_for_ui_intent(self, intent):
         tracker = getattr(self, "_reply_echo_tracker", None)

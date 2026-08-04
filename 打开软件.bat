@@ -64,13 +64,29 @@ if errorlevel 1 (
 powershell -NoProfile -Command "$u=[System.Text.Encoding]::UTF8; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); Write-Output ($u.GetString([Convert]::FromBase64String($env:WXBOT_STARTUP_TEXT))); Write-Output (($u.GetString([Convert]::FromBase64String($env:WXBOT_WORKDIR_LABEL))) + (Get-Location).Path)"
 
 :run_server
-"venv\Scripts\python.exe" web_server.py
+if defined WXBOT_RESUME_BOT_AFTER_UI_STALL (
+    "venv\Scripts\python.exe" web_server.py --resume-after-ui-stall
+) else (
+    "venv\Scripts\python.exe" web_server.py
+)
 set "SERVER_EXIT_CODE=%errorlevel%"
 
 if "%SERVER_EXIT_CODE%"=="86" (
     call :allow_ui_recovery
     if not errorlevel 1 (
         echo [WARNING] WeChat UI stalled. Restarting WXBot Pro panel...
+        set "WXBOT_RESUME_BOT_AFTER_UI_STALL=1"
+        goto run_server
+    )
+    echo [ERROR] WeChat UI stalled more than 3 times in 30 minutes.
+    echo [ERROR] Automatic recovery stopped. Please check WeChat and restart manually.
+)
+
+if "%SERVER_EXIT_CODE%"=="87" (
+    call :allow_ui_recovery
+    if not errorlevel 1 (
+        echo [WARNING] WeChat UI stalled during shutdown. Restarting WXBot Pro panel without starting the bot...
+        set "WXBOT_RESUME_BOT_AFTER_UI_STALL="
         goto run_server
     )
     echo [ERROR] WeChat UI stalled more than 3 times in 30 minutes.

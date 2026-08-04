@@ -70,8 +70,11 @@ JOURNALED_DELIVERY_INTENTS = frozenset({
     UIIntentKind.SEND_ACTIONS,
 })
 UI_STUCK_EXIT_CODE = 86
+UI_STUCK_STOPPED_EXIT_CODE = 87
 # Queueing is intentionally unbounded; active UI actions have their own watchdog deadlines.
 UI_CALL_WAIT_TIMEOUT = None
+WXAUTOX_UI_LOCK_TIMEOUT_SECONDS = 30.0
+UI_OWNER_LOCK_RECOVERY_GRACE_SECONDS = 10.0
 
 
 def task_definition_version(definition: Any) -> int:
@@ -238,7 +241,7 @@ class WeChatUIOwner:
         self,
         handlers: Mapping[UIIntentKind, IntentHandler],
         *,
-        light_timeout: float = 30.0,
+        light_timeout: float = WXAUTOX_UI_LOCK_TIMEOUT_SECONDS,
         exclusive_timeout: float = 180.0,
         poll_interval: float = 0.05,
         thread_name: str = "wechat-ui-owner",
@@ -675,10 +678,18 @@ class WeChatUIOwner:
 class UIWatchdog:
     """Observe owner deadlines; process termination is supplied by the caller."""
 
-    def __init__(self, snapshot_provider, on_timeout, *, poll_interval: float = 0.5):
+    def __init__(
+        self,
+        snapshot_provider,
+        on_timeout,
+        *,
+        poll_interval: float = 0.5,
+        recovery_grace_seconds: float = UI_OWNER_LOCK_RECOVERY_GRACE_SECONDS,
+    ):
         self._snapshot_provider = snapshot_provider
         self._on_timeout = on_timeout
         self._poll_interval = max(0.01, float(poll_interval))
+        self._recovery_grace_seconds = max(0.0, float(recovery_grace_seconds))
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._run, name="wechat-ui-watchdog", daemon=True)
         self._started = False
@@ -700,5 +711,23 @@ class UIWatchdog:
             deadline = float(getattr(snapshot, "deadline_at", 0.0) or 0.0)
             if not deadline or time.monotonic() < deadline:
                 continue
+            if self._recovery_grace_seconds:
+                log(
+                    level="WARNING",
+                    message=(
+                        f"微信 UI 调用达到截止线：{snapshot.kind}，"
+                        f"等待 UI owner 处理异常 {self._recovery_grace_seconds:g} 秒"
+                    ),
+                )
+                if self._stop_event.wait(self._recovery_grace_seconds):
+                    return
+                current = self._snapshot_provider()
+                current_deadline = float(getattr(current, "deadline_at", 0.0) or 0.0)
+                if (
+                    getattr(current, "kind", "") != getattr(snapshot, "kind", "")
+                    or getattr(current, "started_at", 0.0) != getattr(snapshot, "started_at", 0.0)
+                    or current_deadline > time.monotonic()
+                ):
+                    continue
             self._on_timeout(snapshot)
             return
