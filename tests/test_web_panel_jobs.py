@@ -471,6 +471,16 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertIn("$('#btn-clear-materials').prop('hidden', tabName !== 'materials');", dashboard)
         self.assertIn("url:'/material_outreach/materials'", dashboard)
 
+    def test_ai_material_outreach_detail_starts_with_config_fields(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+
+        ai_detail = dashboard.split('id="ai-material-outreach-card"', 1)[1].split(
+            'id="material_management_detail_container"', 1
+        )[0]
+        self.assertIn('id="ai_material_outreach_allowed_sources_wrap"', ai_detail)
+        self.assertNotIn('status-section-title', ai_detail)
+
     def test_split_reply_delay_controls_live_only_in_private_and_group_cards(self):
         root = Path(__file__).resolve().parents[1]
         dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
@@ -556,6 +566,11 @@ class WebPanelJobTests(unittest.TestCase):
             ".keyword-trigger-grid .detail-config-separator { grid-column: 1 / -1; margin: 0; }",
             styles,
         )
+        trigger_grid_rule = next(
+            rule for rule in styles.splitlines()
+            if rule.startswith(".keyword-trigger-grid { ")
+        )
+        self.assertNotIn("margin-top:", trigger_grid_rule)
         self.assertIn(
             ".private-keyword-trigger-dependent.is-muted { opacity: .58; }",
             styles,
