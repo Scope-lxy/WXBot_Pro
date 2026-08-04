@@ -50,7 +50,9 @@ class FakeClient:
         self.chats = {}
         self.callback = None
         self.stop_count = 0
+        self.stop_remove = []
         self.start_count = 0
+        self.switch_to_chat_count = 0
 
     def GetMyInfo(self):
         return {"id": "wxid-test"}
@@ -58,12 +60,17 @@ class FakeClient:
     def IsOnline(self):
         return True
 
-    def StopListening(self):
+    def StopListening(self, remove=True):
         self.stop_count += 1
+        self.stop_remove.append(remove)
         return True
 
     def StartListening(self):
         self.start_count += 1
+        return True
+
+    def SwitchToChat(self):
+        self.switch_to_chat_count += 1
         return True
 
     def GetSubWindow(self, nickname):
@@ -225,6 +232,28 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertFalse(callback.is_alive())
         self.assertEqual(downloads, [True])
         self.assertEqual(received[0].content, "C:/temp/after-contact.png")
+
+    def test_contact_batch_pauses_listener_without_removing_windows_until_recovery(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+        client.stop_count = 0
+        client.stop_remove.clear()
+        client.start_count = 0
+        process = SimpleNamespace(poll=lambda: (False, None), terminate=lambda: None)
+
+        with patch(
+            "feature.contacts.start_contact_auto_maintenance_collector",
+            return_value=process,
+        ):
+            handle = runtime.start_contact_batch({"start_name": "张三"})
+
+        self.assertIsInstance(handle, ContactBatchHandle)
+        self.assertEqual(client.stop_remove, [False])
+        self.assertEqual(client.start_count, 0)
+        self.assertTrue(runtime.recover_chat_page({}))
+        self.assertEqual(client.switch_to_chat_count, 1)
+        self.assertEqual(client.start_count, 1)
 
     def test_listener_auto_recovery_rebuilds_listener_without_rebinding_client(self):
         first = FakeClient()

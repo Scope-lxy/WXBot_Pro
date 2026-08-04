@@ -4,10 +4,11 @@
 
 ## 生产结论
 
-- 全部真实微信动作只经一个 UI owner。业务线程只传纯数据，不能跨线程缓存或复用 `WeChat`、`Chat`、`Message`、`NewFriend` 或 UIA 对象。
-- 通讯录完整资料采集只能在 `feature/contact_auto_collector_worker.py` 子进程执行。采集开始到 `SwitchToChat` 恢复完成前，owner 和聊天业务都等待；父进程以 300 秒硬超时和 PID 清理兜底。
+- 项目主动发起的全部真实微信动作只经一个 UI owner。业务线程只传纯数据，不能跨线程缓存或复用 `WeChat`、`Chat`、`Message`、`NewFriend` 或 UIA 对象。wxautox4 自建 callback 线程上的原始 `Message` 只能在原线程使用，并且必须取得 owner 预约；这不是第二条业务 UI 通道。
+- 通讯录完整资料采集只能在 `feature/contact_auto_collector_worker.py` 子进程执行。开始前排空已持锁 callback，并用 `StopListening(remove=False)` 暂停后台监听；采集开始到 `SwitchToChat` 恢复和 `StartListening()` 完成前，owner、callback 和聊天业务都等待。父进程以 300 秒硬超时和 PID 清理兜底。
 - 普通控件超时、目标不匹配或单任务失败只结束或延后该任务。只有 Windows `1400`、COM/RPC 断开等客户端级证据才允许重绑微信。
 - 手动关系全量扫描是连续、不可抢占的 owner 独占事务；自动关系扫描只读取当前会话列表。
+- owner 等待 wxautox4 全局锁时尚未开始微信动作，不设置 watchdog 截止线、不写投递 `inflight`。若持锁 callback 正在等待 owner，先让该 callback 完成并释放锁；普通任务保持原顺序且只执行一次。
 
 ## 实测依据与边界
 
@@ -18,10 +19,14 @@
 | `GetFriendDetails` | 内部 `timeout` 不能作为进程级截止线；必须使用独立 worker 和父进程硬超时。 |
 | 通讯录 worker 强制终止 | 按 PID 终止后没有半成品合并机会，恢复聊天页后可以重新读取和发送。 |
 | 多子窗口并发 | 仅证明底层偶尔可执行，不证明适合生产；生产不以这项能力换取更快回复。 |
+| 监听 callback 持锁 | callback 已进入 wxautox4 且持有全局锁时，owner 不能一边等锁一边让 callback 等 FIFO；只有尚未开始的普通任务可以暂时让位。 |
+| 多步骤 owner 任务 | handler 从第一步到最后一步持有同一段全局锁；发送动作组、素材、关系扫描、资料修改等任务开始后均不可插入 callback。 |
 | 通讯录 callback | 返回 `False` 继续寻找起点；第一次返回 `True` 停止 callback，并从命中项读取，命中项计入数量。名称只能定位，不能证明身份。 |
 | 关系全量扫描 | 连续 owner 事务比旧分片滚动更可靠；开始和结束回顶保留稳定等待，中间不插入固定等待。 |
 
-这些结论不外推到未验证的回调瞬间、图片下载、引用发送或长时间高压场景。未验证组合默认串行。
+2026-08-04 的两次自动恢复日志已证明：wxautox4 listener 在 `_listener_listen -> GetNewMessage -> UIA` 持锁时，owner 会在 `chat.chat_type -> ui_transaction` 等待同一把锁；没有 Windows `1400`、COM/RPC 断开等客户端死亡证据。该场景只能按锁竞争修复，不能据此重绑微信。
+
+这些结论不外推到未验证的回调瞬间、图片下载、引用发送或长时间高压场景。未验证组合默认串行。未来若要停用后台监听并改由 owner 主动读取，按《微信 UI 主动轮询重构备选方案》单独实验，不与当前修复混合上线。
 
 ## 更新内核后的复验
 

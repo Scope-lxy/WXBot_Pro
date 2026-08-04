@@ -216,6 +216,11 @@ class WebPanelJobTests(unittest.TestCase):
             '<label for="chat_keyword_reply_quote"><span class="switch-title">回复时引用</span></label>',
             dashboard,
         )
+        private_quote_row = dashboard.split(
+            '<div class="switch-row private-keyword-trigger-dependent', 1
+        )[1].split('</div>', 1)[0]
+        self.assertIn('{% if not config.chat_keyword_switch %}is-muted{% endif %}', private_quote_row)
+        self.assertIn('{% if not config.chat_keyword_switch %}disabled{% endif %}', private_quote_row)
         self.assertIn(
             '<label for="group_keyword_reply_quote"><span class="switch-title">回复时引用</span></label>',
             dashboard,
@@ -226,6 +231,11 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertIn("chat_keyword_reply_quote:$('#chat_keyword_reply_quote').is(':checked')", dashboard)
         self.assertIn("group_keyword_reply_quote:$('#group_keyword_reply_quote').is(':checked')", dashboard)
         self.assertIn("group_keyword_reply_at_msg:$('#group_keyword_reply_at_msg').is(':checked')", dashboard)
+        self.assertIn("var privateEnabled = $('#chat_keyword_switch').is(':checked');", dashboard)
+        self.assertIn("$('.private-keyword-trigger-dependent').toggleClass('is-muted', !privateEnabled);", dashboard)
+        self.assertIn("$('#chat_keyword_reply_quote').prop('disabled', !privateEnabled);", dashboard)
+        self.assertIn("$('#chat_keyword_switch, #group_keyword_switch').on('change', syncKeywordTriggerControls);", dashboard)
+        grid_position = dashboard.index('<div class="keyword-trigger-grid">')
         private_quote_position = dashboard.index('id="chat_keyword_reply_quote"')
         divider_position = dashboard.index(
             '<div class="detail-config-separator" aria-hidden="true"></div>',
@@ -234,7 +244,25 @@ class WebPanelJobTests(unittest.TestCase):
         group_switch_position = dashboard.index('id="group_keyword_switch"')
         self.assertLess(private_quote_position, divider_position)
         self.assertLess(divider_position, group_switch_position)
-        self.assertLess(dashboard.index('id="group_keyword_at_only"'), dashboard.index('class="keyword-trigger-grid"'))
+        trigger_control_order = [
+            dashboard.index('id="chat_keyword_switch"'),
+            dashboard.index('id="chat_keyword_reply_quote"'),
+            dashboard.index('id="group_keyword_switch"'),
+            dashboard.index('id="group_keyword_at_only"'),
+            dashboard.index('id="group_keyword_reply_quote"'),
+            dashboard.index('id="group_keyword_reply_at_msg"'),
+        ]
+        self.assertTrue(all(position > grid_position for position in trigger_control_order))
+        self.assertEqual(trigger_control_order, sorted(trigger_control_order))
+        styles = (root / "templates" / "static" / "dashboard.css").read_text(encoding="utf-8")
+        self.assertIn(
+            ".keyword-trigger-grid .detail-config-separator { grid-column: 1 / -1; margin: 0; }",
+            styles,
+        )
+        self.assertIn(
+            ".private-keyword-trigger-dependent.is-muted { opacity: .58; }",
+            styles,
+        )
         self.assertEqual(
             [
                 dashboard.index('id="group_keyword_switch"'),
@@ -245,8 +273,8 @@ class WebPanelJobTests(unittest.TestCase):
             sorted([
                 dashboard.index('id="group_keyword_switch"'),
                 dashboard.index('id="group_keyword_at_only"'),
-                dashboard.index('id="group_keyword_reply_quote"'),
                 dashboard.index('id="group_keyword_reply_at_msg"'),
+                dashboard.index('id="group_keyword_reply_quote"'),
             ]),
         )
 

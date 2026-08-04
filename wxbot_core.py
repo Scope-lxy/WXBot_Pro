@@ -7851,6 +7851,10 @@ class WXBot:
                     echo_delivery_ids=(action_id,),
                     expires_at=turn.expires_at,
                 )
+        except wechat_ui_actions.UIActionNotStarted as exc:
+            if tracker is not None:
+                tracker.discard(action_id)
+            raise DeliveryNotStarted(DeliveryStatus.BLOCKED, str(exc)) from exc
         except wechat_ui_actions.IntentCancelled as exc:
             if tracker is not None:
                 tracker.discard(action_id)

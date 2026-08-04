@@ -491,7 +491,9 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .keyword-trigger-card .switch-row + .switch-row { margin-top: var(--ui-panel-gap); }
 .keyword-trigger-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-panel-gap); margin-top: var(--ui-panel-gap); }
 .keyword-trigger-card .keyword-trigger-grid .switch-row + .switch-row { margin-top: 0; }
-.keyword-trigger-dependent.is-muted { opacity: .58; }
+.keyword-trigger-grid .detail-config-separator { grid-column: 1 / -1; margin: 0; }
+.keyword-trigger-dependent.is-muted,
+.private-keyword-trigger-dependent.is-muted { opacity: .58; }
 .keyword-rule-list { display: grid; gap: 10px; }
 .keyword-empty,
 .listen-rule-empty,

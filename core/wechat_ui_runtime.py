@@ -253,6 +253,7 @@ class WeChatUIRuntime:
         self._client = None
         self._owner = None
         self._listen_chats = {}
+        self._listener_paused_for_contact = False
         self._heartbeat = lambda: None
         self._callback_suppression_lock = RLock()
         self._callback_suppression = {}
@@ -1374,14 +1375,31 @@ class WeChatUIRuntime:
     def start_contact_batch(self, payload):
         from feature.contacts import start_contact_auto_maintenance_collector
 
-        process = start_contact_auto_maintenance_collector(
-            start_name=str(payload.get("start_name") or ""),
-            start_identity=str(payload.get("start_identity") or ""),
-            count=50,
-            timeout_seconds=300,
-        )
+        stop = getattr(self._client, "StopListening", None)
+        if callable(stop):
+            stop(remove=False)
+            self._listener_paused_for_contact = True
+        try:
+            process = start_contact_auto_maintenance_collector(
+                start_name=str(payload.get("start_name") or ""),
+                start_identity=str(payload.get("start_identity") or ""),
+                count=50,
+                timeout_seconds=300,
+            )
+        except BaseException:
+            start = getattr(self._client, "StartListening", None)
+            if self._listener_paused_for_contact and callable(start):
+                start()
+            self._listener_paused_for_contact = False
+            raise
         return ContactBatchHandle(poll=process.poll, terminate=process.terminate)
 
     def recover_chat_page(self, _payload):
         switch = getattr(self._client, "SwitchToChat", None)
-        return switch() if callable(switch) else True
+        try:
+            return switch() if callable(switch) else True
+        finally:
+            start = getattr(self._client, "StartListening", None)
+            if self._listener_paused_for_contact and callable(start):
+                start()
+            self._listener_paused_for_contact = False

@@ -1349,6 +1349,36 @@ class MessageLoopIntegrationTests(unittest.TestCase):
 
             self.assertEqual(caught.exception.status, DeliveryStatus.EXPIRED)
 
+    def test_owner_lock_rejection_maps_to_retryable_not_started_blocked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            inbound = enqueue_friend(bot, "question", "friend-lock-wait")
+            action = ReplyAction("text", "answer")
+            turn_id = bot._ensure_reply_job(FakeChat("Alice", lambda **_kwargs: True), inbound)
+            turn = ReplyTurn(
+                turn_id=turn_id,
+                conversation="Alice",
+                expected_version=inbound._wxbot_event_version,
+                expires_at=200,
+                event_ids=inbound._wxbot_event_ids,
+                actions=(action,),
+            )
+            context = {
+                "chat": FakeChat(
+                    "Alice",
+                    lambda **_kwargs: (_ for _ in ()).throw(
+                        wechat_ui_actions.UIActionNotStarted("lock unavailable")
+                    ),
+                ),
+                "message": inbound,
+                "at_first": "",
+            }
+
+            with self.assertRaises(DeliveryNotStarted) as caught:
+                bot._send_reply_delivery(turn, action, f"{turn_id}:0", context)
+
+            self.assertEqual(caught.exception.status, DeliveryStatus.BLOCKED)
+
     def test_quote_location_failure_falls_back_to_plain_text_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_delivery_bot(tmp)

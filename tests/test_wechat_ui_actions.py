@@ -220,6 +220,205 @@ class WechatUiActionsTests(unittest.TestCase):
 
         self.assertEqual(events, [("download", owner.owner_thread_id)])
 
+    def test_owner_yields_lock_wait_to_callback_that_already_holds_wxautox_lock(self):
+        lock_held = threading.Event()
+        owner_lock_attempted = threading.Event()
+        enqueue_callback = threading.Event()
+        callback_done = threading.Event()
+        events = []
+        normal_calls = []
+        vendor_transaction = wechat_ui_actions.wxautox_ui_transaction
+
+        def tracked_transaction(*, timeout):
+            owner_lock_attempted.set()
+            return vendor_transaction(timeout=timeout)
+
+        def normal(_payload):
+            normal_calls.append("normal")
+            events.append("normal")
+            return True
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.SEND_TEXT: normal,
+        }, poll_interval=0.01)
+
+        def run_callback_while_holding_lock():
+            with vendor_transaction(timeout=1):
+                lock_held.set()
+                self.assertTrue(enqueue_callback.wait(1))
+                owner.run_callback_action(
+                    wechat_ui_actions.UIIntent(
+                        wechat_ui_actions.UIIntentKind.DOWNLOAD_MEDIA,
+                        {"conversation": "张三", "callback_bound_message": True},
+                    ),
+                    lambda: events.append("callback"),
+                )
+            callback_done.set()
+
+        callback_thread = threading.Thread(target=run_callback_while_holding_lock)
+        callback_thread.start()
+        with patch.object(wechat_ui_actions, "wxautox_ui_transaction", tracked_transaction):
+            owner.start()
+            try:
+                self.assertTrue(lock_held.wait(1))
+                normal_ticket = owner.submit(wechat_ui_actions.UIIntent(
+                    wechat_ui_actions.UIIntentKind.SEND_TEXT,
+                    {"conversation": "李四", "text": "你好"},
+                ))
+                self.assertTrue(owner_lock_attempted.wait(1))
+                self.assertFalse(owner.is_idle())
+                self.assertEqual(owner.current_action_snapshot().kind, "")
+                enqueue_callback.set()
+                self.assertTrue(callback_done.wait(1))
+                self.assertTrue(normal_ticket.result(1))
+            finally:
+                enqueue_callback.set()
+                callback_thread.join(1)
+                owner.stop()
+
+        self.assertEqual(events, ["callback", "normal"])
+        self.assertEqual(normal_calls, ["normal"])
+
+    def test_watchdog_ignores_time_spent_waiting_for_wxautox_lock(self):
+        lock_held = threading.Event()
+        release_lock = threading.Event()
+        timed_out = threading.Event()
+        calls = []
+
+        def hold_lock():
+            with wechat_ui_actions.wxautox_ui_transaction(timeout=1):
+                lock_held.set()
+                release_lock.wait(1)
+
+        lock_thread = threading.Thread(target=hold_lock)
+        lock_thread.start()
+        self.assertTrue(lock_held.wait(1))
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.SEND_TEXT: lambda _payload: calls.append("sent") or True,
+        }, light_timeout=0.05, poll_interval=0.01)
+        watchdog = wechat_ui_actions.UIWatchdog(
+            owner.current_action_snapshot,
+            lambda _snapshot: timed_out.set(),
+            poll_interval=0.01,
+            recovery_grace_seconds=0,
+        )
+        owner.start()
+        watchdog.start()
+        try:
+            ticket = owner.submit(wechat_ui_actions.UIIntent(
+                wechat_ui_actions.UIIntentKind.SEND_TEXT,
+                {"conversation": "张三", "text": "稍后发送"},
+            ))
+            time.sleep(0.12)
+            self.assertEqual(owner.current_action_snapshot().kind, "")
+            self.assertFalse(owner.is_idle())
+            self.assertFalse(timed_out.is_set())
+            release_lock.set()
+            self.assertTrue(ticket.result(1))
+        finally:
+            release_lock.set()
+            lock_thread.join(1)
+            watchdog.stop()
+            owner.stop()
+
+        self.assertEqual(calls, ["sent"])
+        self.assertFalse(timed_out.is_set())
+
+    def test_callback_cannot_interrupt_a_started_multi_step_ui_action(self):
+        first_step_done = threading.Event()
+        finish_action = threading.Event()
+        callback_acquired_lock = threading.Event()
+        callback_done = threading.Event()
+        events = []
+
+        def multi_step(_payload):
+            events.append("step-1")
+            first_step_done.set()
+            self.assertTrue(finish_action.wait(1))
+            events.append("step-2")
+            return True
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.SEND_ACTIONS: multi_step,
+        }, poll_interval=0.01)
+        owner.start()
+        action_ticket = owner.submit(wechat_ui_actions.UIIntent(
+            wechat_ui_actions.UIIntentKind.SEND_ACTIONS,
+            {"conversation": "张三", "actions": [{"type": "text", "content": "你好"}]},
+        ))
+        self.assertTrue(first_step_done.wait(1))
+
+        def run_callback():
+            with wechat_ui_actions.wxautox_ui_transaction(timeout=1):
+                callback_acquired_lock.set()
+                owner.run_callback_action(
+                    wechat_ui_actions.UIIntent(
+                        wechat_ui_actions.UIIntentKind.DOWNLOAD_MEDIA,
+                        {"conversation": "李四", "callback_bound_message": True},
+                    ),
+                    lambda: events.append("callback"),
+                )
+            callback_done.set()
+
+        callback_thread = threading.Thread(target=run_callback)
+        callback_thread.start()
+        try:
+            time.sleep(0.05)
+            self.assertFalse(callback_acquired_lock.is_set())
+            self.assertEqual(events, ["step-1"])
+            finish_action.set()
+            self.assertTrue(action_ticket.result(1))
+            self.assertTrue(callback_done.wait(1))
+        finally:
+            finish_action.set()
+            callback_thread.join(1)
+            owner.stop()
+
+        self.assertEqual(events, ["step-1", "step-2", "callback"])
+
+    def test_delivery_journal_stays_untouched_when_ui_lock_wait_times_out(self):
+        lock_held = threading.Event()
+        release_lock = threading.Event()
+        journal_events = []
+        handler_calls = []
+
+        class Journal:
+            def begin(self, delivery_id, kind, payload):
+                journal_events.append(("begin", delivery_id, kind))
+                return True
+
+            def finish(self, delivery_id, status, error=""):
+                journal_events.append(("finish", delivery_id, status, error))
+
+        def hold_lock():
+            with wechat_ui_actions.wxautox_ui_transaction(timeout=1):
+                lock_held.set()
+                release_lock.wait(1)
+
+        lock_thread = threading.Thread(target=hold_lock)
+        lock_thread.start()
+        self.assertTrue(lock_held.wait(1))
+        with patch.object(wechat_ui_actions, "WXAUTOX_UI_LOCK_TIMEOUT_SECONDS", 0.08):
+            owner = wechat_ui_actions.WeChatUIOwner({
+                wechat_ui_actions.UIIntentKind.SEND_FILE: lambda _payload: handler_calls.append("sent") or True,
+            }, poll_interval=0.01)
+            owner.set_delivery_journal(Journal())
+            owner.start()
+            try:
+                ticket = owner.submit(wechat_ui_actions.UIIntent(
+                    wechat_ui_actions.UIIntentKind.SEND_FILE,
+                    {"conversation": "张三", "path": "a.pdf", "delivery_id": "delivery-lock-wait"},
+                ))
+                with self.assertRaises(wechat_ui_actions.UIActionNotStarted):
+                    ticket.result(1)
+            finally:
+                owner.stop()
+                release_lock.set()
+                lock_thread.join(1)
+
+        self.assertEqual(journal_events, [])
+        self.assertEqual(handler_calls, [])
+
     def test_full_relationship_scan_holds_owner_until_complete(self):
         scan_started = threading.Event()
         scan_finished = threading.Event()

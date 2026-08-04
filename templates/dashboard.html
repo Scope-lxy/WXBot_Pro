@@ -1834,24 +1834,24 @@ html.icons-pref-local [class*=" bi-"]::before {
               <span class="desc">选择关键词回复在哪些聊天场景生效</span>
             </div>
           </div>
-          <div class="switch-row">
-            <input class="form-check-input" type="checkbox" id="chat_keyword_switch" name="chat_keyword_switch" {% if config.chat_keyword_switch %}checked{% endif %}>
-            <label for="chat_keyword_switch"><span class="switch-title">私聊关键词回复</span></label>
-          </div>
-          <div class="switch-row">
-            <input class="form-check-input" type="checkbox" id="chat_keyword_reply_quote" name="chat_keyword_reply_quote" {% if config.chat_keyword_reply_quote %}checked{% endif %}>
-            <label for="chat_keyword_reply_quote"><span class="switch-title">回复时引用</span></label>
-          </div>
-          <div class="detail-config-separator" aria-hidden="true"></div>
-          <div class="switch-row">
-            <input class="form-check-input" type="checkbox" id="group_keyword_switch" name="group_keyword_switch" {% if config.group_keyword_switch %}checked{% endif %}>
-            <label for="group_keyword_switch"><span class="switch-title">群聊关键词回复</span></label>
-          </div>
-          <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
-            <input class="form-check-input" type="checkbox" id="group_keyword_at_only" name="group_keyword_at_only" {% if config.group_keyword_at_only %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
-            <label for="group_keyword_at_only"><span class="switch-title">仅被@时触发</span></label>
-          </div>
           <div class="keyword-trigger-grid">
+            <div class="switch-row">
+              <input class="form-check-input" type="checkbox" id="chat_keyword_switch" name="chat_keyword_switch" {% if config.chat_keyword_switch %}checked{% endif %}>
+              <label for="chat_keyword_switch"><span class="switch-title">私聊关键词回复</span></label>
+            </div>
+            <div class="switch-row private-keyword-trigger-dependent {% if not config.chat_keyword_switch %}is-muted{% endif %}">
+              <input class="form-check-input" type="checkbox" id="chat_keyword_reply_quote" name="chat_keyword_reply_quote" {% if config.chat_keyword_reply_quote %}checked{% endif %} {% if not config.chat_keyword_switch %}disabled{% endif %}>
+              <label for="chat_keyword_reply_quote"><span class="switch-title">回复时引用</span></label>
+            </div>
+            <div class="detail-config-separator" aria-hidden="true"></div>
+            <div class="switch-row">
+              <input class="form-check-input" type="checkbox" id="group_keyword_switch" name="group_keyword_switch" {% if config.group_keyword_switch %}checked{% endif %}>
+              <label for="group_keyword_switch"><span class="switch-title">群聊关键词回复</span></label>
+            </div>
+            <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
+              <input class="form-check-input" type="checkbox" id="group_keyword_at_only" name="group_keyword_at_only" {% if config.group_keyword_at_only %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
+              <label for="group_keyword_at_only"><span class="switch-title">仅被@时触发</span></label>
+            </div>
             <div class="switch-row keyword-trigger-dependent {% if not config.group_keyword_switch %}is-muted{% endif %}">
               <input class="form-check-input" type="checkbox" id="group_keyword_reply_quote" name="group_keyword_reply_quote" {% if config.group_keyword_reply_quote %}checked{% endif %} {% if not config.group_keyword_switch %}disabled{% endif %}>
               <label for="group_keyword_reply_quote"><span class="switch-title">回复时引用</span></label>
@@ -8765,7 +8765,10 @@ $(function(){
     }
   }
   function syncKeywordTriggerControls(){
+    var privateEnabled = $('#chat_keyword_switch').is(':checked');
     var groupEnabled = $('#group_keyword_switch').is(':checked');
+    $('.private-keyword-trigger-dependent').toggleClass('is-muted', !privateEnabled);
+    $('#chat_keyword_reply_quote').prop('disabled', !privateEnabled);
     $('.keyword-trigger-dependent').toggleClass('is-muted', !groupEnabled);
     $('#group_keyword_at_only').prop('disabled', !groupEnabled);
     $('#group_keyword_reply_quote').prop('disabled', !groupEnabled);
@@ -8773,7 +8776,7 @@ $(function(){
     syncKeywordSummaryPills();
   }
   syncKeywordTriggerControls();
-  $('#group_keyword_switch').on('change', syncKeywordTriggerControls);
+  $('#chat_keyword_switch, #group_keyword_switch').on('change', syncKeywordTriggerControls);
   $(document).on('change', '#chat_keyword_switch, #chat_keyword_reply_quote, #group_keyword_switch, #group_keyword_at_only, #group_keyword_reply_quote, #group_keyword_reply_at_msg', syncKeywordSummaryPills);
   $(document).on('input change', '#keyword_container input[name="keyword_key"]', syncKeywordSummaryPills);
 
