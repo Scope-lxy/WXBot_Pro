@@ -1396,10 +1396,10 @@ class WeChatUIRuntime:
 
     def recover_chat_page(self, _payload):
         switch = getattr(self._client, "SwitchToChat", None)
-        try:
-            return switch() if callable(switch) else True
-        finally:
-            start = getattr(self._client, "StartListening", None)
-            if self._listener_paused_for_contact and callable(start):
-                start()
-            self._listener_paused_for_contact = False
+        if callable(switch):
+            switch()
+        start = getattr(self._client, "StartListening", None)
+        if self._listener_paused_for_contact and callable(start):
+            start()
+        self._listener_paused_for_contact = False
+        return True

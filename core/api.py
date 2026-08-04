@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import re
 import time
 from dataclasses import dataclass
 
@@ -70,6 +71,81 @@ def _truncate_log_text(value, limit=300):
     if len(text) <= limit:
         return text
     return text[:limit] + f"...（已截断，原始长度 {len(text)}）"
+
+
+def _api_error_status_code(error):
+    for candidate in (
+        getattr(error, "status_code", None),
+        getattr(getattr(error, "response", None), "status_code", None),
+    ):
+        try:
+            if candidate is not None:
+                return int(candidate)
+        except (TypeError, ValueError):
+            pass
+    match = re.search(r"(?:error code|status(?: code)?)\s*[:=]\s*(\d{3})", str(error or ""), re.I)
+    return int(match.group(1)) if match else None
+
+
+def _api_error_provider_message(error):
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        payload = body.get("error", body)
+        if isinstance(payload, dict) and payload.get("message"):
+            return str(payload["message"])
+        if body.get("message"):
+            return str(body["message"])
+    message = getattr(error, "message", None)
+    return str(message or error or "").strip()
+
+
+def describe_api_error(error):
+    """Return a concise, actionable Chinese summary for panel-facing API logs."""
+    status_code = _api_error_status_code(error)
+    error_type = type(error).__name__.lower() if not isinstance(error, str) else ""
+    detail = _api_error_provider_message(error)
+    lower = detail.lower()
+
+    def with_code(summary):
+        if status_code is None:
+            return summary
+        return f"{summary}（错误码 {status_code}）"
+
+    if "image_url" in lower and any(marker in lower for marker in ("expected `text`", "expected text", "unknown variant", "not support")):
+        return with_code("接口不支持图片输入")
+    if status_code == 402 or any(marker in lower for marker in ("insufficient balance", "insufficient quota", "余额不足")):
+        return with_code("余额或套餐额度不足")
+    if any(marker in lower for marker in ("context length", "maximum context", "too many tokens", "上下文长度")):
+        return with_code("内容超过模型上下文限制")
+    if any(marker in lower for marker in ("model_not_found", "model not found", "model does not exist", "unknown model")):
+        return with_code("模型不存在或无权使用")
+    if status_code == 401 or any(marker in lower for marker in ("invalid api key", "incorrect api key", "authentication")):
+        return with_code("API Key 无效")
+    if status_code == 403:
+        return with_code("账号无调用权限")
+    if status_code == 404:
+        return with_code("接口地址或模型不存在")
+    if status_code == 429 or "rate limit" in lower:
+        return with_code("请求频繁或额度受限")
+    if status_code == 400:
+        return with_code("请求参数不被接口接受")
+    if status_code in (408, 504) or "timeout" in error_type or any(marker in lower for marker in ("timed out", "timeout", "请求超时")):
+        return with_code("接口响应超时")
+    if "connection" in error_type or any(marker in lower for marker in ("connection error", "connection refused", "connection reset")):
+        return with_code("无法连接接口")
+    if status_code is not None and status_code >= 500:
+        return with_code("服务商暂时异常")
+    if isinstance(error, ValueError) and any(marker in lower for marker in ("响应为空", "没有 choices", "未找到文本内容")):
+        return with_code("接口未返回有效文本")
+    return with_code("接口请求失败")
+
+
+def format_api_error_log_message(api_label, error, *, action=""):
+    summary = describe_api_error(error)
+    if action:
+        summary = f"{summary}；{str(action).strip()}"
+    technical_detail = _truncate_log_text(f"{type(error).__name__}: {error}", 1200)
+    return f"API调用失败（{api_label}）：{summary}\n技术详情：{technical_detail}"
 
 
 def _to_debug_jsonable(value):
@@ -227,6 +303,7 @@ class OpenAIAPI:
         self.config = config
         self.DS_NOW_MOD = config.model
         self.last_protocol_status = {"status": "unknown"}
+        self.last_error = None
         self.client = OpenAI(
             api_key=config.key,
             base_url=config.url,
@@ -287,6 +364,7 @@ class OpenAIAPI:
         image_path: str = "",
         image_url: str = "",
         image_paths=None,
+        log_errors=True,
     ):
         if model is None:
             model = self.DS_NOW_MOD
@@ -295,15 +373,19 @@ class OpenAIAPI:
 
         protocol = normalize_api_protocol(getattr(self.config, "api_protocol", ""))
         self.last_protocol_status = {"status": "unknown"}
+        self.last_error = None
         if protocol == "responses":
             try:
                 result = self._call_responses_api(message, model, stream, prompt, history, image_path, image_url, image_paths)
                 self.last_protocol_status = {"status": "responses_ok"}
                 return result
             except Exception as e:
-                error_type = type(e).__name__
-                error_msg = _truncate_log_text(str(e), 500)
-                log(level="WARNING", message=f"API调用失败（{self._log_label('Responses API', model=model)}），错误类型：{error_type}，详情：{error_msg}")
+                self.last_error = e
+                if log_errors:
+                    log(
+                        level="WARNING",
+                        message=format_api_error_log_message(self._log_label('Responses API', model=model), e),
+                    )
                 self.last_protocol_status = {"status": "failed"}
                 return API_ERROR_REPLY_TEXT
 
@@ -312,9 +394,12 @@ class OpenAIAPI:
             self.last_protocol_status = {"status": "chat_completions_ok"}
             return result
         except Exception as e:
-            error_type = type(e).__name__
-            error_msg = _truncate_log_text(str(e), 500)
-            log(level="WARNING", message=f"API调用失败（{self._log_label('Chat Completions', model=model)}），错误类型：{error_type}，详情：{error_msg}")
+            self.last_error = e
+            if log_errors:
+                log(
+                    level="WARNING",
+                    message=format_api_error_log_message(self._log_label('Chat Completions', model=model), e),
+                )
             self.last_protocol_status = {"status": "failed"}
             return API_ERROR_REPLY_TEXT
 
@@ -398,7 +483,7 @@ class OpenAIAPI:
 
     def _call_responses_api(self, message, model, stream, prompt, history=None, image_path="", image_url="", image_paths=None):
         if stream:
-            log(level="WARN", message=f"API调用模式（{self._log_label('Responses API', model=model)}）：Responses API 当前按非流式模式调用")
+            log(level="DEBUG", message=f"API调用模式（{self._log_label('Responses API', model=model)}）：Responses API 当前按非流式模式调用")
         normalized_paths = self._normalize_image_paths(image_path, image_paths)
         input_payload = []
         if prompt and str(prompt).strip():
@@ -460,9 +545,19 @@ class DusAPI:
         self.request_timeout = MAIN_API_REQUEST_TIMEOUT_SECONDS
         self.max_output_tokens = max(1, int(getattr(config, "max_output_tokens", DEFAULT_CHAT_MAX_OUTPUT_TOKENS) or DEFAULT_CHAT_MAX_OUTPUT_TOKENS))
         self.reasoning_effort = normalize_reasoning_effort(getattr(config, "reasoning_effort", ""))
+        self.last_error = None
 
     def _log_label(self, api_name="", *, model=None):
         return _api_log_label(self.config, api_name, model=model)
+
+    def _log_failure(self, api_name, model, error, *, action, enabled):
+        if enabled:
+            log(
+                level="WARNING",
+                message=format_api_error_log_message(
+                    self._log_label(api_name, model=model), error, action=action,
+                ),
+            )
 
     @staticmethod
     def build_image_block(image_path: str = "", image_url: str = "") -> dict:
@@ -617,6 +712,7 @@ class DusAPI:
         image_path: str = "",
         image_url: str = "",
         image_paths=None,
+        log_errors=True,
     ):
         if model is None:
             model = self.DS_NOW_MOD
@@ -625,6 +721,7 @@ class DusAPI:
         retry_delays = [2, 4, 8, 16, 32]
         max_retries = max(0, min(self.max_retries, len(retry_delays)))
         last_error = None
+        self.last_error = None
         normalized_paths = self._normalize_image_paths(image_path, image_paths)
 
         if "claude" in model.lower():
@@ -665,12 +762,19 @@ class DusAPI:
                         raise ValueError("DusAPI Claude 流式响应中未找到文本内容")
                     except Exception as e:
                         last_error = e
+                        self.last_error = e
                         if attempt < max_retries:
                             delay = retry_delays[attempt]
-                            log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI Claude', model=model)}，流式），重试：第 {attempt + 1} 次失败，{delay}s 后重试，详情：{type(e).__name__}: {e}")
+                            self._log_failure(
+                                'DusAPI Claude', model, e,
+                                action=f"{delay} 秒后重试（第 {attempt + 1} 次）", enabled=log_errors,
+                            )
                             time.sleep(delay)
                         else:
-                            log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI Claude', model=model)}，流式），已重试 {max_retries} 次，最终失败：{last_error}")
+                            self._log_failure(
+                                'DusAPI Claude', model, last_error,
+                                action=f"已重试 {max_retries} 次，本次调用已停止", enabled=log_errors,
+                            )
                 return API_ERROR_REPLY_TEXT
 
             for attempt in range(max_retries + 1):
@@ -683,12 +787,19 @@ class DusAPI:
                     return result
                 except Exception as e:
                     last_error = e
+                    self.last_error = e
                     if attempt < max_retries:
                         delay = retry_delays[attempt]
-                        log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI Claude', model=model)}），重试：第 {attempt + 1} 次失败，{delay}s 后重试，详情：{type(e).__name__}: {e}")
+                        self._log_failure(
+                            'DusAPI Claude', model, e,
+                            action=f"{delay} 秒后重试（第 {attempt + 1} 次）", enabled=log_errors,
+                        )
                         time.sleep(delay)
                     else:
-                        log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI Claude', model=model)}），已重试 {max_retries} 次，最终失败：{last_error}")
+                        self._log_failure(
+                            'DusAPI Claude', model, last_error,
+                            action=f"已重试 {max_retries} 次，本次调用已停止", enabled=log_errors,
+                        )
             return API_ERROR_REPLY_TEXT
 
         if "gpt" in model.lower():
@@ -731,12 +842,19 @@ class DusAPI:
                         raise ValueError("DusAPI GPT 流式响应中未找到文本内容")
                     except Exception as e:
                         last_error = e
+                        self.last_error = e
                         if attempt < max_retries:
                             delay = retry_delays[attempt]
-                            log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI GPT', model=model)}，流式），重试：第 {attempt + 1} 次失败，{delay}s 后重试，详情：{type(e).__name__}: {e}")
+                            self._log_failure(
+                                'DusAPI GPT', model, e,
+                                action=f"{delay} 秒后重试（第 {attempt + 1} 次）", enabled=log_errors,
+                            )
                             time.sleep(delay)
                         else:
-                            log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI GPT', model=model)}，流式），已重试 {max_retries} 次，最终失败：{last_error}")
+                            self._log_failure(
+                                'DusAPI GPT', model, last_error,
+                                action=f"已重试 {max_retries} 次，本次调用已停止", enabled=log_errors,
+                            )
                 return API_ERROR_REPLY_TEXT
 
             for attempt in range(max_retries + 1):
@@ -754,15 +872,24 @@ class DusAPI:
                     return result
                 except Exception as e:
                     last_error = e
+                    self.last_error = e
                     if attempt < max_retries:
                         delay = retry_delays[attempt]
-                        log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI GPT', model=model)}），重试：第 {attempt + 1} 次失败，{delay}s 后重试，详情：{type(e).__name__}: {e}")
+                        self._log_failure(
+                            'DusAPI GPT', model, e,
+                            action=f"{delay} 秒后重试（第 {attempt + 1} 次）", enabled=log_errors,
+                        )
                         time.sleep(delay)
                     else:
-                        log(level="WARNING", message=f"API调用失败（{self._log_label('DusAPI GPT', model=model)}），已重试 {max_retries} 次，最终失败：{last_error}")
+                        self._log_failure(
+                            'DusAPI GPT', model, last_error,
+                            action=f"已重试 {max_retries} 次，本次调用已停止", enabled=log_errors,
+                        )
             return API_ERROR_REPLY_TEXT
 
-        log(level="WARNING", message=f"DusAPI 未识别的模型名称：{model}，无法路由到对应协议")
+        self.last_error = ValueError(f"DusAPI 未识别模型：{model}")
+        if log_errors:
+            log(level="WARNING", message=f"DusAPI 无法识别模型 {model}，请检查模型名称是否包含 gpt 或 claude")
         return API_ERROR_REPLY_TEXT
 
 

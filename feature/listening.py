@@ -19,7 +19,6 @@ from core.wechat_window import (
     run_with_wechat_rebind_retry,
 )
 from core.wechat_ui_runtime import OwnedChat
-from core.wechat_observability import warn_slow_wechat_ui_action
 from feature.material_outreach import iter_material_outreach_listen_sources
 from feature.message_routing import prepare_message_media
 from feature.new_friends import iter_new_friend_welcome_actions
@@ -223,8 +222,7 @@ def _discover_material_source_listener(bot, name, *, allow_rebind=False):
             return known
 
     def add_action():
-        with warn_slow_wechat_ui_action(f"AddListenChat({name})"):
-            return bot.wx.AddListenChat(nickname=name)
+        return bot.wx.AddListenChat(nickname=name)
 
     try:
         result = (
@@ -445,11 +443,10 @@ def add_listen_chat_once(bot, nickname, label, *, chat_type=None, allow_rebind=F
     log_level = "WARNING" if label_text in quiet_labels else "ERROR"
 
     def add_action():
-        with warn_slow_wechat_ui_action(f"AddListenChat({nickname})"):
-            return bot.wx.AddListenChat(
-                nickname=nickname,
-                chat_type=conversation.chat_type,
-            )
+        return bot.wx.AddListenChat(
+            nickname=nickname,
+            chat_type=conversation.chat_type,
+        )
 
     try:
         if allow_rebind:
@@ -624,11 +621,10 @@ def _rebuild_listener_window(bot, chat_name, *, chat_type=None):
     ):
         return None
     try:
-        with warn_slow_wechat_ui_action(f"AddListenChat({name})"):
-            result = bot.wx.AddListenChat(
-                nickname=name,
-                chat_type=conversation.chat_type,
-            )
+        result = bot.wx.AddListenChat(
+            nickname=name,
+            chat_type=conversation.chat_type,
+        )
     except Exception as exc:
         _bot_log(bot, level="WARNING", message=f"全局监听 {name}：监听窗口重建异常，稍后继续等待，详情：{exc}")
         return None
@@ -679,7 +675,7 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
             supervisor.succeeded(name, chat_type=chat_type)
             touch_dynamic_listener_entry(bot, name, chat_type=chat_type)
             bot._mark_context_repair_needed_after_restore(name, chat_type=chat_type)
-            _bot_log(bot, level="INFO", message=f"全局监听 {name}：监听窗口已恢复")
+            _bot_log(bot, level="DEBUG", message=f"全局监听 {name}：监听窗口已恢复")
             continue
 
         add_result = _consume_last_dynamic_add_result(bot, name, chat_type=chat_type)
@@ -694,7 +690,7 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
         if state["entered_degraded"]:
             _bot_log(
                 bot,
-                level="WARNING",
+                level="DEBUG",
                 message=f"全局监听 {name}：监听窗口持续不可用，已标记降级，将在 {delay}s 后继续尝试；不会重绑微信客户端",
             )
         elif state["degraded"]:
@@ -706,7 +702,7 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
         else:
             _bot_log(
                 bot,
-                level="INFO",
+                level="DEBUG",
                 message=f"全局监听 {name}：监听窗口第 {state['attempts']} 次恢复失败，将在 {delay}s 后继续尝试",
             )
     return handled
@@ -1118,8 +1114,7 @@ def _remove_listen_chat_verified_locked(
     conversation = _conversation_ref(nickname, chat_type)
     name = conversation.who
     try:
-        with warn_slow_wechat_ui_action(f"RemoveListenChat({name})"):
-            remove_result = _call_remove_listen_chat(bot, conversation)
+        remove_result = _call_remove_listen_chat(bot, conversation)
         remove_result_text = str(listen_add_error(remove_result)).strip()
     except Exception as exc:
         _bot_log(bot, level="WARNING", message=f"监听管理 {name}：删除监听调用异常，已保留运行状态等待重试，详情：{exc}")
@@ -1225,7 +1220,6 @@ def global_scan_snapshot(bot):
         **state,
         "degraded_conversations": degraded,
         "scan_coverage_status": status,
-        "scan_coverage_degraded": bool(degraded) or bool(state.get("fail_stopped")),
         "scan_coverage_message": message,
     }
 
@@ -1331,7 +1325,7 @@ def _handle_global_scan_batch(bot, batch):
         _mark_global_scan_degraded(bot, conversation, details)
         _bot_log(
             bot,
-            level="WARNING",
+            level="DEBUG",
             message=(
                 f"全局扫描 {conversation.who}：未读深度覆盖不完整，"
                 f"扫描前 {expected_count} 条，实际取得 {actual_count} 条，"

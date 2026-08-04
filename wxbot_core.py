@@ -61,6 +61,7 @@ from core.api import (
     OpenAIAPI,
     build_api_config_snapshot,
     default_tts_config,
+    describe_api_error,
     format_api_display_name,
     normalize_tts_settings,
     is_api_error_reply,
@@ -5060,7 +5061,13 @@ class WXBot:
             if keyword_plan or isinstance(e, sqlite3.DatabaseError):
                 raise
             print(traceback.format_exc())
-            log(level="ERROR", message=f"私聊 {chat.who}：{e}\n{API_ERROR_REPLY_TEXT}")
+            log(
+                level="ERROR",
+                message=(
+                    f"私聊 {chat.who}：AI 回复生成失败，本次进入接口失败回复策略\n"
+                    f"技术详情：{type(e).__name__}: {e}"
+                ),
+            )
             api_error_reply = True
             if self.config.api_error_reply_once and user_key:
                 user_data = self._reply_once_user_data(user_key)
@@ -5740,7 +5747,7 @@ class WXBot:
             self.chat_api_fail_count += 1
             primary_api_id = self._get_primary_chat_api_id()
             threshold = self._get_backup_chat_api_failover_threshold()
-            log(message=f"主聊天接口调用失败 {self.chat_api_fail_count}/{threshold}，接口：{self._get_chat_api_name(primary_api_id)}")
+            log(message=f"主聊天接口本次调用失败（{self.chat_api_fail_count}/{threshold}），尚未切换备用接口：{self._get_chat_api_name(primary_api_id)}")
             if self.chat_api_fail_count < threshold:
                 return
             backup_api_id = self._get_backup_chat_api_id()
@@ -5775,7 +5782,13 @@ class WXBot:
             self._record_api_request_by_type(request_type)
             result = backup_api.chat(*args, **kwargs)
         except Exception as exc:
-            log(level="WARNING", message=f"备用聊天接口调用失败：{exc}")
+            log(
+                level="WARNING",
+                message=(
+                    f"备用聊天接口调用失败：{describe_api_error(exc)}\n"
+                    f"技术详情：{type(exc).__name__}: {exc}"
+                ),
+            )
             log(level="WARNING", message="主备接口都失败，本次未发送回复")
             return True, API_ERROR_REPLY_TEXT
         if is_api_error_reply(result):
@@ -5803,7 +5816,12 @@ class WXBot:
             self._record_api_request_by_type(request_type)
             result = self.api.chat(*args, **kwargs)
         except Exception as exc:
-            log(message=f"主聊天接口恢复探测失败，继续使用备用聊天接口：{exc}")
+            log(
+                message=(
+                    f"主聊天接口恢复探测失败，继续使用备用聊天接口：{describe_api_error(exc)}\n"
+                    f"技术详情：{type(exc).__name__}: {exc}"
+                ),
+            )
             return False, None
 
         if is_api_error_reply(result):
@@ -7600,7 +7618,13 @@ class WXBot:
         try:
             rewritten = rewrite_func(self._reply_rewrite_prompt())
         except Exception as exc:
-            log(level="ERROR", message=f"{scene_label}：回复预处理重写接口调用失败：{exc}")
+            log(
+                level="ERROR",
+                message=(
+                    f"{scene_label}：回复预处理重写接口调用失败，已转入接口失败回复策略\n"
+                    f"技术详情：{type(exc).__name__}: {exc}"
+                ),
+            )
             return {"status": "api_error", "reply": ""}
 
         if is_api_error_reply(rewritten):
@@ -9209,6 +9233,13 @@ class WXBot:
         replied_messages = int((metrics_today or {}).get("reply_count", 0) or 0)
         api_calls = int((metrics_today or {}).get("api_calls", 0) or 0)
         chat_api_requests = int((metrics_today or {}).get("chat_api_calls", 0) or 0)
+        owner = getattr(self, "_ui_owner", None)
+        contact_recovery_snapshot = getattr(owner, "contact_recovery_snapshot", None)
+        contact_recovery = (
+            contact_recovery_snapshot()
+            if callable(contact_recovery_snapshot)
+            else {"contact_recovery_active": False, "contact_recovery_message": ""}
+        )
 
         return {
             "running":            self.run_flag,
@@ -9252,6 +9283,7 @@ class WXBot:
             "group_text_reply_limit_hours": getattr(self.config, "group_text_reply_limit_hours", 5),
             "pause_chat_reply":      self._pause_chat_reply or getattr(self.config, "chat_listen_only", False),
             "pause_group_reply":     self._pause_group_reply or getattr(self.config, "group_listen_only", False),
+            **contact_recovery,
             **listening.listener_recovery_snapshot(self),
             **listening.global_scan_snapshot(self),
         }

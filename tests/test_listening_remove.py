@@ -445,12 +445,12 @@ class RemoveListenChatTests(unittest.TestCase):
             })
 
         state = listening.global_scan_snapshot(bot)
-        self.assertTrue(state["scan_coverage_degraded"])
+        self.assertEqual(state["scan_coverage_status"], "degraded")
         details = state["degraded_conversations"]["private:张三"]
         self.assertEqual(details["expected_count"], 3)
         self.assertEqual(details["actual_count"], 2)
         self.assertEqual(details["reasons"], ["returned_less_than_unread", "runtime_limit"])
-        self.assertEqual(logs[0][0], "WARNING")
+        self.assertEqual(logs[0][0], "DEBUG")
         self.assertIn("未读深度覆盖不完整", logs[0][1])
 
     def test_global_scan_storage_failure_does_not_dispatch_or_request_window(self):

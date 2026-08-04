@@ -3817,6 +3817,7 @@ $(function(){
     tag: '__all__',
     payload: null
   };
+  var _lastRunningWxId = '';
   var _identityCalibrationState = {
     pending: [],
     wxId: ''
@@ -4901,15 +4902,18 @@ $(function(){
       data: JSON.stringify(payload),
     }).done(function(res){
       if(res.status === 'success'){
+        var responseWxId = String((res.payload || {}).wx_id || _contactDirectoryBrowserState.wxId || '').trim();
+        if(responseWxId) _contactDirectoryBrowserState.wxId = responseWxId;
         renderRelationshipScan(res.payload || {});
         showMsg('relationship-scan-msg', res.message || fallbackMessage, true);
-        loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
-        refreshFriendRequestCandidatesAfterContactChange(_contactDirectoryBrowserState.wxId);
+        loadContactDirectoryBrowser(responseWxId);
+        refreshFriendRequestCandidatesAfterContactChange(responseWxId);
       } else {
         showMsg('relationship-scan-msg', res.message || fallbackMessage + '失败', false);
       }
     }).fail(function(xhr){
-      showMsg('relationship-scan-msg', fallbackMessage + '失败：' + (xhr.responseText || xhr.status), false);
+      var message = xhr.responseJSON && xhr.responseJSON.message;
+      showMsg('relationship-scan-msg', message || fallbackMessage + '失败：' + (xhr.statusText || xhr.status), false);
     }).always(function(){
       $btn.prop('disabled', false).html(oldHtml);
       renderRelationshipScan(_relationshipScanState.payload || {});
@@ -5179,16 +5183,24 @@ $(function(){
       url:url,
       type:'POST',
       contentType:'application/json',
-      data: JSON.stringify({wx_id: String(_contactDirectoryBrowserState.wxId || '').trim()}),
+      data: JSON.stringify(friendRequestSettingsPayload()),
     }).done(function(res){
       if(res.status === 'success'){
+        var responseWxId = String((res.payload || {}).wx_id || '').trim();
+        if(responseWxId && responseWxId !== String(_contactDirectoryBrowserState.wxId || '')){
+          _contactDirectoryBrowserState.wxId = responseWxId;
+          _contactDirectoryBrowserState.tag = '__all__';
+          loadContactDirectoryBrowser(responseWxId);
+          loadRelationshipScanStatus(responseWxId, {silent:true});
+        }
         renderFriendRequest(res.payload || {});
         showMsg('friend-request-msg', res.message || fallbackMessage, true);
       } else {
         showMsg('friend-request-msg', res.message || fallbackMessage + '失败', false);
       }
     }).fail(function(xhr){
-      showMsg('friend-request-msg', fallbackMessage + '失败：' + (xhr.responseText || xhr.status), false);
+      var message = xhr.responseJSON && xhr.responseJSON.message;
+      showMsg('friend-request-msg', message || fallbackMessage + '失败：' + (xhr.statusText || xhr.status), false);
     }).always(function(){
       $btn.prop('disabled', false).html(oldHtml);
     });
@@ -5429,6 +5441,14 @@ $(function(){
       setContactDirectoryBrowserMsg('通讯录加载失败：' + (xhr.responseText || xhr.status), false);
     });
   }
+  function syncContactViewsToRunningAccount(wxId){
+    wxId = String(wxId || '').trim();
+    if(!wxId || wxId === String(_contactDirectoryBrowserState.wxId || '')) return;
+    _contactDirectoryBrowserState.tag = '__all__';
+    loadContactDirectoryBrowser(wxId);
+    loadRelationshipScanStatus(wxId, {silent:true});
+    loadFriendRequestStatus(wxId, {silent:true});
+  }
   applyTaskWorkbenchRuntimeState('material_outreach', _materialOutreachRuntimeSeed || {});
   renderMaterialOutreachBrowser(_materialOutreachBrowserSeed || {});
   renderRelationshipScan(_relationshipScanSeed || {});
@@ -5507,7 +5527,8 @@ $(function(){
         showMsg('contact-directory-msg', res.message || (contactDirectoryActionLabel(mode) + '失败'), false);
       }
     }).fail(function(xhr){
-      showMsg('contact-directory-msg', contactDirectoryActionLabel(mode) + '失败：' + (xhr.responseText || xhr.status), false);
+      var message = xhr.responseJSON && xhr.responseJSON.message;
+      showMsg('contact-directory-msg', message || contactDirectoryActionLabel(mode) + '失败：' + (xhr.statusText || xhr.status), false);
     }).always(function(){
       if($btn.length){
         $btn.prop('disabled', false).html(oldHtml);
@@ -5540,7 +5561,8 @@ $(function(){
         showMsg('contact-directory-msg', res.message || '通讯录维护状态更新失败', false);
       }
     }).fail(function(xhr){
-      showMsg('contact-directory-msg', '通讯录维护状态更新失败：' + (xhr.responseText || xhr.status), false);
+      var message = xhr.responseJSON && xhr.responseJSON.message;
+      showMsg('contact-directory-msg', message || '通讯录维护状态更新失败：' + (xhr.statusText || xhr.status), false);
     }).always(function(){
       $btn.prop('disabled', false).html(oldHtml);
     });
@@ -5564,13 +5586,14 @@ $(function(){
           _contactDirectoryBrowserState.loaded = true;
           loadIdentityCalibration(res.browser.wx_id || _contactDirectoryBrowserState.wxId, {silent:true});
         } else {
-          loadContactDirectoryBrowser(_contactDirectoryBrowserState.wxId);
+          syncContactViewsToRunningAccount(res.wx_id);
         }
       } else {
         showMsg('contact-directory-msg', res.message || '备注修复失败', false);
       }
     }).fail(function(xhr){
-      showMsg('contact-directory-msg', '备注修复失败：' + (xhr.responseText || xhr.status), false);
+      var message = xhr.responseJSON && xhr.responseJSON.message;
+      showMsg('contact-directory-msg', message || '备注修复失败：' + (xhr.statusText || xhr.status), false);
     }).always(function(){
       $btn.prop('disabled', false).html(oldHtml);
     });
@@ -8371,6 +8394,7 @@ $(function(){
         showMsg('contact-directory-msg', res.message || '备注修复预览失败', false);
         return;
       }
+      syncContactViewsToRunningAccount(res.wx_id);
       var data = res.data || {};
       var count = Number(data.candidate_count || 0);
       if(count <= 0){
@@ -8389,7 +8413,8 @@ $(function(){
         ]
       });
     }).fail(function(xhr){
-      showMsg('contact-directory-msg', '备注修复预览失败：' + (xhr.responseText || xhr.status), false);
+      var message = xhr.responseJSON && xhr.responseJSON.message;
+      showMsg('contact-directory-msg', message || '备注修复预览失败：' + (xhr.statusText || xhr.status), false);
     });
   }
   $('#btn-contact-repair-remarks').click(function(){
@@ -8399,11 +8424,11 @@ $(function(){
     showManualIdentityCalibrationDialog();
   });
   $('#btn-relationship-scan-now').click(function(){
-    runRelationshipScanAction('/relationship_scan/scan', 'btn-relationship-scan-now', '扫描中...', '关系扫描完成');
+    runRelationshipScanAction('/relationship_scan/scan', 'btn-relationship-scan-now', '扫描中...', '关系扫描');
   });
   $('#btn-relationship-scan-full').click(function(){
     svModal.confirm('全量扫描会从会话列表顶部连续扫描到末尾，期间不插入其他微信操作，也不能中途停止。确定现在开始？', function(){
-      runRelationshipScanAction('/relationship_scan/full_scan', 'btn-relationship-scan-full', '启动中...', '全量扫描已开始').done(function(){
+      runRelationshipScanAction('/relationship_scan/full_scan', 'btn-relationship-scan-full', '启动中...', '全量扫描').done(function(){
         loadRelationshipScanStatus(_contactDirectoryBrowserState.wxId, {silent:true});
       });
     }, '全量扫描确认', '开始扫描', '取消');
@@ -8454,9 +8479,7 @@ $(function(){
   });
   $('#btn-friend-request-run-once').click(function(){
     svModal.confirm('确定现在执行一次好友申请？本次最多会向 1 个候选人真实提交验证申请。', function(){
-      saveFriendRequestSettings({silent:true}).always(function(){
-        runFriendRequestAction('/friend_request/run_once', 'btn-friend-request-run-once', '执行中...', '执行一次');
-      });
+      runFriendRequestAction('/friend_request/run_once', 'btn-friend-request-run-once', '执行中...', '执行一次');
     }, '好友申请确认', '执行一次', '取消');
   });
   $(document).on('change', '#friend_request_enabled,#friend_request_add_object,#friend_request_daily_limit,#friend_request_interval_minutes,#friend_request_duplicate_strategy,#friend_request_include_tags_wrap .compact-multiselect-check,#friend_request_success_tags_wrap .compact-multiselect-check', function(){
@@ -10470,6 +10493,7 @@ $(function(){
     if(status === 'success'){
       clearBotStartupPolling();
       svModal.success(message || '机器人已启动', '启动成功');
+      triggerStatusPolling(true);
       return;
     }
     if(status === 'error'){
@@ -11167,6 +11191,13 @@ $(function(){
     return $.getJSON('/get_status', function(res){
       if(!res || res.status !== 'success') return;
       var d = res.data;
+      var runningWxId = String(d.running_wx_id || '').trim();
+      if(!d.bot_running){
+        _lastRunningWxId = '';
+      } else if(runningWxId && runningWxId !== _lastRunningWxId){
+        _lastRunningWxId = runningWxId;
+        syncContactViewsToRunningAccount(runningWxId);
+      }
       if(d.bot_stopping){
         $('#status-dot').css('background', '#F59E0B');
         $('#status-text').text('停止中');
@@ -11176,10 +11207,14 @@ $(function(){
           $('#status-dot').css('background', '#F59E0B');
           $('#status-text').text('等待桌面恢复中');
           $('#status-sub').text(d.listener_recovery_message || '桌面暂时不可操作，正在等待恢复后自动重建监听');
-        }else if(d.scan_coverage_degraded){
+        }else if(d.contact_recovery_active){
           $('#status-dot').css('background', '#F59E0B');
-          $('#status-text').text('运行中（覆盖降级）');
-          $('#status-sub').text(d.scan_coverage_message || '部分未读消息可能超过微信单次扫描范围，请查看日志');
+          $('#status-text').text('通讯录恢复中');
+          $('#status-sub').text(d.contact_recovery_message || '正在返回聊天页并恢复消息监听');
+        }else if(d.scan_coverage_status === 'failed'){
+          $('#status-dot').css('background', '#FA5151');
+          $('#status-text').text('运行异常（消息扫描停止）');
+          $('#status-sub').text(d.scan_coverage_message || '全局消息扫描已经停止，请查看日志');
         }else{
           $('#status-dot').css('background', d.callback_is_die ? '#FA5151' : '#07C160');
           $('#status-text').text(d.callback_is_die ? '运行异常（回调出错）' : '运行中');

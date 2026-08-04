@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import web_server
-from feature import friend_request
+from feature import friend_request, relationship_scan
 
 
 class WebPanelJobTests(unittest.TestCase):
@@ -24,6 +24,303 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertTrue(jquery.is_file())
         self.assertIn("url_for('static', filename='jquery-3.6.0.min.js')", dashboard)
         self.assertNotIn("npm/jquery@3.6.0", dashboard)
+
+    def test_dashboard_hides_coverage_diagnostics_but_shows_scan_failure(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+        status_renderer = dashboard.split("function refreshStatus(){", 1)[1].split(
+            "var STATUS_POLL_VISIBLE_MS", 1
+        )[0]
+
+        self.assertNotIn("scan_coverage_degraded", status_renderer)
+        self.assertNotIn("运行中（覆盖降级）", status_renderer)
+        self.assertIn("d.scan_coverage_status === 'failed'", status_renderer)
+        self.assertIn("运行异常（消息扫描停止）", status_renderer)
+
+    def test_dashboard_shows_contact_recovery_as_pending(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+        status_renderer = dashboard.split("function refreshStatus(){", 1)[1].split(
+            "var STATUS_POLL_VISIBLE_MS", 1
+        )[0]
+
+        self.assertIn("d.contact_recovery_active", status_renderer)
+        self.assertIn("通讯录恢复中", status_renderer)
+
+    def test_relationship_scan_actions_use_running_account_when_request_is_stale(self):
+        running_wx_id = "wxid_running"
+        stale_wx_id = "wxid_stale"
+        fake_bot = SimpleNamespace(
+            wx_id=running_wx_id,
+            scan_relationship_sessions=mock.Mock(return_value={}),
+            full_scan_relationship_sessions=mock.Mock(return_value={}),
+        )
+        fake_bot_thread = SimpleNamespace(is_alive=lambda: True)
+        fake_full_scan_thread = SimpleNamespace(start=mock.Mock(), is_alive=lambda: True)
+
+        with tempfile.TemporaryDirectory() as data_dir, mock.patch.object(
+            web_server, "DATA_DIR", data_dir
+        ), mock.patch.object(web_server, "bot", fake_bot), mock.patch.object(
+            web_server, "bot_thread", fake_bot_thread
+        ), mock.patch.object(
+            web_server, "relationship_full_scan_thread", None
+        ), mock.patch.object(
+            web_server,
+            "_start_panel_wechat_job",
+            side_effect=lambda _name, target: target() is None,
+        ), mock.patch.object(
+            web_server.threading, "Thread", return_value=fake_full_scan_thread
+        ) as thread_factory:
+            client = web_server.app.test_client()
+            with client.session_transaction() as session:
+                session["logged_in"] = True
+
+            current_response = client.post("/relationship_scan/scan", json={"wx_id": stale_wx_id})
+            full_response = client.post("/relationship_scan/full_scan", json={"wx_id": stale_wx_id})
+            saved = relationship_scan.load_state(data_dir, running_wx_id)
+
+        self.assertEqual(current_response.status_code, 202)
+        self.assertEqual(current_response.get_json()["payload"]["wx_id"], running_wx_id)
+        fake_bot.scan_relationship_sessions.assert_called_once_with()
+        self.assertEqual(full_response.status_code, 200)
+        self.assertEqual(full_response.get_json()["payload"]["wx_id"], running_wx_id)
+        thread_factory.assert_called_once_with(
+            target=web_server._relationship_full_scan_worker,
+            args=(fake_bot, running_wx_id),
+            daemon=True,
+        )
+        fake_full_scan_thread.start.assert_called_once_with()
+        self.assertTrue(saved["runtime"]["full_scan_running"])
+
+    def test_relationship_scan_action_renders_server_error_and_response_account(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+        action = dashboard.split("function runRelationshipScanAction(", 1)[1].split(
+            "function friendRequestShortTime", 1
+        )[0]
+
+        self.assertIn("(res.payload || {}).wx_id", action)
+        self.assertIn("_contactDirectoryBrowserState.wxId = responseWxId", action)
+        self.assertIn("xhr.responseJSON && xhr.responseJSON.message", action)
+        self.assertNotIn("xhr.responseText", action)
+
+    def test_contact_profile_actions_use_running_account_and_drop_stale_cursor(self):
+        running_wx_id = "wxid_running"
+        stale_wx_id = "wxid_stale"
+        fake_bot = SimpleNamespace(
+            wx_id=running_wx_id,
+            refresh_contact_profiles_batch=mock.Mock(return_value={"wx_id": running_wx_id}),
+            set_contact_profiles_paused=mock.Mock(return_value={"wx_id": running_wx_id}),
+            preview_contact_profile_remark_repairs=mock.Mock(return_value={"candidate_count": 0}),
+            repair_contact_profile_remarks=mock.Mock(),
+        )
+        fake_bot_thread = SimpleNamespace(is_alive=lambda: True)
+
+        with mock.patch.object(web_server, "bot", fake_bot), mock.patch.object(
+            web_server, "bot_thread", fake_bot_thread
+        ), mock.patch.object(
+            web_server,
+            "_contact_profiles_browser_payload",
+            side_effect=lambda wx_id: {"wx_id": wx_id},
+        ), mock.patch.object(
+            web_server,
+            "_start_panel_wechat_job",
+            side_effect=lambda _name, target: target() is None,
+        ):
+            client = web_server.app.test_client()
+            with client.session_transaction() as session:
+                session["logged_in"] = True
+
+            refresh_response = client.post("/contact_profiles/refresh_batch", json={
+                "wx_id": stale_wx_id,
+                "mode": "standard",
+                "start_name": "旧账号游标",
+            })
+            pause_response = client.post("/contact_profiles/pause", json={
+                "wx_id": stale_wx_id,
+                "paused": True,
+            })
+            preview_response = client.get(
+                "/contact_profiles/repair_preview",
+                query_string={"wx_id": stale_wx_id},
+            )
+            repair_response = client.post(
+                "/contact_profiles/repair_remarks",
+                json={"wx_id": stale_wx_id},
+            )
+
+        self.assertEqual(refresh_response.status_code, 200)
+        self.assertEqual(refresh_response.get_json()["browser"]["wx_id"], running_wx_id)
+        fake_bot.refresh_contact_profiles_batch.assert_called_once_with(
+            mode="standard",
+            start_name="",
+            interval=None,
+            run_to_completion=True,
+        )
+        self.assertEqual(pause_response.get_json()["browser"]["wx_id"], running_wx_id)
+        fake_bot.set_contact_profiles_paused.assert_called_once_with(True)
+        self.assertEqual(preview_response.get_json()["wx_id"], running_wx_id)
+        fake_bot.preview_contact_profile_remark_repairs.assert_called_once_with()
+        self.assertEqual(repair_response.status_code, 202)
+        self.assertEqual(repair_response.get_json()["wx_id"], running_wx_id)
+        fake_bot.repair_contact_profile_remarks.assert_called_once_with()
+
+    def test_active_action_waits_until_running_account_is_bound(self):
+        fake_bot = SimpleNamespace(
+            wx_id="",
+            refresh_contact_profiles_batch=mock.Mock(),
+        )
+        fake_bot_thread = SimpleNamespace(is_alive=lambda: True)
+
+        with mock.patch.object(web_server, "bot", fake_bot), mock.patch.object(
+            web_server, "bot_thread", fake_bot_thread
+        ):
+            client = web_server.app.test_client()
+            with client.session_transaction() as session:
+                session["logged_in"] = True
+            response = client.post(
+                "/contact_profiles/refresh_batch",
+                json={"wx_id": "wxid_history", "start_name": "历史游标"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("仍在连接微信", response.get_json()["message"])
+        fake_bot.refresh_contact_profiles_batch.assert_not_called()
+
+    def test_friend_request_run_once_saves_settings_to_running_account_before_action(self):
+        running_wx_id = "wxid_running"
+        stale_wx_id = "wxid_stale"
+        events = []
+        fake_bot = SimpleNamespace(
+            wx_id=running_wx_id,
+            run_friend_request_once=mock.Mock(
+                side_effect=lambda **_kwargs: events.append(("run", running_wx_id))
+            ),
+        )
+        fake_bot_thread = SimpleNamespace(is_alive=lambda: True)
+        request_payload = {
+            "wx_id": stale_wx_id,
+            "settings": {"enabled": True, "daily_limit": 5},
+            "message_rules": [],
+        }
+
+        def save_settings(wx_id, raw_data):
+            events.append(("save", wx_id))
+            self.assertEqual(raw_data, request_payload)
+            return {"wx_id": wx_id}
+
+        with mock.patch.object(web_server, "bot", fake_bot), mock.patch.object(
+            web_server, "bot_thread", fake_bot_thread
+        ), mock.patch.object(
+            web_server, "_save_friend_request_settings", side_effect=save_settings
+        ) as save_mock, mock.patch.object(
+            web_server, "_friend_request_payload", side_effect=lambda wx_id: {"wx_id": wx_id}
+        ), mock.patch.object(
+            web_server,
+            "_start_panel_wechat_job",
+            side_effect=lambda _name, target: target() is None,
+        ):
+            client = web_server.app.test_client()
+            with client.session_transaction() as session:
+                session["logged_in"] = True
+            response = client.post("/friend_request/run_once", json=request_payload)
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.get_json()["payload"]["wx_id"], running_wx_id)
+        save_mock.assert_called_once_with(running_wx_id, request_payload)
+        fake_bot.run_friend_request_once.assert_called_once_with(force=True)
+        self.assertEqual(events, [("save", running_wx_id), ("run", running_wx_id)])
+
+    def test_friend_request_run_once_does_not_execute_when_settings_save_fails(self):
+        fake_bot = SimpleNamespace(
+            wx_id="wxid_running",
+            run_friend_request_once=mock.Mock(),
+        )
+        fake_bot_thread = SimpleNamespace(is_alive=lambda: True)
+
+        with mock.patch.object(web_server, "bot", fake_bot), mock.patch.object(
+            web_server, "bot_thread", fake_bot_thread
+        ), mock.patch.object(
+            web_server,
+            "_save_friend_request_settings",
+            side_effect=ValueError("设置保存失败"),
+        ), mock.patch.object(web_server, "_start_panel_wechat_job") as start_job:
+            client = web_server.app.test_client()
+            with client.session_transaction() as session:
+                session["logged_in"] = True
+            response = client.post(
+                "/friend_request/run_once",
+                json={"wx_id": "wxid_stale", "settings": {"enabled": True}},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["message"], "设置保存失败")
+        start_job.assert_not_called()
+        fake_bot.run_friend_request_once.assert_not_called()
+
+    def test_get_status_exposes_running_account(self):
+        running_wx_id = "wxid_running"
+        fake_bot = SimpleNamespace(
+            wx_id=running_wx_id,
+            get_status=mock.Mock(return_value={}),
+            is_stop_requested=lambda: False,
+            _material_runtime_messages={},
+        )
+        fake_bot_thread = SimpleNamespace(is_alive=lambda: True)
+
+        with mock.patch.object(web_server, "bot", fake_bot), mock.patch.object(
+            web_server, "bot_thread", fake_bot_thread
+        ), mock.patch.object(
+            web_server, "read_config", return_value={}
+        ), mock.patch.object(
+            web_server, "_inject_account_scoped_task_config", return_value={}
+        ), mock.patch.object(
+            web_server, "_dashboard_runtime_metrics_payload", return_value=None
+        ), mock.patch.object(
+            web_server,
+            "_enrich_dashboard_status_snapshot",
+            side_effect=lambda status, **_kwargs: dict(status),
+        ):
+            client = web_server.app.test_client()
+            with client.session_transaction() as session:
+                session["logged_in"] = True
+            response = client.get("/get_status")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["data"]["running_wx_id"], running_wx_id)
+
+    def test_successful_startup_persists_running_account(self):
+        with mock.patch.object(
+            web_server,
+            "_set_bot_startup_state",
+            return_value={"status": "success", "message": "ready"},
+        ), mock.patch.object(
+            web_server, "_running_wx_id", return_value="wxid_running"
+        ), mock.patch.object(web_server, "_write_last_wx_id") as write_last:
+            result = web_server._report_bot_startup_state(True, "ready")
+
+        self.assertEqual(result["status"], "success")
+        write_last.assert_called_once_with("wxid_running")
+
+    def test_dashboard_syncs_account_once_and_submits_friend_settings_with_run(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+        status_renderer = dashboard.split("function refreshStatus(){", 1)[1].split(
+            "var STATUS_POLL_VISIBLE_MS", 1
+        )[0]
+        friend_action = dashboard.split("function runFriendRequestAction(", 1)[1].split(
+            "function updateMaterialOutreachRecordStats", 1
+        )[0]
+        friend_click = dashboard.split("$('#btn-friend-request-run-once').click", 1)[1].split(
+            "$(document).on('change', '#friend_request_enabled", 1
+        )[0]
+
+        self.assertIn("runningWxId !== _lastRunningWxId", status_renderer)
+        self.assertIn("syncContactViewsToRunningAccount(runningWxId)", status_renderer)
+        self.assertIn("JSON.stringify(friendRequestSettingsPayload())", friend_action)
+        self.assertIn("xhr.responseJSON && xhr.responseJSON.message", friend_action)
+        self.assertNotIn("saveFriendRequestSettings", friend_click)
+        self.assertNotIn(".always(function", friend_click)
 
     def test_group_rows_support_per_group_tts_selection(self):
         root = Path(__file__).resolve().parents[1]

@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterator, Mapping
 
 from core.logger import log
 from core.reply_count_store import ReplyCountStore
+from core.wechat_observability import log_wechat_ui_action_timing
 from wxautox4.utils import ui_transaction as wxautox_ui_transaction
 
 
@@ -78,6 +79,7 @@ UI_CALL_WAIT_TIMEOUT = None
 WXAUTOX_UI_LOCK_TIMEOUT_SECONDS = 30.0
 UI_OWNER_LOCK_RECOVERY_GRACE_SECONDS = 10.0
 _WXAUTOX_UI_LOCK_PROBE_SECONDS = 0.05
+CONTACT_RECOVERY_RETRY_SECONDS = 3.0
 
 
 def task_definition_version(definition: Any) -> int:
@@ -172,6 +174,12 @@ class _IntentYieldedForCallback(RuntimeError):
 class IntentTicket:
     def __init__(self, intent: UIIntent):
         self.intent = intent
+        self.queued_at = time.monotonic()
+        self._queue_entered_at: float | None = self.queued_at
+        self.owner_queue_seconds = 0.0
+        self.ui_lock_seconds = 0.0
+        self.handler_seconds = 0.0
+        self.handler_invoked = False
         self._event = threading.Event()
         self._result: Any = None
         self._error: BaseException | None = None
@@ -199,6 +207,15 @@ class IntentTicket:
         if self._error is not None:
             raise self._error
         return self._result
+
+    def mark_dequeued(self) -> None:
+        if self._queue_entered_at is None:
+            return
+        self.owner_queue_seconds += max(0.0, time.monotonic() - self._queue_entered_at)
+        self._queue_entered_at = None
+
+    def mark_requeued(self) -> None:
+        self._queue_entered_at = time.monotonic()
 
 
 class CallbackActionTicket(IntentTicket):
@@ -288,6 +305,10 @@ class WeChatUIOwner:
         self._contact_job: ContactBatchHandle | None = None
         self._contact_ticket: IntentTicket | None = None
         self._contact_barrier_active = False
+        self._contact_recovery_active = False
+        self._contact_recovery_message = ""
+        self._contact_recovery_retry_at = 0.0
+        self._contact_result: Any = None
         self._poll_due_ticket: IntentTicket | None = None
         self._delivery_journal = None
 
@@ -299,6 +320,13 @@ class WeChatUIOwner:
     def contact_active(self) -> bool:
         with self._condition:
             return self._contact_barrier_active
+
+    def contact_recovery_snapshot(self) -> dict[str, str | bool]:
+        with self._condition:
+            return {
+                "contact_recovery_active": self._contact_recovery_active,
+                "contact_recovery_message": self._contact_recovery_message,
+            }
 
     def wait_for_contact_idle(self) -> bool:
         with self._condition:
@@ -435,10 +463,8 @@ class WeChatUIOwner:
                     self._queue.popleft().set_error(IntentCancelled("微信 UI owner 已停止"))
                 if self._poll_due_ticket and not self._poll_due_ticket.done:
                     self._poll_due_ticket.set_error(IntentCancelled("微信 UI owner 已停止"))
-            contact_job = self._contact_job
             self._condition.notify_all()
-        if contact_job is not None:
-            contact_job.terminate()
+        self.terminate_active_contact_job()
         if self._started and threading.get_ident() != self._owner_thread_id:
             self._thread.join(timeout)
 
@@ -454,6 +480,10 @@ class WeChatUIOwner:
                 self._contact_job = None
                 self._contact_ticket = None
                 self._contact_barrier_active = False
+                self._contact_recovery_active = False
+                self._contact_recovery_message = ""
+                self._contact_recovery_retry_at = 0.0
+                self._contact_result = None
                 self._condition.notify_all()
             else:
                 ticket = None
@@ -480,7 +510,9 @@ class WeChatUIOwner:
         )
 
     @contextmanager
-    def _ui_transaction(self) -> Iterator[None]:
+    def _ui_transaction(self, ticket: IntentTicket | None = None) -> Iterator[None]:
+        lock_wait_started_at = time.monotonic()
+        lock_acquired = False
         deadline = time.monotonic() + WXAUTOX_UI_LOCK_TIMEOUT_SECONDS
         stack: ExitStack | None = None
         with self._condition:
@@ -505,10 +537,15 @@ class WeChatUIOwner:
                     candidate.close()
                     raise UIActionNotStarted(f"无法取得 wxautox4 UI 锁，微信操作尚未开始：{exc}") from exc
                 stack = candidate
+                lock_acquired = True
+                if ticket is not None:
+                    ticket.ui_lock_seconds += max(0.0, time.monotonic() - lock_wait_started_at)
                 break
             with stack:
                 yield
         finally:
+            if ticket is not None and not lock_acquired:
+                ticket.ui_lock_seconds += max(0.0, time.monotonic() - lock_wait_started_at)
             with self._condition:
                 self._waiting_for_ui_lock = False
                 self._condition.notify_all()
@@ -516,43 +553,60 @@ class WeChatUIOwner:
     def _poll_contact_job(self) -> None:
         with self._condition:
             job = self._contact_job
+            recovery_active = self._contact_recovery_active
+            retry_at = self._contact_recovery_retry_at
+            result = self._contact_result
         if job is None:
             return
-        try:
-            done, result = job.poll()
-        except BaseException as exc:
-            done, result = True, exc
-        if not done:
+        if not recovery_active:
+            try:
+                done, result = job.poll()
+            except BaseException as exc:
+                done, result = True, exc
+            if not done:
+                return
+            with self._condition:
+                self._contact_recovery_active = True
+                self._contact_recovery_message = "通讯录采集完成，正在返回聊天页"
+                self._contact_result = result
+                self._contact_recovery_retry_at = 0.0
+            retry_at = 0.0
+        if time.monotonic() < retry_at:
             return
 
-        recover_error: BaseException | None = None
         recover = self._handlers.get(UIIntentKind.CONTACT_RECOVER)
         if recover is not None:
             try:
                 with self._ui_transaction():
                     self._execute_direct(UIIntent(UIIntentKind.CONTACT_RECOVER))
-            except _IntentYieldedForCallback:
-                return
-            except UIActionNotStarted:
+            except (_IntentYieldedForCallback, UIActionNotStarted) as exc:
+                with self._condition:
+                    self._contact_recovery_message = f"微信暂时繁忙，正在等待恢复聊天：{exc}"
+                    self._contact_recovery_retry_at = time.monotonic() + CONTACT_RECOVERY_RETRY_SECONDS
                 return
             except BaseException as exc:
-                recover_error = exc
+                with self._condition:
+                    self._contact_recovery_message = f"返回聊天页失败，正在重试：{exc}"
+                    self._contact_recovery_retry_at = time.monotonic() + CONTACT_RECOVERY_RETRY_SECONDS
+                return
 
         with self._condition:
             ticket = self._contact_ticket
             self._contact_job = None
             self._contact_ticket = None
             self._contact_barrier_active = False
+            self._contact_recovery_active = False
+            self._contact_recovery_message = ""
+            self._contact_recovery_retry_at = 0.0
+            self._contact_result = None
             self._condition.notify_all()
         if ticket is not None:
-            if recover_error is not None:
-                ticket.set_error(recover_error)
-            elif isinstance(result, BaseException):
+            if isinstance(result, BaseException):
                 ticket.set_error(result)
             else:
                 ticket.set_result(result)
 
-    def _execute_direct(self, intent: UIIntent) -> Any:
+    def _execute_direct(self, intent: UIIntent, ticket: IntentTicket | None = None) -> Any:
         handler = self._handlers.get(intent.kind)
         if handler is None:
             raise RuntimeError(f"未注册微信 UI 意图处理器：{intent.kind.value}")
@@ -568,7 +622,14 @@ class WeChatUIOwner:
         try:
             if callable(self._intent_start_callback):
                 self._intent_start_callback(intent)
-            return handler(intent.payload)
+            handler_started_at = time.monotonic()
+            if ticket is not None:
+                ticket.handler_invoked = True
+            try:
+                return handler(intent.payload)
+            finally:
+                if ticket is not None:
+                    ticket.handler_seconds += max(0.0, time.monotonic() - handler_started_at)
         finally:
             if callable(self._intent_finish_callback):
                 self._intent_finish_callback(intent)
@@ -596,9 +657,11 @@ class WeChatUIOwner:
         return ticket.callback_result
 
     def _execute_ticket(self, ticket: IntentTicket) -> None:
+        ticket.mark_dequeued()
         starting_contact = ticket.intent.kind == UIIntentKind.CONTACT_START
         journal = None
         journal_started = False
+        final_error: BaseException | None = None
         if starting_contact:
             with self._condition:
                 self._contact_barrier_active = True
@@ -650,7 +713,7 @@ class WeChatUIOwner:
                     journal_started = journal is not None
                     result = self._execute_callback_ticket(ticket, intent)
                 else:
-                    with self._ui_transaction():
+                    with self._ui_transaction(ticket):
                         if journal is not None and not journal.begin(
                             delivery_id,
                             intent.kind.value,
@@ -658,7 +721,7 @@ class WeChatUIOwner:
                         ):
                             raise DeliveryAlreadySubmitted("该微信投递已提交过，结果需核实，禁止重复发送")
                         journal_started = journal is not None
-                        result = self._execute_direct(intent)
+                        result = self._execute_direct(intent, ticket)
             except _IntentYieldedForCallback:
                 raise
             except BaseException as exc:
@@ -704,20 +767,30 @@ class WeChatUIOwner:
                     if not cancelled:
                         self._contact_job = result
                         self._contact_ticket = ticket
+                        self._contact_recovery_active = False
+                        self._contact_recovery_message = ""
+                        self._contact_recovery_retry_at = 0.0
+                        self._contact_result = None
                 if cancelled:
                     result.terminate()
                     with self._condition:
                         self._contact_barrier_active = False
+                        self._contact_recovery_active = False
+                        self._contact_recovery_message = ""
+                        self._contact_recovery_retry_at = 0.0
+                        self._contact_result = None
                         self._condition.notify_all()
                     ticket.set_error(IntentCancelled("微信 UI owner 正在停止"))
                 return
             ticket.set_result(result)
         except _IntentYieldedForCallback:
+            ticket.mark_requeued()
             with self._condition:
                 self._queue.appendleft(ticket)
                 self._condition.notify_all()
         except IntentNeedsExclusive:
             ticket.force_exclusive = True
+            ticket.mark_requeued()
             with self._condition:
                 queued_behind_contact = self._contact_barrier_active
                 self._queue.appendleft(ticket)
@@ -725,12 +798,32 @@ class WeChatUIOwner:
             if queued_behind_contact:
                 _log_runtime_event("运行事件：通讯录期间微信 UI 任务已排队", self._runtime_id)
         except BaseException as exc:
+            final_error = exc
             if starting_contact:
                 with self._condition:
                     self._contact_barrier_active = False
+                    self._contact_recovery_active = False
+                    self._contact_recovery_message = ""
+                    self._contact_recovery_retry_at = 0.0
+                    self._contact_result = None
                     self._condition.notify_all()
             ticket.set_error(exc)
         finally:
+            if ticket.done and ticket.intent.kind in {UIIntentKind.ADD_LISTEN, UIIntentKind.REMOVE_LISTEN}:
+                operation = "添加" if ticket.intent.kind == UIIntentKind.ADD_LISTEN else "关闭"
+                conversation = str(ticket.intent.payload.get("conversation") or "").strip() or "未知会话"
+                try:
+                    log_wechat_ui_action_timing(
+                        f"{operation}“{conversation}”",
+                        total_seconds=max(0.0, time.monotonic() - ticket.queued_at),
+                        owner_queue_seconds=ticket.owner_queue_seconds,
+                        ui_lock_seconds=ticket.ui_lock_seconds,
+                        handler_seconds=ticket.handler_seconds,
+                        handler_invoked=ticket.handler_invoked,
+                        error=final_error,
+                    )
+                except Exception:
+                    pass
             with self._condition:
                 if ticket is self._poll_due_ticket and ticket.done:
                     self._poll_due_ticket = None

@@ -19,11 +19,15 @@ class WebStopTests(unittest.TestCase):
         old_thread = web_server.bot_thread
         try:
             web_server.bot = SimpleNamespace(
-                _ui_owner=SimpleNamespace(is_running=True),
+                _ui_owner=SimpleNamespace(
+                    is_running=True,
+                    contact_recovery_snapshot=lambda: {"contact_recovery_active": False},
+                ),
                 is_stop_requested=lambda: False,
                 _runtime_instance_id='a' * 32,
                 _listener_auto_recovery_active=False,
                 callback_is_die=False,
+                _global_scan_state={"fail_stopped": False},
             )
             web_server.bot_thread = SimpleNamespace(is_alive=lambda: True)
             web_server._set_bot_startup_state('success', '机器人已启动')
@@ -43,6 +47,14 @@ class WebStopTests(unittest.TestCase):
             recovering = web_server.app.test_client().get('/runtime_health')
             self.assertFalse(recovering.get_json()['bot_running'])
             web_server.bot._listener_auto_recovery_active = False
+            web_server.bot._ui_owner.contact_recovery_snapshot = lambda: {"contact_recovery_active": True}
+            contact_recovering = web_server.app.test_client().get('/runtime_health')
+            self.assertFalse(contact_recovering.get_json()['bot_running'])
+            web_server.bot._ui_owner.contact_recovery_snapshot = lambda: {"contact_recovery_active": False}
+            web_server.bot._global_scan_state["fail_stopped"] = True
+            scan_failed = web_server.app.test_client().get('/runtime_health')
+            self.assertFalse(scan_failed.get_json()['bot_running'])
+            web_server.bot._global_scan_state["fail_stopped"] = False
             web_server.bot.callback_is_die = True
             listener_dead = web_server.app.test_client().get('/runtime_health')
             self.assertFalse(listener_dead.get_json()['bot_running'])

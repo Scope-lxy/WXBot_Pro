@@ -1290,7 +1290,7 @@ def is_contact_directory_auto_maintenance_idle(bot):
         if (
             not scan.get("initial_drain_complete")
             or not scan.get("last_scan_empty")
-            or scan.get("scan_coverage_degraded")
+            or scan.get("fail_stopped")
         ):
             return False
     if has_active_contact_maintenance_conflict(bot):

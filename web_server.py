@@ -28,6 +28,7 @@ from core.api import (
     DusAPI,
     OpenAIAPI,
     build_api_config_snapshot,
+    describe_api_error,
     format_api_display_name,
     get_tts_sdk_meta,
     list_tts_model_options,
@@ -2417,8 +2418,9 @@ def _dashboard_config_status_snapshot(cfg):
         'listener_recovery_message': '',
         'listener_recovery_source': '',
         'listener_recovery_error': '',
+        'contact_recovery_active': False,
+        'contact_recovery_message': '',
         'scan_coverage_status': 'idle',
-        'scan_coverage_degraded': False,
         'scan_coverage_message': '',
         'scheduled_switch': _count_enabled_tasks(cfg.get('scheduled_message_task_list', [])) > 0,
         'scheduled_count': _count_enabled_tasks(cfg.get('scheduled_message_task_list', [])),
@@ -3286,7 +3288,11 @@ def save_config_route():
                     try:
                         bot.apply_runtime_api_config_update(merged_config)
                     except Exception as e:
-                        log('WARNING', f'运行中接口配置同步失败，将沿用旧接口直到下次重启/刷新：{e}')
+                        log(
+                            'WARNING',
+                            f'运行中接口配置同步失败，将沿用旧接口直到下次重启或刷新\n'
+                            f'技术详情：{type(e).__name__}: {e}',
+                        )
                 if hasattr(bot, 'request_runtime_task_reload'):
                     bot.request_runtime_task_reload()
                 return jsonify({'status': 'success', 'message': '配置保存成功，运行中的机器人将自动同步新任务'})
@@ -3474,13 +3480,19 @@ def _run_api_image_test(api, sdk):
             prompt=API_IMAGE_TEST_PROMPT,
             history=[],
             image_path=tmp_path,
+            log_errors=False,
         )
         raw_reply = str(reply or "")
         cleaned_reply = clean_ai_reply_text(raw_reply)
         if not raw_reply or raw_reply == "API返回错误，请稍后再试":
+            last_error = getattr(api, 'last_error', None)
             return {
                 'status': 'error',
-                'message': '图片测试未返回有效文本，请确认模型支持视觉输入'
+                'message': (
+                    describe_api_error(last_error)
+                    if last_error is not None
+                    else '图片测试未返回有效文本，请确认模型支持视觉输入'
+                ),
             }
         if not _validate_image_test_reply(cleaned_reply):
             return {
@@ -3502,12 +3514,9 @@ def _run_api_image_test(api, sdk):
             'message': f'当前接口类暂不支持图片参数：{e}'
         }
     except Exception as e:
-        msg = str(e)
-        if len(msg) > 500:
-            msg = msg[:500] + '...'
         return {
             'status': 'error',
-            'message': f'图片测试失败：{msg}'
+            'message': f'图片测试失败：{describe_api_error(e)}'
         }
     finally:
         if tmp_path and os.path.exists(tmp_path):
@@ -3531,7 +3540,10 @@ def _persist_api_capability(api_id, capability, supported):
             json.dump(config, f, ensure_ascii=False, indent=4)
         return True
     except Exception as e:
-        log('WARNING', f'写入接口能力配置失败: {e}')
+        log(
+            'WARNING',
+            f'接口能力记录保存失败，本次测试结果不会保留\n技术详情：{type(e).__name__}: {e}',
+        )
         return False
 
 
@@ -3579,22 +3591,41 @@ def test_api_config_route():
         text_started = time.time()
         reply = api.chat(API_TEST_MESSAGE, stream=False, prompt=tmp_config.prompt, history=[])
         text_elapsed_ms = int((time.time() - text_started) * 1000)
-        log('INFO', f'接口测试文本测试完成：模型 {tmp_config.model}，耗时 {text_elapsed_ms} ms')
+        log('INFO', f'接口测试 {tmp_config.model}：文本可用，耗时 {text_elapsed_ms} ms')
         raw_reply = str(reply or "")
         cleaned_reply = clean_ai_reply_text(raw_reply)
         cleaned = cleaned_reply != raw_reply
         protocol_test = _get_openai_protocol_test_result(api, tmp_config.sdk)
 
         if not raw_reply or raw_reply == "API返回错误，请稍后再试":
+            last_error = getattr(api, 'last_error', None)
             return jsonify({
                 'status': 'error',
-                'message': '接口有响应，但未返回有效文本，请检查模型名称、接口地址或服务商兼容性'
+                'message': (
+                    f'文本测试失败：{describe_api_error(last_error)}'
+                    if last_error is not None
+                    else '接口有响应，但未返回有效文本，请检查模型名称、接口地址或服务商兼容性'
+                ),
             })
 
         image_started = time.time()
         image_test = _run_api_image_test(api, tmp_config.sdk)
         image_elapsed_ms = int((time.time() - image_started) * 1000)
-        log('INFO', f'接口测试图片测试完成：模型 {tmp_config.model}，结果 {image_test.get("status")}，耗时 {image_elapsed_ms} ms')
+        image_status = image_test.get('status')
+        if image_status == 'success':
+            log('INFO', f'接口测试 {tmp_config.model}：图片可用，耗时 {image_elapsed_ms} ms')
+        elif image_status == 'skipped':
+            log(
+                'INFO',
+                f'接口测试 {tmp_config.model}：文本可用，图片能力未测试；'
+                f'{image_test.get("message") or "当前接口类型不支持图片测试"}',
+            )
+        else:
+            log(
+                'INFO',
+                f'接口测试 {tmp_config.model}：文本可用，图片不可用，已按纯文本接口记录；'
+                f'{image_test.get("message") or "请确认模型是否支持图片输入"}',
+            )
         _persist_api_capability(api_id, 'vision', image_test.get('status') == 'success')
         elapsed_ms = int((time.time() - started) * 1000)
         return jsonify({
@@ -3612,10 +3643,11 @@ def test_api_config_route():
             }
         })
     except Exception as e:
-        msg = str(e)
-        if len(msg) > 800:
-            msg = msg[:800] + '...'
-        return jsonify({'status': 'error', 'message': f'接口测试失败：{msg}'})
+        summary = describe_api_error(e)
+        if summary == '接口请求失败' and isinstance(e, ValueError):
+            summary = str(e)
+        log('DEBUG', f'接口测试异常：{type(e).__name__}: {e}')
+        return jsonify({'status': 'error', 'message': f'接口测试失败：{summary}'})
 
 
 # ----------------------------------------------------------
@@ -3902,6 +3934,10 @@ def _get_bot_startup_state_snapshot():
 
 def _report_bot_startup_state(success, message, event=None, state=None):
     snapshot = _set_bot_startup_state('success' if success else 'error', message)
+    if success:
+        running_wx_id = _running_wx_id()
+        if running_wx_id:
+            _write_last_wx_id(running_wx_id)
     if isinstance(state, dict):
         state.clear()
         state.update(snapshot)
@@ -4123,9 +4159,14 @@ def runtime_health():
     snapshot = _get_bot_startup_state_snapshot()
     owner = getattr(bot, '_ui_owner', None) if bot is not None else None
     owner_running = bool(getattr(owner, 'is_running', False))
+    contact_recovery_snapshot = getattr(owner, 'contact_recovery_snapshot', None)
+    contact_recovery = contact_recovery_snapshot() if callable(contact_recovery_snapshot) else {}
+    contact_recovery_active = bool(contact_recovery.get('contact_recovery_active'))
     stop_requested = bool(bot.is_stop_requested()) if bot is not None else True
     listener_recovery_active = bool(getattr(bot, '_listener_auto_recovery_active', False)) if bot is not None else False
     callback_is_die = bool(getattr(bot, 'callback_is_die', False)) if bot is not None else True
+    scan_state = getattr(bot, '_global_scan_state', {}) if bot is not None else {}
+    scan_failed = bool(isinstance(scan_state, dict) and scan_state.get('fail_stopped'))
     bot_running = bool(
         bot_thread
         and bot_thread.is_alive()
@@ -4134,7 +4175,9 @@ def runtime_health():
         and owner_running
         and not stop_requested
         and not listener_recovery_active
+        and not contact_recovery_active
         and not callback_is_die
+        and not scan_failed
     )
     return jsonify({
         'status': 'ok',
@@ -4577,11 +4620,21 @@ def get_status():
                 runtime_material_ids=set(getattr(bot, '_material_runtime_messages', {}) or {}),
                 runtime_metrics_payload=runtime_metrics_payload,
             )
+            status['running_wx_id'] = str(getattr(bot, 'wx_id', '') or '').strip()
             return jsonify({'status': 'success', 'data': status})
         except Exception as e:
-            return jsonify({'status': 'success', 'data': {'bot_running': True, 'bot_stopping': bot_stop_requested.is_set(), 'error': str(e)}})
+            return jsonify({'status': 'success', 'data': {
+                'bot_running': True,
+                'bot_stopping': bot_stop_requested.is_set(),
+                'running_wx_id': str(getattr(bot, 'wx_id', '') or '').strip(),
+                'error': str(e),
+            }})
     elif bot_thread and bot_thread.is_alive():
-        return jsonify({'status': 'success', 'data': {'bot_running': True, 'bot_stopping': bot_stop_requested.is_set()}})
+        return jsonify({'status': 'success', 'data': {
+            'bot_running': True,
+            'bot_stopping': bot_stop_requested.is_set(),
+            'running_wx_id': '',
+        }})
     else:
         status = _dashboard_config_status_snapshot(cfg)
         runtime_metrics_payload = _dashboard_runtime_metrics_payload(days=1)
@@ -4594,6 +4647,7 @@ def get_status():
             runtime_material_ids=set(),
             runtime_metrics_payload=runtime_metrics_payload,
         )
+        status['running_wx_id'] = ''
         return jsonify({'status': 'success', 'data': status})
 
 
@@ -5352,14 +5406,14 @@ def _contact_profiles_runtime_wx_id_from_request():
     return ''
 
 
-def _require_running_contact_profiles_wx_id():
-    if not bot_thread or not bot_thread.is_alive() or not bot:
+def _require_running_bot_action(method_name):
+    active_bot = bot
+    if not (bot_thread and bot_thread.is_alive() and active_bot and callable(getattr(active_bot, method_name, None))):
         raise ValueError('请先启动机器人，并保持微信主窗口可用。')
-    running_wx_id = str(getattr(bot, 'wx_id', '') or '').strip()
-    requested_wx_id = _contact_profiles_runtime_wx_id_from_request()
-    if requested_wx_id and running_wx_id and requested_wx_id != running_wx_id:
-        raise ValueError(f'当前运行账号是 {running_wx_id}，请先切回该微信号后再操作。')
-    return running_wx_id or requested_wx_id
+    wx_id = str(getattr(active_bot, 'wx_id', '') or '').strip()
+    if not wx_id:
+        raise ValueError('机器人仍在连接微信，请稍候再试。')
+    return active_bot, wx_id
 
 
 @app.route('/contact_profiles/wx_ids')
@@ -5633,27 +5687,27 @@ def contact_profiles_tag_delete(tag):
 def contact_profiles_refresh_batch():
     """执行一次真实 wxauto 通讯录读取批次。"""
     try:
-        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'refresh_contact_profiles_batch')):
-            return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
         data = request.get_json(silent=True) or {}
-        running_wx_id = _require_running_contact_profiles_wx_id()
+        active_bot, running_wx_id = _require_running_bot_action('refresh_contact_profiles_batch')
+        requested_wx_id = str(data.get('wx_id', '') or '').strip()
         mode = str(data.get('mode', 'standard') or 'standard').strip()
         if mode != 'test':
             mode = 'standard'
         start_name = str(data.get('start_name', '') or '').strip()
+        if requested_wx_id != running_wx_id:
+            start_name = ''
         interval = data.get('interval')
         mode_label = {
             'test': '快速测试',
             'standard': '立即建档',
         }.get(mode, '通讯录维护')
         log('INFO', f'[通讯录维护] 收到{mode_label}请求，起点：{start_name or "通讯录头部"}')
-        result = bot.refresh_contact_profiles_batch(
+        result = active_bot.refresh_contact_profiles_batch(
             mode=mode,
             start_name=start_name,
             interval=interval,
             run_to_completion=(mode != 'test'),
         )
-        wx_id = str(result.get('wx_id', '') or '').strip()
         total_count = int(result.get("count_returned", 0) or 0)
         read_item_count = int(result.get("read_item_count", total_count) or 0)
         new_unique_count = int(result.get("new_unique_count", 0) or 0)
@@ -5693,7 +5747,7 @@ def contact_profiles_refresh_batch():
             'status': 'success',
             'message': summary_message,
             'data': result,
-            'browser': _contact_profiles_browser_payload(wx_id or running_wx_id) if (wx_id or running_wx_id) else _contact_profiles_browser_payload(''),
+            'browser': _contact_profiles_browser_payload(running_wx_id),
         })
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
@@ -5707,18 +5761,15 @@ def contact_profiles_refresh_batch():
 def contact_profiles_pause():
     """暂停或恢复通讯录维护。"""
     try:
-        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'set_contact_profiles_paused')):
-            return jsonify({'status': 'error', 'message': '请先启动机器人，再设置通讯录维护状态。'})
         data = request.get_json(silent=True) or {}
-        running_wx_id = _require_running_contact_profiles_wx_id()
+        active_bot, running_wx_id = _require_running_bot_action('set_contact_profiles_paused')
         paused = bool(data.get('paused', True))
-        directory = bot.set_contact_profiles_paused(paused)
-        wx_id = str(directory.get('wx_id', '') or running_wx_id or getattr(bot, 'wx_id', '') or '').strip()
+        directory = active_bot.set_contact_profiles_paused(paused)
         return jsonify({
             'status': 'success',
             'message': '已请求停止建档，当前批次会继续跑完，并在本批返回后停止' if paused else '已恢复建档状态',
             'data': directory,
-            'browser': _contact_profiles_browser_payload(wx_id) if wx_id else _contact_profiles_browser_payload(''),
+            'browser': _contact_profiles_browser_payload(running_wx_id),
         })
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
@@ -5731,10 +5782,7 @@ def contact_profiles_pause():
 def contact_profiles_repair_remarks():
     """执行当前微信号通讯录备注修复。"""
     try:
-        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'repair_contact_profile_remarks')):
-            return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
-        running_wx_id = _require_running_contact_profiles_wx_id()
-        active_bot = bot
+        active_bot, running_wx_id = _require_running_bot_action('repair_contact_profile_remarks')
 
         def repair_worker():
             try:
@@ -5760,11 +5808,9 @@ def contact_profiles_repair_remarks():
 def contact_profiles_repair_preview():
     """返回当前微信号通讯录备注修复预览。"""
     try:
-        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'preview_contact_profile_remark_repairs')):
-            return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'}), 400
-        _require_running_contact_profiles_wx_id()
-        result = bot.preview_contact_profile_remark_repairs()
-        return jsonify({'status': 'success', 'data': result})
+        active_bot, running_wx_id = _require_running_bot_action('preview_contact_profile_remark_repairs')
+        result = active_bot.preview_contact_profile_remark_repairs()
+        return jsonify({'status': 'success', 'wx_id': running_wx_id, 'data': result})
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400
     except Exception as e:
@@ -5799,10 +5845,7 @@ def relationship_scan_settings_save():
 @login_required
 def relationship_scan_manual_scan():
     try:
-        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'scan_relationship_sessions')):
-            return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
-        wx_id = _require_running_contact_profiles_wx_id()
-        active_bot = bot
+        active_bot, wx_id = _require_running_bot_action('scan_relationship_sessions')
 
         def scan_worker():
             try:
@@ -5824,11 +5867,10 @@ def relationship_scan_manual_scan():
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-def _relationship_full_scan_worker():
+def _relationship_full_scan_worker(active_bot, wx_id):
     global relationship_full_scan_thread
     try:
-        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'full_scan_relationship_sessions')):
-            wx_id = str(getattr(bot, 'wx_id', '') or '').strip() if bot else ''
+        if not (bot_thread and bot_thread.is_alive() and bot is active_bot):
             state = relationship_scan.load_state(DATA_DIR, wx_id)
             runtime = state.setdefault('runtime', {})
             runtime['full_scan_running'] = False
@@ -5841,7 +5883,7 @@ def _relationship_full_scan_worker():
             }
             relationship_scan.save_state(DATA_DIR, state)
             return
-        result = bot.full_scan_relationship_sessions(allow_running=True)
+        result = active_bot.full_scan_relationship_sessions(allow_running=True)
         if result.get('already_running'):
             log('INFO', '[关系扫描] 全量扫描已在运行，本次后台任务退出')
             return
@@ -5852,7 +5894,6 @@ def _relationship_full_scan_worker():
     except Exception as e:
         log('ERROR', f'[关系扫描] 后台全量扫描失败：{e}')
         try:
-            wx_id = str(getattr(bot, 'wx_id', '') or '').strip() if bot else ''
             state = relationship_scan.load_state(DATA_DIR, wx_id)
             runtime = state.setdefault('runtime', {})
             runtime['full_scan_running'] = False
@@ -5877,11 +5918,8 @@ def _relationship_full_scan_worker():
 def relationship_scan_full_scan():
     try:
         global relationship_full_scan_thread
-        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'full_scan_relationship_sessions')):
-            return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
-        _require_running_contact_profiles_wx_id()
+        active_bot, wx_id = _require_running_bot_action('full_scan_relationship_sessions')
         log('INFO', '[关系扫描] 收到全量扫描请求')
-        wx_id = _relationship_scan_wx_id_from_request()
         state = relationship_scan.load_state(DATA_DIR, wx_id)
         with relationship_full_scan_thread_lock:
             runtime = state.setdefault('runtime', {})
@@ -5925,7 +5963,11 @@ def relationship_scan_full_scan():
                 'message': '全量扫描正在启动',
             }
             state = relationship_scan.save_state(DATA_DIR, state)
-            relationship_full_scan_thread = threading.Thread(target=_relationship_full_scan_worker, daemon=True)
+            relationship_full_scan_thread = threading.Thread(
+                target=_relationship_full_scan_worker,
+                args=(active_bot, wx_id),
+                daemon=True,
+            )
             relationship_full_scan_thread.start()
         return jsonify({
             'status': 'success',
@@ -6019,11 +6061,9 @@ def friend_request_refresh_candidates():
 @login_required
 def friend_request_run_once():
     try:
-        if not (bot_thread and bot_thread.is_alive() and bot and hasattr(bot, 'run_friend_request_once')):
-            return jsonify({'status': 'error', 'message': '请先启动机器人，并保持微信主窗口可用。'})
-        _require_running_contact_profiles_wx_id()
-        active_bot = bot
-        wx_id = str(getattr(bot, 'wx_id', '') or '').strip()
+        data = request.get_json(silent=True) or {}
+        active_bot, wx_id = _require_running_bot_action('run_friend_request_once')
+        _save_friend_request_settings(wx_id, data)
 
         def request_worker():
             try:
@@ -6036,7 +6076,7 @@ def friend_request_run_once():
             'status': 'success',
             'message': '好友申请已开始' if started else '好友申请正在执行中',
             'queued': True,
-            'payload': _friend_request_payload(wx_id) if wx_id else {},
+            'payload': _friend_request_payload(wx_id),
         }), 202
     except ValueError as e:
         return jsonify({'status': 'error', 'message': str(e)}), 400

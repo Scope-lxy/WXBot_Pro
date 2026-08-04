@@ -64,7 +64,7 @@ def test_window_supervisor_marks_only_the_first_degraded_failure():
     assert later["entered_degraded"] is False
 
 
-def test_listener_logs_warning_only_when_it_enters_degraded_state():
+def test_listener_keeps_degraded_retry_logs_in_local_diagnostics():
     bot = SimpleNamespace(is_stop_requested=lambda: False)
     supervisor = listening.ensure_listener_window_recovery_state(bot)
     supervisor.request("张三", now=0)
@@ -84,7 +84,7 @@ def test_listener_logs_warning_only_when_it_enters_degraded_state():
         assert listening.flush_listener_window_recovery_tasks(bot) is True
         assert listening.flush_listener_window_recovery_tasks(bot) is True
 
-    assert [level for level, _message in logged] == ["WARNING", "DEBUG"]
+    assert [level for level, _message in logged] == ["DEBUG", "DEBUG"]
 
 
 def test_window_supervisor_success_removes_retry_state():

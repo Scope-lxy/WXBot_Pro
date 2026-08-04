@@ -255,6 +255,30 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(client.switch_to_chat_count, 1)
         self.assertEqual(client.start_count, 1)
 
+    def test_contact_recovery_does_not_restart_listener_when_returning_to_chat_fails(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+        client.start_count = 0
+        process = SimpleNamespace(poll=lambda: (False, None), terminate=lambda: None)
+
+        with patch(
+            "feature.contacts.start_contact_auto_maintenance_collector",
+            return_value=process,
+        ):
+            runtime.start_contact_batch({"start_name": "张三"})
+        with patch.object(client, "SwitchToChat", side_effect=RuntimeError("chat page unavailable")):
+            with self.assertRaisesRegex(RuntimeError, "chat page unavailable"):
+                runtime.recover_chat_page({})
+
+        self.assertEqual(client.start_count, 0)
+        self.assertTrue(runtime._listener_paused_for_contact)
+
+        self.assertTrue(runtime.recover_chat_page({}))
+        self.assertEqual(client.switch_to_chat_count, 1)
+        self.assertEqual(client.start_count, 1)
+        self.assertFalse(runtime._listener_paused_for_contact)
+
     def test_listener_auto_recovery_rebuilds_listener_without_rebinding_client(self):
         first = FakeClient()
         clients = iter([first])

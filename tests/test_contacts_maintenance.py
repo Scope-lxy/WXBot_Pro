@@ -468,7 +468,7 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
 
         self.assertTrue(has_active_contact_maintenance_conflict(bot, now_ts=1008.0))
 
-    def test_auto_maintenance_idle_requires_a_clean_empty_global_scan(self):
+    def test_auto_maintenance_idle_ignores_historical_coverage_incidents(self):
         bot = SimpleNamespace(
             config=SimpleNamespace(AllListen_switch=True),
             _global_scan_state={
@@ -487,6 +487,8 @@ class ContactMaintenancePrepareTests(unittest.TestCase):
         bot._global_scan_state["degraded_conversations"] = {
             "private:张三": {"conversation": "张三", "expected_count": 3, "actual_count": 2}
         }
+        self.assertTrue(is_contact_directory_auto_maintenance_idle(bot))
+        bot._global_scan_state["fail_stopped"] = True
         self.assertFalse(is_contact_directory_auto_maintenance_idle(bot))
 
     def test_auto_maintenance_idle_ignores_dormant_tail_marker_without_work(self):

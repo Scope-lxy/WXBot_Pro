@@ -3,6 +3,7 @@ import threading
 import time
 import json
 import tempfile
+from contextlib import contextmanager
 from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,86 @@ from wxbot_core import WXBot
 
 
 class WechatUiActionsTests(unittest.TestCase):
+    def test_listener_timing_separates_owner_queue_lock_and_handler(self):
+        blocker_started = threading.Event()
+        release_blocker = threading.Event()
+
+        def blocker(_payload):
+            blocker_started.set()
+            release_blocker.wait(1)
+            return True
+
+        def add_listener(_payload):
+            time.sleep(0.02)
+            return True
+
+        @contextmanager
+        def delayed_transaction(*, timeout):
+            time.sleep(0.02)
+            yield
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.SEND_FILE: blocker,
+            wechat_ui_actions.UIIntentKind.ADD_LISTEN: add_listener,
+        })
+        with patch.object(wechat_ui_actions, "wxautox_ui_transaction", delayed_transaction), patch.object(
+            wechat_ui_actions,
+            "log_wechat_ui_action_timing",
+        ) as timing_log:
+            owner.start()
+            try:
+                first = owner.submit(wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.SEND_FILE))
+                self.assertTrue(blocker_started.wait(1))
+                listener = owner.submit(wechat_ui_actions.UIIntent(
+                    wechat_ui_actions.UIIntentKind.ADD_LISTEN,
+                    {"conversation": "测试会话"},
+                ))
+                time.sleep(0.03)
+                release_blocker.set()
+                first.result(1)
+                listener.result(1)
+            finally:
+                release_blocker.set()
+                owner.stop()
+
+        timing = timing_log.call_args.kwargs
+        self.assertGreaterEqual(timing["owner_queue_seconds"], 0.02)
+        self.assertGreater(timing["ui_lock_seconds"], 0.01)
+        self.assertGreater(timing["handler_seconds"], 0.01)
+        self.assertTrue(timing["handler_invoked"])
+        self.assertIsNone(timing["error"])
+
+    def test_listener_timing_marks_lock_failure_before_handler(self):
+        handler_calls = []
+
+        @contextmanager
+        def failed_transaction(*, timeout):
+            raise TimeoutError("锁繁忙")
+            yield
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.REMOVE_LISTEN: lambda payload: handler_calls.append(payload),
+        })
+        with patch.object(wechat_ui_actions, "wxautox_ui_transaction", failed_transaction), patch.object(
+            wechat_ui_actions,
+            "WXAUTOX_UI_LOCK_TIMEOUT_SECONDS",
+            0.02,
+        ), patch.object(wechat_ui_actions, "log_wechat_ui_action_timing") as timing_log:
+            owner.start()
+            try:
+                with self.assertRaises(wechat_ui_actions.UIActionNotStarted):
+                    owner.call(wechat_ui_actions.UIIntent(
+                        wechat_ui_actions.UIIntentKind.REMOVE_LISTEN,
+                        {"conversation": "测试会话"},
+                    ), 1)
+            finally:
+                owner.stop()
+
+        self.assertEqual(handler_calls, [])
+        timing = timing_log.call_args.kwargs
+        self.assertFalse(timing["handler_invoked"])
+        self.assertIsInstance(timing["error"], wechat_ui_actions.UIActionNotStarted)
+
     def test_config_task_versions_read_account_scoped_rule_truth(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -489,6 +570,128 @@ class WechatUiActionsTests(unittest.TestCase):
             owner.stop()
 
         self.assertEqual(events, ["recover", "scan"])
+
+    def test_contact_recovery_keeps_barrier_until_wxautox_lock_returns(self):
+        contact_done = threading.Event()
+        lock_available = threading.Event()
+        lock_available.set()
+        recoveries = []
+
+        @contextmanager
+        def transaction(*, timeout):
+            if not lock_available.is_set():
+                raise TimeoutError("wxautox lock busy")
+            yield
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.CONTACT_START: lambda _payload: wechat_ui_actions.ContactBatchHandle(
+                poll=lambda: (contact_done.is_set(), "contact-result"),
+            ),
+            wechat_ui_actions.UIIntentKind.CONTACT_RECOVER: lambda _payload: recoveries.append("recovered"),
+        }, poll_interval=0.005)
+        with patch.object(wechat_ui_actions, "wxautox_ui_transaction", transaction), patch.object(
+            wechat_ui_actions, "WXAUTOX_UI_LOCK_TIMEOUT_SECONDS", 0.01
+        ), patch.object(wechat_ui_actions, "CONTACT_RECOVERY_RETRY_SECONDS", 0.01):
+            owner.start()
+            try:
+                contact = owner.submit(wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.CONTACT_START))
+                deadline = time.time() + 1
+                while not owner.contact_active and time.time() < deadline:
+                    time.sleep(0.005)
+                self.assertTrue(owner.contact_active)
+                lock_available.clear()
+                contact_done.set()
+                deadline = time.time() + 1
+                while not owner.contact_recovery_snapshot()["contact_recovery_active"] and time.time() < deadline:
+                    time.sleep(0.005)
+
+                self.assertTrue(owner.contact_active)
+                self.assertTrue(owner.contact_recovery_snapshot()["contact_recovery_active"])
+                self.assertFalse(contact.done)
+                self.assertFalse(owner.is_idle())
+                self.assertEqual(recoveries, [])
+
+                lock_available.set()
+                self.assertEqual(contact.result(1), "contact-result")
+            finally:
+                lock_available.set()
+                owner.stop()
+
+        self.assertEqual(recoveries, ["recovered"])
+        self.assertFalse(owner.contact_active)
+        self.assertFalse(owner.contact_recovery_snapshot()["contact_recovery_active"])
+
+    def test_contact_recovery_retries_handler_failure_before_releasing_barrier(self):
+        contact_done = threading.Event()
+        attempts = []
+
+        def recover(_payload):
+            attempts.append("recover")
+            if len(attempts) == 1:
+                raise RuntimeError("not on chat page")
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.CONTACT_START: lambda _payload: wechat_ui_actions.ContactBatchHandle(
+                poll=lambda: (contact_done.is_set(), "contact-result"),
+            ),
+            wechat_ui_actions.UIIntentKind.CONTACT_RECOVER: recover,
+        }, poll_interval=0.005)
+        with patch.object(wechat_ui_actions, "CONTACT_RECOVERY_RETRY_SECONDS", 0.01):
+            owner.start()
+            try:
+                contact = owner.submit(wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.CONTACT_START))
+                deadline = time.time() + 1
+                while not owner.contact_active and time.time() < deadline:
+                    time.sleep(0.005)
+                contact_done.set()
+                deadline = time.time() + 1
+                while len(attempts) < 1 and time.time() < deadline:
+                    time.sleep(0.005)
+
+                self.assertTrue(owner.contact_active)
+                self.assertTrue(owner.contact_recovery_snapshot()["contact_recovery_active"])
+                self.assertFalse(contact.done)
+
+                self.assertEqual(contact.result(1), "contact-result")
+            finally:
+                owner.stop()
+
+        self.assertEqual(attempts, ["recover", "recover"])
+        self.assertFalse(owner.contact_active)
+
+    def test_stop_cancels_contact_recovery_and_releases_owner(self):
+        contact_done = threading.Event()
+        terminated = threading.Event()
+        recovery_started = threading.Event()
+
+        def recover(_payload):
+            recovery_started.set()
+            raise RuntimeError("chat page unavailable")
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.CONTACT_START: lambda _payload: wechat_ui_actions.ContactBatchHandle(
+                poll=lambda: (contact_done.is_set(), "contact-result"),
+                terminate=terminated.set,
+            ),
+            wechat_ui_actions.UIIntentKind.CONTACT_RECOVER: recover,
+        }, poll_interval=0.005)
+        with patch.object(wechat_ui_actions, "CONTACT_RECOVERY_RETRY_SECONDS", 1):
+            owner.start()
+            contact = owner.submit(wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.CONTACT_START))
+            deadline = time.time() + 1
+            while not owner.contact_active and time.time() < deadline:
+                time.sleep(0.005)
+            contact_done.set()
+            self.assertTrue(recovery_started.wait(1))
+
+            owner.stop(timeout=1)
+
+        self.assertTrue(terminated.is_set())
+        self.assertFalse(owner.contact_active)
+        self.assertFalse(owner.contact_recovery_snapshot()["contact_recovery_active"])
+        self.assertFalse(owner._thread.is_alive())
+        with self.assertRaises(wechat_ui_actions.IntentCancelled):
+            contact.result(0)
 
     def test_cancel_pending_keeps_current_action_but_drops_queued_send_before_shutdown(self):
         started = threading.Event()
