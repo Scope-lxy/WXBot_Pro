@@ -13,6 +13,12 @@ from wxbot_core import WXBot
 
 
 class WechatUiActionsTests(unittest.TestCase):
+    def test_outbound_not_started_is_not_a_task_cancellation(self):
+        self.assertFalse(issubclass(
+            wechat_ui_actions.UIOutboundNotStarted,
+            wechat_ui_actions.IntentCancelled,
+        ))
+
     def test_listener_timing_separates_owner_queue_lock_and_handler(self):
         blocker_started = threading.Event()
         release_blocker = threading.Event()
@@ -1202,6 +1208,40 @@ class WechatUiActionsTests(unittest.TestCase):
 
         self.assertEqual(events[0], ("begin", "delivery-1", "send_file", "张三"))
         self.assertEqual(events[1][:3], ("finish", "delivery-1", "uncertain"))
+
+    def test_owner_releases_journal_when_outbound_was_not_started(self):
+        events = []
+
+        class Journal:
+            def begin(self, delivery_id, kind, payload):
+                events.append(("begin", delivery_id, kind, payload["conversation"]))
+                return True
+
+            def release(self, delivery_id):
+                events.append(("release", delivery_id))
+                return True
+
+            def finish(self, delivery_id, status, error=""):
+                events.append(("finish", delivery_id, status, error))
+
+        def fail(_payload):
+            raise wechat_ui_actions.UIOutboundNotStarted("subwindow unavailable")
+
+        owner = wechat_ui_actions.WeChatUIOwner({wechat_ui_actions.UIIntentKind.SEND_FILE: fail})
+        owner.set_delivery_journal(Journal())
+        owner.start()
+        try:
+            with self.assertRaises(wechat_ui_actions.UIOutboundNotStarted):
+                owner.call(wechat_ui_actions.UIIntent(
+                    wechat_ui_actions.UIIntentKind.SEND_FILE,
+                    {"conversation": "张三", "path": "a.pdf", "delivery_id": "delivery-1"},
+                ), 1)
+        finally:
+            owner.stop()
+
+        self.assertEqual(events[0], ("begin", "delivery-1", "send_file", "张三"))
+        self.assertEqual(events[1], ("release", "delivery-1"))
+        self.assertEqual(len(events), 2)
 
     def test_owner_marks_false_non_idempotent_result_uncertain(self):
         events = []

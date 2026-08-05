@@ -1379,6 +1379,31 @@ class MessageLoopIntegrationTests(unittest.TestCase):
 
             self.assertEqual(caught.exception.status, DeliveryStatus.BLOCKED)
 
+    def test_subwindow_failure_before_send_releases_reply_to_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = make_delivery_bot(tmp)
+            inbound = enqueue_friend(bot, "question", "friend-subwindow-wait")
+            action = ReplyAction("text", "answer")
+            chat = FakeChat(
+                "Alice",
+                lambda **_kwargs: (_ for _ in ()).throw(
+                    wechat_ui_actions.UIOutboundNotStarted("subwindow unavailable")
+                ),
+            )
+            turn = bot._reply_turn(chat, inbound, (action,))
+            context = {
+                "chat": chat,
+                "message": inbound,
+                "at_first": "",
+                "delayed_action_ids": set(),
+            }
+
+            result = bot._reply_delivery_coordinator.deliver(turn, context)
+
+            self.assertEqual(result.status, DeliveryStatus.BLOCKED)
+            self.assertEqual(bot._message_store.delivery_action_status(turn.action_id(0)), "pending")
+            self.assertEqual(bot._message_store.get_reply_job(turn.turn_id)["status"], "pending")
+
     def test_quote_location_failure_falls_back_to_plain_text_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = make_delivery_bot(tmp)
@@ -1463,6 +1488,7 @@ class MessageLoopIntegrationTests(unittest.TestCase):
 
         class BottomChat:
             who = "Alice"
+            _api = SimpleNamespace(HWND=101)
 
             def SendFiles(self, **_kwargs):
                 for _index in range(2):
@@ -1481,14 +1507,15 @@ class MessageLoopIntegrationTests(unittest.TestCase):
         )
         runtime._client = BottomClient()
 
-        results = runtime.send_actions({
-            "conversation": "Alice",
-            "chat_type": "private",
-            "actions": [
-                {"type": "file", "path": "a.txt", "echo_delivery_id": "batch:0"},
-                {"type": "file", "path": "b.txt", "echo_delivery_id": "batch:1"},
-            ],
-        })
+        with mock.patch("core.wechat_ui_runtime.win32gui.IsWindow", return_value=True):
+            results = runtime.send_actions({
+                "conversation": "Alice",
+                "chat_type": "private",
+                "actions": [
+                    {"type": "file", "path": "a.txt", "echo_delivery_id": "batch:0"},
+                    {"type": "file", "path": "b.txt", "echo_delivery_id": "batch:1"},
+                ],
+            })
 
         self.assertEqual(results, [True, True])
         self.assertEqual(matches, ["batch:0", None, "batch:1", None])

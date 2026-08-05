@@ -5,6 +5,7 @@ from __future__ import annotations
 import random
 import time
 import uuid
+import win32gui
 from collections.abc import Mapping
 from contextlib import contextmanager
 from threading import RLock, get_ident
@@ -30,6 +31,7 @@ from core.wechat_ui_actions import (
     UI_CALL_WAIT_TIMEOUT,
     UIIntent,
     UIIntentKind,
+    UIOutboundNotStarted,
 )
 
 
@@ -37,6 +39,7 @@ MESSAGE_TIME_CONTROL_SCAN_LIMIT = 30
 CONTACT_EDIT_CHAT_VERIFY_ATTEMPTS = 9
 CONTACT_EDIT_CHAT_VERIFY_INTERVAL_SECONDS = 0.2
 CONTACT_EDIT_FORCE_WAIT_SECONDS = 0.8
+SUBWINDOW_RECOVERY_DISCOVERY_DELAY_SECONDS = 0.15
 
 
 def _required_internal_chat_type(chat_type):
@@ -62,6 +65,10 @@ def _conversation_payload(conversation):
 
 class MessageLocateError(RuntimeError):
     """The source message was not located before any send was attempted."""
+
+
+class ListenSubwindowNotReady(RuntimeError):
+    """A listener subwindow could not be made ready after one bounded retry."""
 
 
 class OwnedChat:
@@ -425,9 +432,24 @@ class WeChatUIRuntime:
             unique.append(chat)
         return unique
 
+    @staticmethod
+    def _subwindow_hwnd(chat):
+        api = chat._api
+        try:
+            return int(api.HWND or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _subwindow_is_valid(cls, chat):
+        hwnd = cls._subwindow_hwnd(chat)
+        return bool(hwnd and win32gui.IsWindow(hwnd))
+
     def _matching_subwindows(self, *, name, chat_type=None):
         matches = []
         for chat in self._subwindows():
+            if not self._subwindow_is_valid(chat):
+                continue
             conversation = self._chat_conversation(chat)
             if conversation.who != name:
                 continue
@@ -452,7 +474,7 @@ class WeChatUIRuntime:
             return conversation, self._cache_chat(conversation, chat)
         getter = getattr(self._client, "GetSubWindow", None)
         chat = getter(nickname=name) if callable(getter) else None
-        if chat is None:
+        if chat is None or not self._subwindow_is_valid(chat):
             return None, None
         conversation = self._chat_conversation(chat)
         if conversation.who != name:
@@ -462,6 +484,14 @@ class WeChatUIRuntime:
     def _find_chat(self, conversation):
         if not isinstance(conversation, ConversationRef):
             raise TypeError("conversation must be a ConversationRef")
+
+        key = self._chat_key(conversation)
+        cached = self._listen_chats.get(key)
+        if cached is not None:
+            if self._subwindow_is_valid(cached) and self._chat_conversation(cached) == conversation:
+                return cached
+            self._listen_chats.pop(key, None)
+
         matches = self._matching_subwindows(
             name=conversation.who,
             chat_type=conversation.chat_type,
@@ -475,24 +505,107 @@ class WeChatUIRuntime:
             _actual, chat = matches[0]
             return self._cache_chat(conversation, chat)
 
-        key = self._chat_key(conversation)
-        cached = self._listen_chats.get(key)
-        if cached is not None:
-            try:
-                if self._chat_conversation(cached) == conversation:
-                    return cached
-            except Exception:
-                pass
-            self._listen_chats.pop(key, None)
-
         getter = getattr(self._client, "GetSubWindow", None)
         chat = getter(nickname=conversation.who) if callable(getter) else None
-        if chat is None:
+        if chat is None or not self._subwindow_is_valid(chat):
             return None
         actual = self._chat_conversation(chat)
         if actual != conversation:
             return None
         return self._cache_chat(conversation, chat)
+
+    @staticmethod
+    def _is_move_window_invalid_handle(exc):
+        args = tuple(getattr(exc, "args", ()) or ())
+        return (
+            len(args) >= 2
+            and args[0] == 1400
+            and str(args[1] or "").strip() == "MoveWindow"
+        )
+
+    def _drop_cached_chat(self, name, requested):
+        if requested is not None:
+            self._listen_chats.pop(self._chat_key(requested), None)
+            return
+        for key in [key for key in self._listen_chats if key[1] == name]:
+            self._listen_chats.pop(key, None)
+
+    def _registered_listen_chat(self, name, requested):
+        registry = self._client.listen
+        if not isinstance(registry, dict):
+            raise RuntimeError("当前微信内核的监听登记表结构异常")
+        entry = registry.get(name)
+        if entry is None:
+            return None
+        if not isinstance(entry, tuple) or len(entry) != 2:
+            raise RuntimeError("当前微信内核的监听登记项结构异常")
+        chat, callback = entry
+        if callback != self._callback or not self._subwindow_is_valid(chat):
+            return None
+        conversation = self._chat_conversation(chat)
+        if conversation.who != name:
+            return None
+        if requested is not None and conversation != requested:
+            return None
+        return chat
+
+    def _discover_recoverable_subwindow(self, name, requested):
+        matches = self._matching_subwindows(
+            name=name,
+            chat_type=requested.chat_type if requested is not None else None,
+        )
+        if len(matches) > 1:
+            raise ListenSubwindowNotReady(f"存在多个无法区分的同名监听子窗口：{name}")
+        return matches[0][1] if matches else None
+
+    @staticmethod
+    def _resize_recovered_subwindow(chat):
+        chat._api.auto_resize()
+
+    def _recover_move_window_add(self, name, requested, add):
+        self._drop_cached_chat(name, requested)
+        chat = None
+        for attempt in range(2):
+            chat = self._discover_recoverable_subwindow(name, requested)
+            if chat is not None or attempt == 1:
+                break
+            time.sleep(SUBWINDOW_RECOVERY_DISCOVERY_DELAY_SECONDS)
+        if chat is not None:
+            try:
+                self._resize_recovered_subwindow(chat)
+            except Exception as exc:
+                if self._is_move_window_invalid_handle(exc):
+                    raise ListenSubwindowNotReady(f"监听子窗口重新调整大小失败：{name}") from exc
+                raise
+            registered = self._registered_listen_chat(name, requested)
+            if registered is not None:
+                return registered
+        try:
+            return add(nickname=name, callback=self._callback)
+        except Exception as exc:
+            if self._is_move_window_invalid_handle(exc):
+                raise ListenSubwindowNotReady(f"监听子窗口重新登记失败：{name}") from exc
+            raise
+
+    def _validated_added_chat(self, name, requested, result):
+        if isinstance(result, Mapping) and not ReplyCountStore.was_send_success(result):
+            raise ListenSubwindowNotReady(f"监听子窗口登记未成功：{name}，详情：{result}")
+
+        registered = self._registered_listen_chat(name, requested)
+        if registered is None:
+            raise ListenSubwindowNotReady(f"监听 callback 未完成登记：{name}")
+        conversation = self._chat_conversation(registered)
+        registered_hwnd = self._subwindow_hwnd(registered)
+        physical_matches = self._matching_subwindows(
+            name=name,
+            chat_type=requested.chat_type if requested is not None else conversation.chat_type,
+        )
+        if not any(
+            self._subwindow_hwnd(chat) == registered_hwnd
+            for _actual, chat in physical_matches
+        ):
+            raise ListenSubwindowNotReady(f"监听登记没有对应的有效子窗口：{name}")
+        return self._cache_chat(conversation, registered)
 
     def _add_chat(self, name, chat_type=None):
         name = str(name or "").strip()
@@ -506,31 +619,39 @@ class WeChatUIRuntime:
                 chat
                 for (cached_type, cached_name), chat in self._listen_chats.items()
                 if cached_name == name
+                and self._subwindow_is_valid(chat)
                 and self._chat_conversation(chat) == ConversationRef(name, cached_type)
             ]
             existing = matches[0] if len(matches) == 1 else None
         else:
             existing = self._listen_chats.get(self._chat_key(requested))
-            if existing is not None and self._chat_conversation(existing) != requested:
+            if existing is not None and (
+                not self._subwindow_is_valid(existing)
+                or self._chat_conversation(existing) != requested
+            ):
                 existing = None
         if existing is not None:
-            return existing
+            actual = self._chat_conversation(existing)
+            registered = self._registered_listen_chat(name, requested or actual)
+            if registered is not None:
+                return self._cache_chat(actual, registered)
+            self._drop_cached_chat(name, requested)
+
+        registered = self._registered_listen_chat(name, requested)
+        if registered is not None:
+            return self._cache_chat(self._chat_conversation(registered), registered)
         add = getattr(self._client, "AddListenChat", None)
         if not callable(add):
             raise RuntimeError("当前微信内核不支持添加监听")
-        chat = add(nickname=name, callback=self._callback)
-        if requested is None:
-            discovered, chat = self._find_unique_named_chat(name)
-            if discovered is None or chat is None:
-                raise RuntimeError(f"未能建立监听子窗口：{name}")
-            return chat
-
-        actual = self._chat_conversation(chat) if chat is not None else None
-        if actual != requested:
-            chat = self._find_chat(requested)
-        if chat is None:
-            raise RuntimeError(f"未能建立监听子窗口：{name}")
-        return self._cache_chat(requested, chat)
+        try:
+            chat = add(nickname=name, callback=self._callback)
+        except Exception as exc:
+            if not self._is_move_window_invalid_handle(exc):
+                raise
+            result = self._recover_move_window_add(name, requested, add)
+        else:
+            result = chat
+        return self._validated_added_chat(name, requested, result)
 
     def _chat_for_payload(self, payload, *, allow_add):
         if self._client is None:
@@ -542,6 +663,14 @@ class WeChatUIRuntime:
         if not allow_add:
             raise IntentNeedsExclusive()
         return self._add_chat(conversation.who, conversation.chat_type)
+
+    def _outbound_chat_for_payload(self, payload, *, allow_add):
+        try:
+            return self._chat_for_payload(payload, allow_add=allow_add)
+        except IntentNeedsExclusive:
+            raise
+        except ListenSubwindowNotReady as exc:
+            raise UIOutboundNotStarted(str(exc)) from exc
 
     def bootstrap(self, payload):
         self._client = self._create_client()
@@ -659,7 +788,10 @@ class WeChatUIRuntime:
         ]
 
     def send_text(self, payload):
-        chat = self._chat_for_payload(payload, allow_add=bool(payload.get("_exclusive_retry")))
+        chat = self._outbound_chat_for_payload(
+            payload,
+            allow_add=bool(payload.get("_exclusive_retry")),
+        )
         kwargs = {"msg": str(payload.get("text") or "")}
         at = payload.get("at")
         if at:
@@ -667,7 +799,7 @@ class WeChatUIRuntime:
         return chat.SendMsg(**kwargs)
 
     def send_actions(self, payload):
-        chat = self._chat_for_payload(payload, allow_add=True)
+        chat = self._outbound_chat_for_payload(payload, allow_add=True)
         results = []
         for index, action in enumerate(payload.get("actions") or ()):
             action = dict(action or {})
@@ -703,11 +835,11 @@ class WeChatUIRuntime:
         return results
 
     def send_file(self, payload):
-        chat = self._chat_for_payload(payload, allow_add=True)
+        chat = self._outbound_chat_for_payload(payload, allow_add=True)
         return chat.SendFiles(filepath=str(payload.get("path") or ""))
 
     def send_audio(self, payload):
-        chat = self._chat_for_payload(payload, allow_add=True)
+        chat = self._outbound_chat_for_payload(payload, allow_add=True)
         path = str(payload.get("path") or "")
         return chat.SendAudio(filepath=path, duration=None)
 
@@ -899,9 +1031,13 @@ class WeChatUIRuntime:
             return identities
         raise ValueError(f"未登记的主窗口操作：{operation}")
 
-    def _locate_message(self, payload):
+    def _locate_message(self, payload, *, outbound=False):
         conversation = self._payload_conversation(payload)
-        chat = self._chat_for_payload(payload, allow_add=True)
+        chat = (
+            self._outbound_chat_for_payload(payload, allow_add=True)
+            if outbound
+            else self._chat_for_payload(payload, allow_add=True)
+        )
         with self._suppress_callbacks_for(conversation):
             messages = list(chat.GetAllMessage() or [])
             located = self._locate_message_in_snapshot(messages, payload, allow_window_order=True)
@@ -984,7 +1120,7 @@ class WeChatUIRuntime:
         return str(method() or "") if callable(method) else ""
 
     def forward_message(self, payload):
-        message = self._locate_message(payload)
+        message = self._locate_message(payload, outbound=True)
         targets = payload.get("targets") or payload.get("target") or ""
         preface = str(payload.get("preface") or "")
         roll_into_view = getattr(message, "roll_into_view", None)
@@ -995,7 +1131,7 @@ class WeChatUIRuntime:
         return message.forward(targets)
 
     def quote_message(self, payload):
-        message = self._locate_message(payload)
+        message = self._locate_message(payload, outbound=True)
         roll_into_view = getattr(message, "roll_into_view", None)
         if callable(roll_into_view):
             try:

@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from core import wechat_ui_actions
 from feature import listening
 
 
@@ -78,6 +79,39 @@ class PassNewFriendsTests(unittest.TestCase):
         self.assertEqual(send_intents[1].payload["actions"][0]["type"], "file")
         self.assertEqual(delays, ["delay"])
 
+    def test_new_friend_welcome_reports_subwindow_failure_as_not_sent(self):
+        intents = []
+        logs = []
+
+        class Owner:
+            def call(self, intent, _timeout):
+                intents.append(intent)
+                if intent.kind == listening.wechat_ui_actions.UIIntentKind.NEW_FRIEND:
+                    return [{"name": "阿英2", "send_name": "阿英2"}]
+                raise wechat_ui_actions.UIOutboundNotStarted("subwindow unavailable")
+
+        bot = SimpleNamespace(
+            _ui_owner=Owner(),
+            config=SimpleNamespace(
+                new_friend_archive_switch=False,
+                new_friend_tags=[],
+                new_friend_reply_switch=True,
+                new_friend_msg={"text": "欢迎"},
+            ),
+            _config_ui_task_guard=lambda _category: ("new_friend", 3),
+            _inter_message_delay_or_stop=lambda: None,
+            _metric_increment=lambda _key: None,
+        )
+
+        with patch("feature.listening.time.sleep", return_value=None), patch(
+            "feature.listening._bot_log",
+            side_effect=lambda *_args, **kwargs: logs.append(str(kwargs.get("message") or "")),
+        ):
+            self.assertTrue(listening.pass_new_friends(bot))
+
+        self.assertEqual(len(intents), 2)
+        self.assertTrue(any("欢迎消息未发送" in message for message in logs))
+
 
 class GroupWelcomeTests(unittest.TestCase):
     def test_group_welcome_submits_one_journaled_action(self):
@@ -135,6 +169,30 @@ class GroupWelcomeTests(unittest.TestCase):
             chat,
             SimpleNamespace(content='"张三"加入群聊'),
         ))
+
+    def test_group_welcome_reports_subwindow_failure(self):
+        logs = []
+        bot = SimpleNamespace(
+            config=SimpleNamespace(group_welcome_msg="欢迎"),
+            _config_ui_task_guard=lambda _category: ("group_welcome", 3),
+            _send_tracked_outbound=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                wechat_ui_actions.UIOutboundNotStarted("subwindow unavailable")
+            ),
+        )
+        chat = SimpleNamespace(who="测试群", chat_type="group")
+
+        with patch("feature.listening.time.sleep", return_value=None), patch(
+            "feature.listening._bot_log",
+            side_effect=lambda *_args, **kwargs: logs.append(str(kwargs.get("message") or "")),
+        ):
+            result = listening.send_group_welcome_msg(
+                bot,
+                chat,
+                SimpleNamespace(content='"张三"加入群聊'),
+            )
+
+        self.assertFalse(result)
+        self.assertTrue(any("欢迎语未发送" in message for message in logs))
 
 
 if __name__ == "__main__":

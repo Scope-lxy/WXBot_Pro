@@ -156,6 +156,27 @@ os._exit(91)
             self.assertIn("process exited", recovered[0]["error"])
             self.assertFalse(journal.begin("delivery-1", "send_audio", {"conversation": "张三"}))
 
+    def test_ui_delivery_journal_release_only_reopens_inflight_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = self._delivery_journal(tmp)
+            payload = {"conversation": "张三"}
+            self.assertTrue(journal.begin("retryable", "send_file", payload))
+            self.assertTrue(journal.release("retryable"))
+            self.assertEqual(journal.records(), [])
+            self.assertTrue(journal.begin("retryable", "send_file", payload))
+
+            self.assertTrue(journal.begin("done", "send_audio", payload))
+            self.assertTrue(journal.finish("done", "done"))
+            self.assertFalse(journal.release("done"))
+
+            self.assertTrue(journal.begin("uncertain", "send_file", payload))
+            self.assertTrue(journal.finish("uncertain", "uncertain"))
+            self.assertFalse(journal.release("uncertain"))
+            self.assertEqual(
+                {item["delivery_id"]: item["status"] for item in journal.records()},
+                {"retryable": "inflight", "done": "done", "uncertain": "uncertain"},
+            )
+
     def test_ui_delivery_journal_keeps_old_delivery_ids_and_business_context(self):
         with tempfile.TemporaryDirectory() as tmp:
             journal = self._delivery_journal(tmp)

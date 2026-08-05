@@ -111,6 +111,15 @@ def _scheduled_message_runtime_parts(messages):
     return raw_messages, raw_media
 
 
+def _guard_scheduled_message_send(send):
+    try:
+        return send()
+    except wechat_ui_actions.UIOutboundNotStarted as exc:
+        return {"status": "failed", "message": f"监听子窗口未准备好，消息未发送：{exc}"}
+    except wechat_ui_actions.IntentCancelled as exc:
+        return {"status": "cancelled", "message": str(exc)}
+
+
 def run_due_scheduled_message_tasks(bot, now=None):
     now = now or datetime.now()
     tasks = getattr(bot.config, "scheduled_message_task_list", [])
@@ -158,11 +167,6 @@ def run_due_scheduled_message_tasks(bot, now=None):
         def task_is_stale():
             return bool(task_version and bot._current_ui_task_version(task_key) != task_version)
 
-        def guarded_send(send):
-            try:
-                return send()
-            except wechat_ui_actions.IntentCancelled as exc:
-                return {"status": "cancelled", "message": str(exc)}
         messages = [
             str(message or "").strip()
             for message in (raw_task.get("msgs") or [])
@@ -200,7 +204,7 @@ def run_due_scheduled_message_tasks(bot, now=None):
 
         result = execute_scheduled_message_task(
             task={**raw_task, "targets": targets},
-            send_text=lambda target, msg: guarded_send(lambda: bot._send_outbound_to_target(
+            send_text=lambda target, msg: _guard_scheduled_message_send(lambda: bot._send_outbound_to_target(
                     str((target or {}).get("send_name") or "") if isinstance(target, dict) else target,
                     {"type": "text", "text": msg},
                     contact_key=str((target or {}).get("contact_key") or "") if isinstance(target, dict) else "",
@@ -208,7 +212,7 @@ def run_due_scheduled_message_tasks(bot, now=None):
                     task_version=task_version,
                     require_contact_key=bool((target or {}).get("require_contact_key")) if isinstance(target, dict) else False,
                 )),
-            send_file=lambda target, path: guarded_send(lambda: bot._send_outbound_to_target(
+            send_file=lambda target, path: _guard_scheduled_message_send(lambda: bot._send_outbound_to_target(
                     str((target or {}).get("send_name") or "") if isinstance(target, dict) else target,
                     {"type": "file", "path": path},
                     contact_key=str((target or {}).get("contact_key") or "") if isinstance(target, dict) else "",

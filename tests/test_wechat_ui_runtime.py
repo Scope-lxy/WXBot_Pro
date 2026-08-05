@@ -1,20 +1,31 @@
 import unittest
 import threading
 import time
+import pywintypes
 from types import SimpleNamespace
 from unittest.mock import patch
+from wxautox4.param import WxResponse
 
 from feature import listening
 from core.message_pipeline import ConversationRef, MessageEnvelope
-from core.wechat_ui_actions import ActionBatchInterrupted, ContactBatchHandle, IntentNeedsExclusive
+from core.wechat_ui_actions import (
+    ActionBatchInterrupted,
+    ContactBatchHandle,
+    IntentNeedsExclusive,
+    UIOutboundNotStarted,
+)
 from core.wechat_ui_actions import UIIntent, UIIntentKind, WeChatUIOwner
-from core.wechat_ui_runtime import WeChatUIRuntime
+from core.wechat_ui_runtime import ListenSubwindowNotReady, WeChatUIRuntime
 
 
 class FakeChat:
+    _next_hwnd = 1000
+
     def __init__(self, who):
+        type(self)._next_hwnd += 1
         self.who = who
         self.chat_type = "private"
+        self._api = SimpleNamespace(HWND=type(self)._next_hwnd, auto_resize=lambda: None)
         self.sent = []
         self.messages = []
         self.history_messages = None
@@ -48,6 +59,7 @@ class FakeClient:
 
     def __init__(self):
         self.chats = {}
+        self.listen = {}
         self.callback = None
         self.stop_count = 0
         self.stop_remove = []
@@ -63,6 +75,8 @@ class FakeClient:
     def StopListening(self, remove=True):
         self.stop_count += 1
         self.stop_remove.append(remove)
+        if remove:
+            self.listen.clear()
         return True
 
     def StartListening(self):
@@ -78,10 +92,13 @@ class FakeClient:
 
     def AddListenChat(self, nickname, callback):
         self.callback = callback
-        return self.chats.setdefault(nickname, FakeChat(nickname))
+        chat = self.chats.setdefault(nickname, FakeChat(nickname))
+        self.listen[nickname] = (chat, callback)
+        return chat
 
     def RemoveListenChat(self, nickname):
         self.chats.pop(nickname, None)
+        self.listen.pop(nickname, None)
         return True
 
     def GetNextNewMessage(self, filter_mute=False, callback=None):
@@ -129,6 +146,11 @@ class FakeMessageControl:
 
 
 class WeChatUIRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        window_patch = patch("core.wechat_ui_runtime.win32gui.IsWindow", return_value=True)
+        window_patch.start()
+        self.addCleanup(window_patch.stop)
+
     @staticmethod
     def _poll_global_messages(messages, *, client=None):
         client = client or FakeClient()
@@ -926,6 +948,256 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(add_calls, ["张三"])
 
+    def test_add_chat_recovers_created_subwindow_after_move_window_1400(self):
+        client = FakeClient()
+        chat = FakeChat("张三")
+        resize_calls = []
+        chat._api = SimpleNamespace(
+            HWND=101,
+            auto_resize=lambda: resize_calls.append(True),
+        )
+        add_calls = []
+
+        def add(nickname, callback):
+            add_calls.append(nickname)
+            client.chats[nickname] = chat
+            if len(add_calls) == 1:
+                raise pywintypes.error(1400, "MoveWindow", "无效的窗口句柄。")
+            client.callback = callback
+            client.listen[nickname] = (chat, callback)
+            return WxResponse.success("ok")
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        identity = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+
+        self.assertEqual(identity, {"name": "张三", "chat_type": "private"})
+        self.assertEqual(add_calls, ["张三", "张三"])
+        self.assertEqual(resize_calls, [True])
+        self.assertIsNotNone(client.callback)
+
+    def test_add_chat_reuses_registration_completed_before_move_window_1400(self):
+        client = FakeClient()
+        chat = FakeChat("张三")
+        resize_calls = []
+        chat._api = SimpleNamespace(
+            HWND=101,
+            auto_resize=lambda: resize_calls.append(True),
+        )
+        add_calls = []
+
+        def add(nickname, callback):
+            add_calls.append(nickname)
+            client.chats[nickname] = chat
+            client.listen[nickname] = (chat, callback)
+            raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        identity = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+
+        self.assertEqual(identity, {"name": "张三", "chat_type": "private"})
+        self.assertEqual(add_calls, ["张三"])
+        self.assertEqual(resize_calls, [True])
+
+    def test_add_chat_retries_discovery_before_one_replacement_add(self):
+        client = FakeClient()
+        add_calls = []
+        discovery_calls = []
+
+        def get_all_subwindows():
+            discovery_calls.append(True)
+            return list(client.chats.values())
+
+        def add(nickname, callback):
+            add_calls.append(nickname)
+            if len(add_calls) == 1:
+                raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
+            client.callback = callback
+            chat = FakeChat(nickname)
+            client.chats[nickname] = chat
+            client.listen[nickname] = (chat, callback)
+            return WxResponse.success("ok")
+
+        client.GetAllSubWindow = get_all_subwindows
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with patch("core.wechat_ui_runtime.time.sleep") as sleep:
+            identity = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+
+        self.assertEqual(identity, {"name": "张三", "chat_type": "private"})
+        self.assertEqual(add_calls, ["张三", "张三"])
+        self.assertEqual(len(discovery_calls), 3)
+        sleep.assert_called_once()
+
+    def test_add_chat_stops_after_second_add_failure(self):
+        client = FakeClient()
+        add_calls = []
+
+        def add(nickname, callback):
+            add_calls.append(nickname)
+            if len(add_calls) == 1:
+                raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
+            raise RuntimeError("replacement add failed")
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with patch("core.wechat_ui_runtime.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "replacement add failed"):
+                runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+
+        self.assertEqual(add_calls, ["张三", "张三"])
+
+    def test_add_chat_rejects_failed_response_even_when_subwindow_exists(self):
+        client = FakeClient()
+        chat = FakeChat("张三")
+        add_calls = []
+
+        def add(nickname, callback):
+            add_calls.append(nickname)
+            client.chats[nickname] = chat
+            if len(add_calls) == 1:
+                raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
+            return WxResponse.failure("callback registration failed")
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with self.assertRaises(ListenSubwindowNotReady):
+            runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+
+        self.assertEqual(add_calls, ["张三", "张三"])
+        self.assertEqual(client.listen, {})
+
+    def test_add_chat_rejects_success_response_without_callback_registration(self):
+        client = FakeClient()
+        chat = FakeChat("张三")
+        add_calls = []
+
+        def add(nickname, callback):
+            add_calls.append(nickname)
+            client.chats[nickname] = chat
+            if len(add_calls) == 1:
+                raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
+            return WxResponse.success("ok")
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with self.assertRaises(ListenSubwindowNotReady):
+            runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+
+        self.assertEqual(add_calls, ["张三", "张三"])
+        self.assertEqual(client.listen, {})
+
+    def test_add_chat_propagates_client_disconnect_during_recovery(self):
+        class ClientDisconnected(RuntimeError):
+            hresult = -2147023174
+
+        client = FakeClient()
+
+        def add(nickname, callback):
+            raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
+
+        client.AddListenChat = add
+        client.GetAllSubWindow = lambda: (_ for _ in ()).throw(
+            ClientDisconnected("RPC server is unavailable")
+        )
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with self.assertRaises(ClientDisconnected):
+            runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+
+    def test_send_text_does_not_recover_other_window_errors(self):
+        client = FakeClient()
+        add_calls = []
+
+        def add(nickname, callback):
+            add_calls.append(nickname)
+            raise OSError(1400, "SetWindowPos", "无效的窗口句柄。")
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with self.assertRaises(OSError) as raised:
+            runtime.send_text({
+                "conversation": "张三",
+                "chat_type": "private",
+                "text": "不会发送",
+                "_exclusive_retry": True,
+            })
+
+        self.assertEqual(raised.exception.args[0:2], (1400, "SetWindowPos"))
+        self.assertEqual(add_calls, ["张三"])
+
+    def test_add_chat_recovers_matching_type_from_same_name_subwindows(self):
+        client = FakeClient()
+        private = FakeChat("同名会话")
+        group = FakeChat("同名会话")
+        group.chat_type = "group"
+        resized = []
+        private._api = SimpleNamespace(HWND=201, auto_resize=lambda: resized.append("private"))
+        group._api = SimpleNamespace(HWND=202, auto_resize=lambda: resized.append("group"))
+        add_calls = []
+        client.GetAllSubWindow = lambda: [group, private]
+
+        def add(nickname, callback):
+            add_calls.append(nickname)
+            if len(add_calls) == 1:
+                raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
+            client.callback = callback
+            client.listen[nickname] = (private, callback)
+            return WxResponse.success("ok")
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        identity = runtime.add_listen({"conversation": "同名会话", "chat_type": "private"})
+
+        self.assertEqual(identity["chat_type"], "private")
+        self.assertEqual(add_calls, ["同名会话", "同名会话"])
+        self.assertEqual(resized, ["private"])
+
+    def test_send_text_reports_not_started_when_subwindow_recovery_fails(self):
+        client = FakeClient()
+        send_calls = []
+        client.GetAllSubWindow = lambda: []
+
+        def add(nickname, callback):
+            if not send_calls:
+                send_calls.append("first add")
+                raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
+            send_calls.append("second add")
+            raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
+
+        client.AddListenChat = add
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+
+        with patch("core.wechat_ui_runtime.time.sleep"):
+            with self.assertRaises(UIOutboundNotStarted):
+                runtime.send_text({
+                    "conversation": "张三",
+                    "chat_type": "private",
+                    "text": "不会发送",
+                    "_exclusive_retry": True,
+                })
+
+        self.assertEqual(send_calls, ["first add", "second add"])
+
     def test_add_chat_without_type_discovers_group_identity(self):
         client = FakeClient()
 
@@ -934,7 +1206,8 @@ class WeChatUIRuntimeTests(unittest.TestCase):
             chat = FakeChat(nickname)
             chat.chat_type = "group"
             client.chats[nickname] = chat
-            return chat
+            client.listen[nickname] = (chat, callback)
+            return WxResponse.success("ok")
 
         client.AddListenChat = add
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
@@ -943,6 +1216,20 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         identity = runtime.add_listen({"conversation": "【姐姐】素材库"})
 
         self.assertEqual(identity, {"name": "【姐姐】素材库", "chat_type": "group"})
+
+    def test_find_chat_uses_valid_cache_before_enumerating_subwindows(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": [{"name": "张三", "chat_type": "private"}]})
+        client.GetAllSubWindow = lambda: self.fail("有效缓存不应重复枚举全部子窗口")
+
+        result = runtime.send_text({
+            "conversation": "张三",
+            "chat_type": "private",
+            "text": "你好",
+        })
+
+        self.assertTrue(result)
 
     def test_stop_listening_invalidates_runtime_window_registrations(self):
         client = FakeClient()

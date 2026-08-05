@@ -1547,6 +1547,13 @@ def send_group_welcome_msg(bot, chat, message):
                 delivery_id=delivery_id,
                 at=new_friend,
             )
+        except wechat_ui_actions.UIOutboundNotStarted as exc:
+            _bot_log(
+                bot,
+                level="WARNING",
+                message=f"群欢迎语未发送：{new_friend}，监听子窗口未准备好，详情：{exc}",
+            )
+            return False
         except wechat_ui_actions.IntentCancelled:
             _bot_log(bot, message=f"群欢迎设置已更新或关闭，已取消向 {new_friend} 发送旧欢迎语")
             return True
@@ -1655,6 +1662,13 @@ def pass_new_friends(bot):
                     },
                     task_version=task_version,
                 ), wechat_ui_actions.UI_CALL_WAIT_TIMEOUT)
+            except wechat_ui_actions.UIOutboundNotStarted as exc:
+                _bot_log(
+                    bot,
+                    level="WARNING",
+                    message=f"新好友 {send_name} 的欢迎消息未发送：监听子窗口未准备好，详情：{exc}",
+                )
+                break
             except wechat_ui_actions.IntentCancelled:
                 _bot_log(bot, message=f"新好友欢迎规则已更新或关闭，已停止向 {send_name} 发送旧欢迎内容")
                 break

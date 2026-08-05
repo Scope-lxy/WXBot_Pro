@@ -82,6 +82,23 @@ class MaterialOutreachPoolTests(unittest.TestCase):
                 delivery_id="delivery-1",
             )
 
+    def test_material_subwindow_failure_is_reported_as_not_sent(self):
+        bot, _store = self._message_runtime_bot()
+        bot._ui_owner = object()
+        bot._ui_forward_message = mock.Mock(
+            side_effect=wechat_ui_actions.UIOutboundNotStarted("subwindow unavailable")
+        )
+
+        success, error = bot._forward_material_message_unlocked(
+            SimpleNamespace(type="link", content="素材"),
+            ["阿英2"],
+            material_source="素材源",
+            delivery_id="delivery-1",
+        )
+
+        self.assertFalse(success)
+        self.assertIn("未发送", error)
+
     def test_uncertain_material_result_stops_outer_retry_loop(self):
         bot = WXBot.__new__(WXBot)
         snapshot = {"run_id": "run-1", "targets": []}

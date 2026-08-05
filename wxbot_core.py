@@ -2015,7 +2015,10 @@ class WXBot:
             )
         try:
             result = sender(delivery_id)
-        except wechat_ui_actions.IntentCancelled:
+        except (
+            wechat_ui_actions.IntentCancelled,
+            wechat_ui_actions.UIOutboundNotStarted,
+        ):
             if tracker is not None:
                 tracker.discard(delivery_id)
             raise
@@ -3984,6 +3987,10 @@ class WXBot:
             for expectation in echo_expectations:
                 self._reply_echo_tracker.discard(expectation["delivery_id"])
             raise
+        except wechat_ui_actions.UIOutboundNotStarted as exc:
+            for expectation in echo_expectations:
+                self._reply_echo_tracker.discard(expectation["delivery_id"])
+            return False, f"监听子窗口未准备好，素材未发送：{exc}"
         except wechat_ui_actions.IntentCancelled:
             for expectation in echo_expectations:
                 self._reply_echo_tracker.discard(expectation["delivery_id"])
@@ -7875,7 +7882,10 @@ class WXBot:
                     echo_delivery_ids=(action_id,),
                     expires_at=turn.expires_at,
                 )
-        except wechat_ui_actions.UIActionNotStarted as exc:
+        except (
+            wechat_ui_actions.UIActionNotStarted,
+            wechat_ui_actions.UIOutboundNotStarted,
+        ) as exc:
             if tracker is not None:
                 tracker.discard(action_id)
             raise DeliveryNotStarted(DeliveryStatus.BLOCKED, str(exc)) from exc

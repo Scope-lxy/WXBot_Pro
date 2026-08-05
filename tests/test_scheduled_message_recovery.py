@@ -8,6 +8,7 @@ from core.wechat_ui_actions import (
     UI_CALL_WAIT_TIMEOUT,
     UIIntent,
     UIIntentKind,
+    UIOutboundNotStarted,
     WeChatUIOwner,
 )
 from feature.scheduled_message_tasks import (
@@ -20,6 +21,36 @@ from wxbot_core import WXBot
 
 
 class ScheduledMessageRecoveryTests(unittest.TestCase):
+    def test_subwindow_failure_is_failed_not_cancelled_or_uncertain(self):
+        records = [{
+            "key": "0:0",
+            "target": "张三",
+            "message_index": 0,
+            "status": "pending",
+            "error": "",
+        }]
+
+        result = execute_scheduled_message_task(
+            task={"targets": ["张三"], "msgs": ["你好"]},
+            send_text=lambda *_args: runtime_task_runner._guard_scheduled_message_send(
+                lambda: (_ for _ in ()).throw(UIOutboundNotStarted("subwindow unavailable"))
+            ),
+            send_file=lambda *_args: True,
+            is_image_path=lambda _value: False,
+            human_delay=lambda: None,
+            should_stop=lambda: False,
+            notify_error=lambda *_args: None,
+            nickname="测试账号",
+            scheduled_tasks=[],
+            config_data={},
+            save_config=None,
+            delivery_records=records,
+        )
+
+        self.assertEqual(result["result_type"], "all_failed")
+        self.assertEqual(result["uncertain_count"], 0)
+        self.assertEqual(records[0]["status"], "failed")
+
     def test_run_result_level_requires_complete_success(self):
         cases = [
             ({"success_count": 2, "failed_count": 0, "skipped_count": 0, "queued_count": 0}, "SUCCESS"),

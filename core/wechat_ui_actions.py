@@ -159,6 +159,10 @@ class UIActionNotStarted(IntentCancelled):
     """The vendor UI transaction failed before the WeChat handler was invoked."""
 
 
+class UIOutboundNotStarted(RuntimeError):
+    """The handler ran, but no outbound WeChat method was invoked."""
+
+
 class DeliveryAlreadySubmitted(IntentCancelled):
     """A durable delivery fence already exists for this non-idempotent action."""
 
@@ -726,27 +730,31 @@ class WeChatUIOwner:
                 raise
             except BaseException as exc:
                 if journal_started:
-                    details = None
-                    if isinstance(exc, ActionBatchInterrupted):
-                        action_count = len(intent.payload.get("actions") or ())
-                        details = {
-                            "failed_index": exc.failed_index,
-                            "actions": [
-                                {
-                                    "index": index,
-                                    "status": (
-                                        "done" if index < exc.failed_index
-                                        else "uncertain" if index == exc.failed_index
-                                        else "pending"
-                                    ),
-                                }
-                                for index in range(action_count)
-                            ],
-                        }
-                    if details is None:
-                        journal.finish(delivery_id, "uncertain", str(exc))
+                    if isinstance(exc, UIOutboundNotStarted):
+                        if not journal.release(delivery_id):
+                            raise RuntimeError("未能释放尚未开始的微信投递围栏") from exc
                     else:
-                        journal.finish(delivery_id, "uncertain", str(exc), details=details)
+                        details = None
+                        if isinstance(exc, ActionBatchInterrupted):
+                            action_count = len(intent.payload.get("actions") or ())
+                            details = {
+                                "failed_index": exc.failed_index,
+                                "actions": [
+                                    {
+                                        "index": index,
+                                        "status": (
+                                            "done" if index < exc.failed_index
+                                            else "uncertain" if index == exc.failed_index
+                                            else "pending"
+                                        ),
+                                    }
+                                    for index in range(action_count)
+                                ],
+                            }
+                        if details is None:
+                            journal.finish(delivery_id, "uncertain", str(exc))
+                        else:
+                            journal.finish(delivery_id, "uncertain", str(exc), details=details)
                 raise
             if journal_started:
                 if _delivery_succeeded(result):

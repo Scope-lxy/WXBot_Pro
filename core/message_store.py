@@ -2635,6 +2635,15 @@ class MessageStore:
             )
             return cursor.rowcount == 1
 
+    def release_ui_delivery(self, delivery_id):
+        delivery_id = _required_text(delivery_id, "delivery_id")
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                "DELETE FROM ui_deliveries WHERE delivery_id = ? AND status = 'inflight'",
+                (delivery_id,),
+            )
+            return cursor.rowcount == 1
+
     def freeze_interrupted_ui_deliveries(self, *, now=None):
         current = _now(now)
         with self._transaction() as connection:
@@ -2680,6 +2689,9 @@ class SQLiteUIDeliveryJournal:
 
     def finish(self, delivery_id, status, error="", details=None):
         return self.store.finish_ui_delivery(delivery_id, status, error, details)
+
+    def release(self, delivery_id):
+        return self.store.release_ui_delivery(delivery_id)
 
     def freeze_interrupted(self):
         return self.store.freeze_interrupted_ui_deliveries()
