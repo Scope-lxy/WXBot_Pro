@@ -74,11 +74,19 @@ class ListenSubwindowNotReady(RuntimeError):
 class OwnedChat:
     """Conversation identity whose operations are always submitted to the UI owner."""
 
-    def __init__(self, owner, who, chat_type="private"):
+    def __init__(
+        self,
+        owner,
+        who,
+        chat_type="private",
+        *,
+        listener_registration_changed=False,
+    ):
         conversation = _internal_conversation(who, chat_type)
         self._owner = owner
         self.who = conversation.who
         self.chat_type = conversation.chat_type
+        self._listener_registration_changed = bool(listener_registration_changed)
 
     def GetAllMessage(self):
         return self._owner.call(
@@ -215,7 +223,12 @@ class UIClientFacade:
             UIIntent(UIIntentKind.ADD_LISTEN, payload),
             UI_CALL_WAIT_TIMEOUT,
         )
-        return OwnedChat(self._owner, identity["name"], identity["chat_type"])
+        return OwnedChat(
+            self._owner,
+            identity["name"],
+            identity["chat_type"],
+            listener_registration_changed=identity.get("registration_changed", False),
+        )
 
     def RemoveListenChat(self, nickname=None, who=None, chat_type=None):
         name = str(nickname or who or "").strip()
@@ -530,7 +543,7 @@ class WeChatUIRuntime:
         for key in [key for key in self._listen_chats if key[1] == name]:
             self._listen_chats.pop(key, None)
 
-    def _registered_listen_chat(self, name, requested):
+    def _registered_listen_chat(self, name, requested, *, require_valid=True):
         registry = self._client.listen
         if not isinstance(registry, dict):
             raise RuntimeError("当前微信内核的监听登记表结构异常")
@@ -540,12 +553,14 @@ class WeChatUIRuntime:
         if not isinstance(entry, tuple) or len(entry) != 2:
             raise RuntimeError("当前微信内核的监听登记项结构异常")
         chat, callback = entry
-        if callback != self._callback or not self._subwindow_is_valid(chat):
+        if callback != self._callback:
             return None
         conversation = self._chat_conversation(chat)
         if conversation.who != name:
             return None
         if requested is not None and conversation != requested:
+            return None
+        if require_valid and not self._subwindow_is_valid(chat):
             return None
         return chat
 
@@ -750,28 +765,47 @@ class WeChatUIRuntime:
         return True
 
     def add_listen(self, payload):
-        chat = self._add_chat(
-            str(payload.get("conversation") or "").strip(),
-            payload.get("chat_type"),
-        )
+        name = str(payload.get("conversation") or "").strip()
+        chat_type = payload.get("chat_type")
+        requested = _internal_conversation(name, chat_type) if chat_type is not None else None
+        registered_before = self._registered_listen_chat(name, requested)
+        chat = self._add_chat(name, chat_type)
         return {
             "name": self._chat_conversation(chat).who,
             "chat_type": self._chat_conversation(chat).chat_type,
+            "registration_changed": (
+                registered_before is None or registered_before is not chat
+            ),
         }
 
     def remove_listen(self, payload):
         name = str(payload.get("conversation") or "").strip()
         chat_type = payload.get("chat_type")
         if chat_type is None:
-            conversation, chat = self._find_unique_named_chat(name)
+            registered = self._registered_listen_chat(
+                name,
+                None,
+                require_valid=False,
+            )
+            if registered is not None:
+                conversation = self._chat_conversation(registered)
+                chat = registered
+            else:
+                conversation, chat = self._find_unique_named_chat(name)
         else:
             conversation = _internal_conversation(name, chat_type)
-            chat = self._find_chat(conversation)
+            registered = self._registered_listen_chat(
+                name,
+                conversation,
+                require_valid=False,
+            )
+            chat = registered if registered is not None else self._find_chat(conversation)
         if conversation is None or chat is None:
             return None
-        same_name = self._matching_subwindows(name=name)
-        if len(same_name) > 1:
-            raise RuntimeError(f"存在多个同名微信窗口，无法安全删除监听：{name}")
+        if registered is None:
+            same_name = self._matching_subwindows(name=name)
+            if len(same_name) > 1:
+                raise RuntimeError(f"存在多个同名微信窗口，无法安全删除监听：{name}")
         remove = getattr(self._client, "RemoveListenChat", None)
         result = remove(nickname=name) if callable(remove) else None
         self._listen_chats.pop(self._chat_key(conversation), None)

@@ -74,8 +74,6 @@ def test_listener_keeps_degraded_retry_logs_in_local_diagnostics():
         logged.append((kwargs["level"], kwargs["message"]))
 
     with (
-        patch.object(listening, "get_runtime_cached_subwindow", return_value=None),
-        patch.object(listening, "get_cached_or_verified_subwindow", return_value=None),
         patch.object(listening, "add_chat_to_listen", return_value=None),
         patch.object(listening, "_consume_last_dynamic_add_result", return_value={}),
         patch.object(listening, "_bot_log", side_effect=capture_log),

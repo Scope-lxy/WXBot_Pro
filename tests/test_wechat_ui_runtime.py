@@ -942,11 +942,58 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
         runtime.bootstrap({"listeners": []})
 
-        first = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
-        second = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+        payload = {
+            "conversation": "张三",
+            "chat_type": "private",
+        }
+        first = runtime.add_listen(payload)
+        second = runtime.add_listen(payload)
 
-        self.assertEqual(first, second)
+        self.assertTrue(first["registration_changed"])
+        self.assertFalse(second["registration_changed"])
+        self.assertEqual(first["name"], second["name"])
+        self.assertEqual(first["chat_type"], second["chat_type"])
         self.assertEqual(add_calls, ["张三"])
+
+    def test_facade_preserves_listener_registration_change_status(self):
+        from core.wechat_ui_runtime import UIClientFacade
+
+        submitted = []
+        owner = SimpleNamespace(
+            call=lambda intent, _timeout: submitted.append(intent) or {
+                "name": "张三",
+                "chat_type": "private",
+                "registration_changed": True,
+            },
+        )
+
+        chat = UIClientFacade(owner, {}).AddListenChat("张三", chat_type="private")
+
+        self.assertTrue(chat._listener_registration_changed)
+        self.assertEqual(submitted[0].payload["chat_type"], "private")
+
+    def test_remove_chat_cleans_registered_listener_after_window_disappears(self):
+        client = FakeClient()
+        remove_calls = []
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+        chat = FakeChat("张三")
+        chat._api.HWND = 0
+        client.listen["张三"] = (chat, runtime._callback)
+        client.GetAllSubWindow = lambda: self.fail("清理脏登记不应依赖枚举物理窗口")
+
+        def remove(nickname):
+            remove_calls.append(nickname)
+            client.listen.pop(nickname, None)
+            return True
+
+        client.RemoveListenChat = remove
+
+        result = runtime.remove_listen({"conversation": "张三", "chat_type": "private"})
+
+        self.assertTrue(result)
+        self.assertEqual(remove_calls, ["张三"])
+        self.assertNotIn("张三", client.listen)
 
     def test_add_chat_recovers_created_subwindow_after_move_window_1400(self):
         client = FakeClient()
@@ -973,7 +1020,10 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         identity = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
 
-        self.assertEqual(identity, {"name": "张三", "chat_type": "private"})
+        self.assertEqual(
+            identity,
+            {"name": "张三", "chat_type": "private", "registration_changed": True},
+        )
         self.assertEqual(add_calls, ["张三", "张三"])
         self.assertEqual(resize_calls, [True])
         self.assertIsNotNone(client.callback)
@@ -1000,7 +1050,10 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         identity = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
 
-        self.assertEqual(identity, {"name": "张三", "chat_type": "private"})
+        self.assertEqual(
+            identity,
+            {"name": "张三", "chat_type": "private", "registration_changed": True},
+        )
         self.assertEqual(add_calls, ["张三"])
         self.assertEqual(resize_calls, [True])
 
@@ -1031,7 +1084,10 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         with patch("core.wechat_ui_runtime.time.sleep") as sleep:
             identity = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
 
-        self.assertEqual(identity, {"name": "张三", "chat_type": "private"})
+        self.assertEqual(
+            identity,
+            {"name": "张三", "chat_type": "private", "registration_changed": True},
+        )
         self.assertEqual(add_calls, ["张三", "张三"])
         self.assertEqual(len(discovery_calls), 3)
         sleep.assert_called_once()
@@ -1215,7 +1271,14 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         identity = runtime.add_listen({"conversation": "【姐姐】素材库"})
 
-        self.assertEqual(identity, {"name": "【姐姐】素材库", "chat_type": "group"})
+        self.assertEqual(
+            identity,
+            {
+                "name": "【姐姐】素材库",
+                "chat_type": "group",
+                "registration_changed": True,
+            },
+        )
 
     def test_find_chat_uses_valid_cache_before_enumerating_subwindows(self):
         client = FakeClient()

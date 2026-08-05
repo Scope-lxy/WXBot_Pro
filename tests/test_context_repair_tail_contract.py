@@ -543,7 +543,7 @@ class WXBotContractTests(unittest.TestCase):
 
         with patch.object(
             listening,
-            "get_runtime_cached_subwindow",
+            "add_chat_to_listen",
             return_value=sub_chat,
         ), patch.object(listening, "touch_dynamic_listener_entry"), patch.object(
             listening,

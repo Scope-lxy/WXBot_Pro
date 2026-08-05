@@ -18,7 +18,7 @@ from core.wechat_window import (
     rebind_wechat_client as core_rebind_wechat_client,
     run_with_wechat_rebind_retry,
 )
-from core.wechat_ui_runtime import OwnedChat
+from core.wechat_ui_runtime import ListenSubwindowNotReady, OwnedChat
 from feature.material_outreach import iter_material_outreach_listen_sources
 from feature.message_routing import prepare_message_media
 from feature.new_friends import iter_new_friend_welcome_actions
@@ -30,7 +30,6 @@ LISTENER_WINDOW_RECOVERY_ATTEMPT_DELAYS_SECONDS = (30, 60)
 LISTENER_WINDOW_RECOVERY_FIRST_DELAY_SECONDS = LISTENER_WINDOW_RECOVERY_ATTEMPT_DELAYS_SECONDS[0]
 LISTENER_WINDOW_RECOVERY_RETRY_SECONDS = 60
 LISTENER_WINDOW_RECOVERY_DEGRADED_AFTER_SECONDS = 600
-LISTENER_WINDOW_RECOVERY_VERIFY_INTERVAL_SECONDS = 0.3
 GLOBAL_SCAN_EMPTY_INTERVAL_SECONDS = 3.0
 GLOBAL_SCAN_REPEAT_BACKOFF_MAX_SECONDS = 5.0
 LISTENER_RECOVERY_HRESULTS = {
@@ -215,13 +214,13 @@ def _discover_material_source_listener(bot, name, *, allow_rebind=False):
         return None
     refs = _material_source_listener_refs(bot)
     known = refs.get(name)
-    if isinstance(known, ConversationRef):
-        chat = get_verified_subwindow(bot, known)
-        if chat:
-            runtime_chat_state.remember_listen_chat(bot, known, chat)
-            return known
 
     def add_action():
+        if isinstance(known, ConversationRef):
+            return bot.wx.AddListenChat(
+                nickname=name,
+                chat_type=known.chat_type,
+            )
         return bot.wx.AddListenChat(nickname=name)
 
     try:
@@ -231,17 +230,18 @@ def _discover_material_source_listener(bot, name, *, allow_rebind=False):
             else add_action()
         )
     except Exception as exc:
+        if not isinstance(exc, ListenSubwindowNotReady) and is_wechat_client_binding_failure(exc):
+            raise
         _bot_log(bot, level="WARNING", message=f"素材来源 {name}：自动识别会话类型失败，详情：{exc}")
         return None
 
     conversation = ConversationRef.from_wx_chat(result) if result and not isinstance(result, dict) else None
-    if not conversation or conversation.who != name or not callable(getattr(result, "SendMsg", None)):
-        try:
-            result = bot.wx.GetSubWindow(nickname=name)
-        except Exception:
-            result = None
-        conversation = ConversationRef.from_wx_chat(result) if result and not isinstance(result, dict) else None
-    if not conversation or conversation.who != name or not callable(getattr(result, "SendMsg", None)):
+    if (
+        not conversation
+        or conversation.who != name
+        or (isinstance(known, ConversationRef) and conversation != known)
+        or not callable(getattr(result, "SendMsg", None))
+    ):
         _bot_log(bot, level="WARNING", message=f"素材来源 {name}：微信未返回可用监听窗口")
         return None
 
@@ -272,59 +272,8 @@ def is_target_chat(chat, nickname, chat_type=None):
     )
 
 
-def get_verified_subwindow(bot, nickname, *, chat_type=None):
-    conversation = _conversation_ref(nickname, chat_type)
-    try:
-        chat = bot.wx.GetSubWindow(
-            nickname=conversation.who,
-            chat_type=conversation.chat_type,
-        )
-    except Exception as exc:
-        _bot_log(bot, level="WARNING", message=f"监听管理 {conversation.who}：获取监听子窗口失败，详情：{exc}")
-        return None
-    return chat if is_target_chat(chat, conversation) else None
-
-
-def get_verified_subwindow_with_retry(
-    bot,
-    nickname,
-    retry_count=3,
-    interval=LISTENER_WINDOW_RECOVERY_VERIFY_INTERVAL_SECONDS,
-    *,
-    chat_type=None,
-):
-    conversation = _conversation_ref(nickname, chat_type)
-    attempts = max(1, int(retry_count or 1))
-    for attempt in range(1, attempts + 1):
-        sub_chat = get_verified_subwindow(bot, conversation)
-        if sub_chat:
-            if attempt > 1:
-                _bot_log(bot, level="DEBUG", message=f"监听管理 {conversation.who}：第 {attempt} 次验证获取到监听子窗口")
-            return sub_chat
-        if attempt < attempts:
-            _bot_sleep(bot, interval)
-    return None
-
-
-def try_get_all_subwindow_refs(bot):
-    try:
-        chats = bot.wx.GetAllSubWindow()
-    except Exception as exc:
-        _bot_log(bot, level="ERROR", message=f"获取全部监听子窗口失败: {exc}")
-        return None
-    return {
-        (conversation.chat_type, conversation.who)
-        for conversation in (
-            ConversationRef.from_wx_chat(chat)
-            for chat in (chats or [])
-        )
-        if conversation.who
-    }
-
-
-def try_get_all_subwindow_names(bot):
-    refs = try_get_all_subwindow_refs(bot)
-    return None if refs is None else {name for _chat_type, name in refs}
+def listener_registration_changed(chat):
+    return bool(getattr(chat, "_listener_registration_changed", True))
 
 
 def _dynamic_listener_entry_name(entry):
@@ -463,6 +412,8 @@ def add_listen_chat_once(bot, nickname, label, *, chat_type=None, allow_rebind=F
         else:
             result = add_action()
     except Exception as exc:
+        if not isinstance(exc, ListenSubwindowNotReady) and is_wechat_client_binding_failure(exc):
+            raise
         if label_text not in quiet_labels:
             _bot_log(
                 bot,
@@ -606,13 +557,6 @@ def _rebuild_listener_window(bot, chat_name, *, chat_type=None):
     name = conversation.who
     if not name:
         return None
-    existing = get_cached_or_verified_subwindow(
-        bot,
-        name,
-        chat_type=conversation.chat_type,
-    )
-    if existing:
-        return existing
     if not _remove_listen_chat_verified_locked(
         bot,
         name,
@@ -620,28 +564,10 @@ def _rebuild_listener_window(bot, chat_name, *, chat_type=None):
         log_success=False,
     ):
         return None
-    try:
-        result = bot.wx.AddListenChat(
-            nickname=name,
-            chat_type=conversation.chat_type,
-        )
-    except Exception as exc:
-        _bot_log(bot, level="WARNING", message=f"全局监听 {name}：监听窗口重建异常，稍后继续等待，详情：{exc}")
-        return None
-    if is_target_chat(result, conversation):
-        runtime_chat_state.remember_listen_chat(bot, conversation, result)
-        touch_dynamic_listener_entry(bot, conversation)
-        return result
-    sub_chat = get_verified_subwindow_with_retry(
-        bot,
-        conversation,
-        retry_count=3,
-    )
+    sub_chat = add_and_verify_subwindow(bot, conversation)
     if sub_chat:
-        runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
         touch_dynamic_listener_entry(bot, conversation)
         return sub_chat
-    _bot_log(bot, level="WARNING", message=f"全局监听 {name}：监听窗口重建失败，稍后继续等待，详情：{listen_add_error(result)}")
     return None
 
 
@@ -659,23 +585,20 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
     for item in due_items:
         name = item["conversation"]
         chat_type = item["chat_type"]
-        sub_chat = get_runtime_cached_subwindow(bot, name, chat_type=chat_type)
-        if not sub_chat:
-            sub_chat = get_cached_or_verified_subwindow(bot, name, chat_type=chat_type)
-            if not sub_chat:
-                if item["allow_rebuild"] and supervisor.consume_rebuild(
-                    name,
-                    chat_type=chat_type,
-                ):
-                    sub_chat = _rebuild_listener_window(bot, name, chat_type=chat_type)
-                else:
-                    sub_chat = add_chat_to_listen(bot, name, chat_type=chat_type)
+        if item["allow_rebuild"] and supervisor.consume_rebuild(
+            name,
+            chat_type=chat_type,
+        ):
+            sub_chat = _rebuild_listener_window(bot, name, chat_type=chat_type)
+        else:
+            sub_chat = add_chat_to_listen(bot, name, chat_type=chat_type)
         handled = True
         if sub_chat:
             supervisor.succeeded(name, chat_type=chat_type)
             touch_dynamic_listener_entry(bot, name, chat_type=chat_type)
-            bot._mark_context_repair_needed_after_restore(name, chat_type=chat_type)
-            _bot_log(bot, level="DEBUG", message=f"全局监听 {name}：监听窗口已恢复")
+            if listener_registration_changed(sub_chat):
+                bot._mark_context_repair_needed_after_restore(name, chat_type=chat_type)
+                _bot_log(bot, level="DEBUG", message=f"全局监听 {name}：监听窗口已恢复")
             continue
 
         add_result = _consume_last_dynamic_add_result(bot, name, chat_type=chat_type)
@@ -708,32 +631,7 @@ def flush_listener_window_recovery_tasks(bot, *, limit=1):
     return handled
 
 
-def get_cached_or_verified_subwindow(bot, nickname, *, chat_type=None):
-    conversation = _conversation_ref(nickname, chat_type)
-    name = conversation.who
-    if not name:
-        return None
-    cached = runtime_chat_state.get_listen_chat(
-        bot,
-        name,
-        chat_type=conversation.chat_type,
-    )
-    if cached and is_target_chat(cached, conversation):
-        return cached
-    if cached:
-        runtime_chat_state.remove_listen_chat(
-            bot,
-            name,
-            chat_type=conversation.chat_type,
-        )
-    sub_chat = get_verified_subwindow(bot, conversation)
-    if sub_chat:
-        runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
-        return sub_chat
-    return None
-
-
-def add_and_verify_subwindow(bot, nickname, retry_count=3, *, chat_type=None):
+def add_and_verify_subwindow(bot, nickname, *, chat_type=None):
     conversation = _conversation_ref(nickname, chat_type)
     name = conversation.who
     if not name:
@@ -745,9 +643,6 @@ def add_and_verify_subwindow(bot, nickname, retry_count=3, *, chat_type=None):
         chat_type=conversation.chat_type,
         stale=False,
     )
-    sub_chat = get_cached_or_verified_subwindow(bot, conversation)
-    if sub_chat:
-        return sub_chat
     result = add_listen_chat_once(
         bot,
         name,
@@ -756,16 +651,9 @@ def add_and_verify_subwindow(bot, nickname, retry_count=3, *, chat_type=None):
     )
     if is_target_chat(result, conversation):
         runtime_chat_state.remember_listen_chat(bot, conversation, result)
-        _bot_log(bot, level="DEBUG", message=f"监听管理 {name}：AddListenChat 返回可用子窗口，已直接接管")
+        if listener_registration_changed(result):
+            _bot_log(bot, level="DEBUG", message=f"监听管理 {name}：AddListenChat 返回可用子窗口，已直接接管")
         return result
-    sub_chat = get_verified_subwindow_with_retry(
-        bot,
-        conversation,
-        retry_count=retry_count,
-    )
-    if sub_chat:
-        runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
-        return sub_chat
     if is_stale_listen_registration_error(result):
         _bot_log(bot, level="WARNING", message=f"{name} 已存在监听登记但未获取到可用子窗口，本次不删除重建")
         _set_last_dynamic_add_result(
@@ -852,7 +740,6 @@ def probe_listener_recovery_client(bot, *, force_rebind=False):
 def rebuild_listener_runtime(
     bot,
     *,
-    verify_retry_count=3,
     clear_runtime_cache=True,
     finish_message="监听器初始化完成",
 ):
@@ -904,7 +791,7 @@ def rebuild_listener_runtime(
 
     expected_listeners.extend(ensure_material_source_listeners(bot, allow_rebind=True))
 
-    verify_initial_listeners(bot, expected_listeners, retry_count=verify_retry_count)
+    verify_initial_listeners(bot, expected_listeners)
     for conversation in expected_listeners:
         if runtime_chat_state.get_listen_chat(bot, conversation):
             bot._mark_context_repair_needed_after_restore(
@@ -960,7 +847,6 @@ def process_listener_auto_recovery(bot):
     try:
         recovered = rebuild_listener_runtime(
             bot,
-            verify_retry_count=1,
             clear_runtime_cache=True,
             finish_message="监听器自动恢复完成",
         )
@@ -1014,50 +900,42 @@ def listener_recovery_snapshot(bot) -> dict[str, str | bool]:
     }
 
 
-def ensure_listener_subwindow(bot, nickname, retry_count=3, *, chat_type=None):
+def ensure_listener_subwindow(bot, nickname, *, chat_type=None):
     conversation = _conversation_ref(nickname, chat_type)
     name = conversation.who
     if not name:
         return None
-    sub_chat = get_verified_subwindow(bot, conversation)
-    if sub_chat:
-        runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
-        return sub_chat
     runtime_chat_state.remove_listen_chat(bot, conversation)
     sub_chat = add_and_verify_subwindow(
         bot,
         conversation,
-        retry_count=retry_count,
     )
-    if sub_chat:
+    if sub_chat and listener_registration_changed(sub_chat):
         _bot_log(bot, message=f"{name} 监听子窗口已自动恢复")
     return sub_chat
 
 
-def reconcile_listener_subwindows(bot, retry_count=3):
+def reconcile_listener_subwindows(bot):
     if not getattr(bot, "wx", None):
         return []
 
-    ensure_material_source_listeners(bot)
+    material_chats = {}
+    for conversation in ensure_material_source_listeners(bot):
+        chat = runtime_chat_state.get_listen_chat(bot, conversation)
+        if is_target_chat(chat, conversation):
+            material_chats[(conversation.chat_type, conversation.who)] = chat
     expected = expected_listener_refs(bot)
     if not expected:
         return []
 
-    listened_refs = try_get_all_subwindow_refs(bot)
     reopened = []
     for conversation in expected:
-        key = (conversation.chat_type, conversation.who)
-        if listened_refs is not None and key in listened_refs:
-            sub_chat = get_verified_subwindow(bot, conversation)
-            if sub_chat:
-                runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
-                continue
-        sub_chat = ensure_listener_subwindow(
-            bot,
-            conversation,
-            retry_count=retry_count,
+        sub_chat = material_chats.get(
+            (conversation.chat_type, conversation.who)
         )
-        if sub_chat:
+        if sub_chat is None:
+            sub_chat = ensure_listener_subwindow(bot, conversation)
+        if sub_chat and listener_registration_changed(sub_chat):
             reopened.append(conversation.who)
             bot._mark_context_repair_needed_after_restore(
                 conversation.who,
@@ -1066,7 +944,7 @@ def reconcile_listener_subwindows(bot, retry_count=3):
     return reopened
 
 
-def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
+def maybe_reconcile_listener_subwindows(bot, force=False):
     if not getattr(bot, "wx", None):
         return []
 
@@ -1090,7 +968,7 @@ def maybe_reconcile_listener_subwindows(bot, force=False, retry_count=3):
     if not force and last_at and now_ts - last_at < interval:
         return []
 
-    reopened = reconcile_listener_subwindows(bot, retry_count=retry_count)
+    reopened = reconcile_listener_subwindows(bot)
     bot._listener_reconcile_last_at = now_ts
     return reopened
 
@@ -1117,6 +995,8 @@ def _remove_listen_chat_verified_locked(
         remove_result = _call_remove_listen_chat(bot, conversation)
         remove_result_text = str(listen_add_error(remove_result)).strip()
     except Exception as exc:
+        if is_wechat_client_binding_failure(exc):
+            raise
         _bot_log(bot, level="WARNING", message=f"监听管理 {name}：删除监听调用异常，已保留运行状态等待重试，详情：{exc}")
         return False
 
@@ -1148,7 +1028,7 @@ def _remove_listen_chat_verified_locked(
     return True
 
 
-def verify_initial_listeners(bot, expected_chats, retry_count=3):
+def verify_initial_listeners(bot, expected_chats):
     expected = []
     seen = set()
     for item in expected_chats or []:
@@ -1160,33 +1040,17 @@ def verify_initial_listeners(bot, expected_chats, retry_count=3):
     if not expected:
         return
 
-    listened_refs = try_get_all_subwindow_refs(bot)
-    missing = (
-        list(expected)
-        if listened_refs is None
-        else [
-            conversation
-            for conversation in expected
-            if (conversation.chat_type, conversation.who) not in listened_refs
-        ]
-    )
+    missing = []
     for conversation in expected:
-        if conversation not in missing:
-            sub_chat = get_verified_subwindow(bot, conversation)
-            if sub_chat:
-                runtime_chat_state.remember_listen_chat(bot, conversation, sub_chat)
-    if not missing:
-        _bot_log(bot, level="DEBUG", message="监听管理：初始化监听子窗口校验通过")
-        return
-
-    for conversation in missing:
         sub_chat = add_and_verify_subwindow(
             bot,
             conversation,
-            retry_count=retry_count,
         )
         if not sub_chat:
+            missing.append(conversation)
             _bot_log(bot, level="ERROR", message=f"{conversation.who} 初始化监听子窗口重试失败，已跳过运行缓存")
+    if not missing:
+        _bot_log(bot, level="DEBUG", message="监听管理：初始化监听子窗口校验通过")
 
 
 def _update_global_scan_state(bot, **updates):

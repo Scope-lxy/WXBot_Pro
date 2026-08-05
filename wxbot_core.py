@@ -2987,16 +2987,6 @@ class WXBot:
     def _subwindow_who(self, chat):
         return listening.subwindow_who(chat)
 
-    def _get_verified_subwindow(self, nickname, *, chat_type=None):
-        return listening.get_verified_subwindow(
-            self,
-            nickname,
-            chat_type=chat_type,
-        )
-
-    def _try_get_all_subwindow_names(self):
-        return listening.try_get_all_subwindow_names(self)
-
     def _add_listen_chat_once(self, nickname, label, *, chat_type=None):
         return listening.add_listen_chat_once(
             self,
@@ -3005,30 +2995,28 @@ class WXBot:
             chat_type=chat_type,
         )
 
-    def _add_and_verify_subwindow(self, nickname, retry_count=3, *, chat_type=None):
+    def _add_and_verify_subwindow(self, nickname, *, chat_type=None):
         return listening.add_and_verify_subwindow(
             self,
             nickname,
-            retry_count=retry_count,
             chat_type=chat_type,
         )
 
     def _expected_listener_names(self):
         return listening.expected_listener_names(self)
 
-    def _ensure_listener_subwindow(self, nickname, retry_count=3, *, chat_type=None):
+    def _ensure_listener_subwindow(self, nickname, *, chat_type=None):
         return listening.ensure_listener_subwindow(
             self,
             nickname,
-            retry_count=retry_count,
             chat_type=chat_type,
         )
 
-    def _reconcile_listener_subwindows(self, retry_count=3):
-        return listening.reconcile_listener_subwindows(self, retry_count=retry_count)
+    def _reconcile_listener_subwindows(self):
+        return listening.reconcile_listener_subwindows(self)
 
-    def _maybe_reconcile_listener_subwindows(self, force=False, retry_count=3):
-        return listening.maybe_reconcile_listener_subwindows(self, force=force, retry_count=retry_count)
+    def _maybe_reconcile_listener_subwindows(self, force=False):
+        return listening.maybe_reconcile_listener_subwindows(self, force=force)
 
     def _stop_global_scan_pump(self):
         return listening.stop_global_scan_pump(self)
@@ -3050,8 +3038,8 @@ class WXBot:
     def _close_dynamic_listener_subwindows(self, nicknames):
         return listening.close_dynamic_listener_subwindows(self, nicknames)
 
-    def _verify_initial_listeners(self, expected_chats, retry_count=3):
-        return listening.verify_initial_listeners(self, expected_chats, retry_count=retry_count)
+    def _verify_initial_listeners(self, expected_chats):
+        return listening.verify_initial_listeners(self, expected_chats)
 
     def init_wx_listeners(self):
         return listening.init_wx_listeners(self)
@@ -9427,7 +9415,7 @@ class WXBot:
                     break
 
                 try:
-                    self._maybe_reconcile_listener_subwindows(retry_count=1)
+                    self._maybe_reconcile_listener_subwindows()
                 except Exception as e:
                     if self._arm_listener_auto_recovery(e, source="固定监听巡检"):
                         continue

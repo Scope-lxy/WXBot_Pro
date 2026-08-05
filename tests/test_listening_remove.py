@@ -246,6 +246,43 @@ class RemoveListenChatTests(unittest.TestCase):
             [("文件传输助手", "private"), ("素材好友", "private"), ("【姐姐】素材库", "group")],
         )
 
+    def test_known_material_source_does_not_trust_physical_window_without_callback(self):
+        calls = []
+
+        class FakeWeChat:
+            def AddListenChat(self, nickname=None, chat_type=None):
+                calls.append(("AddListenChat", nickname, chat_type))
+                raise listening.ListenSubwindowNotReady("监听 callback 未完成登记")
+
+            def GetSubWindow(self, nickname=None, chat_type=None):
+                calls.append(("GetSubWindow", nickname, chat_type))
+                return SimpleNamespace(
+                    who=nickname,
+                    chat_type=chat_type,
+                    SendMsg=lambda *_args, **_kwargs: True,
+                )
+
+        bot = SimpleNamespace(
+            config=SimpleNamespace(
+                material_source_list=["【姐姐】素材库"],
+                listen_list=[],
+                group=[],
+                group_switch=True,
+            ),
+            wx=FakeWeChat(),
+            _material_source_runtime_enabled=lambda: True,
+            _material_source_listener_refs={
+                "【姐姐】素材库": ConversationRef("【姐姐】素材库", "group"),
+            },
+            _listen_chats={},
+        )
+
+        with mock.patch.object(listening, "_bot_log"):
+            refs = listening.ensure_material_source_listeners(bot)
+
+        self.assertEqual(refs, [])
+        self.assertEqual(calls, [("AddListenChat", "【姐姐】素材库", "group")])
+
     def test_material_source_group_uses_detected_type_without_group_listener_config(self):
         bot = WXBot.__new__(WXBot)
         bot.config = SimpleNamespace(
@@ -727,6 +764,25 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertIs(bot._listen_chats[("group", "同名会话")], group_chat)
         self.assertEqual(bot.all_Mode_listen_list, [["同名会话", 1.0, "group"]])
 
+    def test_listener_remove_propagates_client_disconnect(self):
+        class ClientDisconnected(RuntimeError):
+            hresult = -2147023174
+
+        bot = SimpleNamespace(
+            wx=SimpleNamespace(
+                RemoveListenChat=lambda **_kwargs: (_ for _ in ()).throw(
+                    ClientDisconnected("RPC server is unavailable")
+                ),
+            ),
+        )
+
+        with self.assertRaises(ClientDisconnected):
+            listening.remove_listen_chat_verified(
+                bot,
+                "张三",
+                chat_type="private",
+            )
+
     def test_listener_rebuild_stops_when_existing_registration_cannot_be_removed(self):
         add_calls = []
         bot = SimpleNamespace(
@@ -736,7 +792,6 @@ class RemoveListenChatTests(unittest.TestCase):
         )
 
         with (
-            mock.patch.object(listening, "get_cached_or_verified_subwindow", return_value=None),
             mock.patch.object(listening, "_remove_listen_chat_verified_locked", return_value=False),
         ):
             result = listening._rebuild_listener_window(
@@ -876,11 +931,33 @@ class RemoveListenChatTests(unittest.TestCase):
         result = listening.add_and_verify_subwindow(bot, "张三")
 
         self.assertIs(result, sub_chat)
-        self.assertEqual(
-            calls,
-            [("GetSubWindow", "张三", "private"), ("AddListenChat", "张三", "private")],
-        )
+        self.assertEqual(calls, [("AddListenChat", "张三", "private")])
         self.assertIs(bot._listen_chats[("private", "张三")], sub_chat)
+
+    def test_physical_subwindow_without_callback_registration_is_not_ready(self):
+        calls = []
+        physical_chat = SimpleNamespace(
+            who="张三",
+            chat_type="private",
+            SendMsg=lambda _msg: True,
+        )
+
+        class FakeWeChat:
+            def AddListenChat(self, nickname=None, chat_type=None):
+                calls.append(("AddListenChat", nickname, chat_type))
+                raise listening.ListenSubwindowNotReady("监听 callback 未完成登记：张三")
+
+            def GetSubWindow(self, nickname=None, chat_type=None):
+                calls.append(("GetSubWindow", nickname, chat_type))
+                return physical_chat
+
+        bot = SimpleNamespace(wx=FakeWeChat(), _listen_chats={})
+
+        result = listening.add_and_verify_subwindow(bot, "张三")
+
+        self.assertIsNone(result)
+        self.assertEqual(calls, [("AddListenChat", "张三", "private")])
+        self.assertEqual(bot._listen_chats, {})
 
     def test_listener_reconcile_allows_future_window_recovery_pending(self):
         bot = SimpleNamespace(
@@ -906,6 +983,77 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertEqual(reopened, ["管理员"])
         self.assertEqual(bot._listener_reconcile_last_at, 100.0)
+
+    def test_listener_reconcile_does_not_report_healthy_registration_as_reopened(self):
+        marked = []
+        bot = SimpleNamespace(
+            wx=object(),
+            _mark_context_repair_needed_after_restore=lambda name, *, chat_type: marked.append(
+                (chat_type, name)
+            ),
+        )
+        chat = SimpleNamespace(
+            who="张三",
+            chat_type="private",
+            _listener_registration_changed=False,
+        )
+
+        with (
+            mock.patch.object(listening, "ensure_material_source_listeners"),
+            mock.patch.object(
+                listening,
+                "expected_listener_refs",
+                return_value=[ConversationRef("张三", "private")],
+            ),
+            mock.patch.object(
+                listening,
+                "ensure_listener_subwindow",
+                return_value=chat,
+            ),
+        ):
+            reopened = listening.reconcile_listener_subwindows(bot)
+
+        self.assertEqual(reopened, [])
+        self.assertEqual(marked, [])
+
+    def test_listener_reconcile_reuses_strict_material_source_result(self):
+        marked = []
+        conversation = ConversationRef("【姐姐】素材库", "group")
+        chat = SimpleNamespace(
+            who=conversation.who,
+            chat_type=conversation.chat_type,
+            SendMsg=lambda *_args, **_kwargs: True,
+            _listener_registration_changed=True,
+        )
+        bot = SimpleNamespace(
+            wx=object(),
+            _listen_chats={(conversation.chat_type, conversation.who): chat},
+            _mark_context_repair_needed_after_restore=lambda name, *, chat_type: marked.append(
+                (chat_type, name)
+            ),
+        )
+
+        with (
+            mock.patch.object(
+                listening,
+                "ensure_material_source_listeners",
+                return_value=[conversation],
+            ),
+            mock.patch.object(
+                listening,
+                "expected_listener_refs",
+                return_value=[conversation],
+            ),
+            mock.patch.object(
+                listening,
+                "ensure_listener_subwindow",
+                side_effect=AssertionError("严格素材来源结果不应立即重复校验"),
+            ),
+        ):
+            reopened = listening.reconcile_listener_subwindows(bot)
+
+        self.assertEqual(reopened, [conversation.who])
+        self.assertEqual(marked, [(conversation.chat_type, conversation.who)])
 
     def test_listener_reconcile_waits_until_the_latest_global_scan_is_empty(self):
         bot = SimpleNamespace(
@@ -966,7 +1114,7 @@ class RemoveListenChatTests(unittest.TestCase):
 
         class FakeWeChat:
             def AddListenChat(self, nickname=None, chat_type=None):
-                raise RuntimeError("无效的窗口句柄")
+                raise listening.ListenSubwindowNotReady("监听子窗口尚未准备好")
 
         bot = SimpleNamespace(wx=FakeWeChat())
 
@@ -981,7 +1129,7 @@ class RemoveListenChatTests(unittest.TestCase):
 
         class FakeWeChat:
             def AddListenChat(self, nickname=None, chat_type=None):
-                raise RuntimeError("无效的窗口句柄")
+                raise listening.ListenSubwindowNotReady("监听子窗口尚未准备好")
 
         bot = SimpleNamespace(wx=FakeWeChat())
 
@@ -990,6 +1138,21 @@ class RemoveListenChatTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertTrue(any(level == "ERROR" and "添加监听调用异常" in message for level, message in logs))
+
+    def test_listener_add_propagates_client_disconnect(self):
+        class ClientDisconnected(RuntimeError):
+            hresult = -2147023174
+
+        bot = SimpleNamespace(
+            wx=SimpleNamespace(
+                AddListenChat=lambda **_kwargs: (_ for _ in ()).throw(
+                    ClientDisconnected("RPC server is unavailable")
+                ),
+            ),
+        )
+
+        with self.assertRaises(ClientDisconnected):
+            listening.add_listen_chat_once(bot, "张三", "动态监听")
 
 
 if __name__ == "__main__":
