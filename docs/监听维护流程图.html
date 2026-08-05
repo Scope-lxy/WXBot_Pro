@@ -122,15 +122,15 @@
         <div class="flow-row">
           <article class="node blue"><h3>发现并保存新消息</h3><p>固定回调逐条保存；全局扫描返回同一会话的纯数据批次，原子提交后才进入业务队列。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="decision"><div><strong>目标已有健康子窗口？</strong><span>同时校验当前窗口是否仍属于这个目标</span></div></article>
+          <article class="decision"><div><strong>目标监听已真正就绪？</strong><span>有效物理 HWND 与匹配 callback 登记必须同时成立</span></div></article>
           <div class="arrow">-&gt;</div>
           <article class="node green"><h3>复用并处理</h3><p>刷新活跃状态，交给消息路由。发送前还会再次核对目标窗口，避免回复误投。</p></article>
         </div>
         <div class="arrow down">v</div>
         <div class="branch-grid">
-          <div class="branch"><p class="branch-label">没有健康窗口</p><article class="node blue"><h3>登记一个建窗任务</h3><p>扫描链路不等待建窗；owner 稍后添加并验证子窗口，当前 runtime 已登记的窗口直接复用。</p></article></div>
-          <div class="branch"><p class="branch-label">补窗暂时失败</p><article class="node amber"><h3>延后、合并和轻量重试</h3><p>先在 30 秒、60 秒后延后；之后在 600 秒待处理窗口内继续轻量重试。同一好友的新消息合并到既有任务。</p></article></div>
-          <div class="branch"><p class="branch-label">已监听但无子窗口残留</p><article class="node violet"><h3>受控关闭重建</h3><p>只有这类明确残留状态允许关闭后重建。普通动态监听增删不重绑微信客户端，也不强清窗口。</p></article></div>
+          <div class="branch"><p class="branch-label">没有就绪监听</p><article class="node blue"><h3>登记一个建窗任务</h3><p>扫描链路不等待建窗；owner 稍后调用 runtime 严格添加。缓存只有在窗口有效且 callback 登记匹配时才复用。</p></article></div>
+          <div class="branch"><p class="branch-label">首次 resize 报 1400</p><article class="node violet"><h3>找回实际窗口并补登记</h3><p>runtime 用 <code>GetAllSubWindow()</code> 找回有效窗口并重新 resize；必要时只再调用一次 <code>AddListenChat</code>，最后同时验收窗口与 callback。</p></article></div>
+          <div class="branch"><p class="branch-label">仍未就绪</p><article class="node amber"><h3>延后、合并和受控重建</h3><p>按 30 秒、60 秒和低频节奏重试，同一目标只留一项任务。仅“有登记但无物理窗口”的残留状态允许关闭后重建。</p></article></div>
         </div>
         <div class="arrow down">v</div>
         <div class="two-column">
@@ -181,7 +181,7 @@
         <div class="branch-grid">
           <div class="branch"><p class="branch-label">普通业务失败</p><article class="node amber"><h3>结束或延后当前任务</h3><p>控件超时、目标不匹配、单个资料页不适用等，不能升级为客户端重绑。</p></article></div>
           <div class="branch"><p class="branch-label">监听器异常</p><article class="node blue"><h3>先探活，再只重建监听器</h3><p>现有客户端可用时只恢复监听。监听回调线程异常必须让运行健康状态变为不健康，不能静默失联。</p></article></div>
-          <div class="branch"><p class="branch-label">明确客户端级失效</p><article class="node red"><h3>受控重绑或 watchdog</h3><p>只有 Windows 1400 无效句柄、COM/RPC 断开等明确证据，才允许重绑。UI 卡死由专用 watchdog 以退出码 86 交给启动器恢复。</p></article></div>
+          <div class="branch"><p class="branch-label">明确客户端级失效</p><article class="node red"><h3>受控重绑或 watchdog</h3><p><code>AddListenChat</code> resize 的精确 <code>1400 + MoveWindow</code> 只做上述局部恢复；其他 Windows 1400、COM/RPC 断开等客户端级证据才允许重绑。UI 卡死由专用 watchdog 以退出码 86 交给启动器恢复。</p></article></div>
         </div>
         <div class="note"><strong>启动器的最后防线：</strong>用户点击停止不会自动启动；只有退出码 <code>86</code> 才计入恢复预算，滚动 30 分钟最多自动重启 3 次。超过预算时停在可排查状态，不进入短循环重启。</div>
       </section>

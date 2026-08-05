@@ -90,7 +90,7 @@
 
 实时观察只有 native ID 相同时才做强去重；hash 或正文相同不能删除两次真实消息。项目内部会话类型固定为 `private / group`，wxautox 的 `friend` 只在 `ConversationRef` 入口转换。业务线程只传递纯数据，会话对象和原始消息不跨线程。
 
-所有已经开始的微信动作不可抢占；owner 尚未取得全局锁时，只有持锁 callback 的释放可以先完成。普通任务失败只结束或延后当前任务，客户端重绑必须有 Windows `1400` 或 COM/RPC 断开等客户端级证据。通讯录采集是唯一跨进程例外，期间暂停监听并保持全屏障，完成或超时后恢复聊天页和监听。
+所有已经开始的微信动作不可抢占；owner 尚未取得全局锁时，只有持锁 callback 的释放可以先完成。普通任务失败只结束或延后当前任务；`AddListenChat` resize 的精确 `1400 + MoveWindow` 只做监听局部恢复，客户端重绑必须有其他 Windows `1400` 或 COM/RPC 断开等客户端级证据。通讯录采集是唯一跨进程例外，期间暂停监听并保持全屏障，完成或超时后恢复聊天页和监听。
 
 发送回声、投递状态、联系人资料和静默失败日志等细节见后面的“关键行为边界”和数据真源小节，避免在消息总览中维护第二份规则。
 
@@ -187,7 +187,11 @@ owner 对普通任务按 FIFO 执行，整个 handler 都处于同一段 wxautox
 
 扫描前通过同一 owner 动作读取轻量未读快照。真实好友消息少于快照未读数、扫描耗时达到 wxautox4 的 10 秒上限，或返回达到 30 条上限时，保留会话级覆盖诊断并写入本地 `DEBUG` 日志；已取得事实继续回复，首页仍显示正常运行。只有扫描 fail-stop 才进入用户可见的红色异常状态并让 `/runtime_health` 返回不健康。第一阶段禁止自动 `deep`，也不修改 wxautox4 内置上限。
 
-动态监听采用按需补窗。普通增删监听不触发微信客户端重绑，不恢复主循环高频巡检。普通补窗失败先按 30s / 60s 延后，之后按 60s 继续尝试；持续 600s 仍不可用时标记降级并改为每 300s 低频恢复。`ListenerWindowSupervisor` 只保存会话名、重试时间和错误，不持有消息；消息在尝试补窗前已经进入 SQLite 事实库。同一会话只保留一项窗口恢复任务。runtime `_add_chat` 必须先复用当前运行期已登记且 HWND 有效的窗口，缓存有效时不调用较慢的 `GetAllSubWindow()`；`StopListening` 必须同时使该 runtime 的窗口缓存失效。`AddListenChat` 若只在首次调整窗口大小时报出 Windows `1400 + MoveWindow`，说明子窗口可能已经创建但监听 callback 未必完成登记：runtime 先用 `GetAllSubWindow()` 按名称和 `private / group` 找回有效窗口，找到后重新 `auto_resize()`；首次未找到只等待 150ms 再查一次。resize 后若 callback 已正确登记则直接复用，否则最多再调用一次 `AddListenChat` 完成登记或补建。当前内核失败时返回 `WxResponse`、成功时返回 `Chat`，因此结果字典明确失败时立即拒绝，最终成功则必须同时满足 `client.listen[name]` 登记为匹配的 `(Chat, callback)`，且该 `Chat` 对应有效的物理 HWND，不能只凭返回对象、业务缓存或“看到子窗口”判定监听可用；业务层补窗、固定监听巡检和初始化校验统一以 runtime 的严格 `AddListenChat` 结果为准，不再重复调用 `GetSubWindow()` 放宽结果。严格校验确认原登记本来就有效时，不得报告窗口恢复或重复触发上下文补洞。删除监听时，当前 callback 的登记即使已经失去物理窗口，也必须调用内核 `RemoveListenChat()` 清除残留登记。该局部恢复只把精确的 Windows `1400 + MoveWindow` 收敛为“监听子窗口未准备好”；其他 1400、COM / RPC 和普通控件异常必须原样上抛给既有客户端恢复策略，不得关闭 `resize`，也不得触发整个微信客户端重绑。黑名单模式重建监听器后重新扫描到空，再由 supervisor 补窗；只有“已监听但无子窗口”残留状态允许受控关闭重建。
+动态监听采用按需补窗。普通增删监听不触发微信客户端重绑，不恢复主循环高频巡检。普通补窗失败先按 30s / 60s 延后，之后按 60s 继续尝试；持续 600s 仍不可用时标记降级并改为每 300s 低频恢复。`ListenerWindowSupervisor` 只保存会话名、重试时间和错误，不持有消息；消息在尝试补窗前已经进入 SQLite 事实库。同一会话只保留一项窗口恢复任务。黑名单模式重建监听器后重新扫描到空，再由 supervisor 补窗；只有“已监听但无子窗口”残留状态允许受控关闭重建。
+
+监听是否就绪只由 runtime 判断：必须同时存在有效物理 HWND，并且 `client.listen[name]` 已登记匹配的 `(Chat, callback)`。当前运行期缓存只有满足这两个条件才能复用；`StopListening` 必须使缓存失效。`GetSubWindow()` / `GetAllSubWindow()` 仍保留为 runtime 内部发现接口，但“找到子窗口”本身不能证明 callback 已登记。业务层补窗、固定监听巡检和初始化校验统一使用 runtime 的严格 `AddListenChat` 结果，不再重复查窗并放宽结论。严格校验确认原登记本来有效时，不得报告窗口恢复或重复触发上下文补洞；删除监听时，即使物理窗口已经消失，也必须调用内核 `RemoveListenChat()` 清除残留登记。
+
+`AddListenChat` 若只在首次调整窗口大小时报出 Windows `1400 + MoveWindow`，说明子窗口可能已经创建，但 resize 使用了瞬间失效的旧句柄，callback 也未必完成登记。runtime 先用 `GetAllSubWindow()` 按名称和 `private / group` 找回有效窗口，首次未找到时等待 150ms 再查一次；找到后重新 `auto_resize()`。若 callback 已正确登记则直接复用，否则最多再调用一次 `AddListenChat` 完成登记或补建，最后仍按“有效 HWND + 匹配 callback”验收。当前内核明确失败的 `WxResponse` 必须立即拒绝。该局部恢复只把精确的 `1400 + MoveWindow` 收敛为“监听子窗口未准备好”；其他 Windows 1400、COM / RPC 和普通控件异常原样上抛给既有恢复策略，不得关闭 `resize`，也不得因此重绑整个微信客户端。
 
 固定监听可低频巡检补回，但不能和全局监听延后补窗抢微信 UI。
 
