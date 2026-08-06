@@ -626,7 +626,7 @@ class WXBot:
         if uncertain:
             log(level="WARNING", message=f"消息恢复：{uncertain} 个发送动作结果未知，已禁止自动重发")
         if expired:
-            log(level="INFO", message=f"消息恢复：{expired} 个回复已超过 15 分钟有效期，已丢弃")
+            log(level="INFO", message=f"消息恢复：{expired} 个回复已超过 60 分钟有效期，已丢弃")
         if interrupted_ui:
             log(level="WARNING", message=f"微信发送恢复：{len(interrupted_ui)} 个 UI 动作结果未知，已禁止自动重发")
         return store
@@ -1256,6 +1256,8 @@ class WXBot:
             enrich_message=self._enrich_persisted_ui_message,
             echo_action_start=lambda action_id: self._reply_echo_tracker.activate((action_id,)),
             echo_action_finish=lambda action_id: self._reply_echo_tracker.complete((action_id,)),
+            listener_operation_succeeded=self._note_listener_subwindow_operation,
+            listener_recovery_exhausted=self._record_listener_recovery_exhausted,
         )
         self._ui_owner = wechat_ui_actions.WeChatUIOwner(
             self._ui_runtime.handlers(),
@@ -3046,6 +3048,21 @@ class WXBot:
 
     def _arm_listener_auto_recovery(self, exc, source=""):
         return listening.arm_listener_auto_recovery(self, exc, source=source)
+
+    def _note_listener_subwindow_operation(self, conversation):
+        return listening.note_listener_subwindow_operation(self, conversation)
+
+    def _record_listener_recovery_exhausted(self, conversation):
+        return listening.record_listener_recovery_exhausted(self, conversation)
+
+    def _trigger_controlled_listener_recovery(self):
+        owner = getattr(self, "_ui_owner", None)
+        is_idle = getattr(owner, "is_idle", None)
+        if callable(is_idle) and not is_idle():
+            return False
+        log(level="ERROR", message="监听恢复连续失败，交给面板受控自动恢复")
+        os._exit(wechat_ui_actions.UI_STUCK_EXIT_CODE)
+        return True
 
     def _process_listener_auto_recovery(self):
         return listening.process_listener_auto_recovery(self)
@@ -9406,6 +9423,11 @@ class WXBot:
                 if self.is_stop_requested():
                     break
                 recovery_state = self._process_listener_auto_recovery()
+                if recovery_state == "restart":
+                    if not self._trigger_controlled_listener_recovery():
+                        self._wait_or_stop_requested(wait_time)
+                        continue
+                    continue
                 if recovery_state == "waiting":
                     self._wait_or_stop_requested(wait_time)
                     continue

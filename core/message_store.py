@@ -16,7 +16,7 @@ from core.memory_context_repair import build_tail_repair_plan
 
 
 SCHEMA_VERSION = 5
-DEFAULT_REPLY_TTL_SECONDS = 15 * 60
+DEFAULT_REPLY_TTL_SECONDS = 60 * 60
 
 ACTION_STATES = {"pending", "inflight", "done", "uncertain", "cancelled", "stale", "expired"}
 CHAT_TYPES = {"private", "group"}

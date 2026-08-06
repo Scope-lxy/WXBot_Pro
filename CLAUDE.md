@@ -9,6 +9,7 @@
 
 - 所有真实微信动作只能经唯一 UI owner；wxautox `Chat` / `Message` / `NewFriend` / UIA 对象不得跨线程。
 - 控件超时或单任务失败只结束 / 延后该任务；只有 Windows `1400`、COM/RPC 断开等客户端级证据才允许重绑微信客户端。
+- `AddListenChat` resize 的精确 `MoveWindow 1400` 首先只能局部找回并重建监听；只有重建后 10 分钟内两个不同会话连续耗尽同类恢复，才升级重绑，重绑后再次达到阈值才以退出码 `86` 受控重启。
 - 通讯录完整资料采集只能由 `feature/contact_auto_collector_worker.py` 子进程执行；主进程负责 owner 屏障、300 秒硬超时、PID 清理和 `SwitchToChat` 恢复。
 - `message_store.sqlite3` 是消息事实、会话版本、回复和投递边界的唯一真源；发送、好友申请、素材转发一旦结果未知必须标记 `uncertain`，禁止自动重发。
 - 通讯录档案只保存联系人真源字段；`display_name` / `send_name` 只能作为运行记录快照。

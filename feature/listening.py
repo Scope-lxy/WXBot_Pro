@@ -18,7 +18,11 @@ from core.wechat_window import (
     rebind_wechat_client as core_rebind_wechat_client,
     run_with_wechat_rebind_retry,
 )
-from core.wechat_ui_runtime import ListenSubwindowNotReady, OwnedChat
+from core.wechat_ui_runtime import (
+    ListenSubwindowNotReady,
+    MoveWindowListenRecoveryExhausted,
+    OwnedChat,
+)
 from feature.material_outreach import iter_material_outreach_listen_sources
 from feature.message_routing import prepare_message_media
 from feature.new_friends import iter_new_friend_welcome_actions
@@ -26,6 +30,7 @@ from feature.voice_reply import load_voice_reply_state
 from core.message_pipeline import ConversationRef, MessageEnvelope
 
 LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS = 5
+LISTENER_RECOVERY_OBSERVATION_SECONDS = 10 * 60
 LISTENER_WINDOW_RECOVERY_ATTEMPT_DELAYS_SECONDS = (30, 60)
 LISTENER_WINDOW_RECOVERY_FIRST_DELAY_SECONDS = LISTENER_WINDOW_RECOVERY_ATTEMPT_DELAYS_SECONDS[0]
 LISTENER_WINDOW_RECOVERY_RETRY_SECONDS = 60
@@ -75,6 +80,84 @@ def ensure_listener_recovery_state(bot) -> None:
         bot._listener_auto_recovery_last_error = ""
     if not hasattr(bot, "_listener_auto_recovery_source"):
         bot._listener_auto_recovery_source = ""
+    if not hasattr(bot, "_listener_recovery_observation_started_at"):
+        bot._listener_recovery_observation_started_at = 0.0
+    if not hasattr(bot, "_listener_recovery_failed_conversations"):
+        bot._listener_recovery_failed_conversations = set()
+    if not hasattr(bot, "_listener_recovery_after_rebind"):
+        bot._listener_recovery_after_rebind = False
+    if not hasattr(bot, "_listener_recovery_observation_had_success"):
+        bot._listener_recovery_observation_had_success = False
+    if not hasattr(bot, "_listener_auto_recovery_force_rebind"):
+        bot._listener_auto_recovery_force_rebind = False
+    if not hasattr(bot, "_listener_controlled_recovery_requested"):
+        bot._listener_controlled_recovery_requested = False
+
+
+def _clear_listener_recovery_observation(bot) -> None:
+    bot._listener_recovery_observation_started_at = 0.0
+    bot._listener_recovery_failed_conversations = set()
+    bot._listener_recovery_after_rebind = False
+    bot._listener_recovery_observation_had_success = False
+
+
+def note_listener_subwindow_operation(bot, conversation, *, now=None) -> None:
+    """A successful real child-window read/send breaks consecutive local failures."""
+    started_at = float(getattr(bot, "_listener_recovery_observation_started_at", 0.0) or 0.0)
+    if not started_at:
+        return
+    now_ts = time.monotonic() if now is None else float(now)
+    had_success = bool(getattr(bot, "_listener_recovery_observation_had_success", False))
+    if not had_success:
+        bot._listener_recovery_observation_started_at = now_ts
+    bot._listener_recovery_observation_had_success = True
+    bot._listener_recovery_failed_conversations = set()
+    if had_success and now_ts - started_at >= LISTENER_RECOVERY_OBSERVATION_SECONDS:
+        _clear_listener_recovery_observation(bot)
+
+
+def _begin_listener_recovery_observation(bot, *, after_rebind, now=None) -> None:
+    ensure_listener_recovery_state(bot)
+    bot._listener_recovery_observation_started_at = time.monotonic() if now is None else float(now)
+    bot._listener_recovery_failed_conversations = set()
+    bot._listener_recovery_after_rebind = bool(after_rebind)
+    bot._listener_recovery_observation_had_success = True
+
+
+def record_move_window_local_recovery_failure(bot, conversation, *, now=None) -> str:
+    """Advance only exact MoveWindow-1400 local-recovery exhaustion."""
+    ensure_listener_recovery_state(bot)
+    now_ts = time.monotonic() if now is None else float(now)
+    started_at = float(getattr(bot, "_listener_recovery_observation_started_at", 0.0) or 0.0)
+    if not started_at:
+        return "rebuild"
+    had_success = bool(getattr(bot, "_listener_recovery_observation_had_success", False))
+    failures = set(getattr(bot, "_listener_recovery_failed_conversations", set()) or set())
+    if not failures:
+        if had_success and now_ts - started_at >= LISTENER_RECOVERY_OBSERVATION_SECONDS:
+            _clear_listener_recovery_observation(bot)
+            return "rebuild"
+        bot._listener_recovery_observation_started_at = now_ts
+        bot._listener_recovery_observation_had_success = False
+        bot._listener_recovery_failed_conversations = {
+            (conversation.chat_type, conversation.who),
+        }
+        return "observe"
+    if now_ts - started_at > LISTENER_RECOVERY_OBSERVATION_SECONDS:
+        bot._listener_recovery_observation_started_at = now_ts
+        bot._listener_recovery_failed_conversations = {
+            (conversation.chat_type, conversation.who),
+        }
+        return "observe"
+    failures.add((conversation.chat_type, conversation.who))
+    bot._listener_recovery_failed_conversations = failures
+    if len(failures) < 2:
+        return "observe"
+    if getattr(bot, "_listener_recovery_after_rebind", False):
+        bot._listener_controlled_recovery_requested = True
+        return "restart"
+    bot._listener_auto_recovery_force_rebind = True
+    return "rebind"
 
 
 def is_listener_recovery_desktop_error(exc) -> bool:
@@ -100,7 +183,10 @@ def clear_listener_auto_recovery(bot, *, clear_error=False) -> None:
 
 
 def arm_listener_auto_recovery(bot, exc, source="") -> bool:
-    if not is_listener_recovery_desktop_error(exc):
+    if not (
+        is_listener_recovery_desktop_error(exc)
+        or is_wechat_client_binding_failure(exc)
+    ):
         return False
     ensure_listener_recovery_state(bot)
     now_ts = time.time()
@@ -110,6 +196,10 @@ def arm_listener_auto_recovery(bot, exc, source="") -> bool:
     bot._listener_auto_recovery_probe_after = now_ts + LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS
     bot._listener_auto_recovery_last_error = str(exc or "")
     bot._listener_auto_recovery_source = str(source or "").strip()
+    bot._listener_auto_recovery_force_rebind = bool(
+        getattr(bot, "_listener_auto_recovery_force_rebind", False)
+        or is_wechat_client_binding_failure(exc)
+    )
     if hasattr(bot, "callback_is_die"):
         bot.callback_is_die = False
     if not already_active:
@@ -120,6 +210,33 @@ def arm_listener_auto_recovery(bot, exc, source="") -> bool:
             message=f"检测到桌面环境暂时不可操作（{source_text}），进入隐藏等待恢复态",
         )
     return True
+
+
+def arm_listener_runtime_rebuild(bot, conversation) -> bool:
+    """Queue one owner-owned listener reset after local MoveWindow recovery is exhausted."""
+    ensure_listener_recovery_state(bot)
+    if getattr(bot, "_listener_auto_recovery_active", False):
+        return False
+    bot._listener_auto_recovery_active = True
+    bot._listener_auto_recovery_attempted = False
+    bot._listener_auto_recovery_probe_after = 0.0
+    bot._listener_auto_recovery_last_error = ""
+    bot._listener_auto_recovery_source = f"监听窗口 {conversation.who} 局部恢复耗尽"
+    _bot_log(bot, level="WARNING", message=f"监听窗口 {conversation.who}：局部恢复耗尽，准备原子重建监听器")
+    return True
+
+
+def record_listener_recovery_exhausted(bot, conversation) -> str:
+    """Record a runtime-reported exact local failure without touching wxautox."""
+    escalation = record_move_window_local_recovery_failure(bot, conversation)
+    if escalation == "rebuild":
+        arm_listener_runtime_rebuild(bot, conversation)
+    elif escalation == "rebind":
+        bot._listener_auto_recovery_force_rebind = True
+        arm_listener_runtime_rebuild(bot, conversation)
+    elif escalation == "restart":
+        _bot_log(bot, level="ERROR", message="监听窗口连续局部恢复失败，准备受控自动恢复")
+    return escalation
 
 
 def listen_add_error(result):
@@ -420,7 +537,7 @@ def add_listen_chat_once(bot, nickname, label, *, chat_type=None, allow_rebind=F
                 level=log_level,
                 message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用异常，详情：{exc}",
             )
-        return None
+        return exc if isinstance(exc, MoveWindowListenRecoveryExhausted) else None
     if result:
         if label_text not in quiet_labels:
             _bot_log(bot, level="DEBUG", message=f"监听管理 {nickname}：{listen_add_action_label(label)}调用成功")
@@ -727,7 +844,7 @@ def listener_registration_specs(bot):
 def bind_wechat_client(bot, force_rebind=False):
     if not force_rebind and getattr(bot, "wx", None):
         return bot.wx
-    return core_rebind_wechat_client(bot)
+    return core_rebind_wechat_client(bot, listeners=()) if force_rebind else core_rebind_wechat_client(bot)
 
 
 def probe_listener_recovery_client(bot, *, force_rebind=False):
@@ -746,17 +863,18 @@ def rebuild_listener_runtime(
     if not getattr(bot, "wx", None):
         raise RuntimeError("当前未绑定微信客户端，无法重建监听器")
 
+    preserved_material_sources = material_source_listener_conversations(bot)
     _bot_log(bot, level="DEBUG", message="启动wxautox监听器...")
     if clear_runtime_cache:
         bot._listen_chats = {}
         bot._material_source_listener_refs = {}
 
-    bot.wx.StopListening()
-    _bot_sleep(bot, 1)
-    bot.wx.StartListening()
-
     specs = listener_registration_specs(bot)
+    rebuild = getattr(bot.wx, "RebuildListeners", None)
+    if not callable(rebuild):
+        raise RuntimeError("当前微信客户端不支持 owner 监听器原子重建")
     if bot.config.AllListen_switch:
+        rebuild(())
         scan = global_scan_snapshot(bot)
         if scan.get("fail_stopped"):
             raise RuntimeError(scan.get("last_error") or "全局扫描已停止")
@@ -775,23 +893,16 @@ def rebuild_listener_runtime(
         _bot_log(bot, level="INFO", message=finish_message)
         return True
 
-    result = None
-    expected_listeners = []
-    for label, conversation in specs:
-        _bot_sleep(bot, 0.5)
-        result = add_listen_chat_once(
-            bot,
-            conversation,
-            label,
-            allow_rebind=True,
-        )
-        expected_listeners.append(conversation)
-        if is_target_chat(result, conversation):
-            runtime_chat_state.remember_listen_chat(bot, conversation, result)
-
-    expected_listeners.extend(ensure_material_source_listeners(bot, allow_rebind=True))
-
-    verify_initial_listeners(bot, expected_listeners)
+    expected_listeners = [conversation for _label, conversation in specs]
+    expected_listeners.extend(preserved_material_sources)
+    expected_listeners = list(dict.fromkeys(expected_listeners))
+    restored = rebuild([
+        {"name": conversation.who, "chat_type": conversation.chat_type}
+        for conversation in expected_listeners
+    ])
+    for chat in restored:
+        conversation = ConversationRef.from_wx_chat(chat)
+        runtime_chat_state.remember_listen_chat(bot, conversation, chat)
     for conversation in expected_listeners:
         if runtime_chat_state.get_listen_chat(bot, conversation):
             bot._mark_context_repair_needed_after_restore(
@@ -808,6 +919,8 @@ def rebuild_listener_runtime(
 
 def process_listener_auto_recovery(bot):
     ensure_listener_recovery_state(bot)
+    if getattr(bot, "_listener_controlled_recovery_requested", False):
+        return "restart"
     if not getattr(bot, "_listener_auto_recovery_active", False):
         return "idle"
 
@@ -816,8 +929,9 @@ def process_listener_auto_recovery(bot):
     if probe_after and now_ts < probe_after:
         return "waiting"
 
+    force_rebind = bool(getattr(bot, "_listener_auto_recovery_force_rebind", False))
     try:
-        client = probe_listener_recovery_client(bot)
+        client = probe_listener_recovery_client(bot, force_rebind=True) if force_rebind else probe_listener_recovery_client(bot)
     except Exception as initial_exc:
         recovery_exc = initial_exc
         if is_wechat_client_binding_failure(initial_exc):
@@ -863,6 +977,9 @@ def process_listener_auto_recovery(bot):
 
     if recovered:
         clear_listener_auto_recovery(bot, clear_error=True)
+        bot._listener_auto_recovery_force_rebind = False
+        if force_rebind or not getattr(bot, "_listener_recovery_observation_started_at", 0.0):
+            _begin_listener_recovery_observation(bot, after_rebind=force_rebind)
         if hasattr(bot, "callback_is_die"):
             bot.callback_is_die = False
         _bot_log(bot, level="SUCCESS", message="监听器已自动恢复")

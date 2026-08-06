@@ -127,8 +127,7 @@ class RemoveListenChatTests(unittest.TestCase):
         bot = SimpleNamespace(
             config=SimpleNamespace(AllListen_switch=True),
             wx=SimpleNamespace(
-                StopListening=lambda: calls.append("stop"),
-                StartListening=lambda: calls.append("start"),
+                RebuildListeners=lambda _listeners: calls.append("rebuild") or [],
             ),
             _listen_chats={"stale": object()},
             _global_scan_thread=thread,
@@ -153,7 +152,7 @@ class RemoveListenChatTests(unittest.TestCase):
         ):
             self.assertTrue(listening.rebuild_listener_runtime(bot))
 
-        self.assertEqual(calls, ["stop", "start"])
+        self.assertEqual(calls, ["rebuild"])
         self.assertEqual(bot._listen_chats, {})
         self.assertEqual(
             bot._global_scan_deferred_listener_refs,

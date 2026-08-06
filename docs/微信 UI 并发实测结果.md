@@ -6,7 +6,7 @@
 
 - 项目主动发起的全部真实微信动作只经一个 UI owner。业务线程只传纯数据，不能跨线程缓存或复用 `WeChat`、`Chat`、`Message`、`NewFriend` 或 UIA 对象。wxautox4 自建 callback 线程上的原始 `Message` 只能在原线程使用，并且必须取得 owner 预约；这不是第二条业务 UI 通道。
 - 通讯录完整资料采集只能在 `feature/contact_auto_collector_worker.py` 子进程执行。开始前排空已持锁 callback，并用 `StopListening(remove=False)` 暂停后台监听；采集开始到 `SwitchToChat` 恢复和 `StartListening()` 完成前，owner、callback 和聊天业务都等待。父进程以 300 秒硬超时和 PID 清理兜底。
-- 普通控件超时、目标不匹配或单任务失败只结束或延后该任务。`AddListenChat` resize 的精确 `1400 + MoveWindow` 只做监听局部恢复；只有其他 Windows `1400`、COM/RPC 断开等客户端级证据才允许重绑微信。
+- 普通控件超时、目标不匹配或单任务失败只结束或延后该任务。`AddListenChat` resize 的精确 `1400 + MoveWindow` 先做局部找回和监听重建；重建后 10 分钟内两个不同会话连续耗尽同类恢复才升级重绑，重绑后再次达到阈值才受控重启。其他 Windows `1400`、COM/RPC 断开等客户端级证据仍可直接重绑微信。
 - 手动关系全量扫描是连续、不可抢占的 owner 独占事务；自动关系扫描只读取当前会话列表。
 - owner 等待 wxautox4 全局锁时尚未开始微信动作，不设置 watchdog 截止线、不写投递 `inflight`。若持锁 callback 正在等待 owner，先让该 callback 完成并释放锁；普通任务保持原顺序且只执行一次。
 

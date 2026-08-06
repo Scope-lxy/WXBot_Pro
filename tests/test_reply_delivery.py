@@ -92,6 +92,30 @@ def make_coordinator(store, *, versions=None, prepare=None, sender=None, now=Non
 
 
 class ReplyDeliveryTests(unittest.TestCase):
+    def test_friend_message_default_reply_ttl_is_sixty_minutes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MessageStore(tmp, "reply_ttl")
+            recorded = store.record_inbound(
+                {
+                    "conversation": "Alice",
+                    "chat_type": "private",
+                    "content": "hello",
+                    "original_content": "hello",
+                    "message_type": "text",
+                    "sender": "Alice",
+                    "native_attr": "friend",
+                    "native_id": "ttl-native",
+                    "received_at": 100.0,
+                    "stored_at": 100.0,
+                    "source": "callback",
+                    "direction": "friend",
+                }
+            )
+
+            event = store.get_event(recorded["event_id"])
+
+        self.assertEqual(event["reply_expires_at"] - event["received_at"], 60 * 60)
+
     def test_actions_and_turns_are_immutable_and_have_stable_action_ids(self):
         action = ReplyAction("voice", "audio.wav", "keyword")
         turn = make_turn(action)

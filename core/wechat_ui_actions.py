@@ -30,6 +30,7 @@ IntentFinishCallback = Callable[["UIIntent"], None]
 class UIIntentKind(str, Enum):
     BOOTSTRAP = "bootstrap"
     REBIND = "rebind"
+    REBUILD_LISTENER = "rebuild_listener"
     SHUTDOWN = "shutdown"
     POLL_MESSAGES = "poll_messages"
     GET_MESSAGES = "get_messages"
@@ -418,6 +419,18 @@ class WeChatUIOwner:
 
     def call(self, intent: UIIntent, timeout: float | None = None) -> Any:
         return self.submit(intent).result(timeout)
+
+    def call_recovery(self, intent: UIIntent, timeout: float | None = None) -> Any:
+        """Queue the listener reset after the active action but before ordinary work."""
+        if intent.kind != UIIntentKind.REBUILD_LISTENER:
+            raise ValueError("恢复前插队列只允许监听器重建")
+        with self._condition:
+            if not self._accepting:
+                raise RuntimeError("微信 UI owner 正在停止，不再接受新意图")
+            ticket = IntentTicket(intent)
+            self._queue.appendleft(ticket)
+            self._condition.notify_all()
+        return ticket.result(timeout)
 
     def run_callback_action(self, intent: UIIntent, action: Callable[[], Any]) -> Any:
         """Run a callback-thread wxautox action in the same FIFO as owner intents."""

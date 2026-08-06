@@ -15,7 +15,11 @@ from core.wechat_ui_actions import (
     UIOutboundNotStarted,
 )
 from core.wechat_ui_actions import UIIntent, UIIntentKind, WeChatUIOwner
-from core.wechat_ui_runtime import ListenSubwindowNotReady, WeChatUIRuntime
+from core.wechat_ui_runtime import (
+    ListenSubwindowNotReady,
+    MoveWindowListenRecoveryExhausted,
+    WeChatUIRuntime,
+)
 
 
 class FakeChat:
@@ -415,6 +419,39 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(second.stop_count, 1)
         self.assertEqual(second.start_count, 1)
 
+    def test_rebind_with_explicit_empty_listeners_does_not_restore_runtime_windows(self):
+        first = FakeClient()
+        second = FakeClient()
+        clients = iter([first, second])
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: next(clients))
+        runtime.bootstrap({"listeners": ["阿英4"]})
+
+        identity = runtime.rebind({"listeners": []})
+
+        self.assertEqual(identity["listeners"], [])
+        self.assertEqual(second.listen, {})
+
+    def test_listener_rebuild_is_one_owner_intent_and_restores_fixed_listeners(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        owner = WeChatUIOwner(runtime.handlers())
+        owner.start()
+        runtime.set_heartbeat(owner.heartbeat_current_action)
+        try:
+            owner.call(UIIntent(UIIntentKind.BOOTSTRAP, {"listeners": []}), 1)
+            client.stop_count = 0
+            client.start_count = 0
+            restored = owner.call(UIIntent(
+                UIIntentKind.REBUILD_LISTENER,
+                {"listeners": [{"name": "管理员", "chat_type": "private"}]},
+            ), 1)
+        finally:
+            owner.stop()
+
+        self.assertEqual(client.stop_count, 1)
+        self.assertEqual(client.start_count, 1)
+        self.assertEqual(restored["listeners"], [{"name": "管理员", "chat_type": "private"}])
+
     def test_owner_frozen_listener_payload_bootstraps_real_runtime_shape(self):
         client = FakeClient()
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
@@ -610,8 +647,14 @@ class WeChatUIRuntimeTests(unittest.TestCase):
             quote=lambda _text, at=None: events.append(("quote", at)) or True,
         )
         chat.messages = [source]
-        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        reported = []
+        runtime = WeChatUIRuntime(
+            lambda *_args: None,
+            client_factory=lambda _version: client,
+            listener_operation_succeeded=reported.append,
+        )
         runtime.bootstrap({"listeners": [{"name": "测试群", "chat_type": "group"}]})
+        reported.clear()
 
         runtime.quote_message({
             "conversation": "测试群",
@@ -626,6 +669,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         })
 
         self.assertEqual(events, ["roll", ("quote", "群成员")])
+        self.assertEqual(reported, [ConversationRef("测试群", "group")])
 
     def test_message_snapshot_does_not_return_wxautox_message(self):
         client = FakeClient()
@@ -1128,7 +1172,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
         runtime.bootstrap({"listeners": []})
 
-        with self.assertRaises(ListenSubwindowNotReady):
+        with self.assertRaises(MoveWindowListenRecoveryExhausted):
             runtime.add_listen({"conversation": "张三", "chat_type": "private"})
 
         self.assertEqual(add_calls, ["张三", "张三"])
@@ -1240,7 +1284,12 @@ class WeChatUIRuntimeTests(unittest.TestCase):
             raise OSError(1400, "MoveWindow", "无效的窗口句柄。")
 
         client.AddListenChat = add
-        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        exhausted = []
+        runtime = WeChatUIRuntime(
+            lambda *_args: None,
+            client_factory=lambda _version: client,
+            listener_recovery_exhausted=exhausted.append,
+        )
         runtime.bootstrap({"listeners": []})
 
         with patch("core.wechat_ui_runtime.time.sleep"):
@@ -1253,6 +1302,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
                 })
 
         self.assertEqual(send_calls, ["first add", "second add"])
+        self.assertEqual(exhausted, [ConversationRef("张三", "private")])
 
     def test_add_chat_without_type_discovers_group_identity(self):
         client = FakeClient()
@@ -1574,14 +1624,21 @@ class WeChatUIRuntimeTests(unittest.TestCase):
             forward=lambda *_args, **_kwargs: True,
         )]
         client.chats["素材源"] = chat
-        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        reported = []
+        runtime = WeChatUIRuntime(
+            lambda *_args: None,
+            client_factory=lambda _version: client,
+            listener_operation_succeeded=reported.append,
+        )
         runtime.bootstrap({"listeners": [{"name": "素材源"}]})
+        reported.clear()
 
         result = runtime.read_material_messages({"conversation": "素材源", "chat_type": "private", "limit": 20})
 
         self.assertEqual(result["strategy"], "子窗口公开 GetHistoryMessage")
         self.assertIsInstance(result["messages"][0], MessageEnvelope)
         self.assertFalse(hasattr(result["messages"][0], "forward"))
+        self.assertEqual(reported, [ConversationRef("素材源", "private")])
 
     def test_material_history_read_suppresses_same_thread_old_callbacks(self):
         received = []
@@ -1679,14 +1736,21 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         chat.GetHistoryMessage = broken_public
         client.chats["素材源"] = chat
-        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        reported = []
+        runtime = WeChatUIRuntime(
+            lambda *_args: None,
+            client_factory=lambda _version: client,
+            listener_operation_succeeded=reported.append,
+        )
         runtime.bootstrap({"listeners": [{"name": "素材源"}]})
+        reported.clear()
 
         result = runtime.read_material_messages({"conversation": "素材源", "chat_type": "private", "limit": 20})
 
         self.assertEqual(result["strategy"], "主窗口公开 GetHistoryMessage")
         self.assertEqual(result["messages"][0].content, "C:/docs/main.pdf")
         self.assertEqual(events, ["internal", "public", "main_chat_with", "main_history"])
+        self.assertEqual(reported, [])
 
     def test_forward_rolls_relocated_message_into_view_before_forwarding(self):
         events = []
@@ -1700,8 +1764,14 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         )
         chat.messages = [message]
         client.chats["素材源"] = chat
-        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        reported = []
+        runtime = WeChatUIRuntime(
+            lambda *_args: None,
+            client_factory=lambda _version: client,
+            listener_operation_succeeded=reported.append,
+        )
         runtime.bootstrap({"listeners": [{"name": "素材源"}]})
+        reported.clear()
 
         runtime.forward_message({
             "conversation": "素材源",
@@ -1715,6 +1785,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         })
 
         self.assertEqual(events, ["roll", ("forward", ["阿英2"])])
+        self.assertEqual(reported, [ConversationRef("素材源", "private")])
 
     def test_message_locator_rejects_ambiguous_duplicates_without_known_order(self):
         client = FakeClient()

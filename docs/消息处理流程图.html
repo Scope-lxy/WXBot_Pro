@@ -148,7 +148,7 @@
       <section class="stage">
         <div class="stage-title"><span class="stage-number">03</span><h2>生成前补全与回复组装</h2></div>
         <div class="flow-row">
-          <article class="node violet"><h3>建立回复任务</h3><p>需要回复时建立 <code>reply_job</code>，绑定入站事件、会话版本和 15 分钟有效期；每个气泡再建立独立 delivery action。</p></article>
+          <article class="node violet"><h3>建立回复任务</h3><p>需要回复时建立 <code>reply_job</code>，绑定入站事件、会话版本和 60 分钟有效期；每个气泡再建立独立 delivery action。</p></article>
           <div class="arrow">-&gt;</div>
           <article class="node blue"><h3>按代次补齐可见尾部</h3><p>窗口变为当前运行期可信可用后的首次回复读取当前窗口一次；没有标记时不读取，也不滚动深历史。</p></article>
           <div class="arrow">-&gt;</div>
@@ -173,7 +173,7 @@
         <div class="outcome">
           <article class="node amber"><h3>版本已变化</h3><p>已开始的单个气泡可完成；尚未开始的剩余气泡取消。取消内容不记为“已回复”。</p></article>
           <article class="node red"><h3>已提交但结果未知</h3><p>标记 <code>uncertain</code>，保留证据并禁止自动重发，避免真实好友收到重复消息。</p></article>
-          <article class="node violet"><h3>停止或进程中断</h3><p>15 分钟内且未 claim 的原始消息会重新合并、生成和校验；遗留 <code>inflight</code> 转为 <code>uncertain</code>，同轮剩余气泡取消，绝不自动重发。</p></article>
+          <article class="node violet"><h3>停止或进程中断</h3><p>60 分钟内且未 claim 的原始消息会重新合并、生成和校验；遗留 <code>inflight</code> 转为 <code>uncertain</code>，同轮剩余气泡取消，绝不自动重发。</p></article>
         </div>
       </section>
     </div>

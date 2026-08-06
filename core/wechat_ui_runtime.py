@@ -71,6 +71,10 @@ class ListenSubwindowNotReady(RuntimeError):
     """A listener subwindow could not be made ready after one bounded retry."""
 
 
+class MoveWindowListenRecoveryExhausted(ListenSubwindowNotReady):
+    """The exact MoveWindow 1400 local recovery was exhausted."""
+
+
 class OwnedChat:
     """Conversation identity whose operations are always submitted to the UI owner."""
 
@@ -192,6 +196,16 @@ class UIClientFacade:
     def StopListening(self):
         return self._main("stop_listening")
 
+    def RebuildListeners(self, listeners=()):
+        identities = self._owner.call_recovery(UIIntent(
+            UIIntentKind.REBUILD_LISTENER,
+            {"listeners": list(listeners or ())},
+        ), UI_CALL_WAIT_TIMEOUT)
+        return [
+            OwnedChat(self._owner, item["name"], item["chat_type"], listener_registration_changed=True)
+            for item in identities.get("listeners", ())
+        ]
+
     def IsOnline(self):
         return self._main("is_online")
 
@@ -262,6 +276,8 @@ class WeChatUIRuntime:
         enrich_message=None,
         echo_action_start=None,
         echo_action_finish=None,
+        listener_operation_succeeded=None,
+        listener_recovery_exhausted=None,
     ):
         self._on_message = on_message
         self._client_factory = client_factory or self._default_client_factory
@@ -270,6 +286,8 @@ class WeChatUIRuntime:
         self._enrich_message = enrich_message
         self._echo_action_start = echo_action_start or (lambda _action_id: None)
         self._echo_action_finish = echo_action_finish or (lambda _action_id: None)
+        self._listener_operation_succeeded = listener_operation_succeeded or (lambda _conversation: None)
+        self._listener_recovery_exhausted = listener_recovery_exhausted or (lambda _conversation: None)
         self._client = None
         self._owner = None
         self._listen_chats = {}
@@ -292,6 +310,7 @@ class WeChatUIRuntime:
         return {
             UIIntentKind.BOOTSTRAP: self.bootstrap,
             UIIntentKind.REBIND: self.rebind,
+            UIIntentKind.REBUILD_LISTENER: self.rebuild_listener,
             UIIntentKind.SHUTDOWN: self.shutdown,
             UIIntentKind.POLL_MESSAGES: self.poll_messages,
             UIIntentKind.GET_MESSAGES: self.get_messages,
@@ -663,10 +682,20 @@ class WeChatUIRuntime:
         except Exception as exc:
             if not self._is_move_window_invalid_handle(exc):
                 raise
-            result = self._recover_move_window_add(name, requested, add)
+            try:
+                result = self._recover_move_window_add(name, requested, add)
+                chat = self._validated_added_chat(name, requested, result)
+                self._listener_operation_succeeded(self._chat_conversation(chat))
+                return chat
+            except ListenSubwindowNotReady as recovery_exc:
+                conversation = requested or ConversationRef(name, "private")
+                self._listener_recovery_exhausted(conversation)
+                raise MoveWindowListenRecoveryExhausted(str(recovery_exc)) from recovery_exc
         else:
             result = chat
-        return self._validated_added_chat(name, requested, result)
+        chat = self._validated_added_chat(name, requested, result)
+        self._listener_operation_succeeded(self._chat_conversation(chat))
+        return chat
 
     def _chat_for_payload(self, payload, *, allow_add):
         if self._client is None:
@@ -686,6 +715,9 @@ class WeChatUIRuntime:
             raise
         except ListenSubwindowNotReady as exc:
             raise UIOutboundNotStarted(str(exc)) from exc
+
+    def _report_listener_operation(self, payload):
+        self._listener_operation_succeeded(self._payload_conversation(payload))
 
     def bootstrap(self, payload):
         self._client = self._create_client()
@@ -725,7 +757,7 @@ class WeChatUIRuntime:
 
     def rebind(self, payload):
         listeners = []
-        source = payload.get("listeners") or [
+        source = payload["listeners"] if "listeners" in payload else [
             {"name": name, "chat_type": chat_type}
             for chat_type, name in self._listen_chats
         ]
@@ -755,6 +787,30 @@ class WeChatUIRuntime:
         self._client = None
         self._listen_chats = {}
         return self.bootstrap({"listeners": listeners})
+
+    def rebuild_listener(self, payload):
+        """Atomically replace listener registration while the owner holds the UI turn."""
+        listeners = list(payload.get("listeners") or ())
+        stop = getattr(self._client, "StopListening", None)
+        if callable(stop):
+            stop()
+        self._listen_chats = {}
+        start = getattr(self._client, "StartListening", None)
+        if callable(start):
+            start()
+        restored = []
+        seen = set()
+        for raw in listeners:
+            name = str(raw.get("name") if isinstance(raw, Mapping) else raw or "").strip()
+            chat_type = raw.get("chat_type") if isinstance(raw, Mapping) else None
+            key = (_required_internal_chat_type(chat_type), name) if chat_type is not None else ("", name)
+            if not name or key in seen:
+                continue
+            seen.add(key)
+            chat = self._add_chat(name, chat_type)
+            conversation = self._chat_conversation(chat)
+            restored.append({"name": conversation.who, "chat_type": conversation.chat_type})
+        return {"listeners": restored}
 
     def shutdown(self, _payload):
         stop = getattr(self._client, "StopListening", None)
@@ -816,6 +872,7 @@ class WeChatUIRuntime:
         chat = self._chat_for_payload(payload, allow_add=bool(payload.get("_exclusive_retry")))
         with self._suppress_callbacks_for(conversation):
             messages = list(chat.GetAllMessage() or [])
+        self._report_listener_operation(payload)
         return [
             self._snapshot_envelope(message, ingress_source="window_snapshot", window_order=index)
             for index, message in enumerate(messages)
@@ -830,7 +887,10 @@ class WeChatUIRuntime:
         at = payload.get("at")
         if at:
             kwargs["at"] = at
-        return chat.SendMsg(**kwargs)
+        result = chat.SendMsg(**kwargs)
+        if ReplyCountStore.was_send_success(result):
+            self._report_listener_operation(payload)
+        return result
 
     def send_actions(self, payload):
         chat = self._outbound_chat_for_payload(payload, allow_add=True)
@@ -866,16 +926,24 @@ class WeChatUIRuntime:
                     RuntimeError("WeChat handler returned an unsuccessful result"),
                 )
             results.append(result)
+        if results:
+            self._report_listener_operation(payload)
         return results
 
     def send_file(self, payload):
         chat = self._outbound_chat_for_payload(payload, allow_add=True)
-        return chat.SendFiles(filepath=str(payload.get("path") or ""))
+        result = chat.SendFiles(filepath=str(payload.get("path") or ""))
+        if ReplyCountStore.was_send_success(result):
+            self._report_listener_operation(payload)
+        return result
 
     def send_audio(self, payload):
         chat = self._outbound_chat_for_payload(payload, allow_add=True)
         path = str(payload.get("path") or "")
-        return chat.SendAudio(filepath=path, duration=None)
+        result = chat.SendAudio(filepath=path, duration=None)
+        if ReplyCountStore.was_send_success(result):
+            self._report_listener_operation(payload)
+        return result
 
     @staticmethod
     def _current_message_time(raw_messages):
@@ -1160,9 +1228,10 @@ class WeChatUIRuntime:
         roll_into_view = getattr(message, "roll_into_view", None)
         if callable(roll_into_view):
             roll_into_view()
-        if preface:
-            return message.forward(targets, message=preface)
-        return message.forward(targets)
+        result = message.forward(targets, message=preface) if preface else message.forward(targets)
+        if ReplyCountStore.was_send_success(result):
+            self._report_listener_operation(payload)
+        return result
 
     def quote_message(self, payload):
         message = self._locate_message(payload, outbound=True)
@@ -1172,7 +1241,10 @@ class WeChatUIRuntime:
                 roll_into_view()
             except Exception as exc:
                 raise MessageLocateError(f"原消息无法滚动到可引用位置：{exc}") from exc
-        return message.quote(str(payload.get("text") or ""), at=str(payload.get("at") or "") or None)
+        result = message.quote(str(payload.get("text") or ""), at=str(payload.get("at") or "") or None)
+        if ReplyCountStore.was_send_success(result):
+            self._report_listener_operation(payload)
+        return result
 
     def read_material_messages(self, payload):
         from core.logger import log
@@ -1301,6 +1373,8 @@ class WeChatUIRuntime:
             MessageEnvelope.from_wx_message(message, ingress_source="material_history", window_order=index)
             for index, message in enumerate(last_messages)
         ]
+        if last_strategy.startswith("子窗口"):
+            self._report_listener_operation(payload)
         return {"messages": envelopes, "strategy": last_strategy}
 
     def process_new_friends(self, payload):

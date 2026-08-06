@@ -154,7 +154,7 @@ def click_wechat_main_window_chat_nav(*, wait: float = 0.1) -> bool:
         return False
 
 
-def rebind_wechat_client(bot):
+def rebind_wechat_client(bot, *, listeners=None):
     owner = getattr(bot, "_ui_owner", None)
     runtime = getattr(bot, "_ui_runtime", None)
     if owner is None or runtime is None:
@@ -166,10 +166,11 @@ def rebind_wechat_client(bot):
     from core.wechat_ui_actions import UI_CALL_WAIT_TIMEOUT, UIIntent, UIIntentKind
     from core.wechat_ui_runtime import UIClientFacade
 
+    payload = {} if listeners is None else {"listeners": list(listeners)}
     if owner.owner_thread_id == threading.get_ident():
-        identity = runtime.rebind({})
+        identity = runtime.rebind(payload)
     else:
-        identity = owner.call(UIIntent(UIIntentKind.REBIND), UI_CALL_WAIT_TIMEOUT)
+        identity = owner.call(UIIntent(UIIntentKind.REBIND, payload), UI_CALL_WAIT_TIMEOUT)
     bot._ui_identity = dict(identity or {})
     bot.wx = UIClientFacade(owner, bot._ui_identity)
     return bot.wx

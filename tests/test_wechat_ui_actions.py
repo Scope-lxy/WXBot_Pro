@@ -729,6 +729,78 @@ class WechatUiActionsTests(unittest.TestCase):
 
         self.assertEqual(events, ["current-start", "current-end", "shutdown"])
 
+    def test_listener_rebuild_front_queues_after_current_action_but_before_normal_work(self):
+        started = threading.Event()
+        release = threading.Event()
+        events = []
+
+        def current(_payload):
+            events.append("current-start")
+            started.set()
+            release.wait(1)
+            events.append("current-end")
+
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.SEND_FILE: current,
+            wechat_ui_actions.UIIntentKind.SEND_TEXT: lambda _payload: events.append("normal"),
+            wechat_ui_actions.UIIntentKind.REBUILD_LISTENER: lambda _payload: events.append("rebuild"),
+        })
+        owner.start()
+        try:
+            first = owner.submit(wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.SEND_FILE))
+            self.assertTrue(started.wait(1))
+            normal = owner.submit(wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.SEND_TEXT))
+            recovery = threading.Thread(
+                target=lambda: owner.call_recovery(wechat_ui_actions.UIIntent(
+                    wechat_ui_actions.UIIntentKind.REBUILD_LISTENER,
+                )),
+            )
+            recovery.start()
+            time.sleep(0.02)
+            release.set()
+            first.result(1)
+            recovery.join(1)
+            normal.result(1)
+        finally:
+            owner.stop()
+
+        self.assertEqual(events, ["current-start", "current-end", "rebuild", "normal"])
+
+    def test_listener_rebuild_front_queue_keeps_callback_and_contact_barrier_priority(self):
+        events = []
+        owner = wechat_ui_actions.WeChatUIOwner({
+            wechat_ui_actions.UIIntentKind.REBUILD_LISTENER: lambda _payload: events.append("rebuild"),
+        })
+        callback = wechat_ui_actions.CallbackActionTicket(
+            wechat_ui_actions.UIIntent(wechat_ui_actions.UIIntentKind.DOWNLOAD_MEDIA),
+        )
+        with owner._condition:
+            owner._queue.append(callback)
+            owner._contact_barrier_active = True
+            owner._contact_job = object()
+        owner.start()
+        try:
+            recovery = threading.Thread(
+                target=lambda: owner.call_recovery(wechat_ui_actions.UIIntent(
+                    wechat_ui_actions.UIIntentKind.REBUILD_LISTENER,
+                )),
+            )
+            recovery.start()
+            time.sleep(0.02)
+            self.assertEqual(events, [])
+            with owner._condition:
+                owner._contact_barrier_active = False
+                owner._contact_job = None
+                owner._condition.notify_all()
+            callback_thread = threading.Thread(target=lambda: callback.run(lambda: events.append("callback")))
+            callback_thread.start()
+            callback_thread.join(1)
+            recovery.join(1)
+        finally:
+            owner.stop()
+
+        self.assertEqual(events, ["callback", "rebuild"])
+
     def test_cancel_pending_terminates_contact_start_that_finishes_during_stop(self):
         started = threading.Event()
         release = threading.Event()

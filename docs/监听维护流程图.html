@@ -111,7 +111,7 @@
         <div class="flow-row">
           <article class="node blue"><h3>启动 UI owner</h3><p>owner 线程创建 <code>WeChat</code>、读取当前账号、初始化监听器。wxautox 对象不能跨线程保存或使用。</p></article>
           <div class="arrow">-&gt;</div>
-          <article class="node blue"><h3>先扫描并整批落库</h3><p>黑名单模式只保留一个扫描任务；15 分钟内的恢复消息先等同会话扫描批次对齐，再与新消息走同一队列。非空结果立即把下一轮放到 FIFO 尾部，SQLite 整批成功前不建窗。</p></article>
+          <article class="node blue"><h3>先扫描并整批落库</h3><p>黑名单模式只保留一个扫描任务；60 分钟内的恢复消息先等同会话扫描批次对齐，再与新消息走同一队列。非空结果立即把下一轮放到 FIFO 尾部，SQLite 整批成功前不建窗。</p></article>
           <div class="arrow">-&gt;</div>
           <article class="node green"><h3>空扫描后放行固定窗口</h3><p>首次空扫描后再补固定群聊和素材来源。白名单模式仍直接注册已配置对象。</p></article>
         </div>
@@ -180,8 +180,8 @@
         <div class="stage-title"><span class="stage-number">05</span><h2>失败分级与恢复</h2></div>
         <div class="branch-grid">
           <div class="branch"><p class="branch-label">普通业务失败</p><article class="node amber"><h3>结束或延后当前任务</h3><p>控件超时、目标不匹配、单个资料页不适用等，不能升级为客户端重绑。</p></article></div>
-          <div class="branch"><p class="branch-label">监听器异常</p><article class="node blue"><h3>先探活，再只重建监听器</h3><p>现有客户端可用时只恢复监听。监听回调线程异常必须让运行健康状态变为不健康，不能静默失联。</p></article></div>
-          <div class="branch"><p class="branch-label">明确客户端级失效</p><article class="node red"><h3>受控重绑或 watchdog</h3><p><code>AddListenChat</code> resize 的精确 <code>1400 + MoveWindow</code> 只做上述局部恢复；其他 Windows 1400、COM/RPC 断开等客户端级证据才允许重绑。UI 卡死由专用 watchdog 以退出码 86 交给启动器恢复。</p></article></div>
+          <div class="branch"><p class="branch-label">局部恢复最终失败</p><article class="node blue"><h3>原子重建，再观察</h3><p>精确 <code>MoveWindow 1400</code> 耗尽后只重建监听。owner 一次完成停止、清登记、启动和固定监听恢复；首个失败后的 10 分钟内只统计不同会话的同类连续失败，成功读取、严格登记或发送会清零。</p></article></div>
+          <div class="branch"><p class="branch-label">明确客户端级失效或观察升级</p><article class="node red"><h3>受控重绑或 watchdog</h3><p>主客户端 Windows 1400、COM/RPC 可直接重绑。监听重建后两个不同会话连续失败才重绑；重绑后再次达到阈值，以退出码 86 交给启动器，并保留 30 分钟最多 3 次预算。</p></article></div>
         </div>
         <div class="note"><strong>启动器的最后防线：</strong>用户点击停止不会自动启动；只有退出码 <code>86</code> 才计入恢复预算，滚动 30 分钟最多自动重启 3 次。超过预算时停在可排查状态，不进入短循环重启。</div>
       </section>
