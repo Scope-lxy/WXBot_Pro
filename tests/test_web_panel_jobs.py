@@ -640,10 +640,13 @@ class WebPanelJobTests(unittest.TestCase):
     def test_ui_stall_recovery_auto_start_uses_normal_bot_start_path(self):
         with mock.patch.object(web_server, "bot_thread", None), mock.patch.object(
             web_server, "_start_bot_runtime", return_value={"status": "success"}
-        ) as start_runtime:
+        ) as start_runtime, mock.patch.object(web_server, "log") as recovery_log:
             web_server._auto_start_bot_after_ui_stall()
 
         start_runtime.assert_called_once_with(wait_timeout=web_server.BOT_START_WAIT_TIMEOUT_SECONDS)
+        messages = [call.args[1] for call in recovery_log.call_args_list]
+        self.assertTrue(any("自恢复【机器人重启】执行" in message for message in messages))
+        self.assertTrue(any("自恢复【机器人重启】成功" in message for message in messages))
 
     def test_split_reply_delay_dropdown_values_are_coerced_to_booleans(self):
         config = {

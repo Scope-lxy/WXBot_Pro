@@ -91,7 +91,7 @@ from core.account_storage import (
     migrate_default_account,
     resolve_account_id,
 )
-from core import wechat_ui_actions
+from core import wechat_recovery, wechat_ui_actions
 from core.wechat_ui_runtime import MessageLocateError, OwnedChat, UIClientFacade, WeChatUIRuntime
 from core.inbound_coordinator import InboundCoordinator, InboundEvent
 from core.message_store import (
@@ -517,11 +517,7 @@ class WXBot:
         self._listen_chats       = {}
         self._listener_reconcile_interval_seconds = 30
         self._listener_reconcile_last_at = 0.0
-        self._listener_auto_recovery_active = False
-        self._listener_auto_recovery_attempted = False
-        self._listener_auto_recovery_probe_after = 0.0
-        self._listener_auto_recovery_last_error = ""
-        self._listener_auto_recovery_source = ""
+        self._wechat_recovery = None
         self.wx_id               = None
         self.start_time          = datetime.now()
         self.callback_is_die     = False        # 回调函数是否发生致命错误的标志
@@ -1199,6 +1195,10 @@ class WXBot:
             self.is_stop_requested()
             or snapshot.kind == wechat_ui_actions.UIIntentKind.SHUTDOWN.value
         )
+        exit_code = listening.listener_recovery_coordinator(self).watchdog_exit_code(
+            snapshot,
+            stopped_by_user=stopped_by_user,
+        )
         if stopped_by_user:
             try:
                 runtime_dir = os.path.abspath("runtime")
@@ -1207,11 +1207,7 @@ class WXBot:
                     handle.write(str(time.time() + 300))
             except Exception as exc:
                 log(level="ERROR", message=f"写入用户停止恢复标记失败：{exc}")
-        os._exit(
-            wechat_ui_actions.UI_STUCK_STOPPED_EXIT_CODE
-            if stopped_by_user
-            else wechat_ui_actions.UI_STUCK_EXIT_CODE
-        )
+        os._exit(exit_code)
 
     def _activate_reply_echoes_for_ui_intent(self, intent):
         tracker = getattr(self, "_reply_echo_tracker", None)
@@ -1271,7 +1267,7 @@ class WXBot:
         self._ui_owner.start()
         self._ui_runtime.set_owner(self._ui_owner)
         self._ui_runtime.set_heartbeat(self._ui_owner.heartbeat_current_action)
-        self._ui_watchdog = wechat_ui_actions.UIWatchdog(
+        self._ui_watchdog = wechat_recovery.UIWatchdog(
             self._ui_owner.current_action_snapshot,
             self._handle_ui_owner_timeout,
         )
@@ -3058,14 +3054,20 @@ class WXBot:
     def _trigger_controlled_listener_recovery(self):
         owner = getattr(self, "_ui_owner", None)
         is_idle = getattr(owner, "is_idle", None)
-        if callable(is_idle) and not is_idle():
+        owner_idle = not callable(is_idle) or bool(is_idle())
+        exit_code = listening.listener_recovery_coordinator(
+            self,
+        ).controlled_restart_exit_code(owner_idle=owner_idle)
+        if exit_code is None:
             return False
-        log(level="ERROR", message="监听恢复连续失败，交给面板受控自动恢复")
-        os._exit(wechat_ui_actions.UI_STUCK_EXIT_CODE)
+        os._exit(exit_code)
         return True
 
     def _process_listener_auto_recovery(self):
         return listening.process_listener_auto_recovery(self)
+
+    def listener_recovery_snapshot(self):
+        return listening.listener_recovery_snapshot(self)
 
     def send_material_outreach(self, task):
         if self.is_stop_requested():
@@ -9299,7 +9301,7 @@ class WXBot:
             "pause_chat_reply":      self._pause_chat_reply or getattr(self.config, "chat_listen_only", False),
             "pause_group_reply":     self._pause_group_reply or getattr(self.config, "group_listen_only", False),
             **contact_recovery,
-            **listening.listener_recovery_snapshot(self),
+            **self.listener_recovery_snapshot(),
             **listening.global_scan_snapshot(self),
         }
 
@@ -9433,7 +9435,7 @@ class WXBot:
                     continue
                 if recovery_state == "failed":
                     self.stop_wxbot()
-                    log(level="ERROR", message="监听器自动恢复失败，主线程即将退出")
+                    log(level="ERROR", message="自恢复流程终止：恢复失败，机器人监听主线程即将退出")
                     break
 
                 try:

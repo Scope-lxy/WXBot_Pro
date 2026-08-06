@@ -4014,16 +4014,19 @@ def _ui_stall_recovery_requested(argv=None):
 
 def _auto_start_bot_after_ui_stall():
     if bot_thread and bot_thread.is_alive():
-        log('INFO', 'UI 卡死恢复后机器人已在运行，无需重复启动')
+        log('INFO', '自恢复【机器人重启】成功：面板恢复后检测到机器人已在运行')
         return
-    log('INFO', '面板恢复完成，正在自动启动机器人')
+    log('INFO', '自恢复【机器人重启】执行：面板已恢复，正在自动启动机器人')
     result = _start_bot_runtime(wait_timeout=BOT_START_WAIT_TIMEOUT_SECONDS)
     if result.get('status') == 'success':
-        log('INFO', 'UI 卡死恢复后机器人已自动启动')
+        log('INFO', '自恢复【机器人重启】成功：面板与机器人均已恢复')
     elif result.get('status') == 'pending':
-        log('INFO', 'UI 卡死恢复后机器人正在启动，等待微信监听初始化完成')
+        log('INFO', '自恢复【机器人重启】等待：机器人正在启动，等待微信监听初始化完成')
     else:
-        log('ERROR', f"UI 卡死恢复后自动启动机器人失败：{result.get('message') or '未知错误'}")
+        log(
+            'ERROR',
+            f"自恢复【机器人重启】失败：面板已恢复，但机器人自动启动失败。原因：{result.get('message') or '未知错误'}",
+        )
 
 
 def _schedule_bot_start_after_ui_stall():
@@ -4037,7 +4040,7 @@ def _schedule_bot_start_after_ui_stall():
     timer = threading.Timer(UI_STALL_RECOVERY_BOT_START_DELAY_SECONDS, _auto_start_bot_after_ui_stall)
     timer.daemon = True
     timer.start()
-    log('WARNING', '微信 UI 卡死后面板已恢复，将自动启动机器人')
+    log('WARNING', '自恢复【机器人重启】继续：面板已恢复，即将自动启动机器人')
     return True
 
 
@@ -4163,7 +4166,9 @@ def runtime_health():
     contact_recovery = contact_recovery_snapshot() if callable(contact_recovery_snapshot) else {}
     contact_recovery_active = bool(contact_recovery.get('contact_recovery_active'))
     stop_requested = bool(bot.is_stop_requested()) if bot is not None else True
-    listener_recovery_active = bool(getattr(bot, '_listener_auto_recovery_active', False)) if bot is not None else False
+    listener_recovery_snapshot = getattr(bot, 'listener_recovery_snapshot', None) if bot is not None else None
+    listener_recovery = listener_recovery_snapshot() if callable(listener_recovery_snapshot) else {}
+    listener_recovery_active = bool(listener_recovery.get('listener_recovery_active'))
     callback_is_die = bool(getattr(bot, 'callback_is_die', False)) if bot is not None else True
     scan_state = getattr(bot, '_global_scan_state', {}) if bot is not None else {}
     scan_failed = bool(isinstance(scan_state, dict) and scan_state.get('fail_stopped'))

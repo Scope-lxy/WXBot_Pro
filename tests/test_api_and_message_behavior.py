@@ -503,7 +503,7 @@ class MessageBehaviorTests(unittest.TestCase):
         ))
 
         self.assertTrue(handled)
-        self.assertTrue(bot._listener_auto_recovery_active)
+        self.assertTrue(listening.listener_recovery_coordinator(bot).state_snapshot().active)
         self.assertFalse(bot.callback_is_die)
 
     def test_reply_count_store_loads_utf8_bom_file(self):

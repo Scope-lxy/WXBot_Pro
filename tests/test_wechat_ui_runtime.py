@@ -328,17 +328,14 @@ class WeChatUIRuntimeTests(unittest.TestCase):
             ),
             all_Mode_listen_list=[],
             _listen_chats={},
-            _listener_auto_recovery_active=True,
-            _listener_auto_recovery_attempted=False,
-            _listener_auto_recovery_probe_after=0.0,
-            _listener_auto_recovery_last_error="desktop unavailable",
-            _listener_auto_recovery_source="test",
             _listener_reconcile_last_at=0.0,
             callback_is_die=False,
             message_handle_callback=lambda *_args: None,
         )
         from core.wechat_ui_runtime import UIClientFacade
         bot.wx = UIClientFacade(owner, identity)
+        recovery = listening.listener_recovery_coordinator(bot)
+        recovery.arm(RuntimeError("Find Control Timeout: desktop unavailable"), source="test", now=0)
         try:
             with patch("feature.listening.time.sleep", return_value=None):
                 result = listening.process_listener_auto_recovery(bot)
@@ -349,18 +346,15 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertIsInstance(bot.wx, UIClientFacade)
         self.assertIs(runtime._client, first)
         self.assertIn("管理员", first.chats)
-        self.assertFalse(bot._listener_auto_recovery_active)
+        self.assertFalse(recovery.state_snapshot().active)
 
     def test_listener_auto_recovery_rebinds_after_invalid_client_handle(self):
         bot = SimpleNamespace(
             wx=object(),
-            _listener_auto_recovery_active=True,
-            _listener_auto_recovery_attempted=False,
-            _listener_auto_recovery_probe_after=0.0,
-            _listener_auto_recovery_last_error="invalid handle",
-            _listener_auto_recovery_source="test",
             callback_is_die=False,
         )
+        recovery = listening.listener_recovery_coordinator(bot)
+        recovery.arm(RuntimeError("Find Control Timeout: invalid handle"), source="test", now=0)
         rebound = object()
         with (
             patch(
@@ -368,6 +362,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
                 side_effect=[OSError(1400, "MoveWindow", "无效的窗口句柄。"), rebound],
             ) as probe,
             patch("feature.listening.rebuild_listener_runtime", return_value=True),
+            patch("feature.listening._bot_log") as recovery_log,
         ):
             result = listening.process_listener_auto_recovery(bot)
 
@@ -375,17 +370,18 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertIs(bot.wx, rebound)
         self.assertEqual(probe.call_count, 2)
         self.assertEqual(probe.call_args_list[1].kwargs, {"force_rebind": True})
+        self.assertTrue(recovery.state_snapshot().after_rebind)
+        messages = [call.kwargs["message"] for call in recovery_log.call_args_list]
+        self.assertTrue(any("自恢复【微信客户端重绑】开始" in message for message in messages))
+        self.assertTrue(any("自恢复【微信客户端重绑】成功" in message for message in messages))
 
     def test_listener_auto_recovery_keeps_waiting_after_transient_rebuild_error(self):
         bot = SimpleNamespace(
             wx=object(),
-            _listener_auto_recovery_active=True,
-            _listener_auto_recovery_attempted=False,
-            _listener_auto_recovery_probe_after=0.0,
-            _listener_auto_recovery_last_error="desktop unavailable",
-            _listener_auto_recovery_source="test",
             callback_is_die=False,
         )
+        recovery = listening.listener_recovery_coordinator(bot)
+        recovery.arm(RuntimeError("Find Control Timeout: desktop unavailable"), source="test", now=0)
         with (
             patch("feature.listening.probe_listener_recovery_client", return_value=bot.wx),
             patch(
@@ -396,8 +392,8 @@ class WeChatUIRuntimeTests(unittest.TestCase):
             result = listening.process_listener_auto_recovery(bot)
 
         self.assertEqual(result, "waiting")
-        self.assertTrue(bot._listener_auto_recovery_active)
-        self.assertGreater(bot._listener_auto_recovery_probe_after, 0)
+        self.assertTrue(recovery.state_snapshot().active)
+        self.assertGreater(recovery.state_snapshot().probe_after, 0)
 
     def test_rebind_recreates_client_and_restores_listener_names(self):
         first = FakeClient()
