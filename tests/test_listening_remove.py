@@ -213,6 +213,43 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertFalse(bot._global_scan_state["initial_drain_complete"])
         self.assertFalse(bot._global_scan_state["last_scan_empty"])
 
+    def test_global_rebuild_records_scan_empty_and_repair_queue_timings(self):
+        logs = []
+        thread = SimpleNamespace(is_alive=lambda: True)
+        bot = SimpleNamespace(
+            config=SimpleNamespace(AllListen_switch=True),
+            wx=SimpleNamespace(RebuildListeners=lambda _listeners: []),
+            _listen_chats={},
+            _global_scan_thread=thread,
+            _global_scan_deferred_listener_refs=[],
+            _global_scan_state_lock=threading.Lock(),
+            _global_scan_state={"running": True, "initial_drain_complete": True},
+            _listener_reconcile_last_at=0.0,
+        )
+        refs = [ConversationRef("张三", "private")]
+
+        with (
+            mock.patch.object(listening, "listener_registration_specs", return_value=[("动态监听", refs[0])]),
+            mock.patch.object(listening, "ensure_material_source_listeners", return_value=[]),
+            mock.patch.object(listening.time, "monotonic", side_effect=(10.0, 14.5)),
+            mock.patch.object(
+                listening,
+                "_bot_log",
+                side_effect=lambda _bot, *args, **kwargs: logs.append(kwargs.get("message") or args[0]),
+            ),
+        ):
+            assert listening.rebuild_listener_runtime(
+                bot,
+                track_global_scan_recovery_timing=True,
+            )
+            listening._activate_deferred_listener_windows(bot)
+
+        assert bot._global_scan_recovery_started_at == 0.0
+        assert any(
+            "首次扫空 4.5s，已提交 1 个按需补窗任务" in message
+            for message in logs
+        )
+
     def test_listener_specs_keep_same_named_private_and_group_distinct(self):
         bot = SimpleNamespace(
             config=SimpleNamespace(

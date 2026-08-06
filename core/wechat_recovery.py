@@ -358,6 +358,7 @@ class WeChatRecoveryCoordinator:
         if not self._process_lock.acquire(blocking=False):
             return "waiting"
         try:
+            recovery_started_at = self._monotonic_clock()
             with self._state_lock:
                 force_rebind = self._state.force_rebind
             did_rebind = force_rebind
@@ -396,6 +397,7 @@ class WeChatRecoveryCoordinator:
                     )
 
             self._set_client(client)
+            probe_finished_at = self._monotonic_clock()
             with self._state_lock:
                 self._state.attempted = True
                 self._state.probe_after = 0.0
@@ -413,6 +415,7 @@ class WeChatRecoveryCoordinator:
                 return self._finish_failure(exc, recovery_level, str(exc))
 
             if recovered:
+                rebuild_finished_at = self._monotonic_clock()
                 with self._state_lock:
                     self._clear_active_locked(clear_error=True)
                     self._state.force_rebind = False
@@ -421,12 +424,16 @@ class WeChatRecoveryCoordinator:
                     self.begin_observation(after_rebind=did_rebind)
                 self._mark_listener_alive()
                 recovery_level = "微信客户端重绑" if did_rebind else "监听窗口重建"
-                success = (
-                    "客户端已重新初始化，固定监听窗口已恢复"
-                    if did_rebind
-                    else "固定监听窗口已恢复"
+                probe_label = "客户端探活及重绑" if did_rebind else "客户端探活"
+                self._log(
+                    "SUCCESS",
+                    (
+                        f"自恢复【{recovery_level}】成功："
+                        f"总耗时 {rebuild_finished_at - recovery_started_at:.1f}s（"
+                        f"{probe_label} {probe_finished_at - recovery_started_at:.1f}s，"
+                        f"监听重置 {rebuild_finished_at - probe_finished_at:.1f}s）"
+                    ),
                 )
-                self._log("SUCCESS", f"自恢复【{recovery_level}】成功：{success}")
                 return "recovered"
 
             recovery_level = "微信客户端重绑" if did_rebind else "监听窗口重建"

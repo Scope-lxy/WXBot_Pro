@@ -16,6 +16,7 @@ from wxautox4 import WeChat
 from wxautox4.msgs.msg import parse_msg
 from wxautox4.param import WxParam
 
+from core.logger import log
 from core.message_pipeline import (
     ConversationRef,
     MessageEnvelope,
@@ -613,9 +614,9 @@ class WeChatUIRuntime:
                 raise
             registered = self._registered_listen_chat(name, requested)
             if registered is not None:
-                return registered
+                return registered, True
         try:
-            return add(nickname=name, callback=self._callback)
+            return add(nickname=name, callback=self._callback), chat is not None
         except Exception as exc:
             if self._is_move_window_invalid_handle(exc):
                 raise ListenSubwindowNotReady(f"监听子窗口重新登记失败：{name}") from exc
@@ -683,8 +684,21 @@ class WeChatUIRuntime:
             if not self._is_move_window_invalid_handle(exc):
                 raise
             try:
-                result = self._recover_move_window_add(name, requested, add)
+                result, recovered_existing_subwindow = self._recover_move_window_add(
+                    name,
+                    requested,
+                    add,
+                )
                 chat = self._validated_added_chat(name, requested, result)
+                if recovered_existing_subwindow:
+                    conversation = self._chat_conversation(chat)
+                    log(
+                        level="SUCCESS",
+                        message=(
+                            f"自恢复【局部找回】成功：会话“{conversation.who}”的 "
+                            "监听窗口已找回并重新调整"
+                        ),
+                    )
                 self._listener_operation_succeeded(self._chat_conversation(chat))
                 return chat
             except ListenSubwindowNotReady as recovery_exc:

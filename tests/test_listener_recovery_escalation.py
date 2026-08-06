@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from core.message_pipeline import ConversationRef
-from core.wechat_recovery import UI_STUCK_EXIT_CODE
+from core.wechat_recovery import UI_STUCK_EXIT_CODE, WeChatRecoveryCoordinator
 from feature import listening
 from wxbot_core import WXBot
 
@@ -61,6 +61,26 @@ def test_rebuild_and_rebind_success_logs_are_distinct():
     assert any("自恢复【微信客户端重绑】成功" in message for message in rebind_messages)
     assert probe.call_args.kwargs == {"force_rebind": True}
     assert _state(rebind_bot).after_rebind
+
+
+def test_recovery_success_log_includes_probe_and_rebuild_timings():
+    logs = []
+    clock_values = iter((10.0, 12.0, 15.0, 15.0))
+    coordinator = WeChatRecoveryCoordinator(
+        probe_client=lambda **_kwargs: object(),
+        rebuild_listener=lambda: True,
+        set_client=lambda _client: None,
+        is_client_binding_failure=lambda _exc: False,
+        log_event=lambda **kwargs: logs.append(kwargs),
+        wall_clock=lambda: 0.0,
+        monotonic_clock=lambda: next(clock_values),
+    )
+    coordinator.arm(RuntimeError("Find Control Timeout: ListItemControl"), now=-10)
+
+    assert coordinator.process(now=0) == "recovered"
+
+    message = logs[-1]["message"]
+    assert "总耗时 5.0s（客户端探活 2.0s，监听重置 3.0s）" in message
 
 
 def test_client_rebind_evidence_is_not_downgraded_by_a_later_desktop_error():

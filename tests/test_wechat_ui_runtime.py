@@ -1058,7 +1058,8 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
         runtime.bootstrap({"listeners": []})
 
-        identity = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
+        with patch("core.wechat_ui_runtime.log") as recovery_log:
+            identity = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
 
         self.assertEqual(
             identity,
@@ -1067,6 +1068,12 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(add_calls, ["张三", "张三"])
         self.assertEqual(resize_calls, [True])
         self.assertIsNotNone(client.callback)
+        recovery_log.assert_called_once()
+        self.assertEqual(recovery_log.call_args.kwargs["level"], "SUCCESS")
+        self.assertIn(
+            "自恢复【局部找回】成功",
+            recovery_log.call_args.kwargs["message"],
+        )
 
     def test_add_chat_reuses_registration_completed_before_move_window_1400(self):
         client = FakeClient()
@@ -1121,7 +1128,9 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
         runtime.bootstrap({"listeners": []})
 
-        with patch("core.wechat_ui_runtime.time.sleep") as sleep:
+        with patch("core.wechat_ui_runtime.time.sleep") as sleep, patch(
+            "core.wechat_ui_runtime.log"
+        ) as recovery_log:
             identity = runtime.add_listen({"conversation": "张三", "chat_type": "private"})
 
         self.assertEqual(
@@ -1131,6 +1140,7 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(add_calls, ["张三", "张三"])
         self.assertEqual(len(discovery_calls), 3)
         sleep.assert_called_once()
+        recovery_log.assert_not_called()
 
     def test_add_chat_stops_after_second_add_failure(self):
         client = FakeClient()

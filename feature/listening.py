@@ -67,6 +67,7 @@ def listener_recovery_coordinator(bot):
             bot,
             clear_runtime_cache=True,
             finish_message=None,
+            track_global_scan_recovery_timing=True,
         ),
         set_client=lambda client: setattr(bot, "wx", client),
         is_client_binding_failure=is_wechat_client_binding_failure,
@@ -724,9 +725,12 @@ def rebuild_listener_runtime(
     *,
     clear_runtime_cache=True,
     finish_message="监听器初始化完成",
+    track_global_scan_recovery_timing=False,
 ):
     if not getattr(bot, "wx", None):
         raise RuntimeError("当前未绑定微信客户端，无法重建监听器")
+    if track_global_scan_recovery_timing:
+        bot._global_scan_recovery_started_at = 0.0
 
     preserved_material_sources = material_source_listener_conversations(bot)
     _bot_log(bot, level="DEBUG", message="启动wxautox监听器...")
@@ -747,6 +751,8 @@ def rebuild_listener_runtime(
         if scan.get("fail_stopped"):
             raise RuntimeError(scan.get("last_error") or "全局扫描已停止")
         refs = [conversation for _label, conversation in specs]
+        if track_global_scan_recovery_timing:
+            bot._global_scan_recovery_started_at = time.monotonic()
         thread = bot._global_scan_thread
         if thread is None or not thread.is_alive():
             start_global_scan_pump(bot, refs)
@@ -1123,6 +1129,15 @@ def _handle_global_scan_batch(bot, batch):
 def _activate_deferred_listener_windows(bot):
     refs = list(bot._global_scan_deferred_listener_refs)
     bot._global_scan_deferred_listener_refs = []
+    recovery_started_at = float(
+        getattr(bot, "_global_scan_recovery_started_at", 0.0) or 0.0
+    )
+    bot._global_scan_recovery_started_at = 0.0
+    scan_elapsed_seconds = (
+        max(0.0, time.monotonic() - recovery_started_at)
+        if recovery_started_at
+        else 0.0
+    )
     ensure_material_source_listeners(bot)
     supervisor = ensure_listener_window_recovery_state(bot)
     now_ts = time.time()
@@ -1133,6 +1148,16 @@ def _activate_deferred_listener_windows(bot):
             now=now_ts,
         )
     _update_global_scan_state(bot, initial_drain_complete=True, last_empty_at=now_ts)
+    if recovery_started_at:
+        _bot_log(
+            bot,
+            level="INFO",
+            message=(
+                "自恢复【全局扫描】阶段耗时："
+                f"首次扫空 {scan_elapsed_seconds:.1f}s，"
+                f"已提交 {len(refs)} 个按需补窗任务"
+            ),
+        )
 
 
 def _run_global_scan_pump(bot):
