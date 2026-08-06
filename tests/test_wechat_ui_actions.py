@@ -8,7 +8,7 @@ from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 
-from core import wechat_ui_actions
+from core import wechat_recovery, wechat_ui_actions
 from wxbot_core import WXBot
 
 
@@ -383,7 +383,7 @@ class WechatUiActionsTests(unittest.TestCase):
         owner = wechat_ui_actions.WeChatUIOwner({
             wechat_ui_actions.UIIntentKind.SEND_TEXT: lambda _payload: calls.append("sent") or True,
         }, light_timeout=0.05, poll_interval=0.01)
-        watchdog = wechat_ui_actions.UIWatchdog(
+        watchdog = wechat_recovery.UIWatchdog(
             owner.current_action_snapshot,
             lambda _snapshot: timed_out.set(),
             poll_interval=0.01,
@@ -1103,7 +1103,7 @@ class WechatUiActionsTests(unittest.TestCase):
             started_at=time.monotonic() - 2,
             deadline_at=time.monotonic() - 1,
         )
-        watchdog = wechat_ui_actions.UIWatchdog(
+        watchdog = wechat_recovery.UIWatchdog(
             lambda: snapshot,
             lambda current: timed_out.set(),
             poll_interval=0.01,

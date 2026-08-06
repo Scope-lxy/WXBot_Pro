@@ -78,6 +78,32 @@ def test_client_rebind_evidence_is_not_downgraded_by_a_later_desktop_error():
     assert _state(bot).force_rebind
 
 
+def test_probe_rebind_evidence_stays_sticky_after_transient_desktop_error():
+    bot = _bot()
+    recovery = listening.listener_recovery_coordinator(bot)
+    recovery.arm(RuntimeError("Find Control Timeout: ListItemControl"), now=-10)
+
+    with patch(
+        "feature.listening.probe_listener_recovery_client",
+        side_effect=[
+            OSError(1400, "GetWindowRect", "无效的窗口句柄。"),
+            RuntimeError("事件无法调用任何订户"),
+        ],
+    ):
+        assert recovery.process(now=0) == "waiting"
+
+    assert recovery.state_snapshot().force_rebind
+    rebound = object()
+    with patch(
+        "feature.listening.probe_listener_recovery_client",
+        return_value=rebound,
+    ) as probe, patch("feature.listening.rebuild_listener_runtime", return_value=True):
+        assert recovery.process(now=6) == "recovered"
+
+    assert probe.call_args.kwargs == {"force_rebind": True}
+    assert bot.wx is rebound
+
+
 def test_observation_only_escalates_after_two_distinct_exact_local_failures():
     bot = _bot()
     listening._begin_listener_recovery_observation(bot, after_rebind=False, now=100)
@@ -177,6 +203,24 @@ def test_post_rebind_second_distinct_failure_requests_bounded_process_recovery()
         bot, ConversationRef("乙", "group"), now=102,
     ) == "restart"
     assert listening.process_listener_auto_recovery(bot) == "restart"
+    status = listening.listener_recovery_snapshot(bot)
+    assert status["listener_recovery_active"]
+    assert status["listener_recovery_status"] == "restart"
+    assert "重启机器人" in status["listener_recovery_message"]
+
+
+def test_recovery_snapshot_describes_rebind_instead_of_generic_rebuild():
+    bot = _bot()
+
+    assert listening.arm_listener_auto_recovery(
+        bot,
+        OSError(1400, "GetWindowRect", "无效的窗口句柄。"),
+    )
+
+    status = listening.listener_recovery_snapshot(bot)
+    assert status["listener_recovery_active"]
+    assert status["listener_recovery_status"] == "waiting"
+    assert "重绑微信客户端" in status["listener_recovery_message"]
 
 
 def test_controlled_restart_waits_for_owner_idle_and_uses_launcher_exit_code():

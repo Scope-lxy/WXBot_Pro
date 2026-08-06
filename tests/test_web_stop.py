@@ -17,6 +17,7 @@ class WebStopTests(unittest.TestCase):
     def test_runtime_health_exposes_only_local_operational_state(self):
         old_bot = web_server.bot
         old_thread = web_server.bot_thread
+        recovery = {"active": False}
         try:
             web_server.bot = SimpleNamespace(
                 _ui_owner=SimpleNamespace(
@@ -25,7 +26,9 @@ class WebStopTests(unittest.TestCase):
                 ),
                 is_stop_requested=lambda: False,
                 _runtime_instance_id='a' * 32,
-                _listener_auto_recovery_active=False,
+                listener_recovery_snapshot=lambda: {
+                    "listener_recovery_active": recovery["active"],
+                },
                 callback_is_die=False,
                 _global_scan_state={"fail_stopped": False},
             )
@@ -43,10 +46,10 @@ class WebStopTests(unittest.TestCase):
                 'bot_running': True,
                 'runtime_id': 'a' * 32,
             })
-            web_server.bot._listener_auto_recovery_active = True
+            recovery["active"] = True
             recovering = web_server.app.test_client().get('/runtime_health')
             self.assertFalse(recovering.get_json()['bot_running'])
-            web_server.bot._listener_auto_recovery_active = False
+            recovery["active"] = False
             web_server.bot._ui_owner.contact_recovery_snapshot = lambda: {"contact_recovery_active": True}
             contact_recovering = web_server.app.test_client().get('/runtime_health')
             self.assertFalse(contact_recovering.get_json()['bot_running'])

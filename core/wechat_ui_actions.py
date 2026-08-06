@@ -869,4 +869,3 @@ class WeChatUIOwner:
         finally:
             if pythoncom is not None:
                 pythoncom.CoUninitialize()
-

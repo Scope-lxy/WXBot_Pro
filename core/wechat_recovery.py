@@ -370,6 +370,8 @@ class WeChatRecoveryCoordinator:
             except Exception as initial_exc:
                 recovery_exc = initial_exc
                 if self._is_client_binding_failure(initial_exc):
+                    with self._state_lock:
+                        self._state.force_rebind = True
                     if not did_rebind:
                         did_rebind = True
                         self._log(

@@ -6,10 +6,12 @@ import time
 import unittest
 from pathlib import Path
 
-from core.wechat_ui_actions import (
+from core.wechat_recovery import (
     UI_OWNER_LOCK_RECOVERY_GRACE_SECONDS,
     UI_STUCK_EXIT_CODE,
     UI_STUCK_STOPPED_EXIT_CODE,
+)
+from core.wechat_ui_actions import (
     WXAUTOX_UI_LOCK_TIMEOUT_SECONDS,
     WeChatUIOwner,
 )
@@ -50,7 +52,7 @@ class UIStuckRecoveryTests(unittest.TestCase):
                 script = f"""
 import threading
 import time
-from core import wechat_ui_actions
+from core import wechat_recovery, wechat_ui_actions
 from wxbot_core import WXBot
 
 kind = wechat_ui_actions.UIIntentKind.{kind}
@@ -63,7 +65,7 @@ bot = WXBot.__new__(WXBot)
 bot._ui_owner = owner
 bot.is_stop_requested = lambda: False
 owner.start()
-watchdog = wechat_ui_actions.UIWatchdog(
+watchdog = wechat_recovery.UIWatchdog(
     owner.current_action_snapshot,
     bot._handle_ui_owner_timeout,
     poll_interval=0.01,
@@ -82,7 +84,7 @@ raise SystemExit(99)
             script = """
 import threading
 import time
-from core import wechat_ui_actions
+from core import wechat_recovery, wechat_ui_actions
 from wxbot_core import WXBot
 
 kind = wechat_ui_actions.UIIntentKind.SEND_TEXT
@@ -95,7 +97,7 @@ bot = WXBot.__new__(WXBot)
 bot._ui_owner = owner
 bot.is_stop_requested = lambda: False
 owner.start()
-watchdog = wechat_ui_actions.UIWatchdog(
+watchdog = wechat_recovery.UIWatchdog(
     owner.current_action_snapshot,
     bot._handle_ui_owner_timeout,
     poll_interval=0.01,
