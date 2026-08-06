@@ -1283,7 +1283,11 @@ def contact_directory_auto_maintenance_time_window_allows(bot, now=None):
 
 
 def is_contact_directory_auto_maintenance_idle(bot):
-    if getattr(getattr(bot, "config", None), "AllListen_switch", False):
+    config = getattr(bot, "config", None)
+    if (
+        getattr(config, "chat_switch", True)
+        and getattr(config, "AllListen_switch", False)
+    ):
         from feature.listening import global_scan_snapshot
 
         scan = global_scan_snapshot(bot)

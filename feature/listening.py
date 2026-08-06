@@ -679,7 +679,8 @@ def expected_listener_refs(bot):
 
 def listener_registration_specs(bot):
     specs = []
-    if not getattr(bot.config, "AllListen_switch", False):
+    private_enabled = bool(getattr(bot.config, "chat_switch", True))
+    if private_enabled and not getattr(bot.config, "AllListen_switch", False):
         specs.extend(
             ("用户", ConversationRef(str(item or "").strip(), "private"))
             for item in (getattr(bot.config, "listen_list", []) or [])
@@ -691,7 +692,7 @@ def listener_registration_specs(bot):
         )
     for item in getattr(bot, "all_Mode_listen_list", []) or []:
         conversation = _dynamic_listener_entry_ref(item)
-        if conversation is not None:
+        if conversation is not None and (private_enabled or conversation.chat_type != "private"):
             specs.append(("动态监听", conversation))
 
     unique_specs = []
@@ -737,7 +738,10 @@ def rebuild_listener_runtime(
     rebuild = getattr(bot.wx, "RebuildListeners", None)
     if not callable(rebuild):
         raise RuntimeError("当前微信客户端不支持 owner 监听器原子重建")
-    if bot.config.AllListen_switch:
+    if (
+        getattr(bot.config, "chat_switch", True)
+        and bot.config.AllListen_switch
+    ):
         rebuild(())
         scan = global_scan_snapshot(bot)
         if scan.get("fail_stopped"):
@@ -840,7 +844,11 @@ def maybe_reconcile_listener_subwindows(bot, force=False):
     if not getattr(bot, "wx", None):
         return []
 
-    all_listen = getattr(getattr(bot, "config", None), "AllListen_switch", False)
+    config = getattr(bot, "config", None)
+    all_listen = bool(
+        getattr(config, "chat_switch", True)
+        and getattr(config, "AllListen_switch", False)
+    )
     if all_listen:
         scan_state = global_scan_snapshot(bot)
         if (
@@ -1233,7 +1241,10 @@ def init_wx_listeners(bot):
     bot._init_prompt_system(str(account_area_dir(bot.config.DATA_DIR, wx_id, "chat_memory", create=True)))
     bot._listen_chats = {}
     bot._material_source_listener_refs = {}
-    if getattr(bot.config, "AllListen_switch", False):
+    if (
+        getattr(bot.config, "chat_switch", True)
+        and getattr(bot.config, "AllListen_switch", False)
+    ):
         bot._drain_message_recovery(defer_for_global_scan=True)
         bot._ui_ingress_ready.set()
         start_global_scan_pump(bot, listener_refs)
@@ -1497,6 +1508,8 @@ def is_chat_listened(bot, chat, *, chat_type=None):
 
 
 def alllisten_mode(bot, last_time, timeout=10):
+    if not getattr(bot.config, "chat_switch", True):
+        return last_time
     flush_listener_window_recovery_tasks(bot)
 
     def remove_timeout_listen(chat_time_out=600):

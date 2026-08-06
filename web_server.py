@@ -2199,6 +2199,7 @@ def dashboard():
     _ensure_prompt_dir()
     prompts = _get_prompts_list()
     config.setdefault('default_prompt', '默认')
+    config.setdefault('chat_switch', True)
     config.setdefault('listen_list', [])
     config.setdefault('global_blacklist', [])
     config.setdefault('chat_listen_only', False)
@@ -2401,8 +2402,17 @@ def _dashboard_config_status_snapshot(cfg):
         'api_name': api_snapshot.get('sdk', ''),
         'model': api_snapshot.get('model', ''),
         'current_interface': api_snapshot.get('current_interface', '未连接'),
-        'listen_mode': '黑名单' if cfg.get('AllListen_switch') else '白名单',
-        'listen_count': len(global_blacklist if cfg.get('AllListen_switch') else listen_list),
+        'chat_switch': bool(cfg.get('chat_switch', True)),
+        'listen_mode': (
+            ('全部好友（除黑名单）' if cfg.get('AllListen_switch') else '仅白名单')
+            if cfg.get('chat_switch', True)
+            else '已关闭'
+        ),
+        'listen_count': (
+            len(global_blacklist if cfg.get('AllListen_switch') else listen_list)
+            if cfg.get('chat_switch', True)
+            else 0
+        ),
         'group_switch': bool(cfg.get('group_switch', False)),
         'group_count': len(groups),
         'msg_received': 0,
@@ -2765,8 +2775,17 @@ def _enrich_dashboard_status_snapshot(status, *, cfg=None, wx_id='', runtime_mat
     listen_list = [str(item).strip() for item in (cfg.get('listen_list', []) or []) if str(item).strip()]
     global_blacklist = [str(item).strip() for item in (cfg.get('global_blacklist', []) or []) if str(item).strip()]
     groups = [str(item).strip() for item in (cfg.get('group', []) or []) if str(item).strip()]
-    status['listen_mode'] = '黑名单' if cfg.get('AllListen_switch') else '白名单'
-    status['listen_count'] = len(global_blacklist if cfg.get('AllListen_switch') else listen_list)
+    status['chat_switch'] = bool(cfg.get('chat_switch', True))
+    status['listen_mode'] = (
+        ('全部好友（除黑名单）' if cfg.get('AllListen_switch') else '仅白名单')
+        if status['chat_switch']
+        else '已关闭'
+    )
+    status['listen_count'] = (
+        len(global_blacklist if cfg.get('AllListen_switch') else listen_list)
+        if status['chat_switch']
+        else 0
+    )
     status['group_switch'] = bool(cfg.get('group_switch', False))
     status['group_count'] = len(groups)
     if 'current_interface' not in status:
@@ -2804,6 +2823,7 @@ def _enrich_dashboard_status_snapshot(status, *, cfg=None, wx_id='', runtime_mat
 
 def _coerce_bool_fields(merged_config):
     boolean_fields = [
+        'chat_switch',
         'AllListen_switch',
         'AllListen_filter_mute',
         'chat_listen_only',
@@ -6785,6 +6805,7 @@ def main():
                 "backup_chat_api_id": "",
                 "api_capability_map": {},
                 "admin": "文件传输助手",
+                "chat_switch": True,
                 "AllListen_switch": False,
                 "AllListen_filter_mute": True,
                 "chat_listen_only": False,

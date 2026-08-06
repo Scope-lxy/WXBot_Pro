@@ -121,6 +121,58 @@ class RemoveListenChatTests(unittest.TestCase):
             index for index, item in enumerate(order) if isinstance(item, tuple) and item[0] == "scan"
         ))
 
+    def test_private_master_switch_skips_global_scan_but_keeps_independent_listeners(self):
+        order = []
+        group_ref = ConversationRef("测试群", "group")
+        source_ref = ConversationRef("文件传输助手", "private")
+        config = SimpleNamespace(
+            DATA_DIR="data",
+            AtMe="",
+            chat_switch=False,
+            AllListen_switch=True,
+            listen_list=["张三"],
+            group_switch=True,
+            group=[group_ref.who],
+            bind_account_wx_id=lambda _wx_id: order.append("bind"),
+        )
+        bot = SimpleNamespace(
+            config=config,
+            all_Mode_listen_list=[],
+            _bootstrap_ui_owner=lambda _listeners: {"nickname": "机器人", "wx_id": "wxid-test"},
+            _voice_reply_state_path=lambda: "voice-state.json",
+            _set_material_outreach_namespace=lambda _wx_id: order.append("namespace"),
+            _initialize_message_runtime=lambda _wx_id: order.append("runtime"),
+            _init_prompt_system=lambda _path: order.append("prompt"),
+            _drain_message_recovery=lambda **_kwargs: order.append("recovery"),
+            _register_ui_listener_names=lambda refs: order.append(("register", list(refs))) or list(refs),
+            _mark_context_repair_needed_after_restore=lambda name, *, chat_type: order.append(
+                ("repair", chat_type, name)
+            ),
+            _register_runtime_task_schedules=lambda: order.append("schedules"),
+            _ui_ingress_ready=SimpleNamespace(set=lambda: order.append("ready")),
+            _ui_owner=object(),
+            _listen_chats={},
+            _material_source_runtime_enabled=lambda: True,
+        )
+
+        with mock.patch.object(listening, "migrate_default_account", return_value=False), mock.patch.object(
+            listening, "load_voice_reply_state", return_value={}
+        ), mock.patch.object(listening, "account_area_dir", return_value="memory"), mock.patch.object(
+            listening, "ensure_material_source_listeners", return_value=[source_ref]
+        ), mock.patch.object(
+            listening,
+            "start_global_scan_pump",
+            side_effect=AssertionError("私聊总开关关闭时不得启动全局扫描"),
+        ), mock.patch.object(listening, "_bot_log"):
+            self.assertTrue(listening.init_wx_listeners(bot))
+
+        registered = next(item[1] for item in order if isinstance(item, tuple) and item[0] == "register")
+        self.assertEqual(registered, [group_ref])
+        self.assertEqual(
+            [item for item in order if isinstance(item, tuple) and item[0] == "repair"],
+            [("repair", "group", group_ref.who), ("repair", "private", source_ref.who)],
+        )
+
     def test_global_listener_rebuild_defers_windows_until_scan_is_empty(self):
         calls = []
         thread = SimpleNamespace(is_alive=lambda: True)
@@ -181,6 +233,25 @@ class RemoveListenChatTests(unittest.TestCase):
                 ("用户", "private", "同名会话"),
                 ("群组", "group", "同名会话"),
             ],
+        )
+
+    def test_listener_specs_exclude_private_windows_when_master_switch_is_off(self):
+        bot = SimpleNamespace(
+            config=SimpleNamespace(
+                chat_switch=False,
+                AllListen_switch=False,
+                listen_list=["张三"],
+                group_switch=True,
+                group=["测试群"],
+            ),
+            all_Mode_listen_list=[["旧私聊", 1.0, "private"]],
+        )
+
+        specs = listening.listener_registration_specs(bot)
+
+        self.assertEqual(
+            [(label, ref.chat_type, ref.who) for label, ref in specs],
+            [("群组", "group", "测试群")],
         )
 
     def test_ui_listener_registration_payload_always_includes_chat_type(self):

@@ -1154,6 +1154,8 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .listen-prompt-title-row .cfg-hint { text-align: right; }
 .listen-page-head-actions { gap: 10px; }
 .listen-page-head-actions .cfg-inline-control { width: auto; min-width: 220px; }
+.listen-page-head-actions .listen-scope-select { min-width: 220px; }
+.private-listen-dependent[aria-disabled="true"] { opacity: .62; }
 .listen-config-shell,
 .group-config-shell { display: grid; grid-template-columns: var(--ui-split-main-columns); gap: 16px; align-items: start; }
 .new-friend-config-shell { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
@@ -1382,8 +1384,9 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
   .listen-top-grid { grid-template-columns: 1fr; }
   .listen-prompt-title-row { grid-template-columns: 1fr; }
   .listen-prompt-title-row .cfg-hint { text-align: left; }
-  .listen-page-head-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
-  .listen-page-head-actions .cfg-inline-control { width: 100%; min-width: 0; }
+  .listen-page-head-actions { width: 100%; justify-content: flex-start; flex-wrap: nowrap; }
+  .listen-page-head-actions .cfg-inline-control { flex: 1 1 auto; width: auto; min-width: 0; }
+  .listen-page-head-actions .ui-head-switch { flex: 0 0 auto; }
   .form-select.ui-head-select { width: 100%; min-width: 0; }
   .listen-config-shell,
   .group-config-shell { grid-template-columns: 1fr; }

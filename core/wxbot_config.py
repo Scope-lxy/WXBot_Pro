@@ -60,6 +60,7 @@ class WXBotConfig:
         self.config = {}
 
         # ---------- 全局监听开关 ----------
+        self.chat_switch = True          # 普通私聊监听总开关
         self.AllListen_switch = False   # True=黑名单模式，False=白名单模式
         self.chat_listen_only = False    # 私聊只监听不 AI 回复
 
@@ -217,6 +218,7 @@ class WXBotConfig:
                     "api_id": default_api_id,
                     "backup_chat_api_id": "",
                     "api_capability_map": {},
+                    "chat_switch": True,
                     "AllListen_switch": False,
                     "AllListen_filter_mute": True,
                     "chat_listen_only": False,
@@ -711,7 +713,8 @@ class WXBotConfig:
         if not isinstance(self.global_blacklist, list):
             self.global_blacklist = []
             self.config['global_blacklist'] = []
-        self.AllListen_switch     = self.config.get('AllListen_switch')
+        self.chat_switch          = bool(self.config.get('chat_switch', True))
+        self.AllListen_switch     = bool(self.config.get('AllListen_switch', False))
         self.AllListen_filter_mute = bool(self.config.get('AllListen_filter_mute', True))
         self.chat_listen_only     = bool(self.config.get('chat_listen_only', False))
 

@@ -9269,8 +9269,17 @@ class WXBot:
             "current_interface":  current_interface,
             "api_index":          active_index + 1 if active_index >= 0 else 0,
             "api_total":          len(self.config.api_configs),
-            "listen_mode":        "黑名单" if self.config.AllListen_switch else "白名单",
-            "listen_count":       len(self.config.global_blacklist if self.config.AllListen_switch else self.config.listen_list),
+            "chat_switch":        getattr(self.config, "chat_switch", True),
+            "listen_mode":        (
+                ("全部好友（除黑名单）" if self.config.AllListen_switch else "仅白名单")
+                if getattr(self.config, "chat_switch", True)
+                else "已关闭"
+            ),
+            "listen_count":       (
+                len(self.config.global_blacklist if self.config.AllListen_switch else self.config.listen_list)
+                if getattr(self.config, "chat_switch", True)
+                else 0
+            ),
             "chat_listen_only":    getattr(self.config, "chat_listen_only", False),
             "group_switch":       self.config.group_switch,
             "group_listen_only":   getattr(self.config, "group_listen_only", False),
@@ -9489,7 +9498,7 @@ class WXBot:
                 # ---- 全局监听模式（黑名单模式下启用）----
                 if self.is_stop_requested():
                     break
-                if self.config.AllListen_switch:
+                if getattr(self.config, "chat_switch", True) and self.config.AllListen_switch:
                     try:
                         last_time = self.ALLListen_mode(last_time=last_time)
                     except Exception as e:

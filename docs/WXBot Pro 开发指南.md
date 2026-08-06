@@ -59,7 +59,7 @@
 
 `WXBot.__init__()` 初始化配置、聊天接口主备状态、回复轮数存储、Prompt 系统、素材转发和消息合并状态；微信 UI owner 在监听初始化时创建。
 
-真正接入微信发生在 `init_wx_listeners()`：启动 UI owner，由 `WeChatUIRuntime` 在 owner 线程创建 `WeChat`、读取当前 `wx_id` 并启动监听器。白名单模式随后注册固定来源；黑名单模式先启动全局扫描泵，首次空扫描后才放行固定群聊和素材来源建窗。业务层只接收纯身份和消息快照。
+真正接入微信发生在 `init_wx_listeners()`：启动 UI owner，由 `WeChatUIRuntime` 在 owner 线程创建 `WeChat`、读取当前 `wx_id` 并启动监听器。普通私聊总开关开启且范围为 `仅白名单` 时注册白名单固定窗口；范围为 `全部好友（除黑名单）` 时先启动全局扫描泵，首次空扫描后才放行固定群聊和素材来源建窗。私聊总开关关闭时不登记白名单、不启动全局扫描，但群聊和素材来源仍按各自配置登记。业务层只接收纯身份和消息快照。
 
 素材来源不在配置中保存私聊 / 群聊类型：建窗时必须让微信按名称返回实际窗口，再把发现的内部 `ConversationRef` 缓存到运行期；不得把素材来源默认成私聊，也不得要求用户重复配置普通监听名单。
 
@@ -185,7 +185,7 @@ owner 对普通任务按 FIFO 执行，整个 handler 都处于同一段 wxautox
 
 ### 全局扫描与动态监听
 
-黑名单模式只有一个全局扫描泵，任意时刻最多一个 `mode=next` 的 `POLL_MESSAGES` 在排队或执行。wxautox 返回 `official` 等非 `private / group` 会话的真实消息时，必须在 UI 原始结果进入 `ConversationRef` 前明确跳过，不落库、不建窗，并按无新增事实退避；不得因此停止扫描泵。`GetNextNewMessage` 的 `msg` 和 callback 捕获均为空时，一律返回正常空批次，即使 wxautox 此时把 `client.chat_type` 留为 `None`；空批次不带“不支持会话”标记、不写日志，并进入 3 秒低频。每个非空业务扫描批次在 owner 外通过 `InboundCoordinator.accept_batch()` 和一个 SQLite 事务保存后立刻进入业务队列；不等待其他会话先被读取。启动积压未读尚未清空前不得申请动态监听窗口，首次空扫描后才恢复按需建窗；稳定运行后的新消息仍可登记建窗。重复结果没有新增事实时指数退避到最多 5 秒。SQLite 提交失败必须 fail-stop，不能继续把微信未读标成已读。
+私聊总开关开启且范围为 `全部好友（除黑名单）` 时只有一个全局扫描泵，任意时刻最多一个 `mode=next` 的 `POLL_MESSAGES` 在排队或执行。wxautox 返回 `official` 等非 `private / group` 会话的真实消息时，必须在 UI 原始结果进入 `ConversationRef` 前明确跳过，不落库、不建窗，并按无新增事实退避；不得因此停止扫描泵。`GetNextNewMessage` 的 `msg` 和 callback 捕获均为空时，一律返回正常空批次，即使 wxautox 此时把 `client.chat_type` 留为 `None`；空批次不带“不支持会话”标记、不写日志，并进入 3 秒低频。每个非空业务扫描批次在 owner 外通过 `InboundCoordinator.accept_batch()` 和一个 SQLite 事务保存后立刻进入业务队列；不等待其他会话先被读取。启动积压未读尚未清空前不得申请动态监听窗口，首次空扫描后才恢复按需建窗；稳定运行后的新消息仍可登记建窗。重复结果没有新增事实时指数退避到最多 5 秒。SQLite 提交失败必须 fail-stop，不能继续把微信未读标成已读。
 
 扫描前通过同一 owner 动作读取轻量未读快照。真实好友消息少于快照未读数、扫描耗时达到 wxautox4 的 10 秒上限，或返回达到 30 条上限时，保留会话级覆盖诊断并写入本地 `DEBUG` 日志；已取得事实继续回复，首页仍显示正常运行。只有扫描 fail-stop 才进入用户可见的红色异常状态并让 `/runtime_health` 返回不健康。第一阶段禁止自动 `deep`，也不修改 wxautox4 内置上限。
 

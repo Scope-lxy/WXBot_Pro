@@ -918,21 +918,25 @@ html.icons-pref-local [class*=" bi-"]::before {
         <i class="bi bi-ear"></i>
         <h5>私聊监听</h5>
         <span class="desc">设置机器人监听和回复哪些好友消息</span>
-        <div class="ui-head__actions">
-          <label class="ui-switch ui-switch--l1 ui-head-switch" for="AllListen_switch" title="监听全部私聊（黑名单除外）">
-            <input class="form-check-input" type="checkbox" id="AllListen_switch" name="AllListen_switch" {% if config.AllListen_switch %}checked{% endif %}>
+        <div class="ui-head__actions listen-page-head-actions">
+          <select class="form-select cfg-inline-control ui-head-select listen-scope-select" id="AllListen_switch" name="AllListen_switch" aria-label="监听范围" title="监听范围">
+            <option value="false" {% if not config.AllListen_switch %}selected{% endif %}>监听范围：仅白名单好友</option>
+            <option value="true" {% if config.AllListen_switch %}selected{% endif %}>监听范围：全部（除黑名单）</option>
+          </select>
+          <label class="ui-switch ui-switch--l1 ui-head-switch" for="chat_switch" title="私聊监听总开关" aria-label="私聊监听总开关">
+            <input class="form-check-input" type="checkbox" id="chat_switch" name="chat_switch" {% if config.get('chat_switch', True) %}checked{% endif %}>
             <span class="ui-switch-knob"></span>
           </label>
         </div>
       </div>
       <div class="listen-page-summary" id="listen_page_summary">
-        <span class="ui-pill ui-pill--status {% if config.AllListen_switch %}is-danger{% else %}is-success{% endif %}" id="listen_summary_mode">{% if config.AllListen_switch %}黑名单模式{% else %}白名单模式{% endif %}</span>
+        <span class="ui-pill ui-pill--status {% if config.get('chat_switch', True) %}is-success{% else %}is-danger{% endif %}" id="listen_summary_mode">私聊监听：{% if config.get('chat_switch', True) %}开{% else %}关{% endif %}</span>
         <span id="listen_summary_whitelist" class="ui-pill is-success">白名单 {{ config.get('listen_list', [])|length }}</span>
         <span id="listen_summary_blacklist" class="ui-pill is-danger">黑名单 {{ config.get('global_blacklist', [])|length }}</span>
         <span id="listen_summary_override" class="ui-pill is-info">专属配置 {{ config.get('listen_list', [])|length }}</span>
       </div>
-      <div class="listen-config-shell">
-        {% set listen_rule_initial_tab = 'whitelist' %}
+      <div class="listen-config-shell private-listen-dependent">
+        {% set listen_rule_initial_tab = 'blacklist' if config.AllListen_switch else 'whitelist' %}
         <div class="listen-rule-card">
           <div class="ui-head ui-head--section listen-rule-head">
             <div class="ui-head__main">
@@ -1010,7 +1014,7 @@ html.icons-pref-local [class*=" bi-"]::before {
         </div>
       </div>
     </div>
-    <div class="cfg-card chat-ability-card chat-ability-card--recognition">
+    <div class="cfg-card chat-ability-card chat-ability-card--recognition private-listen-dependent">
       <div class="ui-head ui-head--page">
         <i class="bi bi-image"></i>
         <h5>内容识别</h5>
@@ -1041,7 +1045,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       </div>
     </div>
     {% set chat_merge_delay = config.get('chat_message_merge_delay', 20) | int %}
-    <div class="cfg-card chat-ability-card chat-ability-card--reply">
+    <div class="cfg-card chat-ability-card chat-ability-card--reply private-listen-dependent">
       <div class="ui-head ui-head--page"><i class="bi bi-reply"></i><h5>回复行为</h5><span class="desc">设置私聊回复的次数、节奏、拆分和语音发送</span></div>
       <div class="chat-ability-stack">
         <div class="chat-ability-block chat-ability-block--text-limit">
@@ -7679,17 +7683,28 @@ $(function(){
   }
 
   function refreshListenRuleSummary(){
-    var isGlobal = $('#AllListen_switch').is(':checked');
+    var isEnabled = $('#chat_switch').is(':checked');
+    var isGlobal = $('#AllListen_switch').val() === 'true';
     $('#listen_summary_mode')
-      .text(isGlobal ? '黑名单模式' : '白名单模式')
-      .toggleClass('is-danger', isGlobal)
-      .toggleClass('is-success', !isGlobal);
+      .text('私聊监听：' + (isEnabled ? '开' : '关'))
+      .toggleClass('is-danger', !isEnabled)
+      .toggleClass('is-success', isEnabled);
     $('#listen_summary_whitelist').text('白名单 ' + collectListenNamesFromUI().length);
     $('#listen_summary_blacklist').text('黑名单 ' + collectBlacklistNamesFromUI().length);
     $('#listen_summary_override').text('专属配置 ' + collectListenNamesFromUI().length);
     $('#listen_rule_tabs .listen-rule-tab').removeClass('is-effective');
     $('#listen_rule_tabs .listen-rule-tab[data-target="'+(isGlobal ? 'blacklist' : 'whitelist')+'"]').addClass('is-effective');
     refreshListenRuleEmptyStates();
+  }
+
+  function syncPrivateListenControls(){
+    var enabled = $('#chat_switch').is(':checked');
+    $('#AllListen_switch, #listen_rule_tabs .listen-rule-tab, #btn-add-listen-rule-item, #listen_whitelist_container input, #listen_whitelist_container select, #listen_whitelist_container button, #listen_blacklist_container input, #listen_blacklist_container button, #chat_listen_only, #AllListen_filter_mute')
+      .prop('disabled', !enabled);
+    $('#tab-listen .private-listen-dependent')
+      .attr('aria-disabled', enabled ? 'false' : 'true')
+      .each(function(){ this.toggleAttribute('inert', !enabled); });
+    refreshListenRuleSummary();
   }
 
   function refreshGroupSummary(){
@@ -7762,8 +7777,11 @@ $(function(){
   });
 
   $('#AllListen_switch').on('change', function(){
+    switchListenRuleTab($(this).val() === 'true' ? 'blacklist' : 'whitelist');
     refreshListenRuleSummary();
   });
+  $('#chat_switch').on('change', syncPrivateListenControls);
+  syncPrivateListenControls();
 
   $(document).on('input change', '#listen_whitelist_container input, #listen_whitelist_container select, #listen_blacklist_container input', function(){
     refreshListenRuleSummary();
@@ -10057,7 +10075,8 @@ $(function(){
       api_id:api_id,
       backup_chat_api_id:String($('#backup_chat_api_id').val() || ''),
       backup_chat_api_failover_threshold:parseInt($('#backup_chat_api_failover_threshold').val(), 10)||3,
-      AllListen_switch:$('#AllListen_switch').is(':checked'),
+      chat_switch:$('#chat_switch').is(':checked'),
+      AllListen_switch:$('#AllListen_switch').val()==='true',
       AllListen_filter_mute:$('#AllListen_filter_mute').is(':checked'),
       chat_listen_only:$('#chat_listen_only').is(':checked'),
       group_switch:$('#group_switch').is(':checked'),

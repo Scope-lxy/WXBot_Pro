@@ -797,6 +797,58 @@ class MessageBehaviorTests(unittest.TestCase):
         self.assertEqual(chat.sent, ["回复：你好"])
         self.assertEqual(bot.last_msg_sender, "张三")
 
+    def test_private_master_switch_still_accepts_material_source_messages(self):
+        handled = []
+        terminalized = []
+        bot = SimpleNamespace(
+            config=SimpleNamespace(
+                chat_switch=False,
+                AllListen_switch=False,
+                listen_list=[],
+                group=[],
+                group_switch=False,
+                chat_image_recognition_switch=False,
+                chat_voice_recognition_switch=False,
+            ),
+            msg_received_count=0,
+            last_msg_time="",
+            last_msg_sender="",
+            _handle_material_source_message=lambda chat, message: handled.append(
+                (chat.who, message.content)
+            ) or True,
+            _mark_inbound_no_reply=lambda message: terminalized.append(message.content),
+            process_message=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("素材来源不应进入普通私聊路由")
+            ),
+        )
+        chat = SimpleNamespace(who="文件传输助手", chat_type="private")
+        message = SimpleNamespace(type="text", attr="friend", sender="自己", content="素材")
+
+        result = message_routing.handle_friend_message_callback(bot, message, chat, text="")
+
+        self.assertTrue(result)
+        self.assertEqual(handled, [(chat.who, message.content)])
+        self.assertEqual(terminalized, [message.content])
+
+    def test_private_master_switch_rejects_ordinary_private_routing(self):
+        bot = SimpleNamespace(
+            config=SimpleNamespace(
+                chat_switch=False,
+                AllListen_switch=False,
+                listen_list=["张三"],
+                group_switch=False,
+                group=[],
+            )
+        )
+
+        route = message_routing.route_process_message(
+            bot,
+            SimpleNamespace(who="张三", chat_type="private"),
+            SimpleNamespace(type="text", content="你好"),
+        )
+
+        self.assertEqual(route, {"action": "skip"})
+
     def test_alllisten_timestamp_update_still_refreshes_runtime_entry(self):
         bot = SimpleNamespace(
             config=SimpleNamespace(AllListen_switch=True),

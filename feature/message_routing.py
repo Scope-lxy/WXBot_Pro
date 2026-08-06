@@ -167,7 +167,10 @@ def mark_failed_voice_silent_ignore(bot, msg) -> None:
 
 
 def _update_alllisten_timestamp(bot, chat_name: str, chat_type: str) -> None:
-    if not getattr(bot.config, "AllListen_switch", False):
+    if not (
+        getattr(bot.config, "chat_switch", True)
+        and getattr(bot.config, "AllListen_switch", False)
+    ):
         return
     now_ts = _bot_time_module(bot).time()
     for listen_chat in getattr(bot, "all_Mode_listen_list", []):
@@ -258,6 +261,8 @@ def _is_monitored_chat(bot, chat) -> bool:
             getattr(bot.config, "group_switch", False)
             and chat_name in getattr(bot.config, "group", [])
         )
+    if not getattr(bot.config, "chat_switch", True):
+        return False
     if getattr(bot.config, "AllListen_switch", False):
         return chat_name not in getattr(bot.config, "global_blacklist", [])
     return chat_name in getattr(bot.config, "listen_list", [])
