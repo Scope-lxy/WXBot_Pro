@@ -237,7 +237,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$ErrorActionPreference='Stop';" ^
   "$targetRoot=Join-Path (Get-Location).Path 'venv\tools\ffmpeg';" ^
   "$targetBin=Join-Path $targetRoot 'bin';" ^
-  "$tempDir=Join-Path $env:TEMP ('siver_ffmpeg_' + [guid]::NewGuid().ToString('N'));" ^
+  "$tempDir=Join-Path $env:TEMP ('wxbot_pro_ffmpeg_' + [guid]::NewGuid().ToString('N'));" ^
   "$zipPath=Join-Path $tempDir 'ffmpeg.zip';" ^
   "$extractDir=Join-Path $tempDir 'extract';" ^
   "$urls=@(" ^

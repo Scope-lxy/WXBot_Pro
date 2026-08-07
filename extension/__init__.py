@@ -1,2 +1,1 @@
-"""Optional external extension modules for SiverWXbot_plus."""
-
+"""Optional external extension modules for WXBot Pro."""

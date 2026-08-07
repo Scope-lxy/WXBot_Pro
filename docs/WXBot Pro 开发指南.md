@@ -22,7 +22,7 @@
 - `core/wechat_ui_runtime.py`：唯一持有 wxautox4 对象的 owner 适配层，负责真实微信读取、发送和窗口操作。
 - `core/`：底座能力，例如配置、Prompt、媒体、记忆、发送、通讯录身份校准和调度。
 - `feature/`：业务规则，例如监听维护、素材转发、定时任务。
-- `extension/`：外部增强，例如邮件通知、SiverPanel 远程访问。
+- `extension/`：外部增强，例如邮件通知、WXBot Pro 远程访问。
 - `tools/`：本地复现脚本、备份脚本和专项测试辅助，只放临时、测试性质工具。
 - `tests/`：行为保护测试。
 

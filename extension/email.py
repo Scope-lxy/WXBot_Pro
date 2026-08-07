@@ -1,4 +1,4 @@
-"""Email notification support for SiverWXbot_plus."""
+"""Email notification support for WXBot Pro."""
 
 import json
 import smtplib

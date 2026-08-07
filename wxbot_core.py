@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Siver微信机器人 siver_wxbot - 面向对象版本 - wxautox4版本
-# 作者：https://www.siver.top
+# WXBot Pro - 面向对象版本 - wxautox4版本
+# 上游信息见 source_repo_url
 
 version = "V4.7.30"
 version_log = "V4.7.30 - 关键词回复支持引用和群内@发言人，增加已验证 wxautox4 版本提示"
@@ -9352,7 +9352,7 @@ class WXBot:
         """Request a stop without waiting for a potentially stuck UI call."""
         try:
             self._request_wxbot_stop_cleanup()
-            log(level="WARNING", message='siver_wxbot正在停止！！')
+            log(level="WARNING", message='WXBot Pro正在停止！！')
             return True
         except Exception as e:
             nickname = getattr(getattr(self, "wx", None), "nickname", "wxbot")
@@ -9376,12 +9376,12 @@ class WXBot:
                 self._ui_ingress_stop.set()
                 owner.stop(cancel_pending=True)
                 self._ui_owner = None
-            log(level="WARNING", message='siver_wxbot安全退出！！')
+            log(level="WARNING", message='WXBot Pro安全退出！！')
             return True
         listener = getattr(self, "wx", None)
         if listener and hasattr(listener, "StopListening"):
             listener.StopListening()
-        log(level="WARNING", message='siver_wxbot安全退出！！')
+        log(level="WARNING", message='WXBot Pro安全退出！！')
         return True
 
     def _run_wxbot_main(self):
@@ -9576,7 +9576,7 @@ class WXBot:
         try:
             return self._run_wxbot_main()
         finally:
-            log(level="WARNING", message='siver_wxbot主线程安全退出，正在退出监听...')
+            log(level="WARNING", message='WXBot Pro主线程安全退出，正在退出监听...')
             try:
                 self._finish_wxbot_stop()
             except Exception as e:

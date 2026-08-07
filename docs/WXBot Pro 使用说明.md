@@ -262,7 +262,7 @@
 
 ## 远程访问
 
-远程访问服务是 SiverPanel 提供的可选能力，用于把本机管理面板通过固定网址暴露给外部浏览器。不使用远程访问不影响本地使用。
+远程访问服务是 WXBot Pro 提供的可选能力，用于把本机管理面板通过固定网址暴露给外部浏览器。不使用远程访问不影响本地使用。
 
 使用前请确认：
 
@@ -280,4 +280,4 @@
 
 ## 相关项目
 
-上游项目地址：[https://github.com/SiverKing/SiverWXbot_plus](https://github.com/SiverKing/SiverWXbot_plus)
+上游项目地址：[上游项目仓库](https://github.com/SiverKing/SiverWXbot_plus)

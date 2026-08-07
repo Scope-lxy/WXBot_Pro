@@ -15,7 +15,7 @@ if (-not (Test-Path -LiteralPath $zipDir)) {
 Write-Host "Packaging custom build..."
 Write-Host "Output: $zipPath"
 
-$stage = Join-Path $env:TEMP ("siver_pack_" + [guid]::NewGuid().ToString("N"))
+$stage = Join-Path $env:TEMP ("wxbot_pro_pack_" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $stage | Out-Null
 
 try {
