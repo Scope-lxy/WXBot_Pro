@@ -109,6 +109,7 @@ class WXBotConfig:
         self.chat_prompt_map  = {}          # 白名单模式私聊用户 -> prompt 名称
         self.chat_api_map     = {}          # 私聊白名单用户 -> API 接口索引
         self.chat_tts_map     = {}          # 私聊白名单用户 -> TTS 接口索引
+        self.chat_text_reply_limit_count_map = {}  # 私聊好友 -> 单独回复次数限制
         self.group_prompt_map = {}          # 群组名称 -> prompt 名称
 
         # ---------- 会话记忆配置 ----------
@@ -256,6 +257,7 @@ class WXBotConfig:
                     "chat_prompt_map": {},
                     "chat_api_map": {},
                     "chat_tts_map": {},
+                    "chat_text_reply_limit_count_map": {},
                     "group_prompt_map": {},
                     "chat_memory_switch": True,
                     "chat_memory_message_threshold": 100,
@@ -886,6 +888,19 @@ class WXBotConfig:
         self.chat_text_reply_limit_reply = self.config.get('chat_text_reply_limit_reply', '')
         self.chat_text_reply_limit_reply_once = bool(self.config.get('chat_text_reply_limit_reply_once', False))
         self.chat_text_reply_limit_ai_reply = bool(self.config.get('chat_text_reply_limit_ai_reply', True))
+        raw_chat_reply_limit_map = self.config.get('chat_text_reply_limit_count_map', {})
+        self.chat_text_reply_limit_count_map = {}
+        if isinstance(raw_chat_reply_limit_map, dict):
+            for raw_name, raw_count in raw_chat_reply_limit_map.items():
+                name = str(raw_name or '').strip()
+                if not name:
+                    continue
+                try:
+                    count = int(raw_count)
+                except (TypeError, ValueError):
+                    continue
+                self.chat_text_reply_limit_count_map[name] = max(0, min(99999, count))
+        self.config['chat_text_reply_limit_count_map'] = self.chat_text_reply_limit_count_map
         self.group_text_reply_limit_switch = bool(self.config.get('group_text_reply_limit_switch', False))
         self.group_text_reply_limit_count = self._coerce_int_range(self.config.get('group_text_reply_limit_count', 50), 50, 0, 99999)
         self.group_text_reply_limit_hours = self._coerce_int_range(self.config.get('group_text_reply_limit_hours', 5), 5, 0, 720)

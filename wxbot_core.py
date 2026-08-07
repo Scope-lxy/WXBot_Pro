@@ -4946,11 +4946,8 @@ class WXBot:
                     message=message,
                     quote_first=bool(getattr(self.config, "chat_keyword_reply_quote", False)),
                 )
-                if send_success and getattr(self.config, "chat_text_reply_limit_switch", False) and user_key:
-                    self.reply_count_store.increment_ai_count(
-                        user_key,
-                        limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 5),
-                    )
+                if send_success:
+                    self._increment_private_text_reply_limit_count(chat, user_key)
                 if send_success:
                     self._record_reply_metric_success(chat.who, chat_type="private")
                     self._record_keyword_reply_success(chat.who, chat_type="private", action_count=len(reply_actions))
@@ -5175,11 +5172,7 @@ class WXBot:
                     if image_reply_context_used:
                         self._clear_pending_visual_context(chat.who, chat_type="private")
                     self._save_voice_reply_state()
-                    if getattr(self.config, "chat_text_reply_limit_switch", False) and user_key:
-                        self.reply_count_store.increment_ai_count(
-                            user_key,
-                            limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 5),
-                        )
+                    self._increment_private_text_reply_limit_count(chat, user_key)
                     self._record_reply_metric_success(chat.who, chat_type="private")
                     self._log_reply_contents(
                         "私聊",
@@ -5211,11 +5204,8 @@ class WXBot:
         if send_success and preprocess_fallback_should_mark:
             self.reply_count_store.mark_preprocess_fallback_notified(user_key)
 
-        if send_success and getattr(self.config, "chat_text_reply_limit_switch", False) and user_key and not api_error_reply:
-            self.reply_count_store.increment_ai_count(
-                user_key,
-                limit_hours=getattr(self.config, "chat_text_reply_limit_hours", 5),
-            )
+        if send_success and not api_error_reply:
+            self._increment_private_text_reply_limit_count(chat, user_key)
 
         if send_success:
             self._record_reply_metric_success(chat.who, chat_type="private")
@@ -8176,9 +8166,9 @@ class WXBot:
             return ""
         return f"group:{group_name}:{sender}" if sender else f"group:{group_name}"
 
-    def _text_reply_limit_settings(self, chat_type):
+    def _text_reply_limit_settings(self, chat_type, *, chat_name=""):
         scope = "group" if chat_type == "group" else "chat"
-        return {
+        settings = {
             "switch": bool(getattr(self.config, f"{scope}_text_reply_limit_switch", False)),
             "count": getattr(self.config, f"{scope}_text_reply_limit_count", 50),
             "hours": getattr(self.config, f"{scope}_text_reply_limit_hours", 5),
@@ -8186,6 +8176,27 @@ class WXBot:
             "reply": str(getattr(self.config, f"{scope}_text_reply_limit_reply", "") or "").strip(),
             "reply_once": bool(getattr(self.config, f"{scope}_text_reply_limit_reply_once", False)),
         }
+        if chat_type != "group":
+            overrides = getattr(self.config, "chat_text_reply_limit_count_map", {})
+            name = str(chat_name or "").strip()
+            if isinstance(overrides, dict) and name in overrides:
+                try:
+                    settings["count"] = max(0, min(99999, int(overrides[name])))
+                    settings["switch"] = True
+                except (TypeError, ValueError):
+                    pass
+        return settings
+
+    def _increment_private_text_reply_limit_count(self, chat, user_key):
+        settings = self._text_reply_limit_settings(
+            "private",
+            chat_name=getattr(chat, "who", ""),
+        )
+        if settings["switch"] and user_key:
+            self.reply_count_store.increment_ai_count(
+                user_key,
+                limit_hours=settings["hours"],
+            )
 
     def _memory_context_raw_limit(self, message_limit):
         try:
@@ -8342,7 +8353,10 @@ class WXBot:
 
     def _check_text_reply_limit(self, chat, user_key, message=None, *, chat_type="private"):
         """检查并处理当前会话对象的回复次数限制；返回 (是否已处理, 发送结果)。"""
-        settings = self._text_reply_limit_settings(chat_type)
+        settings = self._text_reply_limit_settings(
+            chat_type,
+            chat_name=getattr(chat, "who", ""),
+        )
         max_round = settings["count"]
         limit_hours = settings["hours"]
         if not self._text_reply_limit_reached(user_key, chat_type=chat_type):
@@ -8419,7 +8433,10 @@ class WXBot:
         return True, result
 
     def _text_reply_limit_reached(self, user_key, *, chat_type="private"):
-        settings = self._text_reply_limit_settings(chat_type)
+        settings = self._text_reply_limit_settings(
+            chat_type,
+            chat_name=user_key if chat_type != "group" else "",
+        )
         return bool(
             settings["switch"]
             and user_key

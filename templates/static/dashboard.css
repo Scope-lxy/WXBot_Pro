@@ -55,6 +55,7 @@
   --ui-l3-head-row-height: 32px;
   --ui-l3-head-divider-gap: 0px;
   --ui-l3-body-gap: 6px;
+  --ui-field-label-gap: 6px;
   --ui-l3-card-padding: 12px;
   --ui-panel-gap: 12px;
   --ui-summary-strip-padding-y: 12px;
@@ -211,7 +212,7 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .ui-head--page { --ui-head-row-height: calc(var(--ui-l1-head-row-height) + 2px); }
 .ui-head--page .ui-head__actions { gap: 12px; }
 .ui-head--page .ui-btn--add { min-width: 118px; padding: 0 14px; font-size: 13px; font-weight: 700; }
-.cfg-label { font-size: 13px; font-weight: 600; color: var(--card-fg); margin-bottom: 6px; }
+.cfg-label { font-size: 13px; font-weight: 600; color: var(--card-fg); margin-bottom: var(--ui-field-label-gap); }
 .cfg-hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .cfg-page-form { display: grid; gap: var(--ui-panel-gap); }
 .cfg-page-field { margin: 0; }
@@ -449,6 +450,11 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .api-config-num { font-weight: 600; font-size: 13.5px; }
 .api-active-badge { display: none; font-size: 11px; background: var(--primary); color: #fff; border-radius: 999px; padding: 1px 8px; }
 .api-config-item.is-active .api-active-badge { display: inline-flex; align-items: center; }
+.api-key-field { display: grid; grid-template-columns: minmax(0, 1fr) 54px; align-items: stretch; width: 100%; }
+.api-key-field .form-control { min-width: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.api-key-visibility-toggle { min-height: var(--ui-control-height); margin-left: -1px; padding: 0; border: 1px solid var(--border); border-radius: 0 6px 6px 0; background: #fff; color: var(--card-fg); font-size: 13px; font-weight: 600; line-height: 1; cursor: pointer; transition: border-color .15s ease, background-color .15s ease, color .15s ease; }
+.api-key-visibility-toggle:hover { position: relative; z-index: 1; border-color: rgba(7,193,96,.45); background: #F0FBF5; color: #06AD56; }
+.api-key-visibility-toggle:focus { position: relative; z-index: 1; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(7,193,96,.12); outline: none; }
 .tts-voice-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: stretch; gap: 0; }
 .tts-voice-picker .form-control { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 .tts-voice-picker .ui-btn { min-width: 116px; border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -1px; }
@@ -900,11 +906,24 @@ body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "S
 .ui-modal-body--left { text-align: left; margin-bottom: 18px; }
 .ui-modal-form { display: grid; gap: 12px; }
 .ui-modal-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+.reply-limit-custom-labels,
+.reply-limit-custom-row { display: grid; grid-template-columns: minmax(160px, .8fr) minmax(200px, 1.2fr) 36px; gap: 8px; align-items: center; }
+.reply-limit-custom-labels .cfg-label { margin: 0; }
+.reply-limit-custom-fields { display: grid; gap: var(--ui-field-label-gap); }
+.reply-limit-custom-hint { color: var(--muted); font-size: 13px; line-height: 1.55; margin-bottom: 2px; }
+.reply-limit-custom-list { display: grid; gap: 8px; max-height: 320px; overflow-y: auto; padding-right: 2px; }
+.reply-limit-custom-row .btn-rm { justify-self: end; }
+@media (max-width: 520px) {
+  .reply-limit-custom-labels,
+  .reply-limit-custom-row { grid-template-columns: minmax(0, .8fr) minmax(148px, 1.2fr) 36px; }
+}
 .ui-modal-danger-action { background: var(--danger); color: #fff; border-color: var(--danger); }
 .ui-modal-danger-action:hover { background: #E64340; color: #fff; border-color: #E64340; }
 .ui-modal-input { width: 100%; margin-bottom: 16px; }
 .ui-modal-feedback { text-align: center; margin-top: 14px; }
 .manual-identity-modal { display: grid; gap: 10px; }
+.manual-identity-field { display: grid; gap: var(--ui-field-label-gap); }
+.manual-identity-field .cfg-label { margin: 0; }
 .manual-identity-modal__hint { color: var(--muted); font-size: 13px; line-height: 1.55; margin-bottom: 2px; }
 .manual-identity-candidate-list { height: 220px; border: 1px solid var(--border); border-radius: 8px; background: #fff; overflow-y: auto; padding: 4px; }
 .manual-identity-candidate { width: 100%; min-height: 38px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; border: 0; border-radius: 6px; background: transparent; color: var(--card-fg); padding: 8px 10px; text-align: left; cursor: pointer; transition: background .12s, color .12s, box-shadow .12s; }

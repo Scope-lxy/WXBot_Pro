@@ -2207,6 +2207,7 @@ def dashboard():
     config.setdefault('chat_prompt_map', {})
     config.setdefault('chat_api_map', {})
     config.setdefault('chat_tts_map', {})
+    config.setdefault('chat_text_reply_limit_count_map', {})
     config.setdefault('group_prompt_map', {})
     config.setdefault('chat_memory_switch', True)
     config.setdefault('chat_memory_message_threshold', 100)
@@ -3117,6 +3118,21 @@ def _coerce_dict_fields(merged_config):
             merged_config[map_field] = clean
         else:
             merged_config[map_field] = {}
+
+    if 'chat_text_reply_limit_count_map' in merged_config:
+        raw_map = merged_config['chat_text_reply_limit_count_map']
+        clean = {}
+        if isinstance(raw_map, dict):
+            for raw_name, raw_count in raw_map.items():
+                name = str(raw_name or '').strip()
+                if not name:
+                    continue
+                try:
+                    count = int(raw_count)
+                except (TypeError, ValueError):
+                    continue
+                clean[name] = max(0, min(99999, count))
+        merged_config['chat_text_reply_limit_count_map'] = clean
 
     if 'api_capability_map' in merged_config:
         merged_config['api_capability_map'] = sanitize_api_capability_map(
@@ -6870,6 +6886,7 @@ def main():
                 "chat_prompt_map": {},
                 "chat_api_map": {},
                 "chat_tts_map": {},
+                "chat_text_reply_limit_count_map": {},
                 "group_prompt_map": {},
                 "chat_memory_switch": True,
                 "chat_memory_message_threshold": 100,

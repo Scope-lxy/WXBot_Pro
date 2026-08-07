@@ -25,6 +25,20 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertIn("url_for('static', filename='jquery-3.6.0.min.js')", dashboard)
         self.assertNotIn("npm/jquery@3.6.0", dashboard)
 
+    def test_api_key_visibility_toggle_covers_existing_and_new_cards(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+        styles = (root / "templates" / "static" / "dashboard.css").read_text(encoding="utf-8")
+        key_controls = dashboard.split("function getMaskedKeyMeta($input){", 1)[1].split(
+            "function getApiConfigFromItem($item){", 1
+        )[0]
+
+        self.assertEqual(dashboard.count('class="api-key-visibility-toggle"'), 4)
+        self.assertIn("function setKeyVisibility($input, visible)", key_controls)
+        self.assertIn("$(document).on('click', '.api-key-visibility-toggle'", key_controls)
+        self.assertIn("setKeyVisibility(u.$el, false);", dashboard)
+        self.assertIn("grid-template-columns: minmax(0, 1fr) 54px", styles)
+
     def test_dashboard_hides_coverage_diagnostics_but_shows_scan_failure(self):
         root = Path(__file__).resolve().parents[1]
         dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
@@ -693,6 +707,8 @@ class WebPanelJobTests(unittest.TestCase):
         self.assertNotIn('id="text_reply_limit_switch"', dashboard)
         self.assertIn('id="chat_text_reply_limit_settings" class="chat-ability-settings"', dashboard)
         self.assertIn('id="group_text_reply_limit_settings" class="chat-ability-settings"', dashboard)
+        self.assertIn('id="btn-chat-text-reply-limit-custom"', dashboard)
+        self.assertIn('chat_text_reply_limit_count_map:chatTextReplyLimitCountMapInitial', dashboard)
         self.assertNotIn("$(prefix + 'settings').toggle", dashboard)
         private_panel = dashboard.index('id="tab-listen"')
         group_panel = dashboard.index('id="tab-group"')
@@ -740,6 +756,24 @@ class WebPanelJobTests(unittest.TestCase):
         for field, default in expected_defaults.items():
             if "voice" in field:
                 self.assertEqual(voice_config[field], default)
+
+    def test_custom_private_reply_limit_counts_are_validated(self):
+        config = {
+            "chat_text_reply_limit_count_map": {
+                "张三": "2",
+                "李四": -1,
+                "王五": 100000,
+                "无效": "not-a-number",
+                "": 5,
+            }
+        }
+
+        web_server._coerce_dict_fields(config)
+
+        self.assertEqual(
+            config["chat_text_reply_limit_count_map"],
+            {"张三": 2, "李四": 0, "王五": 99999},
+        )
 
     def test_contact_directory_columns_match_wechat_profile_fields(self):
         root = Path(__file__).resolve().parents[1]

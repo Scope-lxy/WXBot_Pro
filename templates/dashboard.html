@@ -538,7 +538,10 @@ html.icons-pref-local [class*=" bi-"]::before {
             <div class="col-12 col-md-4">
               <label class="cfg-label">API Key</label>
               {% set _k = cfg.get('key', '') %}{% if _k|length > 10 %}{% set _km = _k[:5] + ('*' * (_k|length - 10)) + _k[-5:] %}{% else %}{% set _km = _k %}{% endif %}
-              <input type="text" class="form-control api-key-input" value="{{ _km }}" data-real-key="{{ _k }}" data-masked="{{ _km }}" placeholder="sk-..." autocomplete="off">
+              <div class="api-key-field">
+                <input type="text" class="form-control api-key-input" value="{{ _km }}" data-real-key="{{ _k }}" data-masked="{{ _km }}" placeholder="sk-..." autocomplete="off">
+                <button type="button" class="api-key-visibility-toggle" aria-pressed="false">显示</button>
+              </div>
             </div>
             <div class="col-12 col-md-4">
               <label class="cfg-label">Base URL</label>
@@ -628,7 +631,10 @@ html.icons-pref-local [class*=" bi-"]::before {
             </div>
             <div class="col-12 col-md-4">
               <label class="cfg-label">API Key</label>
-              <input type="text" class="form-control tts-api-key-input" name="tts_api_key" value="{{ tts_masked_key }}" data-real-key="{{ cfg.get('credentials', {}).get('api_key', '') }}" data-masked="{{ tts_masked_key }}" placeholder="填写语音接口 API Key" autocomplete="off">
+              <div class="api-key-field">
+                <input type="text" class="form-control tts-api-key-input" name="tts_api_key" value="{{ tts_masked_key }}" data-real-key="{{ cfg.get('credentials', {}).get('api_key', '') }}" data-masked="{{ tts_masked_key }}" placeholder="填写语音接口 API Key" autocomplete="off">
+                <button type="button" class="api-key-visibility-toggle" aria-pressed="false">显示</button>
+              </div>
             </div>
             <div class="col-12 col-md-4">
               <label class="cfg-label">Base URL</label>
@@ -1055,6 +1061,7 @@ html.icons-pref-local [class*=" bi-"]::before {
               <span class="desc">按好友分别统计，每成功完成一轮回复计 1 次</span>
             </div>
             <div class="ui-head__actions">
+              <button type="button" class="ui-btn ui-btn--secondary ui-btn--action ui-btn--l2" id="btn-chat-text-reply-limit-custom"><i class="bi bi-sliders"></i> 自定义限制</button>
               <label class="ui-switch ui-switch--l2 ui-head-switch" for="chat_text_reply_limit_switch">
                 <input class="form-check-input" type="checkbox" id="chat_text_reply_limit_switch"
                        {% if config.get('chat_text_reply_limit_switch', False) %}checked{% endif %}>
@@ -4640,7 +4647,7 @@ $(function(){
       return !keyword || haystack.indexOf(keyword) >= 0;
     }).slice(0, 80);
     if(!matches.length){
-      $('#manual-identity-candidate-list').html('<div class="relationship-scan-empty">没有匹配的旧名字</div>');
+      $('#manual-identity-candidate-list').html('<div class="relationship-scan-empty">没有匹配的原备注或昵称</div>');
       return;
     }
     var html = matches.map(function(candidate){
@@ -4658,12 +4665,16 @@ $(function(){
     _manualIdentityCalibrationState.selectedOldName = '';
     return ''+
       '<div class="manual-identity-modal">'+
-        '<div class="manual-identity-modal__hint">选择本地旧名字，再输入你刚改好的新备注/昵称。系统只合并本地资料，不读取微信通讯录。</div>'+
-        '<label class="cfg-label" for="manual-identity-search">旧名字</label>'+
-        '<input type="text" class="form-control" id="manual-identity-search" placeholder="搜索旧备注/昵称">'+
+        '<div class="manual-identity-modal__hint">选择本地原备注/昵称，再输入你刚改好的新备注/昵称。系统只合并本地资料，不读取微信通讯录。</div>'+
+        '<div class="manual-identity-field">'+
+          '<label class="cfg-label" for="manual-identity-search">原备注/昵称</label>'+
+          '<input type="text" class="form-control" id="manual-identity-search" placeholder="搜索原备注或昵称">'+
+        '</div>'+
         '<div id="manual-identity-candidate-list" class="manual-identity-candidate-list ui-workbench-scroll-body"></div>'+
-        '<label class="cfg-label" for="manual-identity-new-name">新备注/昵称</label>'+
-        '<input type="text" class="form-control" id="manual-identity-new-name" placeholder="输入新备注或昵称">'+
+        '<div class="manual-identity-field">'+
+          '<label class="cfg-label" for="manual-identity-new-name">新备注/昵称</label>'+
+          '<input type="text" class="form-control" id="manual-identity-new-name" placeholder="输入新备注或昵称">'+
+        '</div>'+
         '<div id="manual-identity-msg" class="cfg-feedback" style="display:none;"></div>'+
       '</div>';
   }
@@ -4709,7 +4720,7 @@ $(function(){
     var oldName = String(_manualIdentityCalibrationState.selectedOldName || '').trim();
     var newName = String($('#manual-identity-new-name').val() || '').trim();
     if(!oldName){
-      setManualIdentityMsg('请先选择旧名字', false);
+      setManualIdentityMsg('请先选择原备注/昵称', false);
       return;
     }
     if(!newName){
@@ -6614,6 +6625,16 @@ $(function(){
     };
   }
 
+  function setKeyVisibility($input, visible){
+    $input.siblings('.api-key-visibility-toggle')
+      .text(visible ? '隐藏' : '显示')
+      .attr('aria-pressed', String(visible));
+  }
+
+  function defaultKeyPlaceholder($input){
+    return $input.hasClass('tts-api-key-input') ? '填写语音接口 API Key' : 'sk-...';
+  }
+
   function resolveMaskedKeyInputValue($input){
     var meta = getMaskedKeyMeta($input);
     return (meta.typedKey === meta.maskedKey || meta.typedKey === '') ? meta.realKey : meta.typedKey;
@@ -6621,21 +6642,55 @@ $(function(){
 
   // 聚焦：若正显示遮罩值则清空，方便输入新 Key
   $(document).on('focus', '.api-key-input, .tts-api-key-input', function(){
-    var masked = getMaskedKeyMeta($(this)).maskedKey;
-    var defaultPlaceholder = $(this).hasClass('tts-api-key-input') ? '填写语音接口 API Key' : 'sk-...';
+    var $input = $(this);
+    var masked = getMaskedKeyMeta($input).maskedKey;
+    var defaultPlaceholder = defaultKeyPlaceholder($input);
     if (masked && $(this).val() === masked) {
-      $(this).val('').attr('placeholder', '输入新 Key，留空则保持原值');
+      $input.val('').attr('placeholder', '输入新 Key，留空则保持原值');
+      setKeyVisibility($input, false);
     } else if (!$(this).attr('placeholder')) {
       $(this).attr('placeholder', defaultPlaceholder);
     }
   });
   // 失焦：若未填写则恢复遮罩显示
   $(document).on('blur', '.api-key-input, .tts-api-key-input', function(){
-    if ($(this).val() === '') {
-      var masked = getMaskedKeyMeta($(this)).maskedKey;
-      var defaultPlaceholder = $(this).hasClass('tts-api-key-input') ? '填写语音接口 API Key' : 'sk-...';
-      $(this).val(masked).attr('placeholder', defaultPlaceholder);
+    var $input = $(this);
+    if ($input.val() === '') {
+      var masked = getMaskedKeyMeta($input).maskedKey;
+      $input.val(masked).attr('placeholder', defaultKeyPlaceholder($input));
+      setKeyVisibility($input, false);
     }
+  });
+
+  $(document).on('input', '.api-key-input, .tts-api-key-input', function(){
+    var $input = $(this);
+    var meta = getMaskedKeyMeta($input);
+    setKeyVisibility($input, $input.val() !== '' && $input.val() !== meta.maskedKey);
+  });
+
+  $(document).on('click', '.api-key-visibility-toggle', function(){
+    var $toggle = $(this);
+    var $input = $toggle.siblings('.api-key-input, .tts-api-key-input');
+    var meta = getMaskedKeyMeta($input);
+    var visible = $toggle.attr('aria-pressed') === 'true';
+    if (!visible) {
+      if (meta.typedKey === meta.maskedKey) {
+        $input.val(meta.realKey);
+      }
+      $input.attr('placeholder', defaultKeyPlaceholder($input));
+      setKeyVisibility($input, true);
+      return;
+    }
+
+    var key = meta.typedKey === meta.maskedKey ? meta.realKey : meta.typedKey;
+    var masked = maskApiKey(key);
+    $input.val(masked)
+      .attr('data-real-key', key)
+      .attr('data-masked', masked)
+      .data('real-key', key)
+      .data('masked', masked)
+      .attr('placeholder', defaultKeyPlaceholder($input));
+    setKeyVisibility($input, false);
   });
 
   function getApiConfigFromItem($item){
@@ -6882,7 +6937,8 @@ $(function(){
               '<option value="OpenAI SDK">OpenAI SDK</option>'+
             '</select></div>'+
           '<div class="col-12 col-md-4"><label class="cfg-label">API Key</label>'+
-            '<input type="text" class="form-control api-key-input" data-real-key="" placeholder="sk-..." autocomplete="off"></div>'+
+            '<div class="api-key-field"><input type="text" class="form-control api-key-input" data-real-key="" placeholder="sk-..." autocomplete="off">'+
+              '<button type="button" class="api-key-visibility-toggle" aria-pressed="false">显示</button></div></div>'+
           '<div class="col-12 col-md-4"><label class="cfg-label">Base URL</label>'+
             '<input type="text" class="form-control api-url-input" value="https://api.dusapi.com" placeholder="https://api.example.com"></div>'+
           '<div class="col-12 col-md-4"><label class="cfg-label">模型</label>'+
@@ -6943,7 +6999,8 @@ $(function(){
           '<div class="col-12 col-md-4"><label class="cfg-label">接入方式</label>'+
             '<select class="form-select tts-sdk-select" name="tts_sdk">' + renderTtsSdkOptions(firstSdk) + '</select></div>'+
           '<div class="col-12 col-md-4"><label class="cfg-label">API Key</label>'+
-            '<input type="text" class="form-control tts-api-key-input" name="tts_api_key" value="" data-real-key="" data-masked="" placeholder="填写语音接口 API Key" autocomplete="off"></div>'+
+            '<div class="api-key-field"><input type="text" class="form-control tts-api-key-input" name="tts_api_key" value="" data-real-key="" data-masked="" placeholder="填写语音接口 API Key" autocomplete="off">'+
+              '<button type="button" class="api-key-visibility-toggle" aria-pressed="false">显示</button></div></div>'+
           '<div class="col-12 col-md-4"><label class="cfg-label">Base URL</label>'+
             '<input type="text" class="form-control tts-url-input" name="tts_url" value="' + apiTestEscape(firstUrl) + '" placeholder="https://api.example.com"></div>'+
           '<div class="col-12 col-md-4"><label class="cfg-label">语音模型</label>'+
@@ -7128,6 +7185,7 @@ $(function(){
   var chatPromptMapInitial = {{ config.get('chat_prompt_map', {}) | tojson }};
   var chatApiMapInitial = {{ config.get('chat_api_map', {}) | tojson }};
   var chatTtsMapInitial = {{ config.get('chat_tts_map', {}) | tojson }};
+  var chatTextReplyLimitCountMapInitial = {{ config.get('chat_text_reply_limit_count_map', {}) | tojson }};
   renumberApiConfigs();
   syncBackupChatApiOptions();
   $('#tts_configs_container .tts-config-item').each(function(){
@@ -7261,6 +7319,94 @@ $(function(){
       syncTextReplyLimitControls(scope);
     });
     syncTextReplyLimitControls(scope);
+  });
+
+  function buildChatTextReplyLimitCustomRow(name, count){
+    var countValue = count === undefined || count === null ? '' : String(count);
+    var limitHours = Math.max(0, Math.min(720, parseInt($('#chat_text_reply_limit_hours').val(), 10) || 0));
+    return '<div class="list-item reply-limit-custom-row">'+
+      '<input type="text" class="form-control reply-limit-custom-name" value="'+escapeHtml(name || '')+'" placeholder="好友昵称或备注">'+
+      '<input type="number" class="form-control reply-limit-custom-count" value="'+escapeHtml(countValue)+'" min="0" max="99999" step="1" placeholder="每 '+limitHours+' 小时回复次数">'+
+      '<button type="button" class="btn-rm reply-limit-custom-remove" title="删除"><i class="bi bi-x-lg"></i></button>'+
+      '</div>';
+  }
+
+  function collectChatTextReplyLimitCustomRules(){
+    var rules = {};
+    var names = {};
+    var error = '';
+    $('#chat-text-reply-limit-custom-list .reply-limit-custom-row').each(function(){
+      if(error) return;
+      var name = $.trim($(this).find('.reply-limit-custom-name').val() || '');
+      var countText = $.trim($(this).find('.reply-limit-custom-count').val() || '');
+      if(!name && !countText) return;
+      if(!name || !countText){
+        error = '请完整填写好友名和次数 N';
+        return;
+      }
+      if(!/^\d+$/.test(countText)){
+        error = '次数 N 请输入 0 到 99999 的整数';
+        return;
+      }
+      var count = Number(countText);
+      if(count < 0 || count > 99999){
+        error = '次数 N 请输入 0 到 99999 的整数';
+        return;
+      }
+      if(names[name]){
+        error = '同一好友只能设置一次';
+        return;
+      }
+      names[name] = true;
+      rules[name] = count;
+    });
+    return {rules: rules, error: error};
+  }
+
+  function openChatTextReplyLimitCustomModal(){
+    var rows = Object.keys(chatTextReplyLimitCountMapInitial || {}).map(function(name){
+      return buildChatTextReplyLimitCustomRow(name, chatTextReplyLimitCountMapInitial[name]);
+    }).join('');
+    if(!rows) rows = buildChatTextReplyLimitCustomRow('', '');
+    svModal.custom({
+      icon: '<i class="bi bi-sliders" style="color:#07C160;font-size:36px;"></i>',
+      title: '自定义回复次数限制',
+      body: '<div class="ui-modal-form">'+
+        '<div class="reply-limit-custom-hint">为指定好友单独设置回复次数，统计时间跟随全局设置。</div>'+
+        '<div class="reply-limit-custom-fields">'+
+          '<div class="reply-limit-custom-labels"><label class="cfg-label">好友</label><label class="cfg-label">回复限制</label><span></span></div>'+
+          '<div id="chat-text-reply-limit-custom-list" class="reply-limit-custom-list ui-workbench-scroll-body">'+rows+'</div>'+
+        '</div>'+
+        '<button type="button" class="ui-btn ui-btn--add" id="btn-add-chat-text-reply-limit-custom"><i class="bi bi-plus-circle"></i> 添加好友</button>'+
+        '<div id="chat-text-reply-limit-custom-error" class="cfg-feedback"></div>'+
+        '</div>',
+      boxClass: 'ui-modal-box--lg',
+      bodyClass: 'ui-modal-body--left',
+      buttons: [
+        {text: '取消', variant: 'secondary'},
+        {text: '确定', variant: 'primary', keepOpen: true, action: function(){
+          var result = collectChatTextReplyLimitCustomRules();
+          if(result.error){
+            $('#chat-text-reply-limit-custom-error')
+              .text(result.error)
+              .removeClass('cfg-feedback-success cfg-feedback-info')
+              .addClass('cfg-feedback-error')
+              .show();
+            return;
+          }
+          chatTextReplyLimitCountMapInitial = result.rules;
+          svModal.close();
+        }}
+      ]
+    });
+  }
+
+  $('#btn-chat-text-reply-limit-custom').on('click', openChatTextReplyLimitCustomModal);
+  $(document).on('click', '#btn-add-chat-text-reply-limit-custom', function(){
+    $('#chat-text-reply-limit-custom-list').append(buildChatTextReplyLimitCustomRow('', ''));
+  });
+  $(document).on('click', '.reply-limit-custom-remove', function(){
+    $(this).closest('.reply-limit-custom-row').remove();
   });
 
   // ===== Remove List Item =====
@@ -10103,7 +10249,7 @@ $(function(){
       group_welcome_msg:$('#group_welcome_msg').val(),
       default_prompt:$('#default_prompt_select').val()||'默认',
       listen_list:[], global_blacklist:[], group:[], group_api_map:{}, group_tts_map:{}, group_prompt_map:{}, new_friend_msg:{text:'', files:[]},
-      chat_prompt_map:{}, chat_api_map:{}, chat_tts_map:{},
+      chat_prompt_map:{}, chat_api_map:{}, chat_tts_map:{}, chat_text_reply_limit_count_map:chatTextReplyLimitCountMapInitial,
       chat_memory_switch:$('#chat_memory_switch').is(':checked'),
       chat_memory_message_threshold:parseInt($('#chat_memory_message_threshold').val())||100,
       chat_memory_interval_hours:parseInt($('#chat_memory_interval_hours').val())||12,
@@ -10354,6 +10500,7 @@ $(function(){
         $.each(_keyUpdates,function(i,u){
           var m=maskApiKey(u.key);
           u.$el.val(m).attr('data-masked',m).attr('data-real-key',u.key).data('masked',m).data('real-key',u.key).attr('placeholder',u.placeholder || 'sk-...');
+          setKeyVisibility(u.$el, false);
         });
         if(typeof clearScheduledMessageLocalDirty === 'function') clearScheduledMessageLocalDirty();
         setConfigSnapshotBaseline(configData);

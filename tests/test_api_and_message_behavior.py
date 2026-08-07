@@ -1539,6 +1539,37 @@ class MessageBehaviorTests(unittest.TestCase):
             self.assertEqual(sent, ["先休息一下"])
             self.assertTrue(any(level == "INFO" and "触发回复上限" in message for level, message in logs))
 
+    def test_private_text_reply_limit_can_override_count_per_friend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bot = WXBot.__new__(WXBot)
+            bot.config = SimpleNamespace(
+                chat_text_reply_limit_switch=False,
+                chat_text_reply_limit_count=50,
+                chat_text_reply_limit_count_map={"张三": 1, "李四": 2},
+                chat_text_reply_limit_hours=24,
+                chat_text_reply_limit_reply_once=False,
+                chat_text_reply_limit_ai_reply=False,
+                chat_text_reply_limit_reply="先休息一下",
+            )
+            bot.reply_count_store = ReplyCountStore(f"{tmp}/reply_count.json")
+            bot._record_replied_message_success = lambda *_args, **_kwargs: None
+            sent = []
+            bot._send_private_ai_reply_parts = lambda _chat, parts, **_kwargs: sent.extend(parts) or (True, True)
+            chat = SimpleNamespace(who="张三")
+
+            self.assertTrue(bot._text_reply_limit_settings("private", chat_name="张三")["switch"])
+            self.assertEqual(bot._text_reply_limit_settings("private", chat_name="张三")["count"], 1)
+            self.assertEqual(bot._text_reply_limit_settings("private", chat_name="张三")["hours"], 24)
+            self.assertFalse(bot._text_reply_limit_settings("private", chat_name="王五")["switch"])
+
+            bot._increment_private_text_reply_limit_count(chat, "张三")
+            handled, result = bot._check_text_reply_limit(chat, "张三")
+
+            self.assertTrue(handled)
+            self.assertTrue(result)
+            self.assertEqual(sent, ["先休息一下"])
+            self.assertEqual(bot.reply_count_store.get_user("张三")["count"], 1)
+
     def test_text_reply_limit_info_is_deduped_per_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             bot = WXBot.__new__(WXBot)

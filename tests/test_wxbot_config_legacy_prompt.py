@@ -17,6 +17,7 @@ class WXBotConfigLegacyPromptTests(unittest.TestCase):
 
                 self.assertEqual(config.chat_text_reply_limit_count, 50)
                 self.assertEqual(config.chat_text_reply_limit_hours, 5)
+                self.assertEqual(config.chat_text_reply_limit_count_map, {})
                 self.assertEqual(config.group_text_reply_limit_count, 50)
                 self.assertEqual(config.group_text_reply_limit_hours, 5)
                 self.assertEqual(config.chat_voice_reply_limit_count, 5)
