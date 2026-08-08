@@ -357,6 +357,12 @@ class RemoveListenChatTests(unittest.TestCase):
         calls = []
 
         class FakeWeChat:
+            def GetRegisteredListenChats(self, listeners):
+                calls.append(("GetRegisteredListenChats", tuple(
+                    (item["name"], item["chat_type"]) for item in listeners
+                )))
+                return []
+
             def AddListenChat(self, nickname=None, chat_type=None):
                 calls.append(("AddListenChat", nickname, chat_type))
                 raise listening.ListenSubwindowNotReady("监听 callback 未完成登记")
@@ -388,7 +394,10 @@ class RemoveListenChatTests(unittest.TestCase):
             refs = listening.ensure_material_source_listeners(bot)
 
         self.assertEqual(refs, [])
-        self.assertEqual(calls, [("AddListenChat", "【姐姐】素材库", "group")])
+        self.assertEqual(calls, [
+            ("GetRegisteredListenChats", (("【姐姐】素材库", "group"),)),
+            ("AddListenChat", "【姐姐】素材库", "group"),
+        ])
 
     def test_material_source_group_uses_detected_type_without_group_listener_config(self):
         bot = WXBot.__new__(WXBot)
@@ -1091,76 +1100,139 @@ class RemoveListenChatTests(unittest.TestCase):
         self.assertEqual(reopened, ["管理员"])
         self.assertEqual(bot._listener_reconcile_last_at, 100.0)
 
-    def test_listener_reconcile_does_not_report_healthy_registration_as_reopened(self):
+    def test_listener_reconcile_checks_ten_healthy_registrations_once_without_adding(self):
         marked = []
+        conversations = [ConversationRef(f"会话{i}", "private") for i in range(10)]
+        chats = [SimpleNamespace(
+            who=conversation.who,
+            chat_type=conversation.chat_type,
+            SendMsg=lambda *_args, **_kwargs: True,
+            _listener_registration_changed=False,
+        ) for conversation in conversations]
+        snapshots = []
+
+        class FakeWeChat:
+            def GetRegisteredListenChats(self, listeners):
+                snapshots.append(list(listeners))
+                return chats
+
+            def AddListenChat(self, **_kwargs):
+                raise AssertionError("健康监听不应重复提交 AddListenChat")
+
         bot = SimpleNamespace(
-            wx=object(),
+            wx=FakeWeChat(),
+            config=SimpleNamespace(
+                material_source_list=[],
+                listen_list=[],
+                group=[],
+                group_switch=False,
+            ),
+            _material_source_runtime_enabled=lambda: False,
+            _listen_chats={},
             _mark_context_repair_needed_after_restore=lambda name, *, chat_type: marked.append(
                 (chat_type, name)
             ),
         )
-        chat = SimpleNamespace(
-            who="张三",
-            chat_type="private",
-            _listener_registration_changed=False,
-        )
 
-        with (
-            mock.patch.object(listening, "ensure_material_source_listeners"),
-            mock.patch.object(
-                listening,
-                "expected_listener_refs",
-                return_value=[ConversationRef("张三", "private")],
-            ),
-            mock.patch.object(
-                listening,
-                "ensure_listener_subwindow",
-                return_value=chat,
-            ),
+        with mock.patch.object(
+            listening,
+            "expected_listener_refs",
+            return_value=conversations,
+        ), mock.patch.object(
+            listening,
+            "ensure_listener_subwindow",
+            side_effect=AssertionError("健康监听不应补窗"),
         ):
             reopened = listening.reconcile_listener_subwindows(bot)
 
         self.assertEqual(reopened, [])
         self.assertEqual(marked, [])
+        self.assertEqual(len(snapshots), 1)
+        self.assertEqual(
+            snapshots[0],
+            [{"name": item.who, "chat_type": item.chat_type} for item in conversations],
+        )
 
-    def test_listener_reconcile_reuses_strict_material_source_result(self):
+    def test_listener_reconcile_only_adds_missing_registrations(self):
         marked = []
-        conversation = ConversationRef("【姐姐】素材库", "group")
-        chat = SimpleNamespace(
+        conversations = [ConversationRef(f"会话{i}", "private") for i in range(10)]
+        healthy = [SimpleNamespace(
             who=conversation.who,
             chat_type=conversation.chat_type,
             SendMsg=lambda *_args, **_kwargs: True,
-            _listener_registration_changed=True,
-        )
+            _listener_registration_changed=False,
+        ) for conversation in conversations[:8]]
+        added = []
+
+        def ensure_missing(_bot, conversation, *, chat_type=None):
+            added.append(conversation)
+            return SimpleNamespace(
+                who=conversation.who,
+                chat_type=conversation.chat_type,
+                SendMsg=lambda *_args, **_kwargs: True,
+                _listener_registration_changed=True,
+            )
+
         bot = SimpleNamespace(
-            wx=object(),
-            _listen_chats={(conversation.chat_type, conversation.who): chat},
+            wx=SimpleNamespace(GetRegisteredListenChats=lambda _listeners: healthy),
+            config=SimpleNamespace(
+                material_source_list=[],
+                listen_list=[],
+                group=[],
+                group_switch=False,
+            ),
+            _material_source_runtime_enabled=lambda: False,
+            _listen_chats={},
             _mark_context_repair_needed_after_restore=lambda name, *, chat_type: marked.append(
                 (chat_type, name)
             ),
         )
 
-        with (
-            mock.patch.object(
-                listening,
-                "ensure_material_source_listeners",
-                return_value=[conversation],
-            ),
-            mock.patch.object(
-                listening,
-                "expected_listener_refs",
-                return_value=[conversation],
-            ),
-            mock.patch.object(
-                listening,
-                "ensure_listener_subwindow",
-                side_effect=AssertionError("严格素材来源结果不应立即重复校验"),
-            ),
+        with mock.patch.object(
+            listening,
+            "expected_listener_refs",
+            return_value=conversations,
+        ), mock.patch.object(
+            listening,
+            "ensure_listener_subwindow",
+            side_effect=ensure_missing,
         ):
             reopened = listening.reconcile_listener_subwindows(bot)
 
-        self.assertEqual(reopened, [conversation.who])
-        self.assertEqual(marked, [(conversation.chat_type, conversation.who)])
+        self.assertEqual(added, conversations[8:])
+        self.assertEqual(reopened, [item.who for item in conversations[8:]])
+        self.assertEqual(marked, [(item.chat_type, item.who) for item in conversations[8:]])
+
+    def test_listener_reconcile_known_material_source_does_not_repeat_add(self):
+        conversation = ConversationRef("【姐姐】素材库", "group")
+        chat = SimpleNamespace(
+            who=conversation.who,
+            chat_type=conversation.chat_type,
+            SendMsg=lambda *_args, **_kwargs: True,
+            _listener_registration_changed=False,
+        )
+        add_calls = []
+        bot = SimpleNamespace(
+            wx=SimpleNamespace(
+                GetRegisteredListenChats=lambda _listeners: [chat],
+                AddListenChat=lambda **kwargs: add_calls.append(kwargs),
+            ),
+            config=SimpleNamespace(
+                material_source_list=[conversation.who],
+                listen_list=[],
+                group=[],
+                group_switch=False,
+            ),
+            _material_source_runtime_enabled=lambda: True,
+            _material_source_listener_refs={conversation.who: conversation},
+            _listen_chats={},
+            _mark_context_repair_needed_after_restore=lambda *_args, **_kwargs: None,
+        )
+
+        reopened = listening.reconcile_listener_subwindows(bot)
+
+        self.assertEqual(reopened, [])
+        self.assertEqual(add_calls, [])
 
     def test_listener_reconcile_waits_until_the_latest_global_scan_is_empty(self):
         bot = SimpleNamespace(
@@ -1182,6 +1254,65 @@ class RemoveListenChatTests(unittest.TestCase):
             side_effect=AssertionError("非空扫描后不得抢先建窗"),
         ):
             self.assertEqual(listening.maybe_reconcile_listener_subwindows(bot), [])
+
+    def test_listener_reconcile_waits_while_ui_owner_is_busy(self):
+        bot = SimpleNamespace(
+            wx=object(),
+            config=SimpleNamespace(AllListen_switch=False),
+            _ui_owner=SimpleNamespace(is_idle=lambda: False),
+            _listener_reconcile_interval_seconds=30,
+            _listener_reconcile_last_at=0.0,
+        )
+
+        with mock.patch.object(
+            listening,
+            "reconcile_listener_subwindows",
+            side_effect=AssertionError("owner 忙碌时不得提交固定监听巡检"),
+        ):
+            self.assertEqual(listening.maybe_reconcile_listener_subwindows(bot), [])
+
+    def test_listener_reconcile_waits_during_listener_recovery(self):
+        bot = SimpleNamespace(
+            wx=object(),
+            config=SimpleNamespace(AllListen_switch=False),
+            _ui_owner=SimpleNamespace(is_idle=lambda: True),
+            _wechat_recovery=SimpleNamespace(
+                state_snapshot=lambda: SimpleNamespace(active=True),
+            ),
+            _listener_reconcile_interval_seconds=30,
+            _listener_reconcile_last_at=0.0,
+        )
+
+        with mock.patch.object(
+            listening,
+            "reconcile_listener_subwindows",
+            side_effect=AssertionError("恢复期间不得提交固定监听巡检"),
+        ):
+            self.assertEqual(listening.maybe_reconcile_listener_subwindows(bot), [])
+
+    def test_listener_reconcile_defaults_to_sixty_seconds(self):
+        bot = SimpleNamespace(
+            wx=object(),
+            config=SimpleNamespace(AllListen_switch=False),
+            _listener_reconcile_last_at=100.0,
+        )
+
+        with mock.patch.object(listening.time, "time", return_value=159.0), mock.patch.object(
+            listening,
+            "reconcile_listener_subwindows",
+        ) as reconcile:
+            self.assertEqual(listening.maybe_reconcile_listener_subwindows(bot), [])
+            reconcile.assert_not_called()
+
+        with mock.patch.object(listening.time, "time", return_value=160.0), mock.patch.object(
+            listening,
+            "reconcile_listener_subwindows",
+            return_value=["管理员"],
+        ):
+            self.assertEqual(
+                listening.maybe_reconcile_listener_subwindows(bot),
+                ["管理员"],
+            )
 
     def test_listener_reconcile_ignores_window_recovery_outside_alllisten_mode(self):
         bot = SimpleNamespace(

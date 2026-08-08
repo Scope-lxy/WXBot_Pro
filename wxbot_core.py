@@ -515,7 +515,7 @@ class WXBot:
         self.memory_manager      = None         # 记忆管理器（init_wx_listeners 时创建）
         self.all_Mode_listen_list = []           # 全局模式下的动态监听列表，元素格式：[昵称, 最新消息时间戳]
         self._listen_chats       = {}
-        self._listener_reconcile_interval_seconds = 30
+        self._listener_reconcile_interval_seconds = 60
         self._listener_reconcile_last_at = 0.0
         self._wechat_recovery = None
         self.wx_id               = None

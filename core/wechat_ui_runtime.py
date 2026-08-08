@@ -229,6 +229,16 @@ class UIClientFacade:
             for item in self._main("all_subwindows")
         ]
 
+    def GetRegisteredListenChats(self, listeners=()):
+        identities = self._main(
+            "registered_listeners",
+            listeners=list(listeners or ()),
+        )
+        return [
+            OwnedChat(self._owner, item["name"], item["chat_type"])
+            for item in identities
+        ]
+
     def AddListenChat(self, nickname, chat_type=None):
         name = str(nickname or "").strip()
         payload = {"conversation": name}
@@ -1144,6 +1154,33 @@ class WeChatUIRuntime:
                     "chat_type": conversation.chat_type,
                 })
             self._listen_chats = current
+            return identities
+        if operation == "registered_listeners":
+            identities = []
+            seen = set()
+            for item in payload.get("listeners") or ():
+                if not isinstance(item, Mapping):
+                    raise TypeError("监听登记快照只接受纯数据会话身份")
+                conversation = _internal_conversation(
+                    item.get("name"),
+                    item.get("chat_type"),
+                )
+                key = self._chat_key(conversation)
+                if key in seen:
+                    continue
+                seen.add(key)
+                chat = self._registered_listen_chat(
+                    conversation.who,
+                    conversation,
+                )
+                if chat is None:
+                    self._listen_chats.pop(key, None)
+                    continue
+                self._cache_chat(conversation, chat)
+                identities.append({
+                    "name": conversation.who,
+                    "chat_type": conversation.chat_type,
+                })
             return identities
         raise ValueError(f"未登记的主窗口操作：{operation}")
 

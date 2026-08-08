@@ -995,6 +995,49 @@ class WeChatUIRuntimeTests(unittest.TestCase):
         self.assertEqual(first["chat_type"], second["chat_type"])
         self.assertEqual(add_calls, ["张三"])
 
+    def test_registered_listener_snapshot_requires_valid_window_and_matching_callback(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+        healthy = FakeChat("健康会话")
+        wrong_callback = FakeChat("错误回调")
+        invalid_window = FakeChat("失效窗口")
+        invalid_window._api.HWND = 0
+        client.listen = {
+            "健康会话": (healthy, runtime._callback),
+            "错误回调": (wrong_callback, object()),
+            "失效窗口": (invalid_window, runtime._callback),
+        }
+
+        identities = runtime.main_window({
+            "operation": "registered_listeners",
+            "listeners": [
+                {"name": "健康会话", "chat_type": "private"},
+                {"name": "错误回调", "chat_type": "private"},
+                {"name": "失效窗口", "chat_type": "private"},
+            ],
+        })
+
+        self.assertEqual(identities, [{"name": "健康会话", "chat_type": "private"}])
+
+    def test_registered_listener_snapshot_does_not_mix_same_name_chat_types(self):
+        client = FakeClient()
+        runtime = WeChatUIRuntime(lambda *_args: None, client_factory=lambda _version: client)
+        runtime.bootstrap({"listeners": []})
+        group_chat = FakeChat("同名会话")
+        group_chat.chat_type = "group"
+        client.listen["同名会话"] = (group_chat, runtime._callback)
+
+        identities = runtime.main_window({
+            "operation": "registered_listeners",
+            "listeners": [
+                {"name": "同名会话", "chat_type": "private"},
+                {"name": "同名会话", "chat_type": "group"},
+            ],
+        })
+
+        self.assertEqual(identities, [{"name": "同名会话", "chat_type": "group"}])
+
     def test_facade_preserves_listener_registration_change_status(self):
         from core.wechat_ui_runtime import UIClientFacade
 
@@ -1011,6 +1054,25 @@ class WeChatUIRuntimeTests(unittest.TestCase):
 
         self.assertTrue(chat._listener_registration_changed)
         self.assertEqual(submitted[0].payload["chat_type"], "private")
+
+    def test_facade_reads_registered_listeners_in_one_owner_call(self):
+        from core.wechat_ui_runtime import UIClientFacade
+
+        submitted = []
+        owner = SimpleNamespace(
+            call=lambda intent, _timeout: submitted.append(intent) or [
+                {"name": "张三", "chat_type": "private"},
+            ],
+        )
+
+        chats = UIClientFacade(owner, {}).GetRegisteredListenChats([
+            {"name": "张三", "chat_type": "private"},
+            {"name": "李四", "chat_type": "private"},
+        ])
+
+        self.assertEqual([(chat.who, chat.chat_type) for chat in chats], [("张三", "private")])
+        self.assertEqual(len(submitted), 1)
+        self.assertEqual(submitted[0].payload["operation"], "registered_listeners")
 
     def test_remove_chat_cleans_registered_listener_after_window_disappears(self):
         client = FakeClient()

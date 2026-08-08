@@ -233,13 +233,88 @@ def _discover_material_source_listener(bot, name, *, allow_rebind=False):
     return conversation
 
 
-def ensure_material_source_listeners(bot, *, allow_rebind=False):
-    conversations = []
+def _strict_registered_listener_chats(bot, conversations):
+    unique = []
+    expected = set()
+    for conversation in conversations or ():
+        conversation = _conversation_ref(conversation)
+        key = (conversation.chat_type, conversation.who)
+        if not conversation.who or key in expected:
+            continue
+        expected.add(key)
+        unique.append(conversation)
+    if not unique:
+        return {}
+
+    chats = bot.wx.GetRegisteredListenChats([
+        {"name": conversation.who, "chat_type": conversation.chat_type}
+        for conversation in unique
+    ])
+    registered = {}
+    for chat in chats or ():
+        conversation = ConversationRef.from_wx_chat(chat)
+        key = (conversation.chat_type, conversation.who)
+        if key not in expected or not is_target_chat(chat, conversation):
+            continue
+        registered[key] = chat
+        runtime_chat_state.remember_listen_chat(bot, conversation, chat)
+    return registered
+
+
+def _discover_unknown_material_source_listeners(bot, *, allow_rebind=False):
+    discovered = {}
+    refs = _material_source_listener_refs(bot)
     for name in material_source_listener_names(bot):
-        conversation = _discover_material_source_listener(bot, name, allow_rebind=allow_rebind)
-        if conversation:
-            conversations.append(conversation)
-    return conversations
+        if isinstance(refs.get(name), ConversationRef):
+            continue
+        conversation = _discover_material_source_listener(
+            bot,
+            name,
+            allow_rebind=allow_rebind,
+        )
+        if conversation is None:
+            continue
+        chat = runtime_chat_state.get_listen_chat(bot, conversation)
+        if is_target_chat(chat, conversation):
+            discovered[(conversation.chat_type, conversation.who)] = chat
+    return discovered
+
+
+def ensure_material_source_listeners(bot, *, allow_rebind=False):
+    names = material_source_listener_names(bot)
+    refs = _material_source_listener_refs(bot)
+    known_before = [
+        refs[name]
+        for name in names
+        if isinstance(refs.get(name), ConversationRef)
+    ]
+    ready = _discover_unknown_material_source_listeners(
+        bot,
+        allow_rebind=allow_rebind,
+    )
+    ready.update(_strict_registered_listener_chats(bot, known_before))
+
+    for conversation in known_before:
+        key = (conversation.chat_type, conversation.who)
+        if key in ready:
+            continue
+        restored = _discover_material_source_listener(
+            bot,
+            conversation.who,
+            allow_rebind=allow_rebind,
+        )
+        if restored is None:
+            continue
+        chat = runtime_chat_state.get_listen_chat(bot, restored)
+        if is_target_chat(chat, restored):
+            ready[(restored.chat_type, restored.who)] = chat
+
+    return [
+        conversation
+        for name in names
+        if isinstance((conversation := refs.get(name)), ConversationRef)
+        and (conversation.chat_type, conversation.who) in ready
+    ]
 
 
 def is_target_chat(chat, nickname, chat_type=None):
@@ -821,20 +896,18 @@ def reconcile_listener_subwindows(bot):
     if not getattr(bot, "wx", None):
         return []
 
-    material_chats = {}
-    for conversation in ensure_material_source_listeners(bot):
-        chat = runtime_chat_state.get_listen_chat(bot, conversation)
-        if is_target_chat(chat, conversation):
-            material_chats[(conversation.chat_type, conversation.who)] = chat
+    discovered_material_chats = _discover_unknown_material_source_listeners(bot)
     expected = expected_listener_refs(bot)
     if not expected:
         return []
+    registered = _strict_registered_listener_chats(bot, expected)
 
     reopened = []
     for conversation in expected:
-        sub_chat = material_chats.get(
-            (conversation.chat_type, conversation.who)
-        )
+        key = (conversation.chat_type, conversation.who)
+        sub_chat = registered.get(key)
+        if sub_chat is not None and key in discovered_material_chats:
+            sub_chat = discovered_material_chats[key]
         if sub_chat is None:
             sub_chat = ensure_listener_subwindow(bot, conversation)
         if sub_chat and listener_registration_changed(sub_chat):
@@ -848,6 +921,15 @@ def reconcile_listener_subwindows(bot):
 
 def maybe_reconcile_listener_subwindows(bot, force=False):
     if not getattr(bot, "wx", None):
+        return []
+
+    owner = getattr(bot, "_ui_owner", None)
+    is_idle = getattr(owner, "is_idle", None)
+    if callable(is_idle) and not is_idle():
+        return []
+    recovery = getattr(bot, "_wechat_recovery", None)
+    state_snapshot = getattr(recovery, "state_snapshot", None)
+    if callable(state_snapshot) and state_snapshot().active:
         return []
 
     config = getattr(bot, "config", None)
@@ -869,7 +951,7 @@ def maybe_reconcile_listener_subwindows(bot, force=False):
             return []
 
     now_ts = time.time()
-    interval = max(1, int(getattr(bot, "_listener_reconcile_interval_seconds", 30) or 30))
+    interval = max(1, int(getattr(bot, "_listener_reconcile_interval_seconds", 60) or 60))
     last_at = float(getattr(bot, "_listener_reconcile_last_at", 0.0) or 0.0)
     if not force and last_at and now_ts - last_at < interval:
         return []
