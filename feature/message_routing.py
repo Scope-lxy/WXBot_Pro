@@ -15,6 +15,7 @@ from core.message_pipeline import (
     is_unrecognized_voice_placeholder,
     voice_message_body,
 )
+from core.wechat_ui_runtime import MessageLocateError, MoveWindowListenRecoveryExhausted
 from feature.keyword_reply import normalize_keyword_reply_actions, plan_group_keyword_reply
 
 
@@ -208,7 +209,13 @@ def prepare_message_media(bot, msg, chat) -> None:
                 else:
                     _bot_log(bot, "INFO", "引用内容不是图片或视频")
     except Exception as exc:
-        _bot_log(bot, level="WARNING", message=f"消息处理：图片下载失败，请尝试将 Windows 屏幕缩放设置为 100%，详情：{exc}")
+        if isinstance(exc, MessageLocateError):
+            reason = "未能安全定位原消息，本次未下载"
+        elif isinstance(exc, MoveWindowListenRecoveryExhausted):
+            reason = "监听窗口暂不可用，已触发自动恢复，本次未下载"
+        else:
+            reason = "本次未下载"
+        _bot_log(bot, level="WARNING", message=f"消息处理：图片下载失败，{reason}，详情：{exc}")
         if msg.type == "image":
             msg._skip_ai_reply = True
 

@@ -49,6 +49,7 @@ class RecoveryStateSnapshot:
 class _RecoveryState:
     active: bool = False
     attempted: bool = False
+    recovery_detected_at: float | None = None
     probe_after: float = 0.0
     last_error: str = ""
     source: str = ""
@@ -193,6 +194,7 @@ class WeChatRecoveryCoordinator:
 
     def _clear_active_locked(self, *, clear_error: bool = False) -> None:
         self._state.active = False
+        self._state.recovery_detected_at = None
         self._state.probe_after = 0.0
         self._state.source = ""
         if clear_error:
@@ -264,6 +266,8 @@ class WeChatRecoveryCoordinator:
             state = self._state
             already_active = state.active
             state.active = True
+            if not already_active:
+                state.recovery_detected_at = self._monotonic_clock()
             state.attempted = False
             state.probe_after = now_ts + LISTENER_RECOVERY_PROBE_INTERVAL_SECONDS
             state.last_error = str(exc or "")
@@ -290,6 +294,7 @@ class WeChatRecoveryCoordinator:
             if state.active:
                 return False
             state.active = True
+            state.recovery_detected_at = self._monotonic_clock()
             state.attempted = False
             state.probe_after = 0.0
             state.last_error = ""
@@ -358,9 +363,12 @@ class WeChatRecoveryCoordinator:
         if not self._process_lock.acquire(blocking=False):
             return "waiting"
         try:
-            recovery_started_at = self._monotonic_clock()
+            processing_started_at = self._monotonic_clock()
             with self._state_lock:
                 force_rebind = self._state.force_rebind
+                recovery_detected_at = self._state.recovery_detected_at
+            if recovery_detected_at is None:
+                recovery_detected_at = processing_started_at
             did_rebind = force_rebind
             try:
                 client = (
@@ -429,8 +437,9 @@ class WeChatRecoveryCoordinator:
                     "SUCCESS",
                     (
                         f"自恢复【{recovery_level}】成功："
-                        f"总耗时 {rebuild_finished_at - recovery_started_at:.1f}s（"
-                        f"{probe_label} {probe_finished_at - recovery_started_at:.1f}s，"
+                        f"总耗时 {rebuild_finished_at - recovery_detected_at:.1f}s（"
+                        f"等待恢复处理 {processing_started_at - recovery_detected_at:.1f}s，"
+                        f"{probe_label} {probe_finished_at - processing_started_at:.1f}s，"
                         f"监听重置 {rebuild_finished_at - probe_finished_at:.1f}s）"
                     ),
                 )

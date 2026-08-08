@@ -65,7 +65,7 @@ def test_rebuild_and_rebind_success_logs_are_distinct():
 
 def test_recovery_success_log_includes_probe_and_rebuild_timings():
     logs = []
-    clock_values = iter((10.0, 12.0, 15.0, 15.0))
+    clock_values = iter((9.0, 10.0, 12.0, 15.0, 15.0))
     coordinator = WeChatRecoveryCoordinator(
         probe_client=lambda **_kwargs: object(),
         rebuild_listener=lambda: True,
@@ -80,7 +80,27 @@ def test_recovery_success_log_includes_probe_and_rebuild_timings():
     assert coordinator.process(now=0) == "recovered"
 
     message = logs[-1]["message"]
-    assert "总耗时 5.0s（客户端探活 2.0s，监听重置 3.0s）" in message
+    assert "总耗时 6.0s（等待恢复处理 1.0s，客户端探活 2.0s，监听重置 3.0s）" in message
+
+
+def test_exact_local_failure_total_time_starts_before_rebuild_processing():
+    logs = []
+    clock_values = iter((10.0, 15.0, 17.0, 20.0, 20.0))
+    coordinator = WeChatRecoveryCoordinator(
+        probe_client=lambda **_kwargs: object(),
+        rebuild_listener=lambda: True,
+        set_client=lambda _client: None,
+        is_client_binding_failure=lambda _exc: False,
+        log_event=lambda **kwargs: logs.append(kwargs),
+        monotonic_clock=lambda: next(clock_values),
+    )
+
+    assert coordinator.record_listener_recovery_exhausted(
+        ConversationRef("甲", "private"), now=0,
+    ) == "rebuild"
+    assert coordinator.process(now=0) == "recovered"
+
+    assert "总耗时 10.0s（等待恢复处理 5.0s，客户端探活 2.0s，监听重置 3.0s）" in logs[-1]["message"]
 
 
 def test_client_rebind_evidence_is_not_downgraded_by_a_later_desktop_error():

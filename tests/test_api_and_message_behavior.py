@@ -33,7 +33,11 @@ from core.reply_delivery import (
 from core.reply_pipeline import ImageReplyPipeline, ImageReplyRequest
 from core.reply_count_store import ReplyCountStore
 from core.vision_bridge import VisionNote
-from core.wechat_ui_runtime import OwnedChat
+from core.wechat_ui_runtime import (
+    MessageLocateError,
+    MoveWindowListenRecoveryExhausted,
+    OwnedChat,
+)
 from feature import listening, message_routing
 from feature.voice_reply import group_voice_candidate
 from feature.scheduled_messages import execute_scheduled_message_task
@@ -2177,11 +2181,24 @@ class MessageBehaviorTests(unittest.TestCase):
         )
         chat = SimpleNamespace(who="瑞东（私人号）", chat_type="private")
 
-        for download in (
-            lambda: "",
-            lambda: (_ for _ in ()).throw(RuntimeError("当前窗口存在多条相同消息")),
-        ):
-            with self.subTest(download=download):
+        scenarios = (
+            (lambda: "", "未返回文件路径"),
+            (
+                lambda: (_ for _ in ()).throw(
+                    MessageLocateError("当前窗口存在多条相同消息，已拒绝猜测原消息")
+                ),
+                "未能安全定位原消息",
+            ),
+            (
+                lambda: (_ for _ in ()).throw(
+                    MoveWindowListenRecoveryExhausted("监听子窗口重新登记失败：张三")
+                ),
+                "监听窗口暂不可用，已触发自动恢复",
+            ),
+            (lambda: (_ for _ in ()).throw(RuntimeError("网络错误")), "本次未下载"),
+        )
+        for download, expected_reason in scenarios:
+            with self.subTest(expected_reason=expected_reason):
                 bot._ui_download_message = lambda _chat, _msg, quote_image=False: download()
                 msg = SimpleNamespace(
                     attr="friend",
@@ -2199,6 +2216,11 @@ class MessageBehaviorTests(unittest.TestCase):
                 if level is None:
                     level = bot_log.call_args.args[1]
                 self.assertEqual(level, "WARNING")
+                message = bot_log.call_args.kwargs.get("message")
+                if message is None:
+                    message = bot_log.call_args.args[2]
+                self.assertIn(expected_reason, message)
+                self.assertNotIn("屏幕缩放", message)
 
     def test_prepare_pending_voice_never_calls_to_text_and_queues_snapshot_reread(self):
         queued = []
