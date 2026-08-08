@@ -711,7 +711,7 @@ html.icons-pref-local [class*=" bi-"]::before {
       <div class="ui-head ui-head--page">
         <i class="bi bi-arrow-left-right"></i>
         <h5>备用接口设置</h5>
-        <span class="desc">主聊天接口连续失败后自动切换，主接口恢复后会自动切回</span>
+        <span class="desc">主接口失败达到指定次数后自动切换；每 10 分钟检查主接口是否正常并尝试切回</span>
       </div>
       {% set current_api_id = config.get('api_id', '') %}
       {% set backup_chat_api_id = config.get('backup_chat_api_id', '') %}
@@ -7363,11 +7363,21 @@ $(function(){
     return {rules: rules, error: error};
   }
 
+  function markChatTextReplyLimitCustomRulesSaved(rules){
+    var baseline = {};
+    try{
+      baseline = JSON.parse(_configSnapshotBaseline || '{}');
+    }catch(e){}
+    baseline.chat_text_reply_limit_count_map = rules;
+    setConfigSnapshotBaseline(baseline);
+  }
+
   function openChatTextReplyLimitCustomModal(){
     var rows = Object.keys(chatTextReplyLimitCountMapInitial || {}).map(function(name){
       return buildChatTextReplyLimitCustomRow(name, chatTextReplyLimitCountMapInitial[name]);
     }).join('');
     if(!rows) rows = buildChatTextReplyLimitCustomRow('', '');
+    var saving = false;
     svModal.custom({
       icon: '<i class="bi bi-sliders" style="color:#07C160;font-size:36px;"></i>',
       title: '自定义回复次数限制',
@@ -7385,6 +7395,7 @@ $(function(){
       buttons: [
         {text: '取消', variant: 'secondary'},
         {text: '确定', variant: 'primary', keepOpen: true, action: function(){
+          if(saving) return;
           var result = collectChatTextReplyLimitCustomRules();
           if(result.error){
             $('#chat-text-reply-limit-custom-error')
@@ -7394,8 +7405,35 @@ $(function(){
               .show();
             return;
           }
-          chatTextReplyLimitCountMapInitial = result.rules;
-          svModal.close();
+          saving = true;
+          $.ajax({
+            url:'/save_config', type:'POST', contentType:'application/json',
+            data:JSON.stringify({chat_text_reply_limit_count_map: result.rules}),
+            success:function(res){
+              saving = false;
+              if(res.status === 'success'){
+                chatTextReplyLimitCountMapInitial = result.rules;
+                markChatTextReplyLimitCustomRulesSaved(result.rules);
+                svModal.close();
+                svModal.success('自定义限制已保存');
+                return;
+              }
+              $('#chat-text-reply-limit-custom-error')
+                .text('保存失败: '+(res.message || ''))
+                .removeClass('cfg-feedback-success cfg-feedback-info')
+                .addClass('cfg-feedback-error')
+                .show();
+            },
+            error:function(xhr){
+              saving = false;
+              var message = (xhr.responseJSON && xhr.responseJSON.message) || xhr.responseText || '请求失败';
+              $('#chat-text-reply-limit-custom-error')
+                .text('保存失败: '+message)
+                .removeClass('cfg-feedback-success cfg-feedback-info')
+                .addClass('cfg-feedback-error')
+                .show();
+            }
+          });
         }}
       ]
     });

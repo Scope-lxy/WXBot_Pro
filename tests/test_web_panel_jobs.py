@@ -775,6 +775,20 @@ class WebPanelJobTests(unittest.TestCase):
             {"张三": 2, "李四": 0, "王五": 99999},
         )
 
+    def test_custom_private_reply_limit_modal_saves_only_its_own_rules(self):
+        root = Path(__file__).resolve().parents[1]
+        dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")
+        modal = dashboard.split("function openChatTextReplyLimitCustomModal(){", 1)[1].split(
+            "$('#btn-chat-text-reply-limit-custom').on('click'", 1
+        )[0]
+
+        self.assertIn(
+            "data:JSON.stringify({chat_text_reply_limit_count_map: result.rules})",
+            modal,
+        )
+        self.assertIn("markChatTextReplyLimitCustomRulesSaved(result.rules);", modal)
+        self.assertNotIn("saveConfig(", modal)
+
     def test_contact_directory_columns_match_wechat_profile_fields(self):
         root = Path(__file__).resolve().parents[1]
         dashboard = (root / "templates" / "dashboard.html").read_text(encoding="utf-8")

@@ -37,7 +37,13 @@ from core.wechat_ui_runtime import OwnedChat
 from feature import listening, message_routing
 from feature.voice_reply import group_voice_candidate
 from feature.scheduled_messages import execute_scheduled_message_task
-from wxbot_core import LONG_REPLY_SEGMENT_CHARS, WXBOT_SAVE_DIR_NAME, WXBot, WxParam
+from wxbot_core import (
+    LONG_REPLY_SEGMENT_CHARS,
+    PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS,
+    WXBOT_SAVE_DIR_NAME,
+    WXBot,
+    WxParam,
+)
 
 
 def make_message_runtime_bot(data_dir):
@@ -470,6 +476,57 @@ class ApiBehaviorTests(unittest.TestCase):
 
             encoded = data_url.split(",", 1)[1]
             self.assertEqual(base64.standard_b64decode(encoded), b"prepared-bytes")
+
+
+class ChatAPIFailoverTests(unittest.TestCase):
+    def test_backup_rechecks_primary_every_ten_minutes_then_switches_back(self):
+        primary_available = {"value": False}
+        primary_calls = []
+
+        def primary_chat(*args, **kwargs):
+            primary_calls.append((args, kwargs))
+            if not primary_available["value"]:
+                raise RuntimeError("主接口仍不可用")
+            return "主接口回复"
+
+        bot = WXBot.__new__(WXBot)
+        bot.config = SimpleNamespace(
+            api_id="primary",
+            backup_chat_api_id="backup",
+            api_configs=[
+                {"id": "primary", "model": "主模型"},
+                {"id": "backup", "model": "备用模型"},
+            ],
+        )
+        bot.api = SimpleNamespace(chat=primary_chat)
+        bot._chat_api_failover_lock = threading.RLock()
+        bot.active_chat_api_id = "backup"
+        bot.chat_api_fail_count = 0
+        bot.chat_api_using_backup = True
+        bot.next_primary_chat_api_probe_at = 1_000 + PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS
+        bot._record_api_request_by_type = lambda *_args, **_kwargs: None
+        now = {"value": 1_000 + PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS}
+        bot._get_chat_api_failover_now = lambda: now["value"]
+
+        restored, result = bot._try_restore_primary_chat_api("你好")
+
+        self.assertFalse(restored)
+        self.assertIsNone(result)
+        self.assertEqual(
+            bot.next_primary_chat_api_probe_at,
+            now["value"] + PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS,
+        )
+        self.assertTrue(bot.chat_api_using_backup)
+
+        primary_available["value"] = True
+        now["value"] += PRIMARY_CHAT_API_RECOVERY_CHECK_INTERVAL_SECONDS
+        restored, result = bot._try_restore_primary_chat_api("你好")
+
+        self.assertTrue(restored)
+        self.assertEqual(result, "主接口回复")
+        self.assertEqual(len(primary_calls), 2)
+        self.assertFalse(bot.chat_api_using_backup)
+        self.assertEqual(bot.active_chat_api_id, "primary")
 
 
 class MessageBehaviorTests(unittest.TestCase):
