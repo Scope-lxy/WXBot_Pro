@@ -95,6 +95,7 @@ from core import wechat_recovery, wechat_ui_actions
 from core.wechat_ui_runtime import MessageLocateError, OwnedChat, UIClientFacade, WeChatUIRuntime
 from core.inbound_coordinator import InboundCoordinator, InboundEvent
 from core.message_store import (
+    DEFAULT_HISTORY_LIMIT,
     DEFAULT_REPLY_TTL_SECONDS,
     MessageStore,
     MessageStoreTransitionError,
@@ -564,8 +565,17 @@ class WXBot:
 
     def _initialize_message_runtime(self, wx_id):
         account_id = str(wx_id or "").strip() or DEFAULT_ACCOUNT_ID
-        store = MessageStore(self.config.DATA_DIR, account_id)
+        history_limit = coerce_int_range(
+            getattr(self.config, "memory_max_count", DEFAULT_HISTORY_LIMIT),
+            DEFAULT_HISTORY_LIMIT,
+            100,
+            DEFAULT_HISTORY_LIMIT,
+        )
+        store = MessageStore(self.config.DATA_DIR, account_id, history_limit=history_limit)
         startup = store.recover_startup()
+        hidden_history_count = store.prune_history()
+        if hidden_history_count:
+            log("INFO", f"聊天记录上限已执行：每个会话保留最近 {history_limit} 条，已移除 {hidden_history_count} 条最旧记录")
         ui_journal = SQLiteUIDeliveryJournal(store)
         interrupted_ui = ui_journal.freeze_interrupted()
         if getattr(self, "_ui_owner", None) is not None:
@@ -626,6 +636,24 @@ class WXBot:
         if interrupted_ui:
             log(level="WARNING", message=f"微信发送恢复：{len(interrupted_ui)} 个 UI 动作结果未知，已禁止自动重发")
         return store
+
+    def apply_runtime_history_limit(self, history_limit):
+        """Apply a saved history cap to the active account without restarting."""
+
+        limit = coerce_int_range(
+            history_limit,
+            DEFAULT_HISTORY_LIMIT,
+            100,
+            DEFAULT_HISTORY_LIMIT,
+        )
+        self.config.memory_max_count = limit
+        store = getattr(self, "_message_store", None)
+        if store is None:
+            return 0
+        hidden_history_count = store.set_history_limit(limit)
+        if hidden_history_count:
+            log("INFO", f"聊天记录上限已执行：每个会话保留最近 {limit} 条，已移除 {hidden_history_count} 条最旧记录")
+        return hidden_history_count
 
     @staticmethod
     def _coalesce_message_recovery(items):
@@ -5232,7 +5260,7 @@ class WXBot:
         try:
             messages = self.memory_manager.get_messages(
                 str(getattr(chat, "who", "") or "").strip(),
-                getattr(self.config, 'memory_max_count', 5000),
+                getattr(self.config, 'memory_max_count', DEFAULT_HISTORY_LIMIT),
                 chat_type='private',
             )
             api = self._get_other_api(self._get_chat_api_id(chat.who))
@@ -8200,9 +8228,9 @@ class WXBot:
 
     def _memory_context_raw_limit(self, message_limit):
         try:
-            max_count = int(getattr(self.config, "memory_max_count", 5000) or 5000)
+            max_count = int(getattr(self.config, "memory_max_count", DEFAULT_HISTORY_LIMIT) or DEFAULT_HISTORY_LIMIT)
         except Exception:
-            max_count = 5000
+            max_count = DEFAULT_HISTORY_LIMIT
         try:
             message_limit = int(message_limit)
         except Exception:

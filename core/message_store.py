@@ -17,6 +17,7 @@ from core.memory_context_repair import build_tail_repair_plan
 
 SCHEMA_VERSION = 5
 DEFAULT_REPLY_TTL_SECONDS = 60 * 60
+DEFAULT_HISTORY_LIMIT = 10000
 
 ACTION_STATES = {"pending", "inflight", "done", "uncertain", "cancelled", "stale", "expired"}
 CHAT_TYPES = {"private", "group"}
@@ -88,7 +89,7 @@ class MessageStore:
     the same commit boundary.
     """
 
-    def __init__(self, base_dir, wx_id):
+    def __init__(self, base_dir, wx_id, *, history_limit=None):
         self.path = Path(
             account_file(
                 base_dir,
@@ -97,7 +98,20 @@ class MessageStore:
                 create_parent=True,
             )
         )
+        self._history_limit = self._normalize_history_limit(history_limit)
         self._initialize()
+
+    @staticmethod
+    def _normalize_history_limit(value):
+        if value is None:
+            return None
+        try:
+            limit = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("history_limit must be an integer") from exc
+        if limit <= 0:
+            raise ValueError("history_limit must be positive")
+        return limit
 
     def _connect(self):
         connection = sqlite3.connect(
@@ -167,6 +181,8 @@ class MessageStore:
 
                 CREATE INDEX IF NOT EXISTS idx_chat_events_history
                     ON chat_events(conversation, chat_type, received_at, event_seq);
+                CREATE INDEX IF NOT EXISTS idx_chat_events_visible_history
+                    ON chat_events(conversation, chat_type, history_visible, received_at, event_seq);
                 CREATE INDEX IF NOT EXISTS idx_chat_events_pending
                     ON chat_events(processing_state, reply_expires_at, event_seq);
 
@@ -452,11 +468,83 @@ class MessageStore:
 
     def _record_event(self, values, *, advances_version):
         with self._transaction() as connection:
-            return self._record_event_locked(
+            result = self._record_event_locked(
                 connection,
                 values,
                 advances_version=advances_version,
             )
+            if result["is_new"]:
+                self._prune_history_locked(
+                    connection,
+                    values["conversation"],
+                    values["chat_type"],
+                )
+            return result
+
+    def set_history_limit(self, history_limit, *, prune_existing=True):
+        """Set the per-conversation history cap and optionally apply it now."""
+
+        self._history_limit = self._normalize_history_limit(history_limit)
+        return self.prune_history() if prune_existing else 0
+
+    def prune_history(self):
+        """Physically remove history beyond the configured per-conversation cap."""
+
+        if self._history_limit is None:
+            return 0
+        with self._transaction() as connection:
+            conversations = connection.execute(
+                """
+                SELECT DISTINCT conversation, chat_type FROM chat_events
+                WHERE history_visible = 1
+                """
+            ).fetchall()
+            return sum(
+                self._prune_history_locked(
+                    connection,
+                    row["conversation"],
+                    row["chat_type"],
+                )
+                for row in conversations
+            )
+
+    def _prune_history_locked(self, connection, conversation, chat_type):
+        limit = self._history_limit
+        if limit is None:
+            return 0
+        rows = connection.execute(
+            """
+            SELECT event_id FROM chat_events
+            WHERE event_seq IN (
+                SELECT event_seq FROM chat_events
+                WHERE conversation = ? AND chat_type = ? AND history_visible = 1
+                ORDER BY received_at DESC, event_seq DESC
+                LIMIT -1 OFFSET ?
+            )
+            AND NOT EXISTS (
+                SELECT 1
+                FROM reply_job_events
+                JOIN reply_jobs ON reply_jobs.turn_id = reply_job_events.turn_id
+                WHERE reply_job_events.event_id = chat_events.event_id
+                  AND reply_jobs.status IN ('pending', 'generating', 'inflight')
+            )
+            AND processing_state != 'pending'
+            """,
+            (conversation, chat_type, limit),
+        ).fetchall()
+        event_ids = [str(row["event_id"]) for row in rows]
+        if not event_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in event_ids)
+        connection.execute(
+            f"DELETE FROM reply_job_events WHERE event_id IN ({placeholders})",
+            event_ids,
+        )
+        cursor = connection.execute(
+            f"DELETE FROM chat_events WHERE event_id IN ({placeholders})",
+            event_ids,
+        )
+        return cursor.rowcount
 
     def record_inbound(self, event):
         """Record one normalized wxautox observation exactly once.
@@ -466,13 +554,33 @@ class MessageStore:
         """
 
         with self._transaction() as connection:
-            return self._record_inbound_locked(connection, event)
+            result = self._record_inbound_locked(connection, event)
+            if result["is_new"]:
+                self._prune_history_locked(
+                    connection,
+                    _required_text(_event_value(event, "conversation"), "conversation"),
+                    _required_chat_type(_event_value(event, "chat_type", "private")),
+                )
+            return result
 
     @contextmanager
     def inbound_batch(self):
         """Yield a recorder whose observations share one transaction."""
         with self._transaction() as connection:
-            yield lambda event: self._record_inbound_locked(connection, event)
+            affected_conversations = set()
+
+            def record(event):
+                result = self._record_inbound_locked(connection, event)
+                if result["is_new"]:
+                    affected_conversations.add((
+                        _required_text(_event_value(event, "conversation"), "conversation"),
+                        _required_chat_type(_event_value(event, "chat_type", "private")),
+                    ))
+                return result
+
+            yield record
+            for conversation, chat_type in affected_conversations:
+                self._prune_history_locked(connection, conversation, chat_type)
 
     def _record_inbound_locked(self, connection, event):
         """Record one inbound observation on the caller-owned transaction."""
@@ -795,6 +903,8 @@ class MessageStore:
         with self._transaction() as connection:
             result = self._record_event_locked(connection, values, advances_version=False)
             self._merge_confirmed_event(connection, delivery_id, values, metadata)
+            if result["is_new"]:
+                self._prune_history_locked(connection, values["conversation"], values["chat_type"])
         return {"event_id": result["event_id"], "is_new": result["is_new"]}
 
     @staticmethod
@@ -1089,6 +1199,7 @@ class MessageStore:
         values = [self._import_event_values(entry, current) for entry in entries]
         with self._transaction() as connection:
             added = 0
+            affected_conversations = set()
             for item in values:
                 result = self._record_event_locked(
                     connection,
@@ -1096,6 +1207,10 @@ class MessageStore:
                     advances_version=False,
                 )
                 added += int(result["is_new"])
+                if result["is_new"]:
+                    affected_conversations.add((item["conversation"], item["chat_type"]))
+            for conversation, chat_type in affected_conversations:
+                self._prune_history_locked(connection, conversation, chat_type)
             return added
 
     @classmethod
@@ -1271,6 +1386,8 @@ class MessageStore:
                 event_ids.append(result["event_id"])
                 added += int(result["is_new"])
 
+            if added:
+                self._prune_history_locked(connection, conversation, chat_type)
             visible_events = {}
             if event_ids:
                 placeholders = ", ".join("?" for _ in event_ids)
@@ -2336,6 +2453,8 @@ class MessageStore:
                 "",
                 current,
             )
+            if event["is_new"]:
+                self._prune_history_locked(connection, conversation, chat_type)
             return {
                 "event_id": event["event_id"],
                 "is_new": event["is_new"],

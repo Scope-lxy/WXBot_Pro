@@ -3104,9 +3104,9 @@ html.icons-pref-local [class*=" bi-"]::before {
             <label class="form-check-label" for="memory_switch">保存聊天记录</label>
             <span class="switch-desc">记录完整对话，供聊天历史和会话记忆使用</span>
           </div>
-          <label class="cfg-label" for="memory_max_count">最大保存条数（100 ~ 5000）</label>
-          <input type="number" class="form-control" id="memory_max_count" min="100" max="5000"
-            value="{{ config.get('memory_max_count', 5000) }}" placeholder="5000">
+          <label class="cfg-label" for="memory_max_count">最大保存条数（100 ~ 10000）</label>
+          <input type="number" class="form-control" id="memory_max_count" min="100" max="10000"
+            value="{{ config.get('memory_max_count', 10000) }}" placeholder="10000">
           <div class="cfg-hint">每个会话最多保留的消息条数，超出后删除最旧的</div>
         </div>
         <div class="memory-config-section">
@@ -10315,7 +10315,7 @@ $(function(){
       everyday_stop_bot_time:$('#everyday_stop_bot_time').val(),
       memory_switch:$('#memory_switch').is(':checked'),
       memory_context_switch:$('#memory_context_switch').is(':checked'),
-      memory_max_count:Math.max(100,Math.min(5000,parseInt($('#memory_max_count').val())||5000)),
+      memory_max_count:Math.max(100,Math.min(10000,parseInt($('#memory_max_count').val())||10000)),
       memory_context_count:(function(){
         var v=parseInt($('#memory_context_count').val(), 10);
         return isNaN(v) ? 50 : Math.max(1, Math.min(200, v));

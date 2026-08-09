@@ -2158,7 +2158,7 @@ def dashboard():
     config.setdefault('memory_context_switch', config.get('memory_switch', True))
     config.setdefault('chat_context_repair_switch', True)
     config.setdefault('group_context_repair_switch', True)
-    config.setdefault('memory_max_count', 5000)
+    config.setdefault('memory_max_count', 10000)
     config.setdefault('memory_context_count', 50)
     config.setdefault('media_cache_retention_days', 30)
     config.setdefault('clean_ai_reply_switch', True)
@@ -2948,7 +2948,7 @@ def _coerce_int_range_fields(merged_config):
     int_range_fields = {
         'new_friend_check_min': (60, 3600, 60),
         'new_friend_check_max': (60, 3600, 300),
-        'memory_max_count': (100, 5000, 5000),
+        'memory_max_count': (100, 10000, 10000),
         'memory_context_count': (1, 200, 50),
         'chat_text_reply_limit_count': (0, 99999, 50),
         'chat_text_reply_limit_hours': (0, 720, 5),
@@ -3307,6 +3307,17 @@ def save_config_route():
             global update_config_status
             update_config_status = True # 执行了保存配置
             if bot_thread and bot_thread.is_alive() and bot:
+                hidden_history_count = 0
+                if 'memory_max_count' in (config_data or {}) and hasattr(bot, 'apply_runtime_history_limit'):
+                    try:
+                        hidden_history_count = int(bot.apply_runtime_history_limit(
+                            merged_config['memory_max_count']
+                        ) or 0)
+                    except Exception as e:
+                        log(
+                            'WARNING',
+                            f'运行中聊天记录上限同步失败，将在下次启动时执行：{type(e).__name__}: {e}',
+                        )
                 api_runtime_fields = {
                     'api_configs',
                     'api_id',
@@ -3331,7 +3342,10 @@ def save_config_route():
                         )
                 if hasattr(bot, 'request_runtime_task_reload'):
                     bot.request_runtime_task_reload()
-                return jsonify({'status': 'success', 'message': '配置保存成功，运行中的机器人将自动同步新任务'})
+                message = '配置保存成功，运行中的机器人将自动同步新任务'
+                if hidden_history_count:
+                    message = f'配置保存成功，聊天记录上限已同步，已移除 {hidden_history_count} 条最旧记录'
+                return jsonify({'status': 'success', 'message': message})
             return jsonify({'status': 'success', 'message': '配置保存成功'})
         else:
             message = last_save_config_error or '配置保存失败'
@@ -6871,7 +6885,7 @@ def main():
                 "memory_context_switch": True,
                 "chat_context_repair_switch": True,
                 "group_context_repair_switch": True,
-                "memory_max_count": 5000,
+                "memory_max_count": 10000,
                 "memory_context_count": 50,
                 "media_cache_retention_days": 30,
                 "clean_ai_reply_switch": True,

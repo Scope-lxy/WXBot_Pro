@@ -141,6 +141,7 @@
 - `data/prompt/`：人格模板和人格近况文件。
 - `data/system_prompts/`：系统 Prompt 片段及其备份。
 - `data/accounts/<wx_id>/message_store.sqlite3`：消息事实、聊天记录、会话版本、回复任务、逐气泡投递状态和非幂等 UI 提交围栏的唯一真源。旧版 `memory/*_memory.json` 不再由生产代码读取；已有本地数据使用 `tools/migrate_legacy_message_history.py` 一次性迁入，验证后移除旧目录，不保留长期双读兼容层。
+- 聊天记录保留上限按会话物理删除超量 `chat_events`，并只在移除关联事件后保留投递状态及 `uncertain` 状态；活跃回复任务关联的事件不得删除，禁止因为记录清理而重发。
 - `data/accounts/<wx_id>/chat_memory/`：会话记忆 JSON 真源。
 - `data/accounts/<wx_id>/contact_profiles/contacts.json`：通讯录档案真源，使用 v2 瘦身结构。
 - `data/accounts/<wx_id>/contact_merge_backups/`：联系人合并前的账号级保险备份。

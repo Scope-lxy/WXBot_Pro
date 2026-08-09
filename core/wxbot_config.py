@@ -145,7 +145,7 @@ class WXBotConfig:
         self.memory_context_switch = True     # 是否把最近聊天记录带入 AI 上下文
         self.chat_context_repair_switch = True   # 是否补齐私聊停机消息
         self.group_context_repair_switch = True  # 是否补齐群聊停机消息
-        self.memory_max_count     = 5000     # 单窗口最多存储条数（上限 5000）
+        self.memory_max_count     = 10000    # 单窗口最多存储条数（上限 10000）
         self.memory_context_count = 50       # AI 请求时带入最近聊天记录条数
 
         self.media_cache_retention_days = 30  # 媒体缓存自动清理周期，0=不清理
@@ -278,7 +278,7 @@ class WXBotConfig:
                     "memory_context_switch": True,
                     "chat_context_repair_switch": True,
                     "group_context_repair_switch": True,
-                    "memory_max_count": 5000,
+                    "memory_max_count": 10000,
                     "memory_context_count": 50,
                     "media_cache_retention_days": 30,
                     "clean_ai_reply_switch": True,
@@ -816,7 +816,7 @@ class WXBotConfig:
         self.chat_context_repair_switch = bool(self.config.get('chat_context_repair_switch', True))
         self.group_context_repair_switch = bool(self.config.get('group_context_repair_switch', True))
         self.memory_max_count = self._coerce_int_range(
-            self.config.get('memory_max_count', 5000), 5000, 100, 5000
+            self.config.get('memory_max_count', 10000), 10000, 100, 10000
         )
         self.memory_context_count = self._coerce_int_range(
             self.config.get('memory_context_count', 50), 50, 1, 200
