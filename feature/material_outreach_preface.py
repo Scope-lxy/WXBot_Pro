@@ -242,3 +242,12 @@ def cancel_preface_pending_record(records, queue_id):
         del records[index]
         return True
     return False
+
+
+def cancel_preface_pending_records(records):
+    source_records = list(records or [])
+    kept_records = [record for record in source_records if str((record or {}).get("status") or "").strip() != "pending"]
+    changed = len(source_records) - len(kept_records)
+    if changed > 0:
+        records[:] = kept_records
+    return changed

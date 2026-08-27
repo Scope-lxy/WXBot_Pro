@@ -292,6 +292,7 @@ from feature.material_outreach import (
 )
 from feature.material_outreach_preface import (
     build_preface_queue_record,
+    cancel_preface_pending_records,
     due_prefetch_records,
     due_send_records,
     mark_preface_failed,
@@ -4331,6 +4332,11 @@ class WXBot:
         now = now or datetime.now()
         with self._material_outreach_runtime_lock():
             queue_records = self._load_material_outreach_preface_queue()
+            if not self._current_ai_material_outreach_config().get("ai_material_outreach_switch"):
+                changed = bool(cancel_preface_pending_records(queue_records))
+                if changed:
+                    self._save_material_outreach_preface_queue(queue_records)
+                return changed
             changed = False
             for record in due_prefetch_records(queue_records, now=now):
                 try:

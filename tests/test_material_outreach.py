@@ -462,6 +462,7 @@ class MaterialOutreachPoolTests(unittest.TestCase):
         resolved = []
         bot = SimpleNamespace(
             is_stop_requested=lambda: False,
+            _current_ai_material_outreach_config=lambda: {"ai_material_outreach_switch": True},
             _material_outreach_runtime_lock=lambda: nullcontext(),
             _load_material_outreach_preface_queue=lambda: queue,
             _load_material_outreach_materials=lambda: [],
@@ -476,6 +477,30 @@ class MaterialOutreachPoolTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertEqual(resolved, [("task_1", "sent")])
+        self.assertEqual(saved_queues[-1], [])
+
+    def test_preface_queue_drops_pending_records_when_switch_is_off(self):
+        queue = [{
+            "queue_id": "preface_1",
+            "task_id": "task_1",
+            "status": "pending",
+            "preface_status": "success",
+        }]
+        saved_queues = []
+        sent = []
+        bot = SimpleNamespace(
+            is_stop_requested=lambda: False,
+            _current_ai_material_outreach_config=lambda: {"ai_material_outreach_switch": False},
+            _material_outreach_runtime_lock=lambda: nullcontext(),
+            _load_material_outreach_preface_queue=lambda: queue,
+            _send_material_outreach_preface_record=lambda *_args, **_kwargs: sent.append(True),
+            _save_material_outreach_preface_queue=lambda records: saved_queues.append(list(records)),
+        )
+
+        changed = WXBot._process_material_outreach_preface_queue(bot, now=datetime(2026, 7, 12, 15, 0, 0))
+
+        self.assertTrue(changed)
+        self.assertEqual(sent, [])
         self.assertEqual(saved_queues[-1], [])
 
     def test_ai_material_outreach_forwards_material_and_preface(self):

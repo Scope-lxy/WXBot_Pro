@@ -2034,7 +2034,7 @@ html.icons-pref-local [class*=" bi-"]::before {
                 <option value="auto" {% if relationship_settings.get('auto_sync_wechat_tags', True) %}selected{% endif %}>自动</option>
                 <option value="off" {% if not relationship_settings.get('auto_sync_wechat_tags', True) %}selected{% endif %}>关闭</option>
               </select>
-              <div class="cfg-hint">微信空闲时自动添加或移除实际好友标签</div>
+              <div class="cfg-hint">仅在上方自动扫描开启且选择“自动”时，微信空闲才会添加或移除实际好友标签</div>
             </div>
             <div>
               <label class="cfg-label" for="relationship_scan_wechat_tag_sync_interval_seconds">标签同步间隔</label>

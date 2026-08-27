@@ -303,6 +303,40 @@ class RelationshipScanTests(unittest.TestCase):
 
             self.assertFalse(check_auto_scan(bot, now=datetime(2026, 6, 11, 10, 0, 0)))
 
+    def test_auto_scan_switch_off_pauses_pending_wechat_tag_sync(self):
+        calls = []
+        now = datetime(2026, 6, 11, 10, 0, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            save_state(tmp, {
+                "wx_id": "wxid_test",
+                "settings": {"auto_scan_enabled": False, "auto_sync_wechat_tags": True},
+                "records": [{
+                    "name": "阿英2",
+                    "status": STATUS_BLOCKED,
+                    "wechat_sync_status": SYNC_PENDING,
+                }],
+            })
+            bot = SimpleNamespace(
+                wx=SimpleNamespace(),
+                wx_id="wxid_test",
+                config=SimpleNamespace(DATA_DIR=tmp),
+            )
+
+            from feature import relationship_scan
+
+            original = relationship_scan.modify_friend_tags_via_chat_profile
+            relationship_scan.modify_friend_tags_via_chat_profile = lambda *_args, **_kwargs: calls.append(True)
+            try:
+                self.assertFalse(check_auto_scan(bot, now=now))
+                result = process_pending_wechat_tag_sync(bot, now=now)
+            finally:
+                relationship_scan.modify_friend_tags_via_chat_profile = original
+            paused_status = load_state(tmp, "wxid_test")["records"][0]["wechat_sync_status"]
+
+        self.assertEqual(result, {"processed": 0, "success": 0, "failed": 0})
+        self.assertEqual(calls, [])
+        self.assertEqual(paused_status, SYNC_PENDING)
+
     def test_auto_scan_owner_cancellation_is_safe(self):
         with tempfile.TemporaryDirectory() as tmp:
             save_state(tmp, {
@@ -388,6 +422,8 @@ class RelationshipScanTests(unittest.TestCase):
         }
         self.assertTrue(due_for_wechat_tag_sync(state, now=now))
         state["runtime"]["last_wechat_tag_sync_at"] = (now - timedelta(seconds=59)).isoformat()
+        self.assertFalse(due_for_wechat_tag_sync(state, now=now))
+        state["settings"]["auto_scan_enabled"] = False
         self.assertFalse(due_for_wechat_tag_sync(state, now=now))
 
     def test_wechat_tag_sync_processes_only_one_contact_per_run(self):

@@ -106,6 +106,11 @@ def normalize_settings(settings: Any) -> dict[str, Any]:
     }
 
 
+def _wechat_tag_sync_enabled(settings: Any) -> bool:
+    normalized = normalize_settings(settings)
+    return normalized["auto_scan_enabled"] and normalized["auto_sync_wechat_tags"]
+
+
 def state_path(base_dir: str | Path, wx_id: str) -> Path:
     return account_area_file(base_dir, wx_id, AREA_NAME, STATE_FILENAME, create_parent=True)
 
@@ -688,7 +693,6 @@ def check_auto_scan(bot, *, now: Any = None) -> bool:
         return False
     settings = normalize_settings(state.get("settings"))
     if not settings["auto_scan_enabled"]:
-        process_pending_wechat_tag_sync(bot, now=now)
         return False
 
     scan_due = _due_for_auto_scan_interval(
@@ -762,7 +766,7 @@ def pending_sync_records(state: dict[str, Any], *, now: Any = None) -> list[dict
 
 def due_for_wechat_tag_sync(state: dict[str, Any], *, now: Any = None) -> bool:
     settings = normalize_settings((state or {}).get("settings"))
-    if not settings["auto_sync_wechat_tags"]:
+    if not _wechat_tag_sync_enabled(settings):
         return False
     runtime = (state or {}).get("runtime") or {}
     last_sync = _parse_time(runtime.get("last_wechat_tag_sync_at"))
@@ -777,7 +781,7 @@ def desired_wechat_tag_update(status: str) -> tuple[list[str], list[str]]:
 
 
 def _sync_record_still_current(state: dict[str, Any], name: str, status: str) -> bool:
-    if not normalize_settings((state or {}).get("settings"))["auto_sync_wechat_tags"]:
+    if not _wechat_tag_sync_enabled((state or {}).get("settings")):
         return False
     record = _record_map(state).get(_clean_text(name))
     return bool(
@@ -848,7 +852,7 @@ def process_pending_wechat_tag_sync(bot, *, now: Any = None, force: bool = False
         return {"processed": 0, "success": 0, "failed": 0}
     state = _load_bot_state(bot)
     settings = normalize_settings(state.get("settings"))
-    if not settings["auto_sync_wechat_tags"]:
+    if not _wechat_tag_sync_enabled(settings):
         return {"processed": 0, "success": 0, "failed": 0}
     current_time = now if isinstance(now, datetime) else _parse_time(now) or datetime.now()
     if not force and not due_for_wechat_tag_sync(state, now=current_time):
@@ -863,10 +867,10 @@ def process_pending_wechat_tag_sync(bot, *, now: Any = None, force: bool = False
             name = record["name"]
             latest_state = _load_bot_state(bot)
             latest_settings = normalize_settings(latest_state.get("settings"))
-            if not latest_settings["auto_sync_wechat_tags"]:
+            if not _wechat_tag_sync_enabled(latest_settings):
                 state = latest_state
                 state_records = _record_map(state)
-                log(message="[关系扫描] 微信标签同步已关闭，停止处理待同步队列")
+                log(message="[关系扫描] 自动扫描或微信标签同步已关闭，停止处理待同步队列")
                 break
             latest_records = _record_map(latest_state)
             latest_record = latest_records.get(name)
@@ -895,10 +899,10 @@ def process_pending_wechat_tag_sync(bot, *, now: Any = None, force: bool = False
                 post_settings = normalize_settings(post_state.get("settings"))
                 post_records = _record_map(post_state)
                 post_record = post_records.get(name)
-                if not post_settings["auto_sync_wechat_tags"]:
+                if not _wechat_tag_sync_enabled(post_settings):
                     state = post_state
                     state_records = post_records
-                    log(message="[关系扫描] 微信标签同步已关闭，放弃写回本轮剩余同步结果")
+                    log(message="[关系扫描] 自动扫描或微信标签同步已关闭，放弃写回本轮剩余同步结果")
                     break
                 if (
                     not post_record
@@ -944,10 +948,10 @@ def process_pending_wechat_tag_sync(bot, *, now: Any = None, force: bool = False
                 post_settings = normalize_settings(post_state.get("settings"))
                 post_records = _record_map(post_state)
                 post_record = post_records.get(name)
-                if not post_settings["auto_sync_wechat_tags"]:
+                if not _wechat_tag_sync_enabled(post_settings):
                     state = post_state
                     state_records = post_records
-                    log(message="[关系扫描] 微信标签同步已关闭，放弃写回本轮失败结果")
+                    log(message="[关系扫描] 自动扫描或微信标签同步已关闭，放弃写回本轮失败结果")
                     break
                 if (
                     not post_record
