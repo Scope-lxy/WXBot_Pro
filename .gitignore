@@ -49,3 +49,4 @@ tools/ui_conflict_test_config.json
 # Local agent instructions; keep them out of repository backups and pushes
 /AGENTS.md
 /CLAUDE.md
+/LICENSE
