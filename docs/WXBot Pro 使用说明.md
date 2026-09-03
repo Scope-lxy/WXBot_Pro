@@ -279,7 +279,7 @@
 
 - 自动化操作存在微信风控风险，请只在合法、低频、可控的个人场景使用。
 - 不要最小化微信主窗口，尽量避免程序运行时手动操作微信。
-- 公开同步代码前，不要提交 `data/config/`、`data/prompt/`、`data/accounts/`、`wxbot_save/`、`wxbot_logs/`、`backups/` 等本地私有数据。
+- 公开同步代码前，不要提交 `data/config/`、`data/accounts/`、`wxbot_save/`、`wxbot_logs/`、`backups/` 等本地私有数据；`data/prompt/` 下只有 `模板.md` 和 `模板-人设近况.md` 会随代码同步，其余人设和人设近况 Prompt 不会上传。
 - 代码更新后需要重启面板进程，正在运行的 `web_server.py` 不会热加载本地文件改动。
 
 ## 相关项目

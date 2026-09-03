@@ -57,7 +57,7 @@
 - `wxbot_logs/`：面板运行日志；`backups/`：面板一键备份产物。
 - `tools/`、`tests/`：维护、复现和验证使用，不参与正式运行包。
 
-不要提交 `data/config/`、`data/prompt/`、`data/accounts/`、`wxbot_save/`、`wxbot_logs/` 或 `backups/` 等本地私有数据。
+不要提交 `data/config/`、`data/accounts/`、`wxbot_save/`、`wxbot_logs/` 或 `backups/` 等本地私有数据；`data/prompt/` 下只有 `模板.md` 和 `模板-人设近况.md` 纳入版本控制，其余人设和人设近况 Prompt 均为本机私有。
 
 ## 打包与迁移
 

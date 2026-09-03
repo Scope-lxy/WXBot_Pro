@@ -35,8 +35,17 @@ data/accounts/
 data/cache/
 data/config/
 
-# Keep prompt assets, but skip generated prompt backups
+# Prompt/persona data is local-private; keep only the two reusable templates
+data/prompt/*
+!data/prompt/模板.md
+!data/prompt/模板-人设近况.md
+
+# Keep software-owned prompt assets, but skip generated prompt backups
 data/system_prompts/prompt_backup/
 
 # Local test assets
 tools/ui_conflict_test_config.json
+
+# Local agent instructions; keep them out of repository backups and pushes
+/AGENTS.md
+/CLAUDE.md
