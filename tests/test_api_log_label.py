@@ -21,6 +21,39 @@ class FakeProviderError(Exception):
 
 
 class ApiLogLabelTest(unittest.TestCase):
+    def test_snapshot_keeps_configured_url_unchanged(self):
+        config = build_api_config_snapshot({
+            "sdk": "OpenAI SDK",
+            "url": "https://opencode.ai/zen/go/v1/chat/completions",
+        })
+
+        self.assertEqual(config.url, "https://opencode.ai/zen/go/v1/chat/completions")
+
+    def test_opencode_go_client_identifies_itself_and_sends_session_header(self):
+        with mock.patch("core.api.OpenAI") as openai:
+            OpenAIAPI(build_api_config_snapshot({
+                "sdk": "OpenAI SDK",
+                "key": "test-key",
+                "url": "https://opencode.ai/zen/go/v1",
+                "model": "mimo-v2.5",
+            }))
+
+        headers = openai.call_args.kwargs["default_headers"]
+        self.assertTrue(headers["User-Agent"].startswith("siver-wxbot-panel"))
+        self.assertRegex(headers["x-opencode-session"], r"^wxbot-[0-9a-f]{32}$")
+
+    def test_non_opencode_client_headers_are_unchanged(self):
+        with mock.patch("core.api.OpenAI") as openai:
+            OpenAIAPI(build_api_config_snapshot({
+                "sdk": "OpenAI SDK",
+                "key": "test-key",
+                "url": "https://api.example.test/v1",
+                "model": "test-model",
+            }))
+
+        headers = openai.call_args.kwargs["default_headers"]
+        self.assertEqual(headers, {"User-Agent": "Mozilla/5.0", "Accept": "*/*"})
+
     def test_api_log_label_uses_model_without_runtime_index(self):
         config = build_api_config_snapshot({"sdk": "DusAPI", "model": "mimo-v2.5"})
 

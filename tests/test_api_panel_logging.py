@@ -28,7 +28,43 @@ class FakeApiClient:
         return API_ERROR_REPLY_TEXT
 
 
+class FailedTextApiClient:
+    last_protocol_status = {'status': 'failed'}
+
+    def __init__(self):
+        self.last_error = FakeImageCapabilityError()
+
+    def chat(self, *_args, **_kwargs):
+        return API_ERROR_REPLY_TEXT
+
+
 class ApiPanelLoggingTest(unittest.TestCase):
+    def test_failed_text_probe_does_not_log_text_available(self):
+        api = FailedTextApiClient()
+        payload = {
+            'api_id': 'api_test',
+            'api_config': {
+                'id': 'api_test',
+                'sdk': 'OpenAI SDK',
+                'key': 'test-key',
+                'url': 'https://example.test/v1',
+                'model': 'text-only-model',
+                'api_protocol': 'chat_completions',
+            },
+        }
+
+        with mock.patch.object(web_server, '_build_test_api_client', return_value=api), mock.patch.object(
+            web_server, 'log'
+        ) as fake_log:
+            client = web_server.app.test_client()
+            with client.session_transaction() as session:
+                session['logged_in'] = True
+            response = client.post('/test_api_config', json=payload)
+
+        self.assertEqual(response.get_json()['status'], 'error')
+        messages = [call.args[1] for call in fake_log.call_args_list]
+        self.assertFalse(any('文本可用' in message for message in messages))
+
     def test_text_only_model_probe_logs_capability_result_without_raw_json(self):
         api = FakeApiClient()
         payload = {

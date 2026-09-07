@@ -7,6 +7,7 @@ import json
 import mimetypes
 import re
 import time
+import uuid
 from dataclasses import dataclass
 
 import requests
@@ -64,6 +65,14 @@ def normalize_api_protocol(value):
     if protocol in API_PROTOCOL_VALUES:
         return protocol
     return DEFAULT_API_PROTOCOL
+
+
+def _is_opencode_go_url(value):
+    """识别 OpenCode Go 地址，避免把专用请求头带到其他服务商。"""
+    normalized = str(value or "").strip().rstrip("/").lower()
+    return normalized == "https://opencode.ai/zen/go/v1" or normalized.startswith(
+        "https://opencode.ai/zen/go/v1/"
+    )
 
 
 def _truncate_log_text(value, limit=300):
@@ -304,15 +313,24 @@ class OpenAIAPI:
         self.DS_NOW_MOD = config.model
         self.last_protocol_status = {"status": "unknown"}
         self.last_error = None
+        self._opencode_session_id = f"wxbot-{uuid.uuid4().hex}"
+        default_headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "*/*",
+        }
+        if _is_opencode_go_url(config.url):
+            default_headers.update(
+                {
+                    "User-Agent": _chat_api_user_agent(),
+                    "x-opencode-session": self._opencode_session_id,
+                }
+            )
         self.client = OpenAI(
             api_key=config.key,
             base_url=config.url,
             timeout=float(MAIN_API_REQUEST_TIMEOUT_SECONDS),
             max_retries=int(getattr(config, "max_retries", 5)),
-            default_headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "*/*",
-            },
+            default_headers=default_headers,
         )
 
     def _log_label(self, api_name="", *, model=None):

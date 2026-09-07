@@ -3641,7 +3641,6 @@ def test_api_config_route():
         text_started = time.time()
         reply = api.chat(API_TEST_MESSAGE, stream=False, prompt=tmp_config.prompt, history=[])
         text_elapsed_ms = int((time.time() - text_started) * 1000)
-        log('INFO', f'接口测试 {tmp_config.model}：文本可用，耗时 {text_elapsed_ms} ms')
         raw_reply = str(reply or "")
         cleaned_reply = clean_ai_reply_text(raw_reply)
         cleaned = cleaned_reply != raw_reply
@@ -3657,6 +3656,7 @@ def test_api_config_route():
                     else '接口有响应，但未返回有效文本，请检查模型名称、接口地址或服务商兼容性'
                 ),
             })
+        log('INFO', f'接口测试 {tmp_config.model}：文本可用，耗时 {text_elapsed_ms} ms')
 
         image_started = time.time()
         image_test = _run_api_image_test(api, tmp_config.sdk)
